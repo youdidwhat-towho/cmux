@@ -13773,13 +13773,17 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
 /// dark bg → lighten RGB by 0.16 at 0.36 alpha; light bg → darken by 0.12 at 0.26 alpha.
 private struct SidebarTrailingBorder: View {
     @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
+    @State private var separatorColor: NSColor = chromeSeparatorColor()
 
     var body: some View {
         if matchTerminalBackground {
             Rectangle()
-                .fill(Color(nsColor: Self.chromeSeparatorColor()))
+                .fill(Color(nsColor: separatorColor))
                 .frame(width: 1)
                 .ignoresSafeArea()
+                .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+                    separatorColor = Self.chromeSeparatorColor()
+                }
         }
     }
 
