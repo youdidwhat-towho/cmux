@@ -4751,8 +4751,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         _scrollbarLock.unlock()
 
         guard let pending else { return }
-        guard pending != scrollbar else { return }
-        scrollbar = pending
+        if pending != scrollbar {
+            scrollbar = pending
+        }
         onScrollbarUpdate?(pending)
     }
 
