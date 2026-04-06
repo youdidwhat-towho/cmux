@@ -69,6 +69,10 @@ jobs:
             zig version
           fi
 
+      - name: Run Ghostty shim tests
+        working-directory: daemon/remote/rust/ghostty-shim
+        run: zig build test
+
       - name: Run remote daemon tests
         working-directory: daemon/remote
         run: go test ./...

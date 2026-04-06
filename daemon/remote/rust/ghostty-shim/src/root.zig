@@ -9,10 +9,9 @@ const Handle = struct {
     terminal: ghostty_vt.Terminal,
     stream: ghostty_vt.ReadonlyStream,
 
-    fn init(alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize) !Handle {
-        var handle: Handle = undefined;
-        handle.alloc = alloc;
-        handle.terminal = try ghostty_vt.Terminal.init(alloc, .{
+    fn init(self: *Handle, alloc: Allocator, cols: u16, rows: u16, max_scrollback: usize) !void {
+        self.alloc = alloc;
+        self.terminal = try ghostty_vt.Terminal.init(alloc, .{
             .cols = @max(@as(u16, 2), cols),
             .rows = @max(@as(u16, 1), rows),
             .max_scrollback = max_scrollback,
@@ -20,8 +19,7 @@ const Handle = struct {
 
         // The readonly stream stores a pointer to the terminal, so it must be
         // created from the terminal in its final storage location.
-        handle.stream = handle.terminal.vtStream();
-        return handle;
+        self.stream = self.terminal.vtStream();
     }
 
     fn deinit(self: *Handle) void {
@@ -47,7 +45,7 @@ const CapturePayload = struct {
 export fn cmux_ghostty_new(cols: u16, rows: u16, max_scrollback: usize) ?*Handle {
     const alloc = std.heap.c_allocator;
     const handle = alloc.create(Handle) catch return null;
-    handle.* = Handle.init(alloc, cols, rows, max_scrollback) catch {
+    handle.init(alloc, cols, rows, max_scrollback) catch {
         alloc.destroy(handle);
         return null;
     };
@@ -125,7 +123,9 @@ fn dumpOrEmpty(screen: *const ghostty_vt.Screen, alloc: Allocator, point: ghostt
 }
 
 test "Handle.init keeps vt stream bound to stored terminal" {
-    var handle = try Handle.init(testing.allocator, 80, 24, 1_000);
+    const handle = try testing.allocator.create(Handle);
+    defer testing.allocator.destroy(handle);
+    try handle.init(testing.allocator, 80, 24, 1_000);
     defer handle.deinit();
 
     try testing.expectEqual(@intFromPtr(&handle.terminal), @intFromPtr(handle.stream.handler.terminal));
