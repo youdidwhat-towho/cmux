@@ -69,6 +69,10 @@ jobs:
             zig version
           fi
 
+      - name: Prepare Ghostty shim dependency
+        working-directory: daemon/remote/rust/ghostty-shim
+        run: ln -sfn ../../../../ghostty ghostty
+
       - name: Run Ghostty shim tests
         working-directory: daemon/remote/rust/ghostty-shim
         run: zig build test
