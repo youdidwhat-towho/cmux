@@ -8,6 +8,7 @@ private var cmuxWindowBrowserPortalKey: UInt8 = 0
 private var cmuxWindowBrowserPortalCloseObserverKey: UInt8 = 0
 private var cmuxBrowserSearchOverlayPanelIdAssociationKey: UInt8 = 0
 private var cmuxBrowserPortalNeedsRenderingStateReattachKey: UInt8 = 0
+private var cmuxWindowInteractiveSplitDividerDragKey: UInt8 = 0
 
 #if DEBUG
 private func browserPortalDebugToken(_ view: NSView?) -> String {
@@ -41,6 +42,35 @@ private extension NSResponder {
             return editedView
         }
         return self as? NSView
+    }
+}
+
+private extension NSWindow {
+    var browserPortalHasInteractiveSplitDividerDrag: Bool {
+        get {
+            let isActive =
+                (objc_getAssociatedObject(self, &cmuxWindowInteractiveSplitDividerDragKey) as? NSNumber)?
+                    .boolValue ?? false
+            guard isActive else { return false }
+            guard (NSEvent.pressedMouseButtons & 1) != 0 else {
+                objc_setAssociatedObject(
+                    self,
+                    &cmuxWindowInteractiveSplitDividerDragKey,
+                    NSNumber(value: false),
+                    .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+                )
+                return false
+            }
+            return true
+        }
+        set {
+            objc_setAssociatedObject(
+                self,
+                &cmuxWindowInteractiveSplitDividerDragKey,
+                NSNumber(value: newValue),
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+        }
     }
 }
 
@@ -2057,6 +2087,13 @@ final class WindowBrowserSlotView: NSView {
 final class WindowBrowserPortal: NSObject {
     private static let transientRecoveryRetryBudget: Int = 12
 
+    private static func dividerHitRectContains(_ point: NSPoint, rect: NSRect) -> Bool {
+        point.x >= rect.minX &&
+            point.x <= rect.maxX &&
+            point.y >= rect.minY &&
+            point.y <= rect.maxY
+    }
+
     private weak var window: NSWindow?
     private let hostView = WindowBrowserHostView(frame: .zero)
     private weak var installedContainerView: NSView?
@@ -2111,7 +2148,79 @@ final class WindowBrowserPortal: NSObject {
         // WebKit's attached DevTools uses internal NSSplitView instances for the
         // side/bottom inspector layout. Those resizes are local to hosted content
         // and should not trigger a full portal re-sync/refresh pass.
-        return !splitView.isDescendant(of: hostView)
+        guard !splitView.isDescendant(of: hostView) else { return false }
+        // Browser host anchors already emit coalesced geometry callbacks while the
+        // user drags a split divider. Running the portal-wide external-geometry
+        // sync on the same drag frame doubles up WebKit refresh work and shows up
+        // as visible flicker in browser panes.
+        return !isInteractiveSplitDividerDrag(in: window)
+    }
+
+    private static func noteInteractiveSplitDividerDragIfNeeded(
+        _ splitView: NSSplitView,
+        window: NSWindow,
+        hostView: WindowBrowserHostView
+    ) {
+        guard splitView.window === window else { return }
+        guard !splitView.isDescendant(of: hostView) else { return }
+        guard (NSEvent.pressedMouseButtons & 1) != 0 else { return }
+        guard let event = NSApp.currentEvent else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard (now - event.timestamp) < 0.1 else { return }
+        guard event.window === window else { return }
+        switch event.type {
+        case .leftMouseDown, .leftMouseDragged:
+            break
+        default:
+            return
+        }
+        guard splitView.arrangedSubviews.count >= 2 else { return }
+
+        let location = splitView.convert(event.locationInWindow, from: nil)
+        let first = splitView.arrangedSubviews[0].frame
+        let second = splitView.arrangedSubviews[1].frame
+        let thickness = splitView.dividerThickness
+        let dividerRect: NSRect
+
+        if splitView.isVertical {
+            guard first.width > 1, second.width > 1 else { return }
+            dividerRect = NSRect(
+                x: max(0, first.maxX),
+                y: 0,
+                width: thickness,
+                height: splitView.bounds.height
+            )
+        } else {
+            guard first.height > 1, second.height > 1 else { return }
+            dividerRect = NSRect(
+                x: 0,
+                y: max(0, first.maxY),
+                width: splitView.bounds.width,
+                height: thickness
+            )
+        }
+
+        let hitRect = dividerRect.insetBy(dx: -5, dy: -5)
+        if dividerHitRectContains(location, rect: hitRect) {
+            window.browserPortalHasInteractiveSplitDividerDrag = true
+        }
+    }
+
+    private static func isInteractiveSplitDividerDrag(in window: NSWindow) -> Bool {
+        if window.browserPortalHasInteractiveSplitDividerDrag {
+            return true
+        }
+        guard (NSEvent.pressedMouseButtons & 1) != 0 else { return false }
+        guard let event = NSApp.currentEvent else { return false }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard (now - event.timestamp) < 0.1 else { return false }
+        guard event.window === window else { return false }
+        switch event.type {
+        case .leftMouseDown, .leftMouseDragged:
+            return true
+        default:
+            return false
+        }
     }
 
     private func installGeometryObservers(for window: NSWindow) {
@@ -2134,6 +2243,22 @@ final class WindowBrowserPortal: NSObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.scheduleExternalGeometrySynchronize()
+            }
+        })
+        geometryObservers.append(center.addObserver(
+            forName: NSSplitView.willResizeSubviewsNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let splitView = notification.object as? NSSplitView,
+                      let window = self.window else { return }
+                Self.noteInteractiveSplitDividerDragIfNeeded(
+                    splitView,
+                    window: window,
+                    hostView: self.hostView
+                )
             }
         })
         geometryObservers.append(center.addObserver(
