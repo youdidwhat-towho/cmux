@@ -6024,21 +6024,40 @@ struct WebViewRepresentable: NSViewRepresentable {
             webView,
             in: host.currentHostedWebViewContainer(preferredSlotView: slotView)
         )
+        // Local-inline hosting takes ownership of the live WKWebView hierarchy.
+        // Keep any stale portal entry inert so it cannot keep replaying geometry
+        // recovery against an old anchor while DevTools is attached locally.
+        BrowserWindowPortalRegistry.hide(
+            webView: webView,
+            source: "viewStateChanged.localInlineHosting"
+        )
         coordinator.lastPortalHostId = nil
         coordinator.lastSynchronizedHostGeometryRevision = 0
-        if didAttachWebViewToLocalHost {
+        if host.window != nil && !shouldPreserveExternalFullscreenHost {
             panel.noteDeveloperToolsHostAttached()
             panel.restoreDeveloperToolsAfterAttachIfNeeded()
             webView.needsLayout = true
             webView.layoutSubtreeIfNeeded()
             slotView.layoutSubtreeIfNeeded()
             host.layoutSubtreeIfNeeded()
-            host.normalizeHostedInspectorLayoutIfNeeded(reason: "localInline.update.immediate")
-            host.scheduleHostedInspectorDividerReapply(reason: "localInline.update.sync")
+            host.normalizeHostedInspectorLayoutIfNeeded(
+                reason: didAttachWebViewToLocalHost
+                    ? "localInline.update.immediate"
+                    : "localInline.update.existingHost"
+            )
+            host.scheduleHostedInspectorDividerReapply(
+                reason: didAttachWebViewToLocalHost
+                    ? "localInline.update.sync"
+                    : "localInline.update.existingHost"
+            )
             DispatchQueue.main.async { [weak host, weak webView] in
                 guard let host, let webView else { return }
                 host.setHostedInspectorFrontendWebView(webView.cmuxInspectorFrontendWebView())
-                host.scheduleHostedInspectorDockConfigurationSync(reason: "localInline.update.async")
+                host.scheduleHostedInspectorDockConfigurationSync(
+                    reason: didAttachWebViewToLocalHost
+                        ? "localInline.update.async"
+                        : "localInline.update.existingHost.async"
+                )
             }
         } else if !shouldPreserveExternalFullscreenHost {
             panel.consumeAttachedDeveloperToolsManualCloseIfNeeded()
