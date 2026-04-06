@@ -333,7 +333,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdHoverDashPrefixedLogPathResolvesFullConsultantAgreementDocx() throws {
-        try assertCommandHoverResolves(
+        try assertCommandHoverResolvesAcrossEveryCharacter(
             fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
             lineFormat: .log,
             linePrefix: "- ",
@@ -343,7 +343,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdClickDashPrefixedLogPathOpensFullConsultantAgreementDocx() throws {
-        try assertCommandClickOpens(
+        try assertCommandClickOpensAcrossEveryCharacter(
             fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
             lineFormat: .log,
             linePrefix: "- ",
@@ -353,7 +353,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdHoverDashPrefixedLogPathResolvesFullNintendoMkv() throws {
-        try assertCommandHoverResolves(
+        try assertCommandHoverResolvesAcrossEveryCharacter(
             fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
             lineFormat: .log,
             linePrefix: "- "
@@ -361,7 +361,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdClickDashPrefixedLogPathOpensFullNintendoMkv() throws {
-        try assertCommandClickOpens(
+        try assertCommandClickOpensAcrossEveryCharacter(
             fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
             lineFormat: .log,
             linePrefix: "- "
@@ -369,7 +369,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdHoverAltScreenDashPrefixedLogPathResolvesFullConsultantAgreementDocx() throws {
-        try assertCommandHoverResolves(
+        try assertCommandHoverResolvesAcrossEveryCharacter(
             fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
             lineFormat: .altScreenLog,
             linePrefix: "- ",
@@ -379,7 +379,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdClickAltScreenDashPrefixedLogPathOpensFullConsultantAgreementDocx() throws {
-        try assertCommandClickOpens(
+        try assertCommandClickOpensAcrossEveryCharacter(
             fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
             lineFormat: .altScreenLog,
             linePrefix: "- ",
@@ -389,7 +389,7 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdHoverAltScreenDashPrefixedLogPathResolvesFullNintendoMkv() throws {
-        try assertCommandHoverResolves(
+        try assertCommandHoverResolvesAcrossEveryCharacter(
             fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
             lineFormat: .altScreenLog,
             linePrefix: "- "
@@ -397,10 +397,48 @@ final class TerminalCmdClickUITests: XCTestCase {
     }
 
     func testCmdClickAltScreenDashPrefixedLogPathOpensFullNintendoMkv() throws {
-        try assertCommandClickOpens(
+        try assertCommandClickOpensAcrossEveryCharacter(
             fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
             lineFormat: .altScreenLog,
             linePrefix: "- "
+        )
+    }
+
+    func testCmdClickDashPrefixedLogPathPrefixCellsDoNothingForConsultantAgreementDocx() throws {
+        try assertCommandClickDoesNothingAtOffsets(
+            fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
+            lineFormat: .log,
+            linePrefix: "- ",
+            offsets: [-2, -1],
+            extraFileNames: ["Agreement.docx"]
+        )
+    }
+
+    func testCmdClickDashPrefixedLogPathPrefixCellsDoNothingForNintendoMkv() throws {
+        try assertCommandClickDoesNothingAtOffsets(
+            fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
+            lineFormat: .log,
+            linePrefix: "- ",
+            offsets: [-2, -1]
+        )
+    }
+
+    func testCmdClickAltScreenDashPrefixedLogPathPrefixCellsDoNothingForConsultantAgreementDocx() throws {
+        try assertCommandClickDoesNothingAtOffsets(
+            fileName: "Standard - Consultant Agreement - Form of Consulting Agreement.docx",
+            lineFormat: .altScreenLog,
+            linePrefix: "- ",
+            offsets: [-2, -1],
+            extraFileNames: ["Agreement.docx"]
+        )
+    }
+
+    func testCmdClickAltScreenDashPrefixedLogPathPrefixCellsDoNothingForNintendoMkv() throws {
+        try assertCommandClickDoesNothingAtOffsets(
+            fileName: "(NINTENDO) BOTW Guardian Sound Effect.mkv",
+            lineFormat: .altScreenLog,
+            linePrefix: "- ",
+            offsets: [-2, -1]
         )
     }
 
@@ -640,8 +678,39 @@ final class TerminalCmdClickUITests: XCTestCase {
         let invalidOffsets = invalidTokenColumnOffsets(
             tokenLength: renderedTokenLength(fileName: fileName)
         )
+        try assertCommandClickDoesNothingAtOffsets(
+            fileName: fileName,
+            lineFormat: lineFormat,
+            linePrefix: linePrefix,
+            offsets: invalidOffsets,
+            extraFileNames: extraFileNames
+        )
+    }
+
+    private func assertCommandClickDoesNothingAtOffsets(
+        fileName: String,
+        lineFormat: LineFormat,
+        linePrefix: String,
+        offsets: [Int],
+        extraFileNames: [String] = []
+    ) throws {
+        let app = launchApp(
+            displayMode: .raw,
+            lineFormat: lineFormat,
+            fileName: fileName,
+            linePrefix: linePrefix,
+            extraFileNames: extraFileNames,
+            captureOpenPaths: true,
+            captureHoverDiagnostics: false
+        )
+        defer { app.terminate() }
+
+        let setup = try waitForReadySetup()
+        let expectedResolvedPath = expectedPath(for: fileName)
+        XCTAssertEqual(setup.expectedPath, expectedResolvedPath)
+
         let previousOpenCount = loadCapturedOpenPaths().count
-        for tokenColumnOffset in invalidOffsets {
+        for tokenColumnOffset in offsets {
             let result = try runCommand(
                 action: "cmd_click_token",
                 additionalPayload: ["tokenColumnOffset": tokenColumnOffset]
