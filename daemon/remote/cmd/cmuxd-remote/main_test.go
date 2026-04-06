@@ -4,9 +4,16 @@ import (
 	"bufio"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/manaflow-ai/cmux/daemon/remote/internal/rpc"
 )
 
 func TestServeStdioSupportsHelloAndSessionLifecycle(t *testing.T) {
@@ -203,6 +210,48 @@ func TestServeStdioRejectsDuplicateTerminalOpenWithoutCorruptingExistingSession(
 	}
 }
 
+func TestSessionAttachDetachesIfRawModeSetupFails(t *testing.T) {
+	t.Parallel()
+
+	socketPath := startTestUnixDaemon(t)
+	open := callUnixRPC(t, socketPath, map[string]any{
+		"id":     1,
+		"method": "terminal.open",
+		"params": map[string]any{
+			"session_id": "attach-cleanup",
+			"command":    "cat",
+			"cols":       80,
+			"rows":       24,
+		},
+	})
+	if ok, _ := open["ok"].(bool); !ok {
+		t.Fatalf("terminal.open should succeed: %+v", open)
+	}
+
+	if code := sessionAttach(socketPath, "attach-cleanup"); code != 1 {
+		t.Fatalf("sessionAttach exit code = %d, want 1 when raw mode setup fails", code)
+	}
+
+	status := callUnixRPC(t, socketPath, map[string]any{
+		"id":     2,
+		"method": "session.status",
+		"params": map[string]any{
+			"session_id": "attach-cleanup",
+		},
+	})
+	if ok, _ := status["ok"].(bool); !ok {
+		t.Fatalf("session.status should succeed: %+v", status)
+	}
+	attachments := status["result"].(map[string]any)["attachments"].([]any)
+	if len(attachments) != 1 {
+		t.Fatalf("expected only the bootstrap attachment after failed attach, got %+v", attachments)
+	}
+	attachmentID := attachments[0].(map[string]any)["attachment_id"].(string)
+	if strings.HasPrefix(attachmentID, "cli-") {
+		t.Fatalf("failed attach left a cli attachment behind: %+v", attachments)
+	}
+}
+
 func decodeBase64Field(t *testing.T, payload map[string]any, key string) []byte {
 	t.Helper()
 
@@ -239,4 +288,82 @@ func nestedString(payload map[string]any, keys ...string) string {
 		current = next
 	}
 	return ""
+}
+
+func startTestUnixDaemon(t *testing.T) string {
+	t.Helper()
+
+	socketDir, err := os.MkdirTemp("", "cmuxd-test-")
+	if err != nil {
+		t.Fatalf("mkdir temp socket dir: %v", err)
+	}
+	shortDir := filepath.Join(os.TempDir(), filepath.Base(socketDir))
+	if renameErr := os.Rename(socketDir, shortDir); renameErr == nil {
+		socketDir = shortDir
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(socketDir)
+	})
+
+	socketPath := filepath.Join(socketDir, "daemon.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen on unix socket: %v", err)
+	}
+
+	server := newDaemonServer()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				if errors.Is(err, net.ErrClosed) {
+					return
+				}
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_ = rpc.NewServer(server.handleRequest).Serve(conn, conn)
+			}(conn)
+		}
+	}()
+
+	t.Cleanup(func() {
+		_ = listener.Close()
+		server.closeAll()
+		<-done
+	})
+	return socketPath
+}
+
+func callUnixRPC(t *testing.T, socketPath string, payload map[string]any) map[string]any {
+	t.Helper()
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("dial unix socket %s: %v", socketPath, err)
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if _, err := conn.Write(append(encoded, '\n')); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	var response map[string]any
+	if err := json.Unmarshal([]byte(line), &response); err != nil {
+		t.Fatalf("decode response %q: %v", line, err)
+	}
+	return response
 }

@@ -284,6 +284,16 @@ func sessionAttach(socketPath, sessionID string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
+	attached := true
+	defer func() {
+		if !attached {
+			return
+		}
+		_, _ = callJSONRPCValue(socketPath, "session.detach", map[string]any{
+			"session_id":    sessionID,
+			"attachment_id": attachmentID,
+		})
+	}()
 
 	fd := int(os.Stdin.Fd())
 	oldState, err := makeRaw(fd)
@@ -386,6 +396,7 @@ func sessionAttach(socketPath, sessionID string) int {
 		"session_id":    sessionID,
 		"attachment_id": attachmentID,
 	})
+	attached = false
 	<-done
 	return 0
 }
