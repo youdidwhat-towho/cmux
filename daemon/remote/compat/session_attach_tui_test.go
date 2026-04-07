@@ -11,6 +11,10 @@ import (
 )
 
 func TestSessionAttachTUIResizeAndReattach(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+
 	bin := daemonBinary(t)
 	socketPath := startUnixDaemon(t, bin)
 	client := newUnixJSONRPCClient(t, socketPath)
@@ -25,7 +29,7 @@ func TestSessionAttachTUIResizeAndReattach(t *testing.T) {
 		"method": "terminal.open",
 		"params": map[string]any{
 			"session_id": "tui-attach",
-			"command":    "/usr/bin/env bash " + fixturePath(t, "fake_tui.sh"),
+			"command":    "/usr/bin/env python3 -u " + fixturePath(t, "fake_tui.py"),
 			"cols":       80,
 			"rows":       24,
 		},
