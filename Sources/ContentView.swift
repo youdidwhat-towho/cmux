@@ -9887,6 +9887,25 @@ private final class SidebarTabItemSettingsStore: ObservableObject {
     }
 }
 
+private struct SidebarTabItemPresentationSnapshot: Equatable {
+    let tabId: UUID
+    let index: Int
+    let isActive: Bool
+    let workspaceShortcutDigit: Int?
+    let workspaceShortcutModifierSymbol: String
+    let canCloseWorkspace: Bool
+    let accessibilityWorkspaceCount: Int
+    let unreadCount: Int
+    let latestNotificationText: String?
+    let rowSpacing: CGFloat
+    let showsModifierShortcutHints: Bool
+    let contextMenuWorkspaceIds: [UUID]
+    let remoteContextMenuWorkspaceIds: [UUID]
+    let allRemoteContextMenuTargetsConnecting: Bool
+    let allRemoteContextMenuTargetsDisconnected: Bool
+    let settings: SidebarTabItemSettingsSnapshot
+}
+
 struct VerticalTabsSidebar: View {
     @ObservedObject var updateViewModel: UpdateViewModel
     let onSendFeedback: () -> Void
@@ -9902,6 +9921,7 @@ struct VerticalTabsSidebar: View {
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @State private var draggedTabId: UUID?
     @State private var dropIndicator: SidebarDropIndicator?
+    @State private var frozenTabItemPresentation: SidebarTabItemPresentationSnapshot?
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
 
@@ -9967,10 +9987,8 @@ struct VerticalTabsSidebar: View {
                                 let allRemoteContextMenuTargetsDisconnected = usesSelectedContextMenuTargets
                                     ? allSelectedRemoteContextMenuTargetsDisconnected
                                     : (tab.isRemoteWorkspace && tab.remoteConnectionState == .disconnected)
-                                TabItemView(
-                                    tabManager: tabManager,
-                                    notificationStore: notificationStore,
-                                    tab: tab,
+                                let livePresentation = SidebarTabItemPresentationSnapshot(
+                                    tabId: tab.id,
                                     index: index,
                                     isActive: tabManager.selectedTabId == tab.id,
                                     workspaceShortcutDigit: WorkspaceShortcutMapper.digitForWorkspace(
@@ -9991,18 +10009,43 @@ struct VerticalTabsSidebar: View {
                                         return trimmed.isEmpty ? nil : trimmed
                                     }(),
                                     rowSpacing: tabRowSpacing,
-                                    setSelectionToTabs: { selection = .tabs },
-                                    selectedTabIds: $selectedTabIds,
-                                    lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
                                     showsModifierShortcutHints: modifierKeyMonitor.isModifierPressed,
-                                    dragAutoScrollController: dragAutoScrollController,
-                                    draggedTabId: $draggedTabId,
-                                    dropIndicator: $dropIndicator,
                                     contextMenuWorkspaceIds: contextMenuWorkspaceIds,
                                     remoteContextMenuWorkspaceIds: remoteContextMenuWorkspaceIds,
                                     allRemoteContextMenuTargetsConnecting: allRemoteContextMenuTargetsConnecting,
                                     allRemoteContextMenuTargetsDisconnected: allRemoteContextMenuTargetsDisconnected,
                                     settings: tabItemSettings
+                                )
+                                let presentation = frozenTabItemPresentation?.tabId == tab.id
+                                    ? frozenTabItemPresentation ?? livePresentation
+                                    : livePresentation
+                                TabItemView(
+                                    tabManager: tabManager,
+                                    notificationStore: notificationStore,
+                                    tab: tab,
+                                    index: presentation.index,
+                                    isActive: presentation.isActive,
+                                    workspaceShortcutDigit: presentation.workspaceShortcutDigit,
+                                    workspaceShortcutModifierSymbol: presentation.workspaceShortcutModifierSymbol,
+                                    canCloseWorkspace: presentation.canCloseWorkspace,
+                                    accessibilityWorkspaceCount: presentation.accessibilityWorkspaceCount,
+                                    unreadCount: presentation.unreadCount,
+                                    latestNotificationText: presentation.latestNotificationText,
+                                    rowSpacing: presentation.rowSpacing,
+                                    setSelectionToTabs: { selection = .tabs },
+                                    selectedTabIds: $selectedTabIds,
+                                    lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                                    showsModifierShortcutHints: presentation.showsModifierShortcutHints,
+                                    dragAutoScrollController: dragAutoScrollController,
+                                    draggedTabId: $draggedTabId,
+                                    dropIndicator: $dropIndicator,
+                                    contextMenuWorkspaceIds: presentation.contextMenuWorkspaceIds,
+                                    remoteContextMenuWorkspaceIds: presentation.remoteContextMenuWorkspaceIds,
+                                    allRemoteContextMenuTargetsConnecting: presentation.allRemoteContextMenuTargetsConnecting,
+                                    allRemoteContextMenuTargetsDisconnected: presentation.allRemoteContextMenuTargetsDisconnected,
+                                    settings: presentation.settings,
+                                    livePresentation: livePresentation,
+                                    frozenPresentation: $frozenTabItemPresentation
                                 )
                                 .equatable()
                             }
@@ -10102,6 +10145,11 @@ struct VerticalTabsSidebar: View {
             dragFailsafeMonitor.stop()
             dragAutoScrollController.stop()
             dropIndicator = nil
+        }
+        .onChange(of: tabs.map(\.id)) { tabIds in
+            guard let frozenTabItemPresentation,
+                  !tabIds.contains(frozenTabItemPresentation.tabId) else { return }
+            self.frozenTabItemPresentation = nil
         }
         .onReceive(NotificationCenter.default.publisher(for: SidebarDragLifecycleNotification.requestClear)) { notification in
             guard draggedTabId != nil else { return }
@@ -12377,6 +12425,11 @@ enum SidebarTrailingAccessoryWidthPolicy {
 // and bridge only sidebar-visible workspace changes into local state.
 // Do NOT add @EnvironmentObject or new @Binding without updating ==.
 // Do NOT remove .equatable() from the ForEach call site in VerticalTabsSidebar.
+private final class SidebarTabItemContextMenuState: ObservableObject {
+    var isVisible = false
+    var hasDeferredWorkspaceObservationInvalidation = false
+}
+
 private struct TabItemView: View, Equatable {
     private static let workspaceObservationCoalesceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(40)
 
@@ -12429,9 +12482,10 @@ private struct TabItemView: View, Equatable {
     let allRemoteContextMenuTargetsConnecting: Bool
     let allRemoteContextMenuTargetsDisconnected: Bool
     let settings: SidebarTabItemSettingsSnapshot
+    let livePresentation: SidebarTabItemPresentationSnapshot
+    @Binding var frozenPresentation: SidebarTabItemPresentationSnapshot?
     @State private var workspaceObservationGeneration: UInt64 = 0
-    @State private var contextMenuVisible = false
-    @State private var hasDeferredWorkspaceObservationInvalidation = false
+    @StateObject private var contextMenuState = SidebarTabItemContextMenuState()
     @State private var isHovering = false
     @State private var rowHeight: CGFloat = 1
 
@@ -13080,6 +13134,7 @@ private struct TabItemView: View, Equatable {
             updateSelection()
         }
         .onHover { hovering in
+            guard !contextMenuState.isVisible else { return }
             isHovering = hovering
         }
         .accessibilityElement(children: .combine)
@@ -13094,10 +13149,16 @@ private struct TabItemView: View, Equatable {
         .contextMenu {
             workspaceContextMenu
                 .onAppear {
-                    contextMenuVisible = true
+                    contextMenuState.isVisible = true
+                    contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
+                    frozenPresentation = livePresentation
                 }
                 .onDisappear {
-                    contextMenuVisible = false
+                    contextMenuState.isVisible = false
+                    frozenPresentation = nil
+                    if isHovering {
+                        isHovering = false
+                    }
                     flushDeferredWorkspaceObservationInvalidation()
                 }
         }
@@ -13105,16 +13166,16 @@ private struct TabItemView: View, Equatable {
 
     private func scheduleWorkspaceObservationInvalidation() {
         // Keep the context menu stable while background workspace telemetry keeps arriving.
-        if contextMenuVisible {
-            hasDeferredWorkspaceObservationInvalidation = true
+        if contextMenuState.isVisible {
+            contextMenuState.hasDeferredWorkspaceObservationInvalidation = true
             return
         }
         workspaceObservationGeneration &+= 1
     }
 
     private func flushDeferredWorkspaceObservationInvalidation() {
-        guard hasDeferredWorkspaceObservationInvalidation else { return }
-        hasDeferredWorkspaceObservationInvalidation = false
+        guard contextMenuState.hasDeferredWorkspaceObservationInvalidation else { return }
+        contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
         workspaceObservationGeneration &+= 1
     }
 
