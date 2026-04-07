@@ -1243,6 +1243,22 @@ final class StoredShortcutMatchingTests: XCTestCase {
         )
         XCTAssertEqual(stroke.carbonHotKeyRegistration?.keyCode, 13)
     }
+
+    func testSystemWideHotkeyNormalizationRejectsReservedShortcutByRecordedPhysicalKey() {
+        KeyboardShortcutSettings.resetAll()
+        defer { KeyboardShortcutSettings.resetAll() }
+
+        let shortcut = StoredShortcut(
+            key: "q",
+            command: true,
+            shift: false,
+            option: false,
+            control: false,
+            keyCode: 13
+        )
+
+        XCTAssertNil(KeyboardShortcutSettings.Action.showHideAllWindows.normalizedRecordedShortcut(shortcut))
+    }
 }
 
 

@@ -6818,14 +6818,13 @@ private struct ShortcutSettingRow: View {
 
 private struct GlobalHotkeySection: View {
     @AppStorage(SystemWideHotkeySettings.enabledKey) private var isEnabled = SystemWideHotkeySettings.defaultEnabled
-    @State private var shortcut = SystemWideHotkeySettings.shortcut()
+    @State private var shortcut = KeyboardShortcutSettings.shortcut(for: SystemWideHotkeySettings.action)
 
     private var enabledBinding: Binding<Bool> {
         Binding(
             get: { isEnabled },
             set: { newValue in
                 isEnabled = newValue
-                SystemWideHotkeySettings.setEnabled(newValue)
             }
         )
     }
@@ -6863,18 +6862,17 @@ private struct GlobalHotkeySection: View {
 
             KeyboardShortcutRecorder(
                 label: String(localized: "settings.globalHotkey.shortcut", defaultValue: "Show/Hide All Windows"),
-                subtitle: SystemWideHotkeySettings.settingsFileManagedSubtitle(),
+                subtitle: KeyboardShortcutSettings.settingsFileManagedSubtitle(for: SystemWideHotkeySettings.action),
                 shortcut: $shortcut,
-                transformRecordedShortcut: { SystemWideHotkeySettings.normalizedRecordedShortcut($0) },
-                isDisabled: SystemWideHotkeySettings.isManagedBySettingsFile(),
-                onRecordingChanged: { SystemWideHotkeyController.shared.setShortcutRecordingActive($0) }
+                transformRecordedShortcut: { SystemWideHotkeySettings.action.normalizedRecordedShortcut($0) },
+                isDisabled: KeyboardShortcutSettings.isManagedBySettingsFile(SystemWideHotkeySettings.action)
             )
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)
                 .accessibilityIdentifier("SettingsGlobalHotkeyRecorder")
         }
         .onChange(of: shortcut) { newValue in
-            SystemWideHotkeySettings.setShortcut(newValue)
+            KeyboardShortcutSettings.setShortcut(newValue, for: SystemWideHotkeySettings.action)
         }
         .onReceive(NotificationCenter.default.publisher(for: KeyboardShortcutSettings.didChangeNotification)) { _ in
             syncFromDefaults()
@@ -6890,7 +6888,7 @@ private struct GlobalHotkeySection: View {
     }
 
     private func syncFromDefaults() {
-        let latestShortcut = SystemWideHotkeySettings.shortcut()
+        let latestShortcut = KeyboardShortcutSettings.shortcut(for: SystemWideHotkeySettings.action)
         if latestShortcut != shortcut {
             shortcut = latestShortcut
         }

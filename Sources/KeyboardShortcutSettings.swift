@@ -288,7 +288,7 @@ enum KeyboardShortcutSettings {
         func normalizedRecordedShortcut(_ shortcut: StoredShortcut) -> StoredShortcut? {
             switch self {
             case .showHideAllWindows:
-                return Self.normalizedSystemWideHotkeyShortcut(shortcut)
+                return KeyboardShortcutSettings.normalizedSystemWideHotkeyShortcut(shortcut)
             case .selectSurfaceByNumber, .selectWorkspaceByNumber:
                 let digitSource = shortcut.secondStroke ?? shortcut.firstStroke
                 guard let digit = Int(digitSource.key), (1...9).contains(digit) else {
@@ -305,16 +305,61 @@ enum KeyboardShortcutSettings {
                 return shortcut
             }
         }
+    }
 
-        private static func normalizedSystemWideHotkeyShortcut(_ shortcut: StoredShortcut) -> StoredShortcut? {
-            guard !shortcut.hasChord,
-                  shortcut.hasPrimaryModifier,
-                  shortcut.carbonHotKeyRegistration != nil else {
-                return nil
-            }
-            return shortcut
+    private static func normalizedSystemWideHotkeyShortcut(_ shortcut: StoredShortcut) -> StoredShortcut? {
+        guard !shortcut.hasChord,
+              shortcut.hasPrimaryModifier,
+              shortcut.carbonHotKeyRegistration != nil,
+              !systemWideHotkeyConflicts(with: shortcut) else {
+            return nil
+        }
+        return shortcut
+    }
+
+    private static func systemWideHotkeyConflicts(with shortcut: StoredShortcut) -> Bool {
+        guard let registration = shortcut.carbonHotKeyRegistration else { return false }
+        return reservedSystemWideHotkeyShortcuts().contains { reserved in
+            reserved.carbonHotKeyRegistration == registration
         }
     }
+
+    private static func reservedSystemWideHotkeyShortcuts() -> [StoredShortcut] {
+        var reserved: [StoredShortcut] = []
+
+        for action in Action.allCases where action != .showHideAllWindows {
+            let shortcut = KeyboardShortcutSettings.shortcut(for: action)
+            if shortcut.hasChord {
+                reserved.append(StoredShortcut(first: shortcut.firstStroke))
+                continue
+            }
+            if action.usesNumberedDigitMatching {
+                let stroke = shortcut.firstStroke
+                reserved.append(
+                    contentsOf: (1...9).map { digit in
+                        StoredShortcut(
+                            key: String(digit),
+                            command: stroke.command,
+                            shift: stroke.shift,
+                            option: stroke.option,
+                            control: stroke.control
+                        )
+                    }
+                )
+                continue
+            }
+            reserved.append(shortcut)
+        }
+
+        reserved.append(contentsOf: hardcodedSystemWideHotkeyConflicts)
+        return reserved
+    }
+
+    private static let hardcodedSystemWideHotkeyConflicts: [StoredShortcut] = [
+        StoredShortcut(key: "d", command: true, shift: false, option: false, control: false),
+        StoredShortcut(key: "\t", command: false, shift: false, option: false, control: true),
+        StoredShortcut(key: "\t", command: false, shift: true, option: false, control: true),
+    ]
 
     static func shortcut(for action: Action) -> StoredShortcut {
         if let managedShortcut = settingsFileStore.override(for: action) {
@@ -342,7 +387,7 @@ enum KeyboardShortcutSettings {
         let storedShortcut: StoredShortcut
         if let normalizedShortcut = action.normalizedRecordedShortcut(shortcut) {
             storedShortcut = normalizedShortcut
-        } else if action.usesNumberedDigitMatching {
+        } else if action.usesNumberedDigitMatching || action == .showHideAllWindows {
             return
         } else {
             storedShortcut = shortcut
@@ -501,6 +546,11 @@ enum SystemWideHotkeySettings {
     }
 }
 
+struct CarbonHotKeyRegistration: Equatable {
+    let keyCode: UInt32
+    let modifiers: UInt32
+}
+
 final class SystemWideHotkeyController {
     static let shared = SystemWideHotkeyController()
     private static let hotKeySignature: OSType = 0x434D484B // "CMHK"
@@ -510,10 +560,14 @@ final class SystemWideHotkeyController {
     private var hotKeyHandler: EventHandlerRef?
     private var defaultsObserver: NSObjectProtocol?
     private var shortcutObserver: NSObjectProtocol?
-    private var isShortcutRecordingActive = false
+    private var recorderObserver: NSObjectProtocol?
+    private var inputSourceObserver: NSObjectProtocol?
+    private var appHideObserver: NSObjectProtocol?
     private var isEnabled = SystemWideHotkeySettings.defaultEnabled
     private var shortcut = SystemWideHotkeySettings.defaultShortcut
     private var registeredShortcut: StoredShortcut?
+    private var registeredHotKeyRegistration: CarbonHotKeyRegistration?
+    private var hiddenWindowRestoreTargets: [NSWindow] = []
 
     private init() {}
 
@@ -536,31 +590,50 @@ final class SystemWideHotkeyController {
         ) { [weak self] _ in
             self?.refreshRegistration()
         }
+        recorderObserver = NotificationCenter.default.addObserver(
+            forName: KeyboardShortcutRecorderActivity.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshRegistration()
+        }
+        inputSourceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Notification.Name(rawValue: kTISNotifySelectedKeyboardInputSourceChanged as String),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.refreshRegistration()
+        }
+        appHideObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willHideNotification,
+            object: NSApp,
+            queue: .main
+        ) { [weak self] _ in
+            self?.captureHiddenWindowRestoreTargets()
+        }
 
-        refreshRegistration()
-    }
-
-    func setShortcutRecordingActive(_ isActive: Bool) {
-        guard isShortcutRecordingActive != isActive else { return }
-        isShortcutRecordingActive = isActive
         refreshRegistration()
     }
 
     private func refreshRegistration() {
         isEnabled = SystemWideHotkeySettings.isEnabled()
         shortcut = SystemWideHotkeySettings.shortcut()
+        let isShortcutRecordingActive = KeyboardShortcutRecorderActivity.isAnyRecorderActive
 
         guard isEnabled, !isShortcutRecordingActive else {
             unregisterHotKey()
             return
         }
 
-        guard let registration = shortcut.carbonHotKeyRegistration else {
+        guard let normalizedShortcut = SystemWideHotkeySettings.action.normalizedRecordedShortcut(shortcut),
+              let registration = normalizedShortcut.carbonHotKeyRegistration else {
             unregisterHotKey()
             return
         }
 
-        if registeredShortcut == shortcut, hotKeyRef != nil {
+        if registeredShortcut == normalizedShortcut,
+           registeredHotKeyRegistration == registration,
+           hotKeyRef != nil {
             return
         }
 
@@ -581,7 +654,7 @@ final class SystemWideHotkeyController {
         guard status == noErr, let hotKeyRef else {
 #if DEBUG
             dlog(
-                "globalHotkey.register failed shortcut=\(shortcut.displayString) " +
+                "globalHotkey.register failed shortcut=\(normalizedShortcut.displayString) " +
                 "keyCode=\(registration.keyCode) modifiers=\(registration.modifiers) status=\(status)"
             )
 #endif
@@ -589,11 +662,12 @@ final class SystemWideHotkeyController {
         }
 
         self.hotKeyRef = hotKeyRef
-        registeredShortcut = shortcut
+        registeredShortcut = normalizedShortcut
+        registeredHotKeyRegistration = registration
 
 #if DEBUG
         dlog(
-            "globalHotkey.register success shortcut=\(shortcut.displayString) " +
+            "globalHotkey.register success shortcut=\(normalizedShortcut.displayString) " +
             "keyCode=\(registration.keyCode) modifiers=\(registration.modifiers)"
         )
 #endif
@@ -630,6 +704,7 @@ final class SystemWideHotkeyController {
             self.hotKeyRef = nil
         }
         registeredShortcut = nil
+        registeredHotKeyRegistration = nil
     }
 
     private static let hotKeyEventHandler: EventHandlerUPP = { _, event, userInfo in
@@ -671,7 +746,9 @@ final class SystemWideHotkeyController {
     }
 
     private func toggleApplicationVisibility() {
-        if NSApp.isActive {
+        let hasVisibleWindow = NSApp.windows.contains { $0.isVisible && !$0.isMiniaturized }
+        if hasVisibleWindow {
+            captureHiddenWindowRestoreTargets()
             NSApp.hide(nil)
             return
         }
@@ -679,23 +756,39 @@ final class SystemWideHotkeyController {
         showAllApplicationWindows()
     }
 
+    private func captureHiddenWindowRestoreTargets() {
+        hiddenWindowRestoreTargets = NSApp.windows.filter { $0.isVisible || $0.isMiniaturized }
+    }
+
     private func showAllApplicationWindows() {
-        NSApp.unhide(nil)
+        let allWindows = NSApp.windows
+        let revealTargets: [NSWindow]
 
-        let windowsToReveal = NSApp.windows.filter { $0.isVisible || $0.isMiniaturized }
-        guard !windowsToReveal.isEmpty else { return }
+        if NSApp.isHidden {
+            NSApp.unhide(nil)
+            let capturedTargets = hiddenWindowRestoreTargets.filter { window in
+                allWindows.contains { $0 === window }
+            }
+            hiddenWindowRestoreTargets.removeAll()
+            revealTargets = capturedTargets.isEmpty
+                ? allWindows.filter(\.isMiniaturized)
+                : capturedTargets
+        } else {
+            revealTargets = allWindows.filter { $0.isVisible || $0.isMiniaturized }
+        }
 
-        for window in windowsToReveal where window.isMiniaturized {
+        guard !revealTargets.isEmpty else { return }
+
+        for window in revealTargets where window.isMiniaturized {
             window.deminiaturize(nil)
         }
 
         NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
 
-        let focusWindow = preferredFocusWindow(from: windowsToReveal)
-        focusWindow?.orderFrontRegardless()
+        let focusWindow = preferredFocusWindow(from: revealTargets)
         focusWindow?.makeKeyAndOrderFront(nil)
 
-        for window in windowsToReveal where window !== focusWindow {
+        for window in revealTargets where window !== focusWindow {
             window.orderFrontRegardless()
         }
     }
@@ -1117,6 +1210,7 @@ struct ShortcutStroke: Equatable {
         case ".": return 47
         case "\t": return 48
         case "`": return 50
+        case "\r": return 36
         case "←": return 123
         case "→": return 124
         case "↓": return 125
@@ -1177,9 +1271,9 @@ struct ShortcutStroke: Equatable {
         return Self.keyCodeForShortcutKey(shortcutKey)
     }
 
-    var carbonHotKeyRegistration: (keyCode: UInt32, modifiers: UInt32)? {
+    var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
         guard let keyCode = resolvedKeyCode() else { return nil }
-        return (UInt32(keyCode), carbonModifiers)
+        return CarbonHotKeyRegistration(keyCode: UInt32(keyCode), modifiers: carbonModifiers)
     }
 
     private static let supportedShortcutKeyCodes: [UInt16] = [
@@ -1389,9 +1483,35 @@ struct StoredShortcut: Codable, Equatable {
         )
     }
 
-    var carbonHotKeyRegistration: (keyCode: UInt32, modifiers: UInt32)? {
+    var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
         guard !hasChord else { return nil }
         return firstStroke.carbonHotKeyRegistration
+    }
+}
+
+private enum KeyboardShortcutRecorderActivity {
+    static let didChangeNotification = Notification.Name("cmux.keyboardShortcutRecorderActivityDidChange")
+    private static var activeRecorderCount = 0
+
+    static var isAnyRecorderActive: Bool {
+        activeRecorderCount > 0
+    }
+
+    static func beginRecording(center: NotificationCenter = .default) {
+        let wasActive = isAnyRecorderActive
+        activeRecorderCount += 1
+        if wasActive != isAnyRecorderActive {
+            center.post(name: didChangeNotification, object: nil)
+        }
+    }
+
+    static func endRecording(center: NotificationCenter = .default) {
+        guard activeRecorderCount > 0 else { return }
+        let wasActive = isAnyRecorderActive
+        activeRecorderCount -= 1
+        if wasActive != isAnyRecorderActive {
+            center.post(name: didChangeNotification, object: nil)
+        }
     }
 }
 
@@ -1476,6 +1596,7 @@ final class ShortcutRecorderNSButton: NSButton {
     private var isRecording = false
     private var eventMonitor: Any?
     private var pendingChordStart: ShortcutStroke?
+    private var hasRegisteredRecordingActivity = false
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -1527,8 +1648,10 @@ final class ShortcutRecorderNSButton: NSButton {
     }
 
     private func startRecording() {
+        guard !isRecording else { return }
         isRecording = true
         pendingChordStart = nil
+        registerRecordingActivityIfNeeded()
         onRecordingChanged?(true)
         updateTitle()
 
@@ -1579,8 +1702,10 @@ final class ShortcutRecorderNSButton: NSButton {
     }
 
     private func stopRecording() {
+        guard isRecording else { return }
         isRecording = false
         pendingChordStart = nil
+        unregisterRecordingActivityIfNeeded()
         onRecordingChanged?(false)
         updateTitle()
 
@@ -1594,6 +1719,18 @@ final class ShortcutRecorderNSButton: NSButton {
 
     @objc private func windowResigned() {
         stopRecording()
+    }
+
+    private func registerRecordingActivityIfNeeded() {
+        guard !hasRegisteredRecordingActivity else { return }
+        hasRegisteredRecordingActivity = true
+        KeyboardShortcutRecorderActivity.beginRecording()
+    }
+
+    private func unregisterRecordingActivityIfNeeded() {
+        guard hasRegisteredRecordingActivity else { return }
+        hasRegisteredRecordingActivity = false
+        KeyboardShortcutRecorderActivity.endRecording()
     }
 
 #if DEBUG
