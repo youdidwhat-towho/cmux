@@ -2595,6 +2595,7 @@ struct ContentView: View {
     private var sidebarView: some View {
         VerticalTabsSidebar(
             updateViewModel: updateViewModel,
+            fileExplorerState: fileExplorerState,
             onSendFeedback: presentFeedbackComposer,
             selection: $sidebarSelectionState.selection,
             selectedTabIds: $selectedTabIds,
@@ -2687,6 +2688,8 @@ struct ContentView: View {
         }
     }
 
+    @State private var fileExplorerDragStartWidth: CGFloat?
+
     private var terminalContentWithSidebarDropOverlay: some View {
         HStack(spacing: 0) {
             terminalContent
@@ -2697,8 +2700,39 @@ struct ContentView: View {
                 Divider()
                 FileExplorerView(store: fileExplorerStore, state: fileExplorerState)
                     .frame(width: fileExplorerState.width)
+                    .overlay(alignment: .leading) {
+                        fileExplorerResizerOverlay
+                    }
             }
         }
+    }
+
+    private var fileExplorerResizerOverlay: some View {
+        Color.clear
+            .frame(width: 6)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeLeftRight.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if fileExplorerDragStartWidth == nil {
+                            fileExplorerDragStartWidth = fileExplorerState.width
+                        }
+                        guard let startWidth = fileExplorerDragStartWidth else { return }
+                        // Dragging left = wider, dragging right = narrower
+                        let newWidth = startWidth - value.translation.width
+                        fileExplorerState.width = min(500, max(150, newWidth))
+                    }
+                    .onEnded { _ in
+                        fileExplorerDragStartWidth = nil
+                    }
+            )
     }
 
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
@@ -2869,13 +2903,13 @@ struct ContentView: View {
         let dir = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !dir.isEmpty else { return }
 
+        fileExplorerStore.showHiddenFiles = fileExplorerState.showHiddenFiles
+
         if tab.isRemoteWorkspace {
             let config = tab.remoteConfiguration
             let remotePath = tab.remoteDaemonStatus.remotePath
             let isReady = tab.remoteDaemonStatus.state == .ready
             let homePath = remotePath.flatMap { path -> String? in
-                // Extract home from remote path context
-                // For SSH, try to derive home from the working directory if it starts with /home/
                 let components = dir.split(separator: "/")
                 if components.count >= 2, components[0] == "home" {
                     return "/home/\(components[1])"
@@ -2886,12 +2920,20 @@ struct ContentView: View {
                 return nil
             } ?? ""
 
+            #if DEBUG
+            dlog("fileExplorer.sync remote dir=\(dir) ready=\(isReady) dest=\(config?.destination ?? "nil")")
+            #endif
+
             if let existingProvider = fileExplorerStore.provider as? SSHFileExplorerProvider,
                existingProvider.destination == config?.destination {
                 existingProvider.updateAvailability(isReady, homePath: isReady ? homePath : nil)
                 if isReady {
+                    // Only reload if the path actually changed
+                    let pathChanged = fileExplorerStore.rootPath != dir
                     fileExplorerStore.setRootPath(dir)
-                    fileExplorerStore.hydrateExpandedNodes()
+                    if pathChanged {
+                        fileExplorerStore.hydrateExpandedNodes()
+                    }
                 }
             } else if let config {
                 let provider = SSHFileExplorerProvider(
@@ -3075,11 +3117,28 @@ struct ContentView: View {
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == newValue }
             }
             updateTitlebarText()
-            syncFileExplorerDirectory()
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) { _ in
             syncSidebarSelectedWorkspaceIds()
+        })
+
+        // File explorer: reactively sync CWD when selected workspace or its directory changes.
+        // Uses switchToLatest to automatically unsubscribe from the old workspace's publisher.
+        view = AnyView(view.onReceive(
+            tabManager.$selectedTabId
+                .compactMap { [weak tabManager] tabId -> Workspace? in
+                    guard let tabId, let tabManager else { return nil }
+                    return tabManager.tabs.first(where: { $0.id == tabId })
+                }
+                .map { workspace -> AnyPublisher<String, Never> in
+                    workspace.$currentDirectory.eraseToAnyPublisher()
+                }
+                .switchToLatest()
+                .removeDuplicates()
+                .receive(on: DispatchQueue.main)
+        ) { _ in
+            syncFileExplorerDirectory()
         })
 
         view = AnyView(view.onChange(of: tabManager.isWorkspaceCycleHot) { _ in
@@ -9952,6 +10011,7 @@ private final class SidebarTabItemSettingsStore: ObservableObject {
 
 struct VerticalTabsSidebar: View {
     @ObservedObject var updateViewModel: UpdateViewModel
+    @ObservedObject var fileExplorerState: FileExplorerState
     let onSendFeedback: () -> Void
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var notificationStore: TerminalNotificationStore
@@ -10113,7 +10173,7 @@ struct VerticalTabsSidebar: View {
                 .background(Color.clear)
                 .modifier(ClearScrollBackground())
             }
-            SidebarFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+            SidebarFooter(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, onSendFeedback: onSendFeedback)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .accessibilityIdentifier("Sidebar")
@@ -11056,13 +11116,14 @@ private final class SidebarShortcutHintModifierMonitor: ObservableObject {
 
 private struct SidebarFooter: View {
     @ObservedObject var updateViewModel: UpdateViewModel
+    @ObservedObject var fileExplorerState: FileExplorerState
     let onSendFeedback: () -> Void
 
     var body: some View {
 #if DEBUG
-        SidebarDevFooter(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+        SidebarDevFooter(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, onSendFeedback: onSendFeedback)
 #else
-        SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+        SidebarFooterButtons(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, onSendFeedback: onSendFeedback)
             .padding(.leading, 6)
             .padding(.trailing, 10)
             .padding(.bottom, 6)
@@ -11072,11 +11133,28 @@ private struct SidebarFooter: View {
 
 private struct SidebarFooterButtons: View {
     @ObservedObject var updateViewModel: UpdateViewModel
+    @ObservedObject var fileExplorerState: FileExplorerState
     let onSendFeedback: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
             SidebarHelpMenuButton(onSendFeedback: onSendFeedback)
+
+            Button(action: { fileExplorerState.toggle() }) {
+                Image(systemName: fileExplorerState.isVisible ? "folder.fill" : "folder")
+                    .font(.system(size: 12))
+                    .foregroundStyle(fileExplorerState.isVisible ? Color.accentColor : Color(nsColor: .secondaryLabelColor))
+            }
+            .buttonStyle(SidebarFooterIconButtonStyle())
+            .frame(width: 22, height: 22, alignment: .center)
+            .help(fileExplorerState.isVisible
+                ? String(localized: "sidebar.fileExplorer.hide", defaultValue: "Hide File Explorer")
+                : String(localized: "sidebar.fileExplorer.show", defaultValue: "Show File Explorer"))
+            .accessibilityLabel(fileExplorerState.isVisible
+                ? String(localized: "sidebar.fileExplorer.hide", defaultValue: "Hide File Explorer")
+                : String(localized: "sidebar.fileExplorer.show", defaultValue: "Show File Explorer"))
+            .accessibilityIdentifier("sidebarFooter.toggleFileExplorer")
+
             UpdatePill(model: updateViewModel)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -12195,13 +12273,14 @@ private struct SidebarFooterIconButtonStyleBody: View {
 #if DEBUG
 private struct SidebarDevFooter: View {
     @ObservedObject var updateViewModel: UpdateViewModel
+    @ObservedObject var fileExplorerState: FileExplorerState
     let onSendFeedback: () -> Void
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            SidebarFooterButtons(updateViewModel: updateViewModel, onSendFeedback: onSendFeedback)
+            SidebarFooterButtons(updateViewModel: updateViewModel, fileExplorerState: fileExplorerState, onSendFeedback: onSendFeedback)
             if showSidebarDevBuildBanner {
                 Text(String(localized: "debug.devBuildBanner.title", defaultValue: "THIS IS A DEV BUILD"))
                     .font(.system(size: 11, weight: .semibold))

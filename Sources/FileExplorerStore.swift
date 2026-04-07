@@ -57,7 +57,7 @@ enum FileExplorerRootResolver {
 // MARK: - Provider Protocol
 
 protocol FileExplorerProvider: AnyObject {
-    func listDirectory(path: String) async throws -> [FileExplorerEntry]
+    func listDirectory(path: String, showHidden: Bool) async throws -> [FileExplorerEntry]
     var homePath: String { get }
     var isAvailable: Bool { get }
 }
@@ -68,11 +68,11 @@ final class LocalFileExplorerProvider: FileExplorerProvider {
     var homePath: String { NSHomeDirectory() }
     var isAvailable: Bool { true }
 
-    func listDirectory(path: String) async throws -> [FileExplorerEntry] {
+    func listDirectory(path: String, showHidden: Bool) async throws -> [FileExplorerEntry] {
         let fm = FileManager.default
         let contents = try fm.contentsOfDirectory(atPath: path)
         return contents.compactMap { name in
-            guard !name.hasPrefix(".") else { return nil }
+            guard showHidden || !name.hasPrefix(".") else { return nil }
             let fullPath = (path as NSString).appendingPathComponent(name)
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: fullPath, isDirectory: &isDir) else { return nil }
@@ -114,7 +114,7 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
         }
     }
 
-    func listDirectory(path: String) async throws -> [FileExplorerEntry] {
+    func listDirectory(path: String, showHidden: Bool) async throws -> [FileExplorerEntry] {
         guard isAvailable else {
             throw FileExplorerError.providerUnavailable
         }
@@ -128,7 +128,8 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
                 do {
                     let result = try SSHFileExplorerProvider.runSSHListCommand(
                         path: path, destination: dest, port: p,
-                        identityFile: identity, sshOptions: opts
+                        identityFile: identity, sshOptions: opts,
+                        showHidden: showHidden
                     )
                     continuation.resume(returning: result)
                 } catch {
@@ -140,7 +141,8 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
 
     private static func runSSHListCommand(
         path: String, destination: String, port: Int?,
-        identityFile: String?, sshOptions: [String]
+        identityFile: String?, sshOptions: [String],
+        showHidden: Bool
     ) throws -> [FileExplorerEntry] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
@@ -159,7 +161,8 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
         args += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T"]
         // Escape single quotes in path for shell safety
         let escapedPath = path.replacingOccurrences(of: "'", with: "'\\''")
-        args += [destination, "ls -1paF '\(escapedPath)' 2>/dev/null"]
+        let lsFlags = showHidden ? "-1paFA" : "-1paF"
+        args += [destination, "ls \(lsFlags) '\(escapedPath)' 2>/dev/null"]
 
         process.arguments = args
 
@@ -169,15 +172,15 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
         process.standardError = errPipe
 
         try process.run()
+        // Read pipe data before waitUntilExit to avoid deadlock when pipe buffer fills
+        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
 
         guard process.terminationStatus == 0 else {
-            let stderrData = errPipe.fileHandleForReading.readDataToEndOfFile()
             let stderrStr = String(data: stderrData, encoding: .utf8) ?? ""
             throw FileExplorerError.sshCommandFailed(stderrStr)
         }
-
-        let data = outPipe.fileHandleForReading.readDataToEndOfFile()
         guard let output = String(data: data, encoding: .utf8) else {
             return []
         }
@@ -187,10 +190,9 @@ final class SSHFileExplorerProvider: FileExplorerProvider {
             let entry = String(line)
             // Skip . and .. entries
             guard entry != "./" && entry != "../" else { return nil }
-            // Skip hidden files
             let isDir = entry.hasSuffix("/")
             let name = isDir ? String(entry.dropLast()) : entry
-            guard !name.hasPrefix(".") else { return nil }
+            guard showHidden || !name.hasPrefix(".") else { return nil }
             // Strip type indicators from -F flag (*, @, =, |) for files
             let cleanName: String
             if !isDir, let last = name.last, "*@=|".contains(last) {
@@ -221,8 +223,33 @@ enum FileExplorerError: LocalizedError {
 // MARK: - State (visibility toggle)
 
 final class FileExplorerState: ObservableObject {
-    @Published var isVisible: Bool = false
-    @Published var width: CGFloat = 220
+    @Published var isVisible: Bool {
+        didSet { UserDefaults.standard.set(isVisible, forKey: "fileExplorer.isVisible") }
+    }
+    @Published var width: CGFloat {
+        didSet { UserDefaults.standard.set(Double(width), forKey: "fileExplorer.width") }
+    }
+
+    /// Proportion of sidebar height allocated to the tab list (0.0-1.0).
+    /// The file explorer gets the remaining space below.
+    @Published var dividerPosition: CGFloat {
+        didSet { UserDefaults.standard.set(Double(dividerPosition), forKey: "fileExplorer.dividerPosition") }
+    }
+
+    /// Whether hidden files (dotfiles) are shown in the tree.
+    @Published var showHiddenFiles: Bool {
+        didSet { UserDefaults.standard.set(showHiddenFiles, forKey: "fileExplorer.showHidden") }
+    }
+
+    init() {
+        let defaults = UserDefaults.standard
+        self.isVisible = defaults.bool(forKey: "fileExplorer.isVisible")
+        let storedWidth = defaults.double(forKey: "fileExplorer.width")
+        self.width = storedWidth > 0 ? CGFloat(storedWidth) : 220
+        let storedPosition = defaults.double(forKey: "fileExplorer.dividerPosition")
+        self.dividerPosition = storedPosition > 0 ? CGFloat(storedPosition) : 0.6
+        self.showHiddenFiles = defaults.bool(forKey: "fileExplorer.showHidden")
+    }
 
     func toggle() {
         isVisible.toggle()
@@ -238,8 +265,15 @@ final class FileExplorerStore: ObservableObject {
     @Published var rootPath: String = ""
     @Published var rootNodes: [FileExplorerNode] = []
     @Published private(set) var isRootLoading: Bool = false
+    @Published private(set) var gitStatusByPath: [String: GitFileStatus] = [:]
 
     var provider: FileExplorerProvider?
+
+    /// Whether hidden files are shown. Set from FileExplorerState externally.
+    var showHiddenFiles: Bool = false
+
+    /// Watches the root directory for filesystem changes (local only).
+    private var directoryWatcher: FileExplorerDirectoryWatcher?
 
     /// Paths that are logically expanded (persisted across provider changes)
     private(set) var expandedPaths: Set<String> = []
@@ -263,12 +297,69 @@ final class FileExplorerStore: ObservableObject {
     // MARK: - Public API
 
     func setRootPath(_ path: String) {
-        guard path != rootPath else { return }
+        guard path != rootPath else {
+            #if DEBUG
+            NSLog("[FileExplorer] setRootPath skipped (same path): \(path)")
+            #endif
+            return
+        }
+        #if DEBUG
+        NSLog("[FileExplorer] setRootPath: \(rootPath) -> \(path)")
+        #endif
         rootPath = path
         reload()
+        refreshGitStatus()
+        updateDirectoryWatcher()
+    }
+
+    func refreshGitStatus() {
+        guard !rootPath.isEmpty else {
+            gitStatusByPath = [:]
+            return
+        }
+        let path = rootPath
+        if let sshProvider = provider as? SSHFileExplorerProvider {
+            let dest = sshProvider.destination
+            let port = sshProvider.port
+            let identity = sshProvider.identityFile
+            let opts = sshProvider.sshOptions
+            DispatchQueue.global(qos: .utility).async {
+                let status = GitStatusProvider.fetchStatusSSH(
+                    directory: path, destination: dest, port: port,
+                    identityFile: identity, sshOptions: opts
+                )
+                DispatchQueue.main.async { [weak self] in
+                    self?.gitStatusByPath = status
+                }
+            }
+        } else {
+            DispatchQueue.global(qos: .utility).async {
+                let status = GitStatusProvider.fetchStatus(directory: path)
+                DispatchQueue.main.async { [weak self] in
+                    self?.gitStatusByPath = status
+                }
+            }
+        }
+    }
+
+    private func updateDirectoryWatcher() {
+        if provider is LocalFileExplorerProvider, !rootPath.isEmpty {
+            if directoryWatcher == nil {
+                directoryWatcher = FileExplorerDirectoryWatcher { [weak self] in
+                    self?.reload()
+                    self?.refreshGitStatus()
+                }
+            }
+            directoryWatcher?.watch(path: rootPath)
+        } else {
+            directoryWatcher?.stop()
+        }
     }
 
     func setProvider(_ newProvider: FileExplorerProvider?) {
+        #if DEBUG
+        NSLog("[FileExplorer] setProvider: \(type(of: newProvider).self) available=\(newProvider?.isAvailable ?? false)")
+        #endif
         provider = newProvider
         // Re-expand previously expanded nodes if provider becomes available
         if newProvider?.isAvailable == true {
@@ -277,6 +368,9 @@ final class FileExplorerStore: ObservableObject {
     }
 
     func reload() {
+        #if DEBUG
+        NSLog("[FileExplorer] reload() path=\(rootPath) provider=\(type(of: provider).self)")
+        #endif
         cancelAllLoads()
         rootNodes = []
         nodesByPath = [:]
@@ -339,11 +433,11 @@ final class FileExplorerStore: ObservableObject {
     /// Called when SSH provider becomes available after being unavailable.
     /// Re-hydrates expanded nodes that were waiting.
     func hydrateExpandedNodes() {
-        guard let provider, provider.isAvailable else { return }
-        // Reload root
+        guard let provider, provider.isAvailable, !expandedPaths.isEmpty else { return }
+        #if DEBUG
+        NSLog("[FileExplorer] hydrateExpandedNodes: \(expandedPaths.count) paths to hydrate")
+        #endif
         reload()
-        // After root loads, re-expand previously expanded paths
-        // The expansion happens in loadChildren when it detects expanded paths
     }
 
     // MARK: - Private
@@ -359,7 +453,7 @@ final class FileExplorerStore: ObservableObject {
         }
 
         do {
-            let entries = try await provider.listDirectory(path: path)
+            let entries = try await provider.listDirectory(path: path, showHidden: showHiddenFiles)
             let children = entries.map { entry in
                 let node = FileExplorerNode(name: entry.name, path: entry.path, isDirectory: entry.isDirectory)
                 nodesByPath[entry.path] = node
@@ -418,5 +512,206 @@ final class FileExplorerStore: ObservableObject {
         }
         prefetchWorkItems.removeAll()
         isRootLoading = false
+    }
+}
+
+// MARK: - Directory Watcher
+
+/// Watches a local directory for filesystem changes and calls back on the main thread.
+/// Debounces events to avoid rapid-fire reloads during bulk operations (e.g., git checkout).
+final class FileExplorerDirectoryWatcher {
+    private var fileDescriptor: Int32 = -1
+    private var watchSource: DispatchSourceFileSystemObject?
+    private let watchQueue = DispatchQueue(label: "com.cmux.fileExplorerWatcher", qos: .utility)
+    private var debounceWorkItem: DispatchWorkItem?
+    private let onChange: () -> Void
+
+    init(onChange: @escaping () -> Void) {
+        self.onChange = onChange
+    }
+
+    func watch(path: String) {
+        stop()
+        let fd = open(path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        fileDescriptor = fd
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .link, .rename, .delete],
+            queue: watchQueue
+        )
+
+        source.setEventHandler { [weak self] in
+            self?.scheduleReload()
+        }
+
+        source.setCancelHandler {
+            Darwin.close(fd)
+        }
+
+        source.resume()
+        watchSource = source
+    }
+
+    func stop() {
+        debounceWorkItem?.cancel()
+        debounceWorkItem = nil
+        watchSource?.cancel()
+        watchSource = nil
+        fileDescriptor = -1
+    }
+
+    private func scheduleReload() {
+        debounceWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            DispatchQueue.main.async {
+                self?.onChange()
+            }
+        }
+        debounceWorkItem = work
+        watchQueue.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    deinit {
+        stop()
+    }
+}
+
+// MARK: - Git Status
+
+enum GitFileStatus {
+    case modified, added, deleted, renamed, untracked
+}
+
+/// Runs `git status --porcelain` and parses results into a path-to-status map.
+enum GitStatusProvider {
+
+    static func fetchStatus(directory: String) -> [String: GitFileStatus] {
+        guard let repoRoot = gitRepoRoot(for: directory) else { return [:] }
+        return parseGitStatus(
+            output: runGit(in: repoRoot, arguments: ["status", "--porcelain"]),
+            repoRoot: repoRoot,
+            explorerRoot: directory
+        )
+    }
+
+    static func fetchStatusSSH(
+        directory: String, destination: String, port: Int?,
+        identityFile: String?, sshOptions: [String]
+    ) -> [String: GitFileStatus] {
+        let escapedDir = directory.replacingOccurrences(of: "'", with: "'\\''")
+        let cmd = "cd '\(escapedDir)' 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null && echo '---GIT_STATUS---' && git status --porcelain 2>/dev/null"
+        guard let output = runSSH(
+            command: cmd, destination: destination,
+            port: port, identityFile: identityFile, sshOptions: sshOptions
+        ) else { return [:] }
+
+        let parts = output.components(separatedBy: "---GIT_STATUS---\n")
+        guard parts.count == 2 else { return [:] }
+        let repoRoot = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        return parseGitStatus(output: parts[1], repoRoot: repoRoot, explorerRoot: directory)
+    }
+
+    private static func parseGitStatus(
+        output: String?, repoRoot: String, explorerRoot: String
+    ) -> [String: GitFileStatus] {
+        guard let output, !output.isEmpty else { return [:] }
+        var statusMap: [String: GitFileStatus] = [:]
+
+        for line in output.components(separatedBy: "\n") where line.count >= 4 {
+            let indexStatus = line[line.startIndex]
+            let workTreeStatus = line[line.index(after: line.startIndex)]
+            var path = String(line.dropFirst(3))
+                .trimmingCharacters(in: .whitespaces)
+                .replacingOccurrences(of: "\"", with: "")
+
+            if path.contains(" -> ") {
+                path = String(path.split(separator: " -> ").last ?? Substring(path))
+            }
+
+            guard let status = parseStatusChars(index: indexStatus, workTree: workTreeStatus) else { continue }
+
+            let absolutePath = repoRoot.hasSuffix("/") ? repoRoot + path : repoRoot + "/" + path
+            guard absolutePath.hasPrefix(explorerRoot) else { continue }
+
+            statusMap[absolutePath] = status
+            markParentDirectories(absolutePath: absolutePath, explorerRoot: explorerRoot, status: status, in: &statusMap)
+        }
+        return statusMap
+    }
+
+    private static func parseStatusChars(index: Character, workTree: Character) -> GitFileStatus? {
+        if index == "?" && workTree == "?" { return .untracked }
+        if index == "A" || workTree == "A" { return .added }
+        if index == "D" || workTree == "D" { return .deleted }
+        if index == "R" || workTree == "R" { return .renamed }
+        if index == "M" || workTree == "M" { return .modified }
+        return nil
+    }
+
+    private static func markParentDirectories(
+        absolutePath: String, explorerRoot: String,
+        status: GitFileStatus, in map: inout [String: GitFileStatus]
+    ) {
+        let dirStatus: GitFileStatus = (status == .untracked) ? .untracked : .modified
+        var current = (absolutePath as NSString).deletingLastPathComponent
+        while current.hasPrefix(explorerRoot) && current != explorerRoot {
+            if map[current] == nil {
+                map[current] = dirStatus
+            }
+            current = (current as NSString).deletingLastPathComponent
+        }
+    }
+
+    private static func gitRepoRoot(for directory: String) -> String? {
+        runGit(in: directory, arguments: ["rev-parse", "--show-toplevel"])?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func runGit(in directory: String, arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func runSSH(
+        command: String, destination: String,
+        port: Int?, identityFile: String?, sshOptions: [String]
+    ) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
+        var args: [String] = []
+        if let port { args += ["-p", String(port)] }
+        if let identityFile { args += ["-i", identityFile] }
+        for option in sshOptions { args += ["-o", option] }
+        args += ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "-T"]
+        args += [destination, command]
+        process.arguments = args
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
     }
 }

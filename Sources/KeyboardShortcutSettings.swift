@@ -227,7 +227,7 @@ enum KeyboardShortcutSettings {
             case .selectWorkspaceByNumber:
                 return StoredShortcut(key: "1", command: true, shift: false, option: false, control: false)
             case .toggleFileExplorer:
-                return StoredShortcut(key: "e", command: true, shift: true, option: false, control: false)
+                return StoredShortcut(key: "b", command: true, shift: false, option: true, control: false)
             case .openBrowser:
                 return StoredShortcut(key: "l", command: true, shift: true, option: false, control: false)
             case .focusBrowserAddressBar:

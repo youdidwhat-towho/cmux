@@ -22,7 +22,7 @@ private final class MockFileExplorerProvider: FileExplorerProvider {
         self.isAvailable = isAvailable
     }
 
-    func listDirectory(path: String) async throws -> [FileExplorerEntry] {
+    func listDirectory(path: String, showHidden: Bool) async throws -> [FileExplorerEntry] {
         listCallCount += 1
         listCallPaths.append(path)
 

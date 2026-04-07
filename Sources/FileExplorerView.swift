@@ -3,6 +3,65 @@ import Bonsplit
 import Combine
 import SwiftUI
 
+// MARK: - Right Panel Container
+
+/// Right-side panel that wraps the file explorer with a vertical divider and resize handle.
+struct FileExplorerRightPanel: View {
+    @ObservedObject var store: FileExplorerStore
+    @ObservedObject var state: FileExplorerState
+
+    @State private var isResizerHovered = false
+    @State private var isResizerDragging = false
+    @State private var dragStartWidth: CGFloat = 0
+
+    private let minWidth: CGFloat = 150
+    private let maxWidth: CGFloat = 500
+    private let resizerWidth: CGFloat = 6
+
+    var body: some View {
+        HStack(spacing: 0) {
+            // Vertical divider + resize handle
+            Rectangle()
+                .fill(isResizerDragging || isResizerHovered
+                    ? Color.accentColor.opacity(0.5)
+                    : Color(nsColor: .separatorColor))
+                .frame(width: isResizerDragging || isResizerHovered ? 2 : 1)
+                .padding(.horizontal, (resizerWidth - 1) / 2)
+                .contentShape(Rectangle())
+                .onHover { hovering in
+                    isResizerHovered = hovering
+                    if hovering {
+                        NSCursor.resizeLeftRight.push()
+                    } else if !isResizerDragging {
+                        NSCursor.pop()
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 1)
+                        .onChanged { value in
+                            if !isResizerDragging {
+                                dragStartWidth = state.width
+                                isResizerDragging = true
+                            }
+                            // Dragging left = wider panel, dragging right = narrower
+                            let newWidth = dragStartWidth - value.translation.width
+                            state.width = min(maxWidth, max(minWidth, newWidth))
+                        }
+                        .onEnded { _ in
+                            isResizerDragging = false
+                            if !isResizerHovered {
+                                NSCursor.pop()
+                            }
+                        }
+                )
+                .accessibilityIdentifier("FileExplorerResizer")
+
+            FileExplorerView(store: store, state: state)
+                .frame(width: state.width)
+        }
+    }
+}
+
 // MARK: - Container View
 
 struct FileExplorerView: View {
@@ -18,7 +77,6 @@ struct FileExplorerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
     }
 
     private var emptyState: some View {
@@ -57,6 +115,20 @@ struct FileExplorerView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer()
+
+            Button {
+                state.showHiddenFiles.toggle()
+                store.showHiddenFiles = state.showHiddenFiles
+                store.reload()
+            } label: {
+                Image(systemName: state.showHiddenFiles ? "eye" : "eye.slash")
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(state.showHiddenFiles
+                ? String(localized: "fileExplorer.hiddenFiles.hide", defaultValue: "Hide Hidden Files")
+                : String(localized: "fileExplorer.hiddenFiles.show", defaultValue: "Show Hidden Files"))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -82,13 +154,14 @@ struct FileExplorerOutlineView: NSViewRepresentable {
 
         let outlineView = NSOutlineView()
         outlineView.headerView = nil
-        outlineView.usesAlternatingRowBackgroundColors = true
-        outlineView.style = .sourceList
-        outlineView.selectionHighlightStyle = .sourceList
+        outlineView.usesAlternatingRowBackgroundColors = false
+        outlineView.style = .plain
+        outlineView.selectionHighlightStyle = .regular
         outlineView.rowSizeStyle = .default
         outlineView.indentationPerLevel = 16
         outlineView.autoresizesOutlineColumn = true
         outlineView.floatsGroupRows = false
+        outlineView.backgroundColor = .clear
 
         let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("name"))
         column.isEditable = false
@@ -98,6 +171,11 @@ struct FileExplorerOutlineView: NSViewRepresentable {
 
         outlineView.dataSource = context.coordinator
         outlineView.delegate = context.coordinator
+
+        // Context menu
+        let menu = NSMenu()
+        menu.delegate = context.coordinator
+        outlineView.menu = menu
 
         scrollView.documentView = outlineView
         context.coordinator.outlineView = outlineView
@@ -112,7 +190,7 @@ struct FileExplorerOutlineView: NSViewRepresentable {
 
     // MARK: - Coordinator
 
-    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate {
+    final class Coordinator: NSObject, NSOutlineViewDataSource, NSOutlineViewDelegate, NSMenuDelegate {
         var store: FileExplorerStore
         weak var outlineView: NSOutlineView?
         private var lastRootNodeCount: Int = -1
@@ -215,7 +293,8 @@ struct FileExplorerOutlineView: NSViewRepresentable {
                 cellView = FileExplorerCellView(identifier: identifier)
             }
 
-            cellView.configure(with: node)
+            let gitStatus = store.gitStatusByPath[node.path]
+            cellView.configure(with: node, gitStatus: gitStatus)
             cellView.onHover = { [weak self] isHovering in
                 guard let self else { return }
                 if isHovering {
@@ -272,6 +351,99 @@ struct FileExplorerOutlineView: NSViewRepresentable {
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
             22
+        }
+
+        // MARK: - Drag-to-Terminal
+
+        func outlineView(_ outlineView: NSOutlineView, pasteboardWriterForItem item: Any) -> (any NSPasteboardWriting)? {
+            guard let node = item as? FileExplorerNode, !node.isDirectory else { return nil }
+            // Only allow drag for local files
+            guard store.provider is LocalFileExplorerProvider else { return nil }
+            return NSURL(fileURLWithPath: node.path)
+        }
+
+        // MARK: - Context Menu (NSMenuDelegate)
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            guard let outlineView else { return }
+            let clickedRow = outlineView.clickedRow
+            guard clickedRow >= 0,
+                  let node = outlineView.item(atRow: clickedRow) as? FileExplorerNode else { return }
+
+            let isLocal = store.provider is LocalFileExplorerProvider
+
+            if !node.isDirectory && isLocal {
+                let openItem = NSMenuItem(
+                    title: String(localized: "fileExplorer.contextMenu.openDefault", defaultValue: "Open in Default Editor"),
+                    action: #selector(contextMenuOpenInDefaultEditor(_:)),
+                    keyEquivalent: ""
+                )
+                openItem.target = self
+                openItem.representedObject = node
+                menu.addItem(openItem)
+            }
+
+            if isLocal {
+                let revealItem = NSMenuItem(
+                    title: String(localized: "fileExplorer.contextMenu.revealInFinder", defaultValue: "Reveal in Finder"),
+                    action: #selector(contextMenuRevealInFinder(_:)),
+                    keyEquivalent: ""
+                )
+                revealItem.target = self
+                revealItem.representedObject = node
+                menu.addItem(revealItem)
+
+                menu.addItem(.separator())
+            }
+
+            let copyPathItem = NSMenuItem(
+                title: String(localized: "fileExplorer.contextMenu.copyPath", defaultValue: "Copy Path"),
+                action: #selector(contextMenuCopyPath(_:)),
+                keyEquivalent: ""
+            )
+            copyPathItem.target = self
+            copyPathItem.representedObject = node
+            menu.addItem(copyPathItem)
+
+            let copyRelItem = NSMenuItem(
+                title: String(localized: "fileExplorer.contextMenu.copyRelativePath", defaultValue: "Copy Relative Path"),
+                action: #selector(contextMenuCopyRelativePath(_:)),
+                keyEquivalent: ""
+            )
+            copyRelItem.target = self
+            copyRelItem.representedObject = node
+            menu.addItem(copyRelItem)
+        }
+
+        @objc private func contextMenuOpenInDefaultEditor(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode else { return }
+            NSWorkspace.shared.open(URL(fileURLWithPath: node.path))
+        }
+
+        @objc private func contextMenuRevealInFinder(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode else { return }
+            NSWorkspace.shared.selectFile(node.path, inFileViewerRootedAtPath: "")
+        }
+
+        @objc private func contextMenuCopyPath(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode else { return }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(node.path, forType: .string)
+        }
+
+        @objc private func contextMenuCopyRelativePath(_ sender: NSMenuItem) {
+            guard let node = sender.representedObject as? FileExplorerNode else { return }
+            let rootPath = store.rootPath
+            var relativePath = node.path
+            if relativePath.hasPrefix(rootPath) {
+                relativePath = String(relativePath.dropFirst(rootPath.count))
+                if relativePath.hasPrefix("/") {
+                    relativePath = String(relativePath.dropFirst())
+                }
+            }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(relativePath, forType: .string)
         }
     }
 }
@@ -331,7 +503,7 @@ final class FileExplorerCellView: NSTableCellView {
         ])
     }
 
-    func configure(with node: FileExplorerNode) {
+    func configure(with node: FileExplorerNode, gitStatus: GitFileStatus? = nil) {
         nameLabel.stringValue = node.name
 
         if node.isDirectory {
@@ -357,9 +529,22 @@ final class FileExplorerCellView: NSTableCellView {
         if let error = node.error {
             nameLabel.textColor = .systemRed
             nameLabel.toolTip = error
+        } else if let gitStatus {
+            nameLabel.textColor = Self.colorForGitStatus(gitStatus)
+            nameLabel.toolTip = node.path
         } else {
             nameLabel.textColor = .labelColor
             nameLabel.toolTip = node.path
+        }
+    }
+
+    private static func colorForGitStatus(_ status: GitFileStatus) -> NSColor {
+        switch status {
+        case .modified: return NSColor(red: 0.65, green: 0.45, blue: 0.0, alpha: 1.0)
+        case .added: return .systemGreen
+        case .deleted: return .systemRed
+        case .renamed: return .systemCyan
+        case .untracked: return NSColor(white: 0.5, alpha: 1.0)
         }
     }
 
@@ -433,63 +618,94 @@ struct FileExplorerTitlebarButton: View {
 
 final class FileExplorerTitlebarAccessoryViewController: NSTitlebarAccessoryViewController {
     private let hostingView: NonDraggableHostingView<FileExplorerTitlebarButton>
-    private let containerView = NSView()
-    private var didInitialLayout = false
 
     init(onToggle: @escaping () -> Void) {
         let style = TitlebarControlsStyle(rawValue: UserDefaults.standard.integer(forKey: "titlebarControlsStyle")) ?? .classic
+        let config = style.config
         hostingView = NonDraggableHostingView(
             rootView: FileExplorerTitlebarButton(
                 onToggle: onToggle,
-                config: style.config
+                config: config
             )
         )
 
         super.init(nibName: nil, bundle: nil)
 
-        view = containerView
-        containerView.translatesAutoresizingMaskIntoConstraints = true
-        containerView.wantsLayer = true
-        containerView.layer?.masksToBounds = false
-        hostingView.translatesAutoresizingMaskIntoConstraints = true
-        containerView.addSubview(hostingView)
+        // Use fixed dimensions matching the button config to avoid layout feedback loops.
+        let buttonSize = config.buttonSize
+        let width = buttonSize + 12
+        let height = buttonSize
 
-        // Compute initial size once from the hosting view's fitting size
-        hostingView.layoutSubtreeIfNeeded()
-        let fitting = hostingView.fittingSize
-        let width = fitting.width + 8
-        let height = max(fitting.height, 28)
+        hostingView.translatesAutoresizingMaskIntoConstraints = false
+        let wrapper = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        wrapper.translatesAutoresizingMaskIntoConstraints = true
+        wrapper.wantsLayer = true
+        wrapper.layer?.masksToBounds = false
+        wrapper.addSubview(hostingView)
+
+        NSLayoutConstraint.activate([
+            hostingView.centerXAnchor.constraint(equalTo: wrapper.centerXAnchor),
+            hostingView.centerYAnchor.constraint(equalTo: wrapper.centerYAnchor),
+        ])
+
+        view = wrapper
         preferredContentSize = NSSize(width: width, height: height)
-        containerView.frame = NSRect(x: 0, y: 0, width: width, height: height)
-        let yOffset = max(0, (height - fitting.height) / 2.0)
-        hostingView.frame = NSRect(x: 0, y: yOffset, width: fitting.width, height: fitting.height)
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+}
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        guard !didInitialLayout else { return }
-        didInitialLayout = true
-        // Re-measure once after attached to window (titlebar height is now known)
-        let fitting = hostingView.fittingSize
-        guard fitting.width > 0, fitting.height > 0 else { return }
-        let titlebarHeight: CGFloat = {
-            if let window = view.window,
-               let closeButton = window.standardWindowButton(.closeButton),
-               let titlebarView = closeButton.superview,
-               titlebarView.frame.height > 0 {
-                return titlebarView.frame.height
+// MARK: - Sidebar Explorer Divider
+
+/// Draggable horizontal divider between the tab list and file explorer in the sidebar.
+struct SidebarExplorerDivider: View {
+    @Binding var position: CGFloat
+    let totalHeight: CGFloat
+    var minFraction: CGFloat = 0.1
+    var maxFraction: CGFloat = 0.8
+
+    @State private var isDragging = false
+    @State private var isHovered = false
+    @State private var dragStartPosition: CGFloat = 0
+
+    private let handleHeight: CGFloat = 6
+
+    var body: some View {
+        Rectangle()
+            .fill(isDragging || isHovered
+                ? Color.accentColor.opacity(0.5)
+                : Color(nsColor: .separatorColor))
+            .frame(height: isDragging || isHovered ? 2 : 1)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, (handleHeight - 1) / 2)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                isHovered = hovering
+                if hovering {
+                    NSCursor.resizeUpDown.push()
+                } else if !isDragging {
+                    NSCursor.pop()
+                }
             }
-            return fitting.height
-        }()
-        let containerHeight = max(fitting.height, titlebarHeight)
-        let yOffset = max(0, (containerHeight - fitting.height) / 2.0)
-        let width = fitting.width + 8
-        preferredContentSize = NSSize(width: width, height: containerHeight)
-        containerView.frame = NSRect(x: 0, y: 0, width: width, height: containerHeight)
-        hostingView.frame = NSRect(x: 0, y: yOffset, width: fitting.width, height: fitting.height)
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        if !isDragging {
+                            dragStartPosition = position
+                            isDragging = true
+                        }
+                        let newPosition = dragStartPosition + (value.translation.height / totalHeight)
+                        position = min(maxFraction, max(minFraction, newPosition))
+                    }
+                    .onEnded { _ in
+                        isDragging = false
+                        if !isHovered {
+                            NSCursor.pop()
+                        }
+                    }
+            )
+            .accessibilityIdentifier("SidebarExplorerDivider")
     }
 }
