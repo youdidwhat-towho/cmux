@@ -10067,12 +10067,19 @@ final class Workspace: Identifiable, ObservableObject {
             maybeAutoFocusBrowserAddressBarOnPanelFocus(browserPanel, trigger: trigger)
         }
 
-        if trigger == .terminalFirstResponder,
-           panels[panelId] is TerminalPanel {
-            beginEventDrivenLayoutFollowUp(
-                reason: "workspace.focusPanel.terminal",
-                terminalFocusPanelId: panelId
-            )
+        if let terminalPanel = panels[panelId] as? TerminalPanel {
+            // Always set up a focus follow-up when the terminal is not yet first responder.
+            // The .terminalFirstResponder trigger always needs it (reentrant focus assertion).
+            // The .standard trigger needs it when the surface view isn't ready yet (e.g.
+            // new workspace via Cmd+T where the portal hasn't attached to a window yet).
+            let needsFocusFollowUp = trigger == .terminalFirstResponder
+                || !terminalPanel.hostedView.isSurfaceViewFirstResponder()
+            if needsFocusFollowUp {
+                beginEventDrivenLayoutFollowUp(
+                    reason: "workspace.focusPanel.terminal",
+                    terminalFocusPanelId: panelId
+                )
+            }
         }
     }
 
