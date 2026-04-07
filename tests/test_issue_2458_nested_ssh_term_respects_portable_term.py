@@ -150,13 +150,19 @@ def _run_exec_string_shell(
         argv.append("-l")
     argv.extend(["-i", "-c", command_string])
 
-    result = subprocess.run(
-        argv,
-        cwd=str(root),
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=str(root),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=8,
+        )
+    except subprocess.TimeoutExpired as exc:
+        combined = ((exc.stdout or "") + (exc.stderr or "")).strip()
+        return False, f"zsh exec-string session timed out after 8s: {combined}"
+
     combined = ((result.stdout or "") + (result.stderr or "")).strip()
     if result.returncode != 0:
         return False, f"zsh exited non-zero rc={result.returncode}: {combined}"

@@ -66,16 +66,13 @@ _cmux_restore_wrapper_zdotdir() {
 }
 
 _cmux_source_real_zdotfile() {
-    builtin emulate -L zsh -o no_aliases
-    builtin setopt local_options no_sh_word_split
-
     builtin local file_name="$1"
-    builtin local path
+    builtin local zdotfile_path
 
     {
         _cmux_use_real_zdotdir
-        path="${ZDOTDIR-$HOME}/$file_name"
-        [[ ! -r "$path" ]] || builtin source -- "$path"
+        zdotfile_path="${ZDOTDIR-$HOME}/$file_name"
+        [[ ! -r "$zdotfile_path" ]] || builtin source -- "$zdotfile_path"
     } always {
         # Preserve any user-side ZDOTDIR rebinding so the next startup file
         # resolves from the same location vanilla zsh would use.
