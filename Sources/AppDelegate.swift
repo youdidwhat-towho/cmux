@@ -2213,6 +2213,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         struct StoredGeometry: Codable, Sendable {
             let frame: SessionRectSnapshot
             let display: SessionDisplaySnapshot?
+            let lastUsedAt: Date?
+
+            init(
+                frame: SessionRectSnapshot,
+                display: SessionDisplaySnapshot?,
+                lastUsedAt: Date? = nil
+            ) {
+                self.frame = frame
+                self.display = display
+                self.lastUsedAt = lastUsedAt
+            }
         }
 
         let version: Int
@@ -2414,10 +2425,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var sessionAutosaveTimer: DispatchSourceTimer?
     private var sessionAutosaveTickInFlight = false
     private var sessionAutosaveDeferredRetryPending = false
-    private let sessionPersistenceQueue = DispatchQueue(
-        label: "com.cmuxterm.app.sessionPersistence",
-        qos: .utility
-    )
+    private nonisolated static let sessionPersistenceQueueSpecificKey = DispatchSpecificKey<UInt8>()
+    private let sessionPersistenceQueue: DispatchQueue = {
+        let queue = DispatchQueue(
+            label: "com.cmuxterm.app.sessionPersistence",
+            qos: .utility
+        )
+        queue.setSpecific(key: AppDelegate.sessionPersistenceQueueSpecificKey, value: 1)
+        return queue
+    }()
     private nonisolated static let launchServicesRegistrationQueue = DispatchQueue(
         label: "com.cmuxterm.app.launchServicesRegistration",
         qos: .utility
@@ -3864,27 +3880,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     /// Merge a freshly-captured per-display-configuration entry into the
-    /// existing map and evict the oldest extras when we exceed the LRU cap.
-    /// The `fingerprint` entry (if any) is always preserved as the most
-    /// recent — only other entries are eligible for eviction.
+    /// existing map and evict the least-recently-used extras when we exceed
+    /// the cap. The `fingerprint` entry (if any) is always refreshed as the
+    /// most recent and never evicted by the same merge.
     nonisolated static func mergedDisplayConfigurations(
         existing: [String: PersistedWindowGeometry.StoredGeometry]?,
         fingerprint: String?,
         frame: SessionRectSnapshot,
-        display: SessionDisplaySnapshot?
+        display: SessionDisplaySnapshot?,
+        now: Date = Date()
     ) -> [String: PersistedWindowGeometry.StoredGeometry]? {
         var merged = existing ?? [:]
         if let fingerprint, !fingerprint.isEmpty {
             merged[fingerprint] = PersistedWindowGeometry.StoredGeometry(
                 frame: frame,
-                display: display
+                display: display,
+                lastUsedAt: now
             )
         }
         while merged.count > maxStoredDisplayConfigurations {
-            // Evict any entry other than the just-written fingerprint. We
-            // don't track true LRU order, so picking an arbitrary stale key
-            // is acceptable for an eight-slot bound.
-            let evictionKey = merged.keys.first { $0 != fingerprint }
+            let evictionKey = merged
+                .filter { entry in
+                    guard let fingerprint else { return true }
+                    return entry.key != fingerprint
+                }
+                .min { lhs, rhs in
+                    let lhsLastUsedAt = lhs.value.lastUsedAt ?? .distantPast
+                    let rhsLastUsedAt = rhs.value.lastUsedAt ?? .distantPast
+                    if lhsLastUsedAt == rhsLastUsedAt {
+                        return lhs.key < rhs.key
+                    }
+                    return lhsLastUsedAt < rhsLastUsedAt
+                }?
+                .key
             if let evictionKey {
                 merged.removeValue(forKey: evictionKey)
             } else {
@@ -4043,7 +4071,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         targetFrame.size.width = max(targetFrame.width, minimumFrameSize.width)
         targetFrame.size.height = max(targetFrame.height, minimumFrameSize.height)
 
-        if let screen = Self.screenForConstrainingFrame(targetFrame, currentWindow: window) {
+        let availableDisplays = currentDisplayGeometries().available
+        let shouldPreserveSpanningFrame = Self.shouldPreserveSpanningFrame(
+            targetFrame,
+            availableDisplays: availableDisplays,
+            minWidth: minimumFrameSize.width,
+            minHeight: minimumFrameSize.height,
+            minimumVisibleWidth: Self.minimumVisibleRestoredWindowWidth,
+            minimumVisibleHeight: max(Self.minimumVisibleRestoredWindowHeight, minimumFrameSize.height)
+        )
+
+        if !shouldPreserveSpanningFrame,
+           let screen = Self.screenForConstrainingFrame(targetFrame, currentWindow: window) {
             targetFrame = window.constrainFrameRect(targetFrame, to: screen)
             if targetFrame.width < minimumFrameSize.width || targetFrame.height < minimumFrameSize.height {
                 targetFrame.size.width = max(targetFrame.width, minimumFrameSize.width)
@@ -4358,6 +4397,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
+        if displaySnapshot == nil,
+           frame.width >= minWidth,
+           frame.height >= minHeight,
+           !intersectsAnyDisplay(frame, in: availableDisplays),
+           let fallbackTargetDisplay {
+            return centeredFrame(
+                frame,
+                in: fallbackTargetDisplay.visibleFrame,
+                minWidth: minWidth,
+                minHeight: minHeight
+            )
+        }
+
         if let sourceReference = displaySnapshot?.visibleFrame?.cgRect ?? displaySnapshot?.frame?.cgRect,
            let fallbackTargetDisplay {
             let remapped = remappedFrame(
@@ -4470,6 +4522,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return nil
         }
         return bestOverlap.display
+    }
+
+    private nonisolated static func intersectsAnyDisplay(
+        _ frame: CGRect,
+        in displays: [SessionDisplayGeometry]
+    ) -> Bool {
+        displays.contains { display in
+            intersectionArea(frame, display.visibleFrame) > 0
+        }
+    }
+
+    nonisolated static func shouldPreserveSpanningFrame(
+        _ frame: CGRect,
+        availableDisplays: [SessionDisplayGeometry],
+        minWidth: CGFloat,
+        minHeight: CGFloat,
+        minimumVisibleWidth: CGFloat,
+        minimumVisibleHeight: CGFloat
+    ) -> Bool {
+        let intersectingDisplays = availableDisplays.filter { display in
+            intersectionArea(frame, display.visibleFrame) > 0
+        }
+        guard intersectingDisplays.count > 1 else { return false }
+        return hasSufficientVisibleFrame(
+            frame,
+            in: intersectingDisplays,
+            minWidth: minWidth,
+            minHeight: minHeight,
+            minimumVisibleWidth: minimumVisibleWidth,
+            minimumVisibleHeight: minimumVisibleHeight
+        )
     }
 
     nonisolated static func hasSufficientVisibleFrame(
@@ -5141,7 +5224,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if synchronously {
-            writeBlock()
+            if DispatchQueue.getSpecific(key: Self.sessionPersistenceQueueSpecificKey) != nil {
+                writeBlock()
+            } else {
+                sessionPersistenceQueue.sync(execute: writeBlock)
+            }
         } else {
             sessionPersistenceQueue.async(execute: writeBlock)
         }
