@@ -338,6 +338,8 @@ struct SignInView: View {
                 return String(localized: "auth.error.config", defaultValue: "Sign in is temporarily unavailable. Please try again later.")
             case "OAUTH_PROVIDER_ACCOUNT_ID_ALREADY_USED_FOR_SIGN_IN":
                 return String(localized: "auth.error.oauth_linked", defaultValue: "This account is already linked to another sign-in method.")
+            case "INVALID_APPLE_CREDENTIALS":
+                return String(localized: "auth.error.apple_config", defaultValue: "Apple Sign In is not available yet. Please use another sign-in method.")
             case "oauth_cancelled":
                 return ""
             default:
@@ -355,7 +357,14 @@ struct SignInView: View {
         }
 
         #if DEBUG
-        return "\(error.localizedDescription)\n\(String(reflecting: type(of: error)))"
+        var debug = "\(error.localizedDescription)\n\(String(reflecting: type(of: error)))"
+        if let stackError = error as? StackAuthErrorProtocol {
+            debug += "\ncode: \(stackError.code)\nmessage: \(stackError.message)"
+            if let details = stackError.details {
+                debug += "\ndetails: \(details)"
+            }
+        }
+        return debug
         #else
         return String(localized: "auth.error.generic", defaultValue: "Something went wrong. Please try again.")
         #endif
