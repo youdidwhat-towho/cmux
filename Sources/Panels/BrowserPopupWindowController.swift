@@ -96,7 +96,8 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         if let browserContextSource {
             BrowserPanel.configureWebViewConfiguration(
                 configuration,
-                websiteDataStore: browserContextSource.websiteDataStore
+                websiteDataStore: browserContextSource.websiteDataStore,
+                processPool: browserContextSource.processPool
             )
         }
 

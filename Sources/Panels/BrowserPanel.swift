@@ -1701,7 +1701,7 @@ actor BrowserSearchSuggestionService {
 }
 
 /// BrowserPanel provides a WKWebView-based browser panel.
-/// All browser panels share a WKWebsiteDataStore for cookie and storage persistence.
+/// All browser panels share a WKProcessPool and WKWebsiteDataStore for session and cookie persistence.
 private enum BrowserInsecureHTTPNavigationIntent {
     case currentTab
     case newTab
@@ -1737,6 +1737,13 @@ final class BrowserPanel: Panel, ObservableObject {
         "::1",
         "0.0.0.0",
     ]
+
+    /// Shared process pool across all browser panels. Although Apple deprecated
+    /// WKProcessPool in macOS 12 ("creating multiple instances no longer has any
+    /// effect"), removing the shared pool entirely breaks in-memory session/cookie
+    /// state sharing between panels and popup flows.
+    @available(macOS, deprecated: 12.0, message: "WKProcessPool is deprecated but removing it breaks session sharing")
+    private static let sharedProcessPool = WKProcessPool()
 
     /// Popup windows owned by this panel (for lifecycle cleanup)
     private var popupControllers: [BrowserPopupWindowController] = []
@@ -2510,8 +2517,10 @@ final class BrowserPanel: Panel, ObservableObject {
 
     static func configureWebViewConfiguration(
         _ configuration: WKWebViewConfiguration,
-        websiteDataStore: WKWebsiteDataStore
+        websiteDataStore: WKWebsiteDataStore,
+        processPool: WKProcessPool = BrowserPanel.sharedProcessPool
     ) {
+        configuration.processPool = processPool
         configuration.mediaTypesRequiringUserActionForPlayback = []
         // Ensure browser cookies/storage persist across navigations and launches.
         // This reduces repeated consent/bot-challenge flows on sites like Google.
