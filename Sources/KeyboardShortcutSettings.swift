@@ -1028,7 +1028,7 @@ struct ShortcutStroke: Equatable {
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
         guard !isDisabled else { return false }
-        matches(
+        return matches(
             keyCode: event.keyCode,
             modifierFlags: event.modifierFlags,
             eventCharacter: event.charactersIgnoringModifiers,
