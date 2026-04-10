@@ -201,6 +201,7 @@ private enum TerminalHardwareKeyResolver {
 enum TerminalInputAccessoryAction: Int, CaseIterable {
     case control
     case alternate
+    case command
     case shift
     case escape
     case tab
@@ -230,6 +231,8 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
             return isMacRemote ? "⌃" : "Ctrl"
         case .alternate:
             return isMacRemote ? "⌥" : "Alt"
+        case .command:
+            return "⌘"
         case .shift:
             return "⇧"
         case .escape:
@@ -275,6 +278,7 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
         switch self {
         case .control: return "terminal.inputAccessory.control"
         case .alternate: return "terminal.inputAccessory.alt"
+        case .command: return "terminal.inputAccessory.command"
         case .shift: return "terminal.inputAccessory.shift"
         case .escape: return "terminal.inputAccessory.escape"
         case .tab: return "terminal.inputAccessory.tab"
@@ -300,14 +304,14 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
     /// Whether this action is a modifier key (toggleable armed state).
     var isModifier: Bool {
         switch self {
-        case .control, .alternate, .shift: return true
+        case .control, .alternate, .command, .shift: return true
         default: return false
         }
     }
 
     var output: Data? {
         switch self {
-        case .control, .alternate, .shift:
+        case .control, .alternate, .command, .shift:
             return nil
         case .escape:
             return Data([0x1B])
@@ -1211,12 +1215,15 @@ final class TerminalInputTextView: UITextView {
     var onHideKeyboard: (() -> Void)?
     private var controlAccessoryArmed = false
     private var alternateAccessoryArmed = false
+    private var commandAccessoryArmed = false
     private var shiftAccessoryArmed = false
     private var controlAccessorySticky = false
     private var alternateAccessorySticky = false
+    private var commandAccessorySticky = false
     private var shiftAccessorySticky = false
     private var lastControlTapTime: Date?
     private var lastAlternateTapTime: Date?
+    private var lastCommandTapTime: Date?
     private var lastShiftTapTime: Date?
 
     override var canBecomeFirstResponder: Bool { true }
@@ -1268,6 +1275,10 @@ final class TerminalInputTextView: UITextView {
             button.backgroundColor = UIColor(white: 0.35, alpha: 1)
             button.setTitleColor(.white, for: .normal)
             button.layer.cornerRadius = 6
+            // Command is Mac-only; hidden by default until updateModifierLabels(isMacRemote: true)
+            if action == .command {
+                button.isHidden = true
+            }
             stack.addArrangedSubview(button)
         }
 
@@ -1321,6 +1332,14 @@ final class TerminalInputTextView: UITextView {
         for case let button as UIButton in stack.arrangedSubviews {
             guard let action = TerminalInputAccessoryAction(rawValue: button.tag) else { continue }
             button.setTitle(action.title(isMacRemote: isMacRemote), for: .normal)
+            // Command key is only useful on Mac terminals
+            if action == .command {
+                button.isHidden = !isMacRemote
+            }
+        }
+        // Disarm command state if switching away from Mac remote
+        if !isMacRemote && commandAccessoryArmed {
+            setCommandAccessoryArmed(false)
         }
     }
 
@@ -1348,6 +1367,14 @@ final class TerminalInputTextView: UITextView {
     }
 
     override func deleteBackward() {
+        if commandAccessoryArmed, markedTextRange == nil, !hasText {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            // Cmd+Backspace on Mac = delete to start of line (Ctrl+U / 0x15)
+            onEscapeSequence?(Data([0x15]))
+            return
+        }
         if alternateAccessoryArmed, markedTextRange == nil, !hasText {
             if !alternateAccessorySticky {
                 setAlternateAccessoryArmed(false)
@@ -1439,11 +1466,24 @@ final class TerminalInputTextView: UITextView {
             return
         }
 
+        if commandAccessoryArmed,
+           !action.isModifier {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            if let output = commandAccessoryOutput(for: action) {
+                onEscapeSequence?(output)
+            }
+            return
+        }
+
         switch action {
         case .control:
             toggleControlModifier()
         case .alternate:
             toggleAlternateModifier()
+        case .command:
+            toggleCommandModifier()
         case .shift:
             toggleShiftModifier()
         default:
@@ -1456,6 +1496,7 @@ final class TerminalInputTextView: UITextView {
     private func disarmAllModifiers() {
         controlAccessoryArmed = false; controlAccessorySticky = false; lastControlTapTime = nil
         alternateAccessoryArmed = false; alternateAccessorySticky = false; lastAlternateTapTime = nil
+        commandAccessoryArmed = false; commandAccessorySticky = false; lastCommandTapTime = nil
         shiftAccessoryArmed = false; shiftAccessorySticky = false; lastShiftTapTime = nil
     }
 
@@ -1487,6 +1528,22 @@ final class TerminalInputTextView: UITextView {
             disarmAllModifiers()
             alternateAccessoryArmed = shouldArm
             lastAlternateTapTime = shouldArm ? now : nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func toggleCommandModifier() {
+        let now = Date()
+        if commandAccessorySticky {
+            disarmAllModifiers()
+        } else if commandAccessoryArmed, let last = lastCommandTapTime, now.timeIntervalSince(last) < Self.stickyDoubleTapInterval {
+            commandAccessorySticky = true
+            lastCommandTapTime = nil
+        } else {
+            let shouldArm = !commandAccessoryArmed
+            disarmAllModifiers()
+            commandAccessoryArmed = shouldArm
+            lastCommandTapTime = shouldArm ? now : nil
         }
         refreshAccessoryButtonStyles()
     }
@@ -1551,6 +1608,15 @@ final class TerminalInputTextView: UITextView {
                 } else {
                     onText?(committedText)
                 }
+            } else if commandAccessoryArmed {
+                if !commandAccessorySticky {
+                    setCommandAccessoryArmed(false)
+                }
+                if let commandSequence = commandTextSequence(for: committedText) {
+                    onEscapeSequence?(commandSequence)
+                } else {
+                    onText?(committedText)
+                }
             } else if shiftAccessoryArmed {
                 if !shiftAccessorySticky {
                     setShiftAccessoryArmed(false)
@@ -1562,6 +1628,23 @@ final class TerminalInputTextView: UITextView {
         }
         if text != result.nextBufferText {
             text = result.nextBufferText
+        }
+    }
+
+    /// Translate Cmd+<letter> typed through the soft keyboard into Mac-terminal
+    /// readline shortcuts (cmd+a = start of line, cmd+e = end, cmd+k = kill line, etc).
+    private func commandTextSequence(for text: String) -> Data? {
+        guard text.count == 1, let char = text.lowercased().first else { return nil }
+        switch char {
+        case "a": return Data([0x01]) // Ctrl+A - beginning of line
+        case "e": return Data([0x05]) // Ctrl+E - end of line
+        case "k": return Data([0x0B]) // Ctrl+K - kill to end of line
+        case "u": return Data([0x15]) // Ctrl+U - kill to start of line
+        case "w": return Data([0x17]) // Ctrl+W - delete previous word
+        case "l": return Data([0x0C]) // Ctrl+L - clear screen
+        case "c": return Data([0x03]) // Ctrl+C - SIGINT
+        case "d": return Data([0x04]) // Ctrl+D - EOF
+        default: return nil
         }
     }
 
@@ -1589,7 +1672,7 @@ final class TerminalInputTextView: UITextView {
                 input: UIKeyCommand.inputRightArrow,
                 modifierFlags: [.alternate]
             )
-        case .control, .alternate:
+        case .control, .alternate, .command:
             return nil
         default:
             guard let output = action.output else { return nil }
@@ -1599,10 +1682,38 @@ final class TerminalInputTextView: UITextView {
         }
     }
 
+    /// Translate Cmd+<key> into the equivalent Mac-terminal readline sequence.
+    /// Cmd+Left/Right = start/end of line (Ctrl+A / Ctrl+E).
+    /// Cmd+Backspace is handled directly in deleteBackward() as Ctrl+U.
+    private func commandAccessoryOutput(for action: TerminalInputAccessoryAction) -> Data? {
+        switch action {
+        case .leftArrow:
+            return Data([0x01]) // Ctrl+A - beginning of line
+        case .rightArrow:
+            return Data([0x05]) // Ctrl+E - end of line
+        case .upArrow:
+            // Cmd+Up on Mac often scrolls; just send the raw arrow
+            return TerminalHardwareKeyResolver.data(
+                input: UIKeyCommand.inputUpArrow,
+                modifierFlags: []
+            )
+        case .downArrow:
+            return TerminalHardwareKeyResolver.data(
+                input: UIKeyCommand.inputDownArrow,
+                modifierFlags: []
+            )
+        case .control, .alternate, .command, .shift:
+            return nil
+        default:
+            return action.output
+        }
+    }
+
     private func isAccessoryActionArmed(_ action: TerminalInputAccessoryAction) -> Bool {
         switch action {
         case .control: return controlAccessoryArmed
         case .alternate: return alternateAccessoryArmed
+        case .command: return commandAccessoryArmed
         case .shift: return shiftAccessoryArmed
         default: return false
         }
@@ -1612,9 +1723,20 @@ final class TerminalInputTextView: UITextView {
         switch action {
         case .control: return controlAccessorySticky
         case .alternate: return alternateAccessorySticky
+        case .command: return commandAccessorySticky
         case .shift: return shiftAccessorySticky
         default: return false
         }
+    }
+
+    private func setCommandAccessoryArmed(_ armed: Bool) {
+        guard commandAccessoryArmed != armed else { return }
+        commandAccessoryArmed = armed
+        if !armed {
+            commandAccessorySticky = false
+            lastCommandTapTime = nil
+        }
+        refreshAccessoryButtonStyles()
     }
 
     private func setControlAccessoryArmed(_ armed: Bool) {
