@@ -63,15 +63,7 @@ const RuntimeSession = struct {
             if (effective_offset < window.base_offset) effective_offset = window.base_offset;
 
             if (effective_offset < window.next_offset) {
-                if (timeout_ms > 0 and !self.pty.isClosed()) {
-                    const elapsed = std.time.milliTimestamp() - start_ms;
-                    const remaining = @as(i64, timeout_ms) - elapsed;
-                    if (remaining > 0) {
-                        const ready = try self.pty.waitReadable(@as(i32, @intCast(remaining)));
-                        if (ready) continue;
-                    }
-                }
-
+                // Data available: return immediately. Don't wait for more.
                 const refreshed = self.terminal.offsetWindow();
                 const raw = try self.terminal.readRaw(alloc, offset, max_bytes);
                 return .{

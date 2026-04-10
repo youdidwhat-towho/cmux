@@ -1,26 +1,28 @@
 import Foundation
 
 /// Bridges a macOS Ghostty surface (Manual I/O mode) to a daemon terminal session.
-/// Handles terminal.open, terminal.read loop, terminal.write, session.resize, and session.detach
-/// via Unix socket JSON-RPC to cmuxd-remote.
+/// Uses two separate Unix socket connections: one for the read loop (blocking poll)
+/// and one for writes (non-blocking, always ready).
 final class DaemonTerminalBridge: @unchecked Sendable {
     private let socketPath: String
     let sessionID: String
     private let shellCommand: String
 
-    private var socketFD: Int32 = -1
-    private var attachmentID: String?
+    // Read connection (used exclusively by the read thread)
+    private var readFD: Int32 = -1
+    // Write connection (used by io_write_cb and resize, protected by writeLock)
+    private var writeFD: Int32 = -1
+    private let writeLock = NSLock()
+
+    // Stable attachment ID: reused across reconnections so we don't leak attachments
+    private let attachmentID: String = "bridge-\(UUID().uuidString.prefix(8).lowercased())"
     private var readOffset: UInt64 = 0
     private var readThread: Thread?
     private var running = false
-    private let lock = NSLock()
     private var rpcID: Int = 0
+    private let idLock = NSLock()
 
-    /// Called on the read thread when terminal output arrives from the daemon.
-    /// The receiver should call ghostty_surface_process_output().
     var onOutput: ((_ data: Data) -> Void)?
-
-    /// Called when the session ends (EOF or error).
     var onDisconnect: ((_ error: String?) -> Void)?
 
     init(socketPath: String, sessionID: String, shellCommand: String) {
@@ -35,7 +37,6 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    /// Opens or attaches to the daemon session, then starts the read loop.
     func start(cols: Int, rows: Int) {
         guard !running else { return }
         running = true
@@ -51,33 +52,36 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     func stop() {
         running = false
-        lock.lock()
-        if socketFD >= 0 {
-            // Send detach before closing
-            if let attachmentID {
-                let params: [String: Any] = ["session_id": sessionID, "attachment_id": attachmentID]
-                sendRPCNoResponse(method: "session.detach", params: params)
+        // Detach via write socket before closing
+        writeLock.lock()
+        if writeFD >= 0 {
+            let params: [String: Any] = ["session_id": sessionID, "attachment_id": attachmentID]
+            let id = nextID()
+            let payload: [String: Any] = ["id": id, "method": "session.detach", "params": params]
+            if var data = try? JSONSerialization.data(withJSONObject: payload) {
+                data.append(0x0A)
+                _ = data.withUnsafeBytes { ptr in Darwin.write(writeFD, ptr.baseAddress, ptr.count) }
             }
-            Darwin.close(socketFD)
-            socketFD = -1
+            Darwin.close(writeFD)
+            writeFD = -1
         }
-        lock.unlock()
+        writeLock.unlock()
+        // readFD is closed by the read thread
     }
 
-    // MARK: - Write (user input → daemon)
+    // MARK: - Write (user input → daemon) — uses dedicated write socket
 
     func writeToSession(_ data: Data) {
         let base64 = data.base64EncodedString()
         let params: [String: Any] = ["session_id": sessionID, "data": base64]
-        DispatchQueue.global(qos: .userInteractive).async { [weak self] in
-            self?.sendRPCNoResponse(method: "terminal.write", params: params)
-        }
+        // Fire directly on the calling thread (io_write_cb is already off-main).
+        // The write socket is separate from the read socket, so no contention.
+        sendOnWriteSocket(method: "terminal.write", params: params)
     }
 
     // MARK: - Resize
 
     func resize(cols: Int, rows: Int) {
-        guard let attachmentID else { return }
         let params: [String: Any] = [
             "session_id": sessionID,
             "attachment_id": attachmentID,
@@ -85,61 +89,71 @@ final class DaemonTerminalBridge: @unchecked Sendable {
             "rows": max(1, rows),
         ]
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.sendRPCNoResponse(method: "session.resize", params: params)
+            self?.sendOnWriteSocket(method: "session.resize", params: params)
         }
     }
 
-    // MARK: - Session loop (runs on dedicated thread)
+    // MARK: - Session loop (runs on dedicated thread, uses read socket only)
 
     private func sessionLoop(cols: Int, rows: Int) {
         while running {
-            guard connectSocket() else {
+            guard let fd = openSocket() else {
                 Thread.sleep(forTimeInterval: 1)
                 continue
             }
+            readFD = fd
+
+            // Also open the write socket
+            if let wfd = openSocket() {
+                writeLock.lock()
+                writeFD = wfd
+                writeLock.unlock()
+            }
 
             // Try to attach to existing session first
-            let attached = attachToSession(cols: cols, rows: rows)
+            let attached = attachToSession(fd: fd, cols: cols, rows: rows)
             if !attached {
-                // Create new session
-                let opened = openSession(cols: cols, rows: rows)
+                let opened = openSession(fd: fd, cols: cols, rows: rows)
                 if !opened {
                     NSLog("📱 DaemonBridge[%@]: failed to open/attach, retrying in 1s", sessionID)
-                    disconnectSocket()
+                    Darwin.close(fd)
+                    readFD = -1
                     Thread.sleep(forTimeInterval: 1)
                     continue
                 }
             }
 
-            NSLog("📱 DaemonBridge[%@]: connected, attachment=%@, starting read loop", sessionID, attachmentID ?? "nil")
+            NSLog("📱 DaemonBridge[%@]: connected, attachment=%@", sessionID, attachmentID ?? "nil")
+            readLoop(fd: fd)
 
-            // Read loop
-            readLoop()
-
-            disconnectSocket()
+            Darwin.close(fd)
+            readFD = -1
             if running {
-                NSLog("📱 DaemonBridge[%@]: disconnected, reconnecting in 1s", sessionID)
                 Thread.sleep(forTimeInterval: 1)
             }
         }
     }
 
-    private func readLoop() {
+    private func readLoop(fd: Int32) {
         while running {
-            let params: [String: Any] = [
-                "session_id": sessionID,
-                "offset": readOffset,
-                "max_bytes": 65536,
-                "timeout_ms": 250,
+            let id = nextID()
+            let payload: [String: Any] = [
+                "id": id,
+                "method": "terminal.read",
+                "params": [
+                    "session_id": sessionID,
+                    "offset": readOffset,
+                    "max_bytes": 65536,
+                    "timeout_ms": 30000,
+                ] as [String: Any],
             ]
 
-            guard let response = sendRPC(method: "terminal.read", params: params) else {
-                break // Connection lost
+            guard let response = sendRPCOn(fd: fd, payload: payload) else {
+                break
             }
 
             guard let ok = response["ok"] as? Bool, ok,
                   let result = response["result"] as? [String: Any] else {
-                // Check for timeout (not an error, just no data)
                 if let error = response["error"] as? [String: Any],
                    let code = error["code"] as? String,
                    code == "deadline_exceeded" {
@@ -148,85 +162,88 @@ final class DaemonTerminalBridge: @unchecked Sendable {
                 break
             }
 
-            // Update offset
             if let newOffset = result["offset"] as? UInt64 {
                 readOffset = newOffset
             } else if let newOffset = result["offset"] as? Int {
                 readOffset = UInt64(newOffset)
             }
 
-            // Deliver output data
             if let base64 = result["data"] as? String,
                let data = Data(base64Encoded: base64),
                !data.isEmpty {
                 onOutput?(data)
             }
 
-            // Check EOF
             if let eof = result["eof"] as? Bool, eof {
-                NSLog("📱 DaemonBridge[%@]: EOF", sessionID)
                 onDisconnect?(nil)
                 return
             }
         }
     }
 
-    // MARK: - Session management
+    // MARK: - Session management (uses read socket during setup)
 
-    private func attachToSession(cols: Int, rows: Int) -> Bool {
-        let newAttachmentID = UUID().uuidString.lowercased()
-        let params: [String: Any] = [
-            "session_id": sessionID,
-            "attachment_id": newAttachmentID,
-            "cols": max(1, cols),
-            "rows": max(1, rows),
+    private func attachToSession(fd: Int32, cols: Int, rows: Int) -> Bool {
+        let id = nextID()
+        let payload: [String: Any] = [
+            "id": id,
+            "method": "session.attach",
+            "params": [
+                "session_id": sessionID,
+                "attachment_id": attachmentID,
+                "cols": max(1, cols),
+                "rows": max(1, rows),
+            ] as [String: Any],
         ]
 
-        guard let response = sendRPC(method: "session.attach", params: params),
+        guard let response = sendRPCOn(fd: fd, payload: payload),
               let ok = response["ok"] as? Bool, ok else {
             return false
         }
 
-        lock.lock()
-        self.attachmentID = newAttachmentID
         self.readOffset = 0
-        lock.unlock()
-        NSLog("📱 DaemonBridge[%@]: attached as %@", sessionID, newAttachmentID)
         return true
     }
 
-    private func openSession(cols: Int, rows: Int) -> Bool {
-        let params: [String: Any] = [
-            "session_id": sessionID,
-            "command": shellCommand,
-            "cols": max(1, cols),
-            "rows": max(1, rows),
+    private func openSession(fd: Int32, cols: Int, rows: Int) -> Bool {
+        let id = nextID()
+        let payload: [String: Any] = [
+            "id": id,
+            "method": "terminal.open",
+            "params": [
+                "session_id": sessionID,
+                "command": shellCommand,
+                "cols": max(1, cols),
+                "rows": max(1, rows),
+            ] as [String: Any],
         ]
 
-        guard let response = sendRPC(method: "terminal.open", params: params),
-              let ok = response["ok"] as? Bool, ok,
-              let result = response["result"] as? [String: Any],
-              let attachID = result["attachment_id"] as? String else {
+        guard let response = sendRPCOn(fd: fd, payload: payload),
+              let ok = response["ok"] as? Bool, ok else {
             return false
         }
 
-        lock.lock()
-        self.attachmentID = attachID
-        self.readOffset = 0
-        lock.unlock()
-        NSLog("📱 DaemonBridge[%@]: opened, attachment=%@", sessionID, attachID)
-        return true
+        // terminal.open creates its own attachment; detach it and re-attach with our stable ID
+        if let result = response["result"] as? [String: Any],
+           let bootstrapAttach = result["attachment_id"] as? String {
+            // Detach bootstrap attachment
+            let detachPayload: [String: Any] = [
+                "id": nextID(),
+                "method": "session.detach",
+                "params": ["session_id": sessionID, "attachment_id": bootstrapAttach] as [String: Any],
+            ]
+            _ = sendRPCOn(fd: fd, payload: detachPayload)
+        }
+
+        // Attach with our stable ID
+        return attachToSession(fd: fd, cols: cols, rows: rows)
     }
 
     // MARK: - Socket I/O
 
-    private func connectSocket() -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        guard socketFD < 0 else { return true }
-
+    private func openSocket() -> Int32? {
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { return false }
+        guard fd >= 0 else { return nil }
 
         var addr = sockaddr_un()
         addr.sun_family = sa_family_t(AF_UNIX)
@@ -243,59 +260,43 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
         if result != 0 {
             Darwin.close(fd)
-            return false
+            return nil
         }
 
-        // Timeouts for send (write is async, so generous)
-        var sendTimeout = timeval(tv_sec: 5, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
-        // Read timeout: short for responsiveness in read loop
-        var recvTimeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
+        var timeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
 
-        socketFD = fd
-        return true
+        return fd
     }
 
-    private func disconnectSocket() {
-        lock.lock()
-        if socketFD >= 0 {
-            Darwin.close(socketFD)
-            socketFD = -1
-        }
-        attachmentID = nil
-        lock.unlock()
-    }
-
-    private func sendRPC(method: String, params: [String: Any]) -> [String: Any]? {
-        lock.lock()
-        guard socketFD >= 0 else { lock.unlock(); return nil }
+    private func nextID() -> Int {
+        idLock.lock()
         rpcID += 1
         let id = rpcID
-        let fd = socketFD
-        lock.unlock()
+        idLock.unlock()
+        return id
+    }
 
-        let payload: [String: Any] = ["id": id, "method": method, "params": params]
+    /// Send RPC on a specific fd (used by read thread on readFD).
+    private func sendRPCOn(fd: Int32, payload: [String: Any]) -> [String: Any]? {
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
-        data.append(0x0A) // newline delimiter
+        data.append(0x0A)
 
         let writeResult = data.withUnsafeBytes { ptr -> Int in
             Darwin.write(fd, ptr.baseAddress, ptr.count)
         }
         guard writeResult > 0 else { return nil }
 
-        // Read response (may span multiple read() calls)
         var accumulated = Data()
         var buf = [UInt8](repeating: 0, count: 65536 + 4096)
         while true {
             let n = Darwin.read(fd, &buf, buf.count)
             guard n > 0 else { return nil }
             accumulated.append(contentsOf: buf[0..<n])
-            // Check if we have a complete line (newline-delimited JSON)
             if accumulated.contains(0x0A) { break }
         }
 
-        // Parse up to first newline
         if let newlineIndex = accumulated.firstIndex(of: 0x0A) {
             let jsonData = accumulated[accumulated.startIndex..<newlineIndex]
             return try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any]
@@ -303,21 +304,22 @@ final class DaemonTerminalBridge: @unchecked Sendable {
         return try? JSONSerialization.jsonObject(with: accumulated) as? [String: Any]
     }
 
-    private func sendRPCNoResponse(method: String, params: [String: Any]) {
-        lock.lock()
-        guard socketFD >= 0 else { lock.unlock(); return }
-        rpcID += 1
-        let id = rpcID
-        let fd = socketFD
-        lock.unlock()
+    /// Send RPC on the dedicated write socket (fire-and-forget with response drain).
+    private func sendOnWriteSocket(method: String, params: [String: Any]) {
+        writeLock.lock()
+        guard writeFD >= 0 else { writeLock.unlock(); return }
+        let fd = writeFD
+        let id = nextID()
+        writeLock.unlock()
 
         let payload: [String: Any] = ["id": id, "method": method, "params": params]
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return }
         data.append(0x0A)
 
-        _ = data.withUnsafeBytes { ptr -> Int in
+        let writeResult = data.withUnsafeBytes { ptr -> Int in
             Darwin.write(fd, ptr.baseAddress, ptr.count)
         }
+        guard writeResult > 0 else { return }
 
         // Drain response
         var buf = [UInt8](repeating: 0, count: 4096)
