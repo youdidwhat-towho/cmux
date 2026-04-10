@@ -10068,12 +10068,11 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         if let terminalPanel = panels[panelId] as? TerminalPanel {
-            // Always set up a focus follow-up when the terminal is not yet first responder.
-            // The .terminalFirstResponder trigger always needs it (reentrant focus assertion).
-            // The .standard trigger needs it when the surface view isn't ready yet (e.g.
-            // new workspace via Cmd+T where the portal hasn't attached to a window yet).
+            // Always set up a focus follow-up when the terminal's preferred keyboard target
+            // is not yet active. That target can be either the surface view or the terminal
+            // find field, so surface-first-responder alone is too strict here.
             let needsFocusFollowUp = trigger == .terminalFirstResponder
-                || !terminalPanel.hostedView.isSurfaceViewFirstResponder()
+                || terminalPanelKeyboardFocusNeedsFollowUp(panelId: panelId, terminalPanel: terminalPanel)
             if needsFocusFollowUp {
                 beginEventDrivenLayoutFollowUp(
                     reason: "workspace.focusPanel.terminal",
@@ -10596,7 +10595,19 @@ final class Workspace: Identifiable, ObservableObject {
               let terminalPanel = terminalPanel(for: panelId) else {
             return false
         }
-        return focusedPanelId != panelId || !terminalPanel.hostedView.isSurfaceViewFirstResponder()
+        return terminalPanelKeyboardFocusNeedsFollowUp(panelId: panelId, terminalPanel: terminalPanel)
+    }
+
+    private func terminalPanelKeyboardFocusNeedsFollowUp(
+        panelId: UUID,
+        terminalPanel: TerminalPanel
+    ) -> Bool {
+        guard focusedPanelId == panelId else { return true }
+        guard let window = terminalPanel.hostedView.window,
+              let firstResponder = window.firstResponder else {
+            return true
+        }
+        return !terminalPanel.hostedView.responderMatchesPreferredKeyboardFocus(firstResponder)
     }
 
     private func browserPanelNeedsFollowUp() -> Bool {
@@ -10628,8 +10639,16 @@ final class Workspace: Identifiable, ObservableObject {
         if let terminalFocusPanelId = layoutFollowUpTerminalFocusPanelId {
             if let terminalPanel = terminalPanel(for: terminalFocusPanelId),
                focusedPanelId == terminalFocusPanelId {
-                terminalPanel.hostedView.ensureFocus(for: id, surfaceId: terminalFocusPanelId)
-                if terminalPanel.hostedView.isSurfaceViewFirstResponder() {
+                if terminalPanelKeyboardFocusNeedsFollowUp(
+                    panelId: terminalFocusPanelId,
+                    terminalPanel: terminalPanel
+                ) {
+                    terminalPanel.hostedView.ensureFocus(for: id, surfaceId: terminalFocusPanelId)
+                }
+                if !terminalPanelKeyboardFocusNeedsFollowUp(
+                    panelId: terminalFocusPanelId,
+                    terminalPanel: terminalPanel
+                ) {
                     layoutFollowUpTerminalFocusPanelId = nil
                 }
             } else if terminalPanel(for: terminalFocusPanelId) == nil {
