@@ -86,6 +86,11 @@ func cmuxSurfacePointerAppearsLive(_ surface: ghostty_surface_t) -> Bool {
 }
 
 func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
+#if DEBUG
+    if let override = cmuxCurrentSurfaceFontSizePointsOverride {
+        return override(surface)
+    }
+#endif
     guard cmuxSurfacePointerAppearsLive(surface) else {
         return nil
     }
@@ -100,11 +105,31 @@ func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
     return points
 }
 
+#if DEBUG
+var cmuxCurrentSurfaceFontSizePointsOverride: ((ghostty_surface_t) -> Float?)?
+var cmuxGhosttyInheritedSurfaceConfigOverride: ((ghostty_surface_t, ghostty_surface_context_e) -> ghostty_surface_config_s)?
+var cmuxSurfaceForInheritanceOverride: ((TerminalPanel) -> ghostty_surface_t?)?
+#endif
+
+func cmuxSurfaceForInheritance(_ terminalPanel: TerminalPanel) -> ghostty_surface_t? {
+#if DEBUG
+    if let override = cmuxSurfaceForInheritanceOverride {
+        return override(terminalPanel)
+    }
+#endif
+    return terminalPanel.surface.surface
+}
+
 func cmuxInheritedSurfaceConfig(
     sourceSurface: ghostty_surface_t,
     context: ghostty_surface_context_e
 ) -> CmuxSurfaceConfigTemplate {
+#if DEBUG
+    let inherited = cmuxGhosttyInheritedSurfaceConfigOverride?(sourceSurface, context)
+        ?? ghostty_surface_inherited_config(sourceSurface, context)
+#else
     let inherited = ghostty_surface_inherited_config(sourceSurface, context)
+#endif
     var config = CmuxSurfaceConfigTemplate(cConfig: inherited)
 
     // Make runtime zoom inheritance explicit, even when Ghostty's
@@ -8753,7 +8778,7 @@ final class Workspace: Identifiable, ObservableObject {
             // ghostty_surface_inherited_config or cmuxCurrentSurfaceFontSizePoints
             // is still reading through the pointer.
             let surface = terminalPanel.surface
-            guard let sourceSurface = surface.surface else { continue }
+            guard let sourceSurface = cmuxSurfaceForInheritance(terminalPanel) else { continue }
             var config = cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_SPLIT
