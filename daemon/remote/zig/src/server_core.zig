@@ -559,6 +559,15 @@ fn handleWorkspaceList(service: *session_service.Service, req: *const json_rpc.R
         all_pane_entries.deinit(alloc);
     }
 
+    // Pump all runtime sessions first so OSC-extracted title/directory
+    // reflects the latest PTY output, even if no client is reading.
+    {
+        var rt_iter = service.runtimes.iterator();
+        while (rt_iter.next()) |entry| {
+            entry.value_ptr.*.*.pty.pump(&entry.value_ptr.*.*.terminal) catch {};
+        }
+    }
+
     for (reg.order.items) |ws_id| {
         const ws = reg.workspaces.get(ws_id) orelse continue;
         const leaves = try ws.root_pane.collectLeaves(alloc);
@@ -566,11 +575,29 @@ fn handleWorkspaceList(service: *session_service.Service, req: *const json_rpc.R
 
         var pane_entries: std.ArrayList(PaneEntry) = .empty;
         for (leaves) |leaf| {
+            // Use OSC-extracted title/directory from the daemon's terminal
+            // session as fallback when the macOS sync hasn't provided them.
+            var title = leaf.title;
+            var directory = leaf.directory;
+            if (leaf.session_id) |sid| {
+                if (service.runtimes.getPtr(sid)) |runtime| {
+                    if (title.len == 0 or std.mem.eql(u8, title, "Terminal")) {
+                        if (runtime.*.*.terminal.last_title) |t| {
+                            title = t;
+                        }
+                    }
+                    if (directory.len == 0) {
+                        if (runtime.*.*.terminal.last_directory) |d| {
+                            directory = d;
+                        }
+                    }
+                }
+            }
             try pane_entries.append(alloc, .{
                 .id = leaf.id,
                 .session_id = leaf.session_id,
-                .title = leaf.title,
-                .directory = leaf.directory,
+                .title = title,
+                .directory = directory,
             });
         }
         const panes_slice = try pane_entries.toOwnedSlice(alloc);
@@ -916,11 +943,23 @@ fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
 
         var pane_entries: std.ArrayList(PaneEntry) = .empty;
         for (leaves) |leaf| {
+            var title = leaf.title;
+            var directory = leaf.directory;
+            if (leaf.session_id) |sid| {
+                if (service.runtimes.getPtr(sid)) |runtime| {
+                    if (title.len == 0 or std.mem.eql(u8, title, "Terminal")) {
+                        if (runtime.*.*.terminal.last_title) |t| title = t;
+                    }
+                    if (directory.len == 0) {
+                        if (runtime.*.*.terminal.last_directory) |d| directory = d;
+                    }
+                }
+            }
             pane_entries.append(alloc, .{
                 .id = leaf.id,
                 .session_id = leaf.session_id,
-                .title = leaf.title,
-                .directory = leaf.directory,
+                .title = title,
+                .directory = directory,
             }) catch continue;
         }
         const panes_slice = pane_entries.toOwnedSlice(alloc) catch continue;

@@ -29,6 +29,10 @@ pub const TerminalSession = struct {
     raw_buffer: std.ArrayList(u8),
     base_offset: u64 = 0,
     next_offset: u64 = 0,
+    /// Last window title extracted from OSC 0/2 sequences in the PTY output.
+    last_title: ?[]u8 = null,
+    /// Last working directory extracted from OSC 7 sequences.
+    last_directory: ?[]u8 = null,
 
     pub fn init(alloc: std.mem.Allocator, opts: Options) !TerminalSession {
         const terminal = try alloc.create(ghostty_vt.Terminal);
@@ -59,6 +63,8 @@ pub const TerminalSession = struct {
         self.terminal.deinit(self.alloc);
         self.alloc.destroy(self.terminal);
         self.raw_buffer.deinit(self.alloc);
+        if (self.last_title) |t| self.alloc.free(t);
+        if (self.last_directory) |d| self.alloc.free(d);
     }
 
     pub fn feed(self: *TerminalSession, data: []const u8) !void {
@@ -68,12 +74,61 @@ pub const TerminalSession = struct {
         try self.raw_buffer.appendSlice(self.alloc, data);
         self.next_offset += data.len;
 
+        // Extract title/directory from OSC sequences in the new data.
+        // OSC 0/2: \x1b]0;title\x07 or \x1b]2;title\x07 (or ST = \x1b\\)
+        // OSC 7: \x1b]7;file://hostname/path\x07
+        extractOSCMetadata(self, data);
+
         if (self.raw_buffer.items.len > max_raw_buffer_bytes) {
             const overflow = self.raw_buffer.items.len - max_raw_buffer_bytes;
             const remaining = self.raw_buffer.items[overflow..];
             std.mem.copyForwards(u8, self.raw_buffer.items[0..remaining.len], remaining);
             self.raw_buffer.items.len = remaining.len;
             self.base_offset += overflow;
+        }
+    }
+
+    fn extractOSCMetadata(self: *TerminalSession, data: []const u8) void {
+        // Scan for ESC ] (0x1b 0x5d) sequences
+        var i: usize = 0;
+        while (i + 2 < data.len) : (i += 1) {
+            if (data[i] != 0x1b or data[i + 1] != 0x5d) continue;
+            const osc_start = i + 2;
+
+            // Find terminator: BEL (0x07) or ST (ESC \)
+            var end: usize = osc_start;
+            while (end < data.len) : (end += 1) {
+                if (data[end] == 0x07) break;
+                if (end + 1 < data.len and data[end] == 0x1b and data[end + 1] == 0x5c) break;
+            }
+            if (end >= data.len) continue;
+
+            const osc_body = data[osc_start..end];
+            if (osc_body.len < 2) continue;
+
+            // OSC 0;title or OSC 2;title
+            if ((osc_body[0] == '0' or osc_body[0] == '2') and osc_body[1] == ';') {
+                const title = osc_body[2..];
+                if (title.len > 0) {
+                    if (self.last_title) |old| self.alloc.free(old);
+                    self.last_title = self.alloc.dupe(u8, title) catch null;
+                }
+            }
+            // OSC 7;file://host/path or OSC 7;kitty-shell-cwd://host/path
+            else if (osc_body.len > 2 and osc_body[0] == '7' and osc_body[1] == ';') {
+                const url = osc_body[2..];
+                // Extract path from scheme://hostname/path
+                if (std.mem.indexOf(u8, url, "//")) |slash2| {
+                    const after_scheme = url[slash2 + 2 ..];
+                    if (std.mem.indexOf(u8, after_scheme, "/")) |path_start| {
+                        const path = after_scheme[path_start..];
+                        if (self.last_directory) |old| self.alloc.free(old);
+                        self.last_directory = self.alloc.dupe(u8, path) catch null;
+                    }
+                }
+            }
+
+            i = end;
         }
     }
 
