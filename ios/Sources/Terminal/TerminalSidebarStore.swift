@@ -630,14 +630,32 @@ final class TerminalSidebarStore: ObservableObject {
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             Self.debugLog("subscription: starting for \(hostname):\(wsPort)")
+            var consecutiveFailures = 0
 
             while self != nil && self?.activeSubscriptions.contains(stableID) == true {
                 // Connect, subscribe, and listen for events
                 guard let fd = Self.connectWebSocket(hostname: hostname, port: wsPort, secret: secret) else {
-                    Self.debugLog("subscription: connect failed, retry in 5s")
+                    consecutiveFailures += 1
+                    Self.debugLog("subscription: connect failed (\(consecutiveFailures)), retry in 5s")
+                    // After 3 consecutive failures, the daemon is gone.
+                    // Clear workspaces for this host so the iOS UI doesn't
+                    // show stale data from a daemon that no longer exists.
+                    if consecutiveFailures >= 3 {
+                        DispatchQueue.main.async { [weak self] in
+                            guard let self else { return }
+                            let hostID = self.hosts.first(where: { $0.stableID == stableID })?.id
+                            if let hostID {
+                                self.workspaces.removeAll { $0.hostID == hostID && $0.remoteWorkspaceID != nil }
+                            }
+                        }
+                        // Stop retrying — discovery will restart subscription
+                        // if the daemon comes back online.
+                        break
+                    }
                     Thread.sleep(forTimeInterval: 5)
                     continue
                 }
+                consecutiveFailures = 0
 
                 // Subscribe (also returns initial workspace list)
                 Self.wsSend(fd: fd, data: "{\"id\":1,\"method\":\"workspace.subscribe\"}")
@@ -671,6 +689,10 @@ final class TerminalSidebarStore: ObservableObject {
             }
 
             Self.debugLog("subscription: stopped for \(hostname):\(wsPort)")
+            // Allow re-subscription if discovery finds the daemon again.
+            DispatchQueue.main.async { [weak self] in
+                self?.activeSubscriptions.remove(stableID)
+            }
         }
     }
 

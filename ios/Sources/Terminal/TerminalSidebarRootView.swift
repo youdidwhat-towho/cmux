@@ -305,7 +305,8 @@ struct TerminalSidebarRootView: View {
                     TerminalWorkspaceScreen(
                         workspace: workspace,
                         host: host,
-                        controller: store.controller(for: workspace)
+                        controller: store.controller(for: workspace),
+                        store: store
                     )
                 } else {
                     ContentUnavailableView(
@@ -880,7 +881,8 @@ struct TerminalWorkspaceDestinationView: View {
             TerminalWorkspaceScreen(
                 workspace: workspace,
                 host: host,
-                controller: store.controller(for: workspace)
+                controller: store.controller(for: workspace),
+                store: store
             )
         } else {
             ContentUnavailableView(
@@ -910,6 +912,7 @@ struct TerminalWorkspaceScreen: View {
     let workspace: TerminalWorkspace
     let host: TerminalHost
     @ObservedObject var controller: TerminalSessionController
+    @ObservedObject var store: TerminalSidebarStore
     @State private var selectedPaneIndex: Int = 0
 
     private static let monokaiBackground = Color(red: 0x27/255.0, green: 0x28/255.0, blue: 0x22/255.0)
@@ -921,7 +924,10 @@ struct TerminalWorkspaceScreen: View {
         return Self.monokaiBackground
     }
 
-    private var panes: [TerminalPane] { workspace.panes }
+    /// Live panes from the store (updated by subscription push).
+    private var panes: [TerminalPane] {
+        store.workspace(with: workspace.id)?.panes ?? workspace.panes
+    }
     private var hasMultiplePanes: Bool { panes.count > 1 }
 
     var body: some View {

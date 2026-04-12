@@ -4314,6 +4314,14 @@ final class TerminalSurface: Identifiable, ObservableObject {
                     NSLog("📱 DaemonBridge: disconnected with error: %@", error)
                 }
                 self?.daemonBridge = nil
+                // Shell exited (Ctrl+D / exit). In Manual IO mode Ghostty
+                // doesn't watch a child process, so we must close the
+                // surface explicitly to match Exec mode behavior.
+                if error == nil, let surface = self?.surface {
+                    DispatchQueue.main.async {
+                        ghostty_surface_request_close(surface)
+                    }
+                }
             }
             let size = ghostty_surface_size(surface)
             bridge.start(cols: Int(size.columns), rows: Int(size.rows))
