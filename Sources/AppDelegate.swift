@@ -14688,9 +14688,13 @@ final class MobileDaemonBridgeInline {
     private var daemonReused = false
 
     /// True when a daemon is available, whether we spawned it or reused
-    /// an existing one. Used by applicationShouldTerminate to show the
-    /// "keep daemon?" dialog.
-    var isRunning: Bool { process?.isRunning == true || daemonReused }
+    /// an existing one. Does a live socket check for reused daemons to
+    /// avoid treating a dead daemon as running.
+    var isRunning: Bool {
+        if process?.isRunning == true { return true }
+        guard daemonReused, let path = daemonSocketPath else { return false }
+        return isReachableSocket(path)
+    }
 
     private init() {}
 
