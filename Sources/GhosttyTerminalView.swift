@@ -4324,7 +4324,22 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 }
             }
             let size = ghostty_surface_size(surface)
-            bridge.start(cols: Int(size.columns), rows: Int(size.rows))
+            let cols = Int(size.columns)
+            let rows = Int(size.rows)
+            bridge.start(cols: cols > 0 ? cols : 80, rows: rows > 0 ? rows : 24)
+            // The surface may not have its final layout yet at this point.
+            // Schedule a deferred resize after layout so the daemon gets
+            // the real dimensions. Without this, the PTY keeps the size
+            // from preCreateSession (default 80x24) and line wrapping breaks.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let surface = self.surface, let bridge = self.daemonBridge else { return }
+                let realSize = ghostty_surface_size(surface)
+                let realCols = Int(realSize.columns)
+                let realRows = Int(realSize.rows)
+                if realCols > 0 && realRows > 0 && (realCols != cols || realRows != rows) {
+                    bridge.resize(cols: realCols, rows: realRows)
+                }
+            }
         }
         #endif
 
