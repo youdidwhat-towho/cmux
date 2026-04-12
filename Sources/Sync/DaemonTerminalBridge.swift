@@ -296,7 +296,10 @@ final class DaemonTerminalBridge: @unchecked Sendable {
             return false
         }
 
-        self.readOffset = 0
+        // Don't reset readOffset here. On reconnect we want to resume
+        // from where we left off, not replay the entire terminal history
+        // on top of what Ghostty already rendered. readOffset is only
+        // reset to 0 when the session is first opened (openSession).
         return true
     }
 
@@ -317,6 +320,9 @@ final class DaemonTerminalBridge: @unchecked Sendable {
               let ok = response["ok"] as? Bool, ok else {
             return false
         }
+
+        // Brand new session — read from the beginning.
+        readOffset = 0
 
         // terminal.open creates its own attachment; detach it and re-attach with our stable ID
         if let result = response["result"] as? [String: Any],
@@ -358,9 +364,13 @@ final class DaemonTerminalBridge: @unchecked Sendable {
             return nil
         }
 
-        var timeout = timeval(tv_sec: 2, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        // Send timeout stays short (2s). Recv timeout must exceed the
+        // terminal.read server-side timeout (30s) so the socket doesn't
+        // EAGAIN mid-poll and trigger a spurious reconnect cycle.
+        var sendTimeout = timeval(tv_sec: 2, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &sendTimeout, socklen_t(MemoryLayout<timeval>.size))
+        var recvTimeout = timeval(tv_sec: 35, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &recvTimeout, socklen_t(MemoryLayout<timeval>.size))
 
         return fd
     }

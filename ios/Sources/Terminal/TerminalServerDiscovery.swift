@@ -55,15 +55,12 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
         self.hintedPorts = hintedPorts
         self.knownHosts = existingHosts
 
-        // Kick off the first scan immediately, then repeat periodically.
-        performScan()
-        let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
-        timer.schedule(deadline: .now() + 5, repeating: 10)
-        timer.setEventHandler { [weak self] in
-            self?.performScan()
-        }
-        timer.resume()
-        self.probeTimer = timer
+        // Single full port sweep at launch. No periodic timer.
+        // After the initial scan, workspace subscriptions (push-based
+        // WebSocket) handle all ongoing state. A new daemon appearing on
+        // an unknown port is rare and handled by the manual "Find Servers"
+        // button.
+        performScan(fullSweep: true)
     }
 
     deinit {
@@ -79,12 +76,16 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
             knownHosts.append(host)
         }
         stateLock.unlock()
-        performScan()
+        // Probe just the known hosts (including the one just added).
+        performScan(fullSweep: false)
     }
 
     // MARK: - Scan
 
-    private func performScan() {
+    /// - `fullSweep: true` — probes ports 52100-52199 (launch + manual refresh).
+    /// - `fullSweep: false` — only re-probes ports of already-known hosts +
+    ///   hinted ports. Cheap (1-2 TCP connects vs 100).
+    private func performScan(fullSweep: Bool) {
         let hostname = probeHostname
         let secret = wsSecret
         let hints = hintedPorts
@@ -93,15 +94,19 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
         stateLock.unlock()
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Probe the full cmuxd-remote port range. Hinted ports get probed
-            // too (deduped via Set) so the embedded `debug-ws-port` file still
-            // works as a fast-path but isn't required.
-            var ports = Set<Int>(52100...52199)
+            var ports = Set<Int>()
+
+            if fullSweep {
+                // Full range sweep — only at launch and manual "Find Servers".
+                ports.formUnion(52100...52199)
+            }
+
+            // Always include hinted ports and ports of already-discovered hosts.
             ports.formUnion(hints)
             for host in existing {
                 if let port = host.wsPort { ports.insert(port) }
             }
-            ScannerLog.shared.log("discovery.scan starting host=\(hostname) ports=\(ports.count)")
+            ScannerLog.shared.log("discovery.scan starting host=\(hostname) ports=\(ports.count) full=\(fullSweep)")
 
             var found: [TerminalHost] = []
             let lock = NSLock()
@@ -171,6 +176,14 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
             }
 
             ScannerLog.shared.log("discovery.scan.done online=\(found.count)")
+            // Remember discovered hosts so subsequent narrow scans re-probe them.
+            self?.stateLock.lock()
+            for host in found {
+                if self?.knownHosts.contains(where: { $0.stableID == host.stableID }) == false {
+                    self?.knownHosts.append(host)
+                }
+            }
+            self?.stateLock.unlock()
             DispatchQueue.main.async { self?.subject.send(found) }
         }
     }
