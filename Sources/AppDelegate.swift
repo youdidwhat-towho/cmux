@@ -11014,7 +11014,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if matchConfiguredShortcut(event: event, action: .toggleFileExplorer) {
-            fileExplorerState?.toggle()
+            // Dispatch async to escape AppKit's performKeyEquivalent animation context.
+            // Without this, NSAnimationContext implicitly animates the layout change.
+            DispatchQueue.main.async { [weak self] in
+                self?.fileExplorerState?.toggle()
+            }
             return true
         }
 

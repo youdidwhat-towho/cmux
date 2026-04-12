@@ -172,6 +172,38 @@ struct ShortcutHintPillBackground: View {
     }
 }
 
+/// Reusable shortcut hint pill that shows a keyboard shortcut string.
+struct ShortcutHintPill: View {
+    let text: String
+    var fontSize: CGFloat = 9
+    var emphasis: Double = 1.0
+
+    init(shortcut: StoredShortcut, fontSize: CGFloat = 9, emphasis: Double = 1.0) {
+        self.text = shortcut.displayString
+        self.fontSize = fontSize
+        self.emphasis = emphasis
+    }
+
+    init(text: String, fontSize: CGFloat = 9, emphasis: Double = 1.0) {
+        self.text = text
+        self.fontSize = fontSize
+        self.emphasis = emphasis
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: fontSize, weight: .semibold, design: .rounded))
+            .monospacedDigit()
+            .lineLimit(1)
+            .fixedSize(horizontal: true, vertical: false)
+            .foregroundColor(.primary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(ShortcutHintPillBackground(emphasis: emphasis))
+    }
+}
+
+
 /// Applies NSGlassEffectView (macOS 26+) to a window, falling back to NSVisualEffectView
 enum WindowGlassEffect {
     private static var glassViewKey: UInt8 = 0
@@ -2729,27 +2761,36 @@ struct ContentView: View {
     }
 
     private var terminalContentWithSidebarDropOverlay: some View {
-        HStack(spacing: 0) {
+        // File explorer is always in the view tree. Visibility is controlled by
+        // frame width (0 when hidden), avoiding SwiftUI view insertion/removal
+        // and all associated transition animations.
+        let explorerVisible = fileExplorerState.isVisible
+        return HStack(spacing: 0) {
             terminalContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .layoutPriority(1)
                 .overlay {
                     SidebarExternalDropOverlay(draggedTabId: sidebarDraggedTabId)
                 }
-            if fileExplorerState.isVisible {
+            if explorerVisible {
                 Divider()
-                FileExplorerPanelView(store: fileExplorerStore, state: fileExplorerState)
-                    .frame(width: fileExplorerWidth)
-                    .overlay(alignment: .leading) {
+            }
+            FileExplorerPanelView(store: fileExplorerStore, state: fileExplorerState)
+                .frame(width: explorerVisible ? fileExplorerWidth : 0)
+                .clipped()
+                .allowsHitTesting(explorerVisible)
+                .accessibilityHidden(!explorerVisible)
+                .overlay(alignment: .leading) {
+                    if explorerVisible {
                         fileExplorerResizerHandle
                     }
-            }
+                }
         }
-        .animation(nil, value: fileExplorerState.isVisible)
-        .animation(nil, value: fileExplorerWidth)
+        .transaction { $0.animation = nil }
         .onAppear {
             fileExplorerWidth = fileExplorerState.width
         }
         .onChange(of: fileExplorerState.width) { newValue in
-            // Sync persisted width -> local (e.g. from debug window)
             if fileExplorerDragStartWidth == nil {
                 fileExplorerWidth = newValue
             }
@@ -2932,7 +2973,7 @@ struct ContentView: View {
         let dir = tab.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !dir.isEmpty else { return }
 
-        fileExplorerStore.showHiddenFiles = fileExplorerState.showHiddenFiles
+        fileExplorerStore.showHiddenFiles = true
 
         if tab.isRemoteWorkspace {
             let config = tab.remoteConfiguration
@@ -12963,15 +13004,7 @@ private struct TabItemView: View, Equatable {
                     .allowsHitTesting(showCloseButton && !showsWorkspaceShortcutHint)
 
                     if showsWorkspaceShortcutHint, let workspaceShortcutLabel {
-                        Text(workspaceShortcutLabel)
-                            .lineLimit(1)
-                            .fixedSize(horizontal: true, vertical: false)
-                            .font(.system(size: 10, weight: .semibold, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundColor(activePrimaryTextColor)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(ShortcutHintPillBackground(emphasis: shortcutHintEmphasis))
+                        ShortcutHintPill(text: workspaceShortcutLabel, fontSize: 10, emphasis: shortcutHintEmphasis)
                             .offset(
                                 x: ShortcutHintDebugSettings.clamped(sidebarShortcutHintXOffset),
                                 y: ShortcutHintDebugSettings.clamped(sidebarShortcutHintYOffset)
@@ -12979,7 +13012,7 @@ private struct TabItemView: View, Equatable {
                             .transition(.opacity)
                     }
                 }
-                .animation(.easeInOut(duration: 0.14), value: showsModifierShortcutHints || alwaysShowShortcutHints)
+                .animation(.easeOut(duration: 0.12), value: showsModifierShortcutHints || alwaysShowShortcutHints)
                 .frame(width: trailingAccessoryWidth, height: 16, alignment: .trailing)
             }
 

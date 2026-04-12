@@ -24,7 +24,7 @@ struct FileExplorerPanelView: NSViewRepresentable {
     func updateNSView(_ container: FileExplorerContainerView, context: Context) {
         context.coordinator.store = store
         context.coordinator.state = state
-        container.updateHeader(store: store, state: state)
+        container.updateHeader(store: store)
         context.coordinator.reloadIfNeeded()
     }
 
@@ -395,13 +395,8 @@ final class FileExplorerContainerView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func updateHeader(store: FileExplorerStore, state: FileExplorerState) {
-        headerView.update(displayPath: store.displayRootPath, showHidden: state.showHiddenFiles)
-        headerView.onToggleHidden = {
-            state.showHiddenFiles.toggle()
-            store.showHiddenFiles = state.showHiddenFiles
-            store.reload()
-        }
+    func updateHeader(store: FileExplorerStore) {
+        headerView.update(displayPath: store.displayRootPath)
     }
 
     func updateVisibility(hasContent: Bool, isLoading: Bool) {
@@ -423,8 +418,6 @@ final class FileExplorerContainerView: NSView {
 final class FileExplorerHeaderView: NSView {
     private let iconView = NSImageView()
     private let pathLabel = NSTextField(labelWithString: "")
-    private let toggleButton = NSButton()
-    var onToggleHidden: (() -> Void)?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -449,19 +442,8 @@ final class FileExplorerHeaderView: NSView {
         pathLabel.maximumNumberOfLines = 1
         pathLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        toggleButton.translatesAutoresizingMaskIntoConstraints = false
-        toggleButton.bezelStyle = .inline
-        toggleButton.isBordered = false
-        toggleButton.image = NSImage(systemSymbolName: "eye.slash", accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .regular))
-        toggleButton.contentTintColor = .secondaryLabelColor
-        toggleButton.target = self
-        toggleButton.action = #selector(toggleHiddenFiles)
-        toggleButton.toolTip = String(localized: "fileExplorer.hiddenFiles.show", defaultValue: "Show Hidden Files")
-
         addSubview(iconView)
         addSubview(pathLabel)
-        addSubview(toggleButton)
 
         NSLayoutConstraint.activate([
             heightAnchor.constraint(equalToConstant: 28),
@@ -473,27 +455,12 @@ final class FileExplorerHeaderView: NSView {
 
             pathLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4),
             pathLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: toggleButton.leadingAnchor, constant: -4),
-
-            toggleButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
-            toggleButton.centerYAnchor.constraint(equalTo: centerYAnchor),
-            toggleButton.widthAnchor.constraint(equalToConstant: 20),
-            toggleButton.heightAnchor.constraint(equalToConstant: 20),
+            pathLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
         ])
     }
 
-    func update(displayPath: String, showHidden: Bool) {
+    func update(displayPath: String) {
         pathLabel.stringValue = displayPath
-        let symbolName = showHidden ? "eye" : "eye.slash"
-        toggleButton.image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)?
-            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .regular))
-        toggleButton.toolTip = showHidden
-            ? String(localized: "fileExplorer.hiddenFiles.hide", defaultValue: "Hide Hidden Files")
-            : String(localized: "fileExplorer.hiddenFiles.show", defaultValue: "Show Hidden Files")
-    }
-
-    @objc private func toggleHiddenFiles() {
-        onToggleHidden?()
     }
 }
 
@@ -543,7 +510,7 @@ final class FileExplorerCellView: NSTableCellView {
         iconToTextConstraint = nameLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 4)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 0),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconWidthConstraint,
             iconHeightConstraint,
@@ -640,8 +607,11 @@ final class FileExplorerCellView: NSTableCellView {
 
 // MARK: - Non-Animating Outline View
 
-/// NSOutlineView subclass that disables expand/collapse animations.
+/// NSOutlineView subclass that disables expand/collapse animations and adds leading margin.
 final class FileExplorerNSOutlineView: NSOutlineView {
+    /// Leading margin applied to disclosure triangles and content.
+    static let leadingMargin: CGFloat = 8
+
     override func expandItem(_ item: Any?, expandChildren: Bool) {
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
@@ -654,6 +624,20 @@ final class FileExplorerNSOutlineView: NSOutlineView {
         NSAnimationContext.current.duration = 0
         super.collapseItem(item, collapseChildren: collapseChildren)
         NSAnimationContext.endGrouping()
+    }
+
+    override func frameOfOutlineCell(atRow row: Int) -> NSRect {
+        var frame = super.frameOfOutlineCell(atRow: row)
+        frame.origin.x += Self.leadingMargin
+        return frame
+    }
+
+    override func frameOfCell(atColumn column: Int, row: Int) -> NSRect {
+        var frame = super.frameOfCell(atColumn: column, row: row)
+        let cellShift: CGFloat = Self.leadingMargin - 6
+        frame.origin.x += cellShift
+        frame.size.width -= cellShift
+        return frame
     }
 }
 
@@ -687,7 +671,6 @@ final class FileExplorerRowView: NSTableRowView {
 struct FileExplorerTitlebarButton: View {
     let onToggle: () -> Void
     let config: TitlebarControlsStyleConfig
-    @State private var isHovering = false
 
     var body: some View {
         TitlebarControlButton(config: config, action: {
@@ -712,15 +695,16 @@ struct FileExplorerTitlebarButton: View {
 
 final class FileExplorerTitlebarAccessoryViewController: NSTitlebarAccessoryViewController {
     private let hostingView: NonDraggableHostingView<FileExplorerTitlebarButton>
+    private var hintPanel: NSPanel?
+    private var hintHostingView: NSHostingView<ShortcutHintPill>?
+    private var hintObserver: NSObjectProtocol?
+    private let config: TitlebarControlsStyleConfig
 
     init(onToggle: @escaping () -> Void) {
         let style = TitlebarControlsStyle(rawValue: UserDefaults.standard.integer(forKey: "titlebarControlsStyle")) ?? .classic
-        let config = style.config
+        config = style.config
         hostingView = NonDraggableHostingView(
-            rootView: FileExplorerTitlebarButton(
-                onToggle: onToggle,
-                config: config
-            )
+            rootView: FileExplorerTitlebarButton(onToggle: onToggle, config: config)
         )
 
         super.init(nibName: nil, bundle: nil)
@@ -743,9 +727,93 @@ final class FileExplorerTitlebarAccessoryViewController: NSTitlebarAccessoryView
 
         view = wrapper
         preferredContentSize = NSSize(width: width, height: height)
+
+        hintObserver = NotificationCenter.default.addObserver(
+            forName: .titlebarShortcutHintsVisibilityChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self else { return }
+            if let visible = notification.userInfo?["visible"] as? Bool {
+                if visible {
+                    self.showHintPanel()
+                } else {
+                    self.hideHintPanel()
+                }
+            }
+        }
     }
 
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    deinit {
+        if let hintObserver {
+            NotificationCenter.default.removeObserver(hintObserver)
+        }
+        hideHintPanel()
+    }
+
+    private func showHintPanel() {
+        guard let parentWindow = view.window else { return }
+
+        if hintPanel == nil {
+            let panel = NSPanel(
+                contentRect: .zero,
+                styleMask: [.borderless, .nonactivatingPanel],
+                backing: .buffered,
+                defer: true
+            )
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = false
+            panel.ignoresMouseEvents = true
+            panel.isReleasedWhenClosed = false
+            panel.collectionBehavior = [.fullScreenAuxiliary, .ignoresCycle]
+            panel.animationBehavior = .none
+            hintPanel = panel
+
+            let shortcut = KeyboardShortcutSettings.shortcut(for: .toggleFileExplorer)
+            let pill = ShortcutHintPill(shortcut: shortcut, fontSize: max(8, config.iconSize - 5))
+            let hosting = NSHostingView(rootView: pill)
+            panel.contentView = hosting
+            hintHostingView = hosting
+        }
+
+        guard let panel = hintPanel, let hosting = hintHostingView else { return }
+
+        let pillSize = hosting.fittingSize
+        let buttonRect = hostingView.convert(hostingView.bounds, to: nil)
+        let buttonScreenRect = parentWindow.convertToScreen(buttonRect)
+
+        let x = buttonScreenRect.midX - pillSize.width / 2
+        let y = buttonScreenRect.minY - pillSize.height - 4
+
+        panel.setFrame(NSRect(x: x, y: y, width: pillSize.width, height: pillSize.height), display: true)
+
+        if panel.parent == nil {
+            parentWindow.addChildWindow(panel, ordered: .above)
+        }
+        panel.alphaValue = 0
+        panel.orderFront(nil)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 1
+        }
+    }
+
+    private func hideHintPanel() {
+        guard let panel = hintPanel else { return }
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.12
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            panel.animator().alphaValue = 0
+        }, completionHandler: {
+            panel.parent?.removeChildWindow(panel)
+            panel.orderOut(nil)
+        })
+    }
 }
+

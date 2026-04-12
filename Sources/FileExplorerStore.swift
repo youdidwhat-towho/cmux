@@ -1,6 +1,8 @@
 import AppKit
 import Combine
 import Foundation
+import QuartzCore
+import SwiftUI
 
 // MARK: - Explorer Visual Style
 
@@ -445,11 +447,34 @@ final class FileExplorerState: ObservableObject {
         self.width = storedWidth > 0 ? CGFloat(storedWidth) : 220
         let storedPosition = defaults.double(forKey: "fileExplorer.dividerPosition")
         self.dividerPosition = storedPosition > 0 ? CGFloat(storedPosition) : 0.6
-        self.showHiddenFiles = defaults.bool(forKey: "fileExplorer.showHidden")
+        let storedShowHidden = defaults.object(forKey: "fileExplorer.showHidden")
+        self.showHiddenFiles = storedShowHidden == nil ? true : defaults.bool(forKey: "fileExplorer.showHidden")
     }
 
     func toggle() {
-        isVisible.toggle()
+        setVisible(!isVisible)
+    }
+
+    func setVisible(_ nextValue: Bool) {
+        guard isVisible != nextValue else { return }
+
+        // Suppress both SwiftUI transactions and AppKit/Core Animation implicit layout changes.
+        NSAnimationContext.beginGrouping()
+        CATransaction.begin()
+        defer {
+            CATransaction.commit()
+            NSAnimationContext.endGrouping()
+        }
+
+        NSAnimationContext.current.duration = 0
+        NSAnimationContext.current.allowsImplicitAnimation = false
+        CATransaction.setDisableActions(true)
+
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            isVisible = nextValue
+        }
     }
 }
 
