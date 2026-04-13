@@ -19,6 +19,27 @@ final class WorkspaceDaemonBridge {
     private(set) var lastSyncTime: Date?
     private(set) var syncCount: Int = 0
 
+    /// True while applying a daemon-sourced workspace.changed event. Suppresses
+    /// the workspace.sync echo that observing @Published fields would otherwise
+    /// trigger, preventing a ping-pong loop.
+    private var applyingDaemonState = false
+
+    /// Feature flags for Phase 2.2 field migrations. Default off; Phase 2.2
+    /// flips them on one at a time per field.
+    private static let flagApplyPinned = "cmux.daemon.apply.pinned"
+    private static let flagApplyCustomTitle = "cmux.daemon.apply.customTitle"
+    private static let flagApplyCustomColor = "cmux.daemon.apply.customColor"
+
+    private var applyPinnedFromDaemon: Bool {
+        UserDefaults.standard.bool(forKey: Self.flagApplyPinned)
+    }
+    private var applyCustomTitleFromDaemon: Bool {
+        UserDefaults.standard.bool(forKey: Self.flagApplyCustomTitle)
+    }
+    private var applyCustomColorFromDaemon: Bool {
+        UserDefaults.standard.bool(forKey: Self.flagApplyCustomColor)
+    }
+
     private var connection: DaemonConnection { DaemonConnection.shared }
 
     var isConnected: Bool { connection.isConnected }
@@ -41,6 +62,12 @@ final class WorkspaceDaemonBridge {
         connection.setWorkspaceSyncProvider { [weak self] in
             guard let self else { return nil }
             return self.buildSyncParams()
+        }
+
+        connection.setWorkspaceChangedHandler { [weak self] payload in
+            DispatchQueue.main.async {
+                self?.applyWorkspaceChanged(payload)
+            }
         }
 
         tabManager.$tabs
@@ -66,6 +93,50 @@ final class WorkspaceDaemonBridge {
         workspaceCancellables.removeAll()
         panelCancellables.removeAll()
         panelSetCancellables.removeAll()
+        connection.setWorkspaceChangedHandler(nil)
+    }
+
+    // MARK: - Applying daemon-sourced workspace state
+
+    /// Apply a `workspace.changed` payload from the daemon to local Workspace
+    /// objects. Each field is gated by a UserDefaults feature flag (default off)
+    /// so Phase 2.2 can migrate them one at a time with rollback.
+    private func applyWorkspaceChanged(_ payload: [String: Any]) {
+        guard let tabManager else { return }
+        guard let workspaces = payload["workspaces"] as? [[String: Any]] else { return }
+
+        let applyPinned = applyPinnedFromDaemon
+        let applyTitle = applyCustomTitleFromDaemon
+        let applyColor = applyCustomColorFromDaemon
+        guard applyPinned || applyTitle || applyColor else { return }
+
+        let byID: [UUID: Workspace] = Dictionary(
+            uniqueKeysWithValues: tabManager.tabs.compactMap { ws in (ws.id, ws) }
+        )
+
+        applyingDaemonState = true
+        defer { applyingDaemonState = false }
+
+        for entry in workspaces {
+            guard let idString = entry["id"] as? String,
+                  let id = UUID(uuidString: idString),
+                  let ws = byID[id] else { continue }
+
+            if applyPinned, let pinned = entry["pinned"] as? Bool, ws.isPinned != pinned {
+                ws.isPinned = pinned
+            }
+            if applyTitle, let title = entry["title"] as? String, ws.title != title {
+                ws.title = title
+            }
+            if applyColor {
+                let color = (entry["color"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let normalized = (color?.isEmpty == false) ? color : nil
+                if ws.customColor != normalized {
+                    ws.customColor = normalized
+                }
+            }
+        }
     }
 
     private func rewireWorkspaceObservers(workspaces: [Workspace]) {
@@ -94,6 +165,7 @@ final class WorkspaceDaemonBridge {
     }
 
     private func scheduleSyncNow() {
+        guard !applyingDaemonState else { return }
         guard !syncScheduled else { return }
         syncScheduled = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in

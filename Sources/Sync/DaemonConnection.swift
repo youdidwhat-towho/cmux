@@ -36,6 +36,16 @@ final class DaemonConnection: @unchecked Sendable {
     private var terminalHandlers: [String: TerminalSubscription] = [:]
     private var workspaceSubscribed = false
     private var workspaceSyncProvider: (() -> [String: Any]?)?
+    private var workspaceChangedHandler: (([String: Any]) -> Void)?
+
+    /// Register a handler for `workspace.changed` push events. Invoked on the
+    /// reader thread; handler is responsible for dispatching to main actor if
+    /// it mutates UI state. Pass nil to clear.
+    func setWorkspaceChangedHandler(_ handler: (([String: Any]) -> Void)?) {
+        stateLock.lock()
+        workspaceChangedHandler = handler
+        stateLock.unlock()
+    }
 
     /// Set by AppDelegate after the TabManager is wired up. Called whenever the
     /// daemon (re)connects so we can push the current workspace snapshot.
@@ -546,8 +556,11 @@ final class DaemonConnection: @unchecked Sendable {
                 cb?(nil)
             }
         case "workspace.changed":
-            // macOS app is the source of workspace state, not a consumer; ignore.
-            break
+            guard let result = obj["result"] as? [String: Any] else { return }
+            stateLock.lock()
+            let handler = workspaceChangedHandler
+            stateLock.unlock()
+            handler?(result)
         default:
             break
         }
