@@ -1409,6 +1409,15 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             return true
         }
 
+        if NSHomeDirectory().hasPrefix("/Users/runner") {
+            return true
+        }
+
+        let currentPath = FileManager.default.currentDirectoryPath
+        if currentPath.hasPrefix("/Users/runner/") || currentPath.contains("/runner/work/") {
+            return true
+        }
+
         guard let ci = environment["CI"]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !ci.isEmpty else {
             return false
