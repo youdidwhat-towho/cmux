@@ -180,12 +180,24 @@ struct TerminalRemoteDaemonSessionHistoryResult: Decodable, Equatable, Sendable 
     }
 }
 
+enum TerminalPushEvent: Sendable {
+    case output(data: Data, offset: UInt64, baseOffset: UInt64, truncated: Bool, eof: Bool)
+    case eof
+}
+
+protocol TerminalRemoteDaemonPushSubscribing: Sendable {
+    func setPushHandler(sessionID: String, handler: @escaping @Sendable (TerminalPushEvent) -> Void) async
+    func removePushHandler(sessionID: String) async
+    func terminalSubscribe(sessionID: String, offset: UInt64?) async throws -> TerminalRemoteDaemonTerminalReadResult
+}
+
 enum TerminalRemoteDaemonClientError: LocalizedError, Equatable {
     case invalidJSON(String)
     case missingResult
     case rpc(code: String, message: String)
     case responseMismatch
     case rpcTimeout
+    case transportClosed
 
     var errorDescription: String? {
         switch self {
@@ -199,6 +211,8 @@ enum TerminalRemoteDaemonClientError: LocalizedError, Equatable {
             return "Response ID did not match request ID."
         case .rpcTimeout:
             return "RPC call timed out waiting for a response."
+        case .transportClosed:
+            return "Daemon transport closed."
         }
     }
 }
@@ -208,6 +222,10 @@ actor TerminalRemoteDaemonClient {
     private let decoder: JSONDecoder
     private let rpcTimeoutSeconds: TimeInterval
     private var nextRequestID = 1
+    private var pendingRequests: [Int: CheckedContinuation<String, Error>] = [:]
+    private var pushHandlers: [String: @Sendable (TerminalPushEvent) -> Void] = [:]
+    private var dispatcher: Task<Void, Never>?
+    private var transportFailure: Error?
 
     init(transport: any TerminalRemoteDaemonTransport, rpcTimeoutSeconds: TimeInterval = 30) {
         self.transport = transport
@@ -215,6 +233,27 @@ actor TerminalRemoteDaemonClient {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         self.decoder = decoder
+    }
+
+    func setPushHandler(sessionID: String, handler: @escaping @Sendable (TerminalPushEvent) -> Void) {
+        pushHandlers[sessionID] = handler
+        ensureDispatcher()
+    }
+
+    func removePushHandler(sessionID: String) {
+        pushHandlers.removeValue(forKey: sessionID)
+    }
+
+    func terminalSubscribe(sessionID: String, offset: UInt64?) async throws -> TerminalRemoteDaemonTerminalReadResult {
+        var params: [String: Any] = ["session_id": sessionID]
+        if let offset {
+            params["offset"] = offset
+        }
+        return try await sendRequest(
+            method: "terminal.subscribe",
+            params: params,
+            as: TerminalRemoteDaemonTerminalReadResult.self
+        )
     }
 
     static func decodeHello(from line: String) throws -> TerminalRemoteDaemonHello {
@@ -367,25 +406,124 @@ actor TerminalRemoteDaemonClient {
         params: [String: Any],
         as responseType: ResponsePayload.Type
     ) async throws -> ResponsePayload {
+        if let transportFailure {
+            throw transportFailure
+        }
+        ensureDispatcher()
+
         let requestID = nextRequestID
         nextRequestID += 1
 
         try await transport.writeLine(try encodeRequestLine(id: requestID, method: method, params: params))
 
-        let responseLine: String = try await withThrowingTaskGroup(of: String.self) { group in
-            group.addTask { [transport] in
-                try await transport.readLine()
+        let timeoutTask = Task { [weak self, rpcTimeoutSeconds] in
+            try? await Task.sleep(nanoseconds: UInt64(rpcTimeoutSeconds * 1_000_000_000))
+            await self?.timeoutPending(id: requestID)
+        }
+        defer { timeoutTask.cancel() }
+
+        let responseLine: String = try await withCheckedThrowingContinuation { continuation in
+            if let transportFailure {
+                continuation.resume(throwing: transportFailure)
+                return
             }
-            group.addTask { [rpcTimeoutSeconds] in
-                try await Task.sleep(nanoseconds: UInt64(rpcTimeoutSeconds * 1_000_000_000))
-                throw TerminalRemoteDaemonClientError.rpcTimeout
-            }
-            let result = try await group.next()!
-            group.cancelAll()
-            return result
+            pendingRequests[requestID] = continuation
         }
 
         return try Self.decodeResponse(from: responseLine, decoder: decoder, expectedID: requestID, as: responseType)
+    }
+
+    private func ensureDispatcher() {
+        guard dispatcher == nil, transportFailure == nil else { return }
+        dispatcher = Task { [weak self] in
+            await self?.runDispatcher()
+        }
+    }
+
+    private func runDispatcher() async {
+        while !Task.isCancelled {
+            let line: String
+            do {
+                line = try await transport.readLine()
+            } catch {
+                failPending(error: error)
+                return
+            }
+            dispatch(line: line)
+        }
+    }
+
+    private func dispatch(line: String) {
+        guard let data = line.data(using: .utf8),
+              let raw = try? JSONSerialization.jsonObject(with: data),
+              let json = raw as? [String: Any] else {
+            NSLog("📱 dispatcher: dropping non-JSON line: %@", String(line.prefix(120)))
+            return
+        }
+
+        if let requestID = (json["id"] as? Int) ?? (json["id"] as? NSNumber)?.intValue {
+            if let continuation = pendingRequests.removeValue(forKey: requestID) {
+                continuation.resume(returning: line)
+            } else {
+                NSLog("📱 dispatcher: response for unknown id %d", requestID)
+            }
+            return
+        }
+
+        guard let event = json["event"] as? String else {
+            NSLog("📱 dispatcher: line missing id and event: %@", String(line.prefix(120)))
+            return
+        }
+
+        guard let sessionID = json["session_id"] as? String else {
+            NSLog("📱 dispatcher: event %@ missing session_id", event)
+            return
+        }
+        guard let handler = pushHandlers[sessionID] else {
+            NSLog("📱 dispatcher: no push handler for session %@ event %@", sessionID, event)
+            return
+        }
+
+        switch event {
+        case "terminal.output":
+            guard let pushEvent = Self.parseTerminalOutputEvent(json: json) else {
+                NSLog("📱 dispatcher: malformed terminal.output for %@", sessionID)
+                return
+            }
+            handler(pushEvent)
+        case "terminal.eof":
+            handler(.eof)
+        default:
+            NSLog("📱 dispatcher: ignoring unknown event %@ for %@", event, sessionID)
+        }
+    }
+
+    private static func parseTerminalOutputEvent(json: [String: Any]) -> TerminalPushEvent? {
+        let dataString = (json["data"] as? String) ?? ""
+        let decoded = dataString.isEmpty ? Data() : Data(base64Encoded: dataString) ?? Data()
+        guard let offset = (json["offset"] as? UInt64) ?? (json["offset"] as? NSNumber)?.uint64Value else {
+            return nil
+        }
+        let baseOffset = (json["base_offset"] as? UInt64) ?? (json["base_offset"] as? NSNumber)?.uint64Value ?? 0
+        let truncated = (json["truncated"] as? Bool) ?? false
+        let eof = (json["eof"] as? Bool) ?? false
+        return .output(data: decoded, offset: offset, baseOffset: baseOffset, truncated: truncated, eof: eof)
+    }
+
+    private func timeoutPending(id: Int) {
+        guard let continuation = pendingRequests.removeValue(forKey: id) else { return }
+        continuation.resume(throwing: TerminalRemoteDaemonClientError.rpcTimeout)
+    }
+
+    private func failPending(error: Error) {
+        if transportFailure == nil {
+            transportFailure = error
+        }
+        let snapshot = pendingRequests
+        pendingRequests.removeAll()
+        for (_, continuation) in snapshot {
+            continuation.resume(throwing: error)
+        }
     }
 
     private func encodeRequestLine(id: Int, method: String, params: [String: Any]) throws -> String {
@@ -436,6 +574,8 @@ actor TerminalRemoteDaemonClient {
 }
 
 extension TerminalRemoteDaemonClient: TerminalRemoteDaemonSessionClient {}
+
+extension TerminalRemoteDaemonClient: TerminalRemoteDaemonPushSubscribing {}
 
 private struct TerminalRemoteDaemonResponseEnvelope<Result: Decodable>: Decodable {
     let id: Int

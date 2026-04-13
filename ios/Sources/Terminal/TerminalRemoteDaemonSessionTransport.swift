@@ -63,6 +63,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
     private var nextOffset: UInt64 = 0
     private var readTask: Task<Void, Never>?
     private var closed = false
+    private var pushSubscribed = false
 
     init(
         client: any TerminalRemoteDaemonSessionClient,
@@ -92,8 +93,15 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         NSLog("📱 SessionTransport: terminal opened, sessionID=%@", lockedSessionID() ?? "nil")
 
         eventHandler?(.connected)
-        startReadLoop()
-        NSLog("📱 SessionTransport: read loop started")
+
+        if hello.capabilities.contains("terminal.subscribe"),
+           let pushClient = client as? any TerminalRemoteDaemonPushSubscribing {
+            try await startPushSubscription(pushClient: pushClient)
+            NSLog("📱 SessionTransport: push subscription active")
+        } else {
+            startReadLoop()
+            NSLog("📱 SessionTransport: fallback polling read loop started")
+        }
     }
 
     func send(_ data: Data) async throws {
@@ -117,6 +125,8 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         readTask?.cancel()
         await readTask?.value
 
+        await tearDownPushSubscription(sessionID: state?.sessionID)
+
         if let state {
             if sharedSessionID != nil {
                 // Detach instead of close so other clients keep the session
@@ -138,6 +148,8 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         let readTask = takeReadTask(markClosed: true)
         readTask?.cancel()
         await readTask?.value
+
+        await tearDownPushSubscription(sessionID: state.sessionID)
 
         _ = try? await client.sessionDetach(
             sessionID: state.sessionID,
@@ -223,6 +235,73 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             readTask = Task { [weak self] in
                 await self?.runReadLoop()
             }
+        }
+    }
+
+    private func startPushSubscription(pushClient: any TerminalRemoteDaemonPushSubscribing) async throws {
+        guard let state = lockedSessionStateWithOffset() else { return }
+
+        await pushClient.setPushHandler(sessionID: state.sessionID) { [weak self] event in
+            self?.handlePushEvent(event)
+        }
+        withLockedState { pushSubscribed = true }
+
+        let initialOffset: UInt64? = state.offset > 0 ? state.offset : nil
+        let result: TerminalRemoteDaemonTerminalReadResult
+        do {
+            result = try await pushClient.terminalSubscribe(
+                sessionID: state.sessionID,
+                offset: initialOffset
+            )
+        } catch {
+            await pushClient.removePushHandler(sessionID: state.sessionID)
+            withLockedState { pushSubscribed = false }
+            throw error
+        }
+
+        applySubscriptionPayload(
+            data: result.data,
+            offset: result.offset,
+            truncated: result.truncated,
+            eof: result.eof
+        )
+    }
+
+    private func handlePushEvent(_ event: TerminalPushEvent) {
+        switch event {
+        case .output(let data, let offset, _, let truncated, let eof):
+            applySubscriptionPayload(data: data, offset: offset, truncated: truncated, eof: eof)
+        case .eof:
+            clearSessionState()
+            finishDisconnect(error: nil)
+        }
+    }
+
+    private func applySubscriptionPayload(
+        data: Data,
+        offset: UInt64,
+        truncated: Bool,
+        eof: Bool
+    ) {
+        if truncated {
+            NSLog("📱 SessionTransport: push payload truncated, resetting emulator buffer")
+            eventHandler?(.notice("Terminal output truncated; buffer reset."))
+            // RIS (ESC c) — reset to initial state. Clears emulator screen/scrollback
+            // before we feed the post-truncation snapshot.
+            eventHandler?(.output(Data([0x1B, 0x63])))
+        }
+
+        let newOffset = offset &+ UInt64(data.count)
+        withLockedState { nextOffset = newOffset }
+
+        if !data.isEmpty {
+            eventHandler?(.output(data))
+        }
+
+        if eof {
+            NSLog("📱 SessionTransport: EOF via push for session")
+            clearSessionState()
+            finishDisconnect(error: nil)
         }
     }
 
@@ -320,6 +399,20 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             }
             return task
         }
+    }
+
+    private func tearDownPushSubscription(sessionID: String?) async {
+        let wasSubscribed: Bool = withLockedState {
+            let prev = pushSubscribed
+            pushSubscribed = false
+            return prev
+        }
+        guard wasSubscribed,
+              let sessionID,
+              let pushClient = client as? any TerminalRemoteDaemonPushSubscribing else {
+            return
+        }
+        await pushClient.removePushHandler(sessionID: sessionID)
     }
 
     private func withLockedState<Result>(_ body: () -> Result) -> Result {
