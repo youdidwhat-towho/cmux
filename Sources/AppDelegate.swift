@@ -8584,10 +8584,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
             let requestedBrowserURL = env["CMUX_UI_TEST_GOTO_SPLIT_BROWSER_URL"]?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
+            let defaultBrowserURL: URL = {
+                let html = """
+                <!doctype html>
+                <html>
+                <head>
+                  <meta charset="utf-8">
+                  <title>cmux-goto-split</title>
+                </head>
+                <body tabindex="-1">
+                  <main>cmux goto split ui test</main>
+                  <script>
+                    window.addEventListener('load', () => {
+                      try { document.body.focus(); } catch (_) {}
+                    });
+                  </script>
+                </body>
+                </html>
+                """
+                let encoded = Data(html.utf8).base64EncodedString()
+                return URL(string: "data:text/html;base64,\(encoded)") ?? URL(string: "about:blank")!
+            }()
             let url = requestedBrowserURL.flatMap { rawURL in
                 guard !rawURL.isEmpty else { return nil }
                 return URL(string: rawURL)
-            } ?? URL(string: "https://example.com")
+            } ?? defaultBrowserURL
             guard let url else {
                 self.writeGotoSplitTestData(["setupError": "Invalid browser URL"])
                 return
@@ -8873,6 +8894,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
 
             tab.focusPanel(browserPanelId)
+            _ = panel.requestExplicitWebViewFocus()
 
             guard isWebViewFocused(panel),
                   let (browserPaneId, terminalPaneId) = paneIdsForGotoSplitUITest(
