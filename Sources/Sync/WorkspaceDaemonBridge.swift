@@ -253,6 +253,15 @@ final class WorkspaceDaemonBridge {
     }
 
     private func performSync() {
+        if Self.existenceOwnedByDaemon {
+            // Daemon is source of truth for workspace existence + per-field state
+            // (via workspace.create / workspace.pin / workspace.rename /
+            // workspace.set_color RPCs, and OSC-parsed per-pane titles+cwd).
+            // Emitting workspace.sync here would race those writes and
+            // overwrite daemon-originated workspaces.
+            lastSyncTime = Date()
+            return
+        }
         guard let params = buildSyncParams() else { return }
         connection.sendWorkspaceSync(params)
         lastSyncTime = Date()
