@@ -3,7 +3,6 @@ import Foundation
 import WebKit
 
 #if DEBUG
-import Bonsplit
 #endif
 
 // MARK: - Settings

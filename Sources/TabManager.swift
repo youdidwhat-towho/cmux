@@ -1907,12 +1907,12 @@ class TabManager: ObservableObject {
         from sourceWorkspace: Workspace?
     ) {
         guard let sourceWorkspace else { return }
-        // Sidebar-toggle relayout updates the live Bonsplit leading inset so minimal-mode
+        // Sidebar-toggle relayout updates the live split-host leading inset so minimal-mode
         // workspaces reserve traffic-light space. New workspaces need that same inset
         // copied immediately because creation itself does not trigger the resync path.
-        let inheritedLeadingInset = sourceWorkspace.bonsplitController.configuration.appearance.tabBarLeadingInset
-        if newWorkspace.bonsplitController.configuration.appearance.tabBarLeadingInset != inheritedLeadingInset {
-            newWorkspace.bonsplitController.configuration.appearance.tabBarLeadingInset = inheritedLeadingInset
+        let inheritedLeadingInset = sourceWorkspace.splitController.configuration.appearance.tabBarLeadingInset
+        if newWorkspace.splitController.configuration.appearance.tabBarLeadingInset != inheritedLeadingInset {
+            newWorkspace.splitController.configuration.appearance.tabBarLeadingInset = inheritedLeadingInset
         }
     }
 
@@ -4201,10 +4201,10 @@ class TabManager: ObservableObject {
             return workspace.panels.keys.first
         }
 
-        let candidatePane = workspace.bonsplitController.focusedPaneId ?? workspace.bonsplitController.allPaneIds.first
+        let candidatePane = workspace.splitController.focusedPaneId ?? workspace.splitController.allPaneIds.first
         if let candidatePane,
-           let selectedTabId = workspace.bonsplitController.selectedTab(inPane: candidatePane)?.id
-                ?? workspace.bonsplitController.tabs(inPane: candidatePane).first?.id,
+           let selectedTabId = workspace.splitController.selectedTab(inPane: candidatePane)?.id
+                ?? workspace.splitController.tabs(inPane: candidatePane).first?.id,
            let panelId = workspace.panelIdFromSurfaceId(selectedTabId),
            workspace.panels[panelId] != nil {
             return panelId
