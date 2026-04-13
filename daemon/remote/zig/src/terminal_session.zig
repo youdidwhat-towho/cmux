@@ -53,8 +53,13 @@ pub const TerminalSession = struct {
     last_command_exit_code: ?i32 = null,
     /// Set true whenever an OSC 133;D sequence is parsed.
     command_finished: bool = false,
+    /// Bumped every time an OSC 133;D sequence is parsed; subscribers compare
+    /// their last-seen value to detect a new command-finished event.
+    command_seq: u64 = 0,
     /// Last OSC 99 notification parsed (key=value;key=value form).
     last_notification: ?Notification = null,
+    /// Bumped every time a new OSC 99 notification is parsed.
+    notification_seq: u64 = 0,
     /// Incremental OSC parser state.
     osc_state: OscParserState = .ground,
     /// In-progress OSC payload buffer. Capped at max_osc_bytes.
@@ -217,6 +222,7 @@ pub const TerminalSession = struct {
             const sub = rest[0..sub_end];
             if (sub.len == 1 and sub[0] == 'D') {
                 self.command_finished = true;
+                self.command_seq += 1;
                 if (sub_end < rest.len) {
                     const code_str = rest[sub_end + 1 ..];
                     self.last_command_exit_code = std.fmt.parseInt(i32, code_str, 10) catch null;
@@ -247,6 +253,7 @@ pub const TerminalSession = struct {
         if (notif.title == null and notif.body == null) return;
         if (self.last_notification) |*old| old.deinit(self.alloc);
         self.last_notification = notif;
+        self.notification_seq += 1;
     }
 
     pub fn resize(self: *TerminalSession, cols: u16, rows: u16) !void {

@@ -19,6 +19,12 @@ pub const TerminalSubscription = struct {
     last_offset: u64,
     seq: u64 = 0,
     dead: std.atomic.Value(bool) = .init(false),
+    /// Last bell_count observed when we pushed to this subscriber.
+    last_bell_count: u64 = 0,
+    /// Last command_seq observed when we pushed to this subscriber.
+    last_command_seq: u64 = 0,
+    /// Last notification_seq observed when we pushed to this subscriber.
+    last_notification_seq: u64 = 0,
 };
 
 pub const SubscribeSnapshot = struct {
@@ -378,6 +384,9 @@ pub const Service = struct {
             .stream_lock = stream_lock,
             .last_offset = raw.offset,
             .seq = 0,
+            .last_bell_count = runtime.terminal.bell_count,
+            .last_command_seq = runtime.terminal.command_seq,
+            .last_notification_seq = runtime.terminal.notification_seq,
         };
 
         self.sub_mutex.lock();
@@ -472,45 +481,101 @@ pub const Service = struct {
         entry.lock.lock();
         const window = entry.terminal.offsetWindow();
         const eof_flag = entry.pty.isClosed();
+
+        // Snapshot notification-related state under lock.
+        const cur_bell = entry.terminal.bell_count;
+        const cur_cmd_seq = entry.terminal.command_seq;
+        const cur_notif_seq = entry.terminal.notification_seq;
+        const new_bell = cur_bell != sub.last_bell_count;
+        const new_command = cur_cmd_seq != sub.last_command_seq;
+        const new_notification = cur_notif_seq != sub.last_notification_seq;
+
+        const exit_code_snapshot: ?i32 = if (new_command) entry.terminal.last_command_exit_code else null;
+        var notif_title: ?[]u8 = null;
+        var notif_body: ?[]u8 = null;
+        if (new_notification) {
+            if (entry.terminal.last_notification) |n| {
+                if (n.title) |t| notif_title = self.alloc.dupe(u8, t) catch null;
+                if (n.body) |b| notif_body = self.alloc.dupe(u8, b) catch null;
+            }
+        }
+        defer if (notif_title) |t| self.alloc.free(t);
+        defer if (notif_body) |b| self.alloc.free(b);
+
         var start = sub.last_offset;
         var truncated = false;
         if (start < window.base_offset) {
             start = window.base_offset;
             truncated = true;
         }
-        if (start >= window.next_offset) {
+        const has_new_bytes = start < window.next_offset;
+        const has_new_notifications = new_bell or new_command or new_notification;
+
+        if (!has_new_bytes and !has_new_notifications) {
             entry.lock.unlock();
             return;
         }
-        const want = window.next_offset - start;
-        const max_chunk: usize = 256 * 1024;
-        const take: usize = if (want > max_chunk) max_chunk else @as(usize, @intCast(want));
-        const raw = entry.terminal.readRaw(self.alloc, start, take) catch |err| {
-            entry.lock.unlock();
-            return err;
-        };
-        sub.last_offset = raw.offset;
+
+        var raw_data_owned: ?[]u8 = null;
+        var raw_offset = sub.last_offset;
+        var raw_base_offset = window.base_offset;
+        var raw_truncated_flag = false;
+        if (has_new_bytes) {
+            const want = window.next_offset - start;
+            const max_chunk: usize = 256 * 1024;
+            const take: usize = if (want > max_chunk) max_chunk else @as(usize, @intCast(want));
+            const raw = entry.terminal.readRaw(self.alloc, start, take) catch |err| {
+                entry.lock.unlock();
+                return err;
+            };
+            raw_data_owned = raw.data;
+            raw_offset = raw.offset;
+            raw_base_offset = raw.base_offset;
+            raw_truncated_flag = raw.truncated;
+        }
+
+        sub.last_offset = raw_offset;
+        sub.last_bell_count = cur_bell;
+        sub.last_command_seq = cur_cmd_seq;
+        sub.last_notification_seq = cur_notif_seq;
         sub.seq += 1;
         const seq_now = sub.seq;
-        const eof_now = eof_flag and raw.offset >= window.next_offset;
+        const eof_now = eof_flag and raw_offset >= window.next_offset;
         entry.lock.unlock();
-        defer self.alloc.free(raw.data);
 
-        const enc_len = std.base64.standard.Encoder.calcSize(raw.data.len);
+        defer if (raw_data_owned) |d| self.alloc.free(d);
+
+        const data_bytes: []const u8 = if (raw_data_owned) |d| d else "";
+        const enc_len = std.base64.standard.Encoder.calcSize(data_bytes.len);
         const enc = try self.alloc.alloc(u8, enc_len);
         defer self.alloc.free(enc);
-        _ = std.base64.standard.Encoder.encode(enc, raw.data);
+        _ = std.base64.standard.Encoder.encode(enc, data_bytes);
+
+        const NotificationsPayload = struct {
+            bell: bool,
+            command_finished: ?struct { exit_code: ?i32 },
+            notification: ?struct { title: ?[]const u8, body: ?[]const u8 },
+        };
+
+        const notifications_payload: ?NotificationsPayload = if (has_new_notifications) .{
+            .bell = new_bell,
+            .command_finished = if (new_command) .{ .exit_code = exit_code_snapshot } else null,
+            .notification = if (new_notification) .{
+                .title = if (notif_title) |t| t else null,
+                .body = if (notif_body) |b| b else null,
+            } else null,
+        } else null;
 
         const event = try json_rpc.encodeResponse(self.alloc, .{
             .event = "terminal.output",
             .seq = seq_now,
             .session_id = sub.session_id,
             .data = enc,
-            .offset = raw.offset,
-            .base_offset = raw.base_offset,
-            .truncated = truncated or raw.truncated,
+            .offset = raw_offset,
+            .base_offset = raw_base_offset,
+            .truncated = truncated or raw_truncated_flag,
             .eof = eof_now,
-            .notifications = @as(?[]const u8, null),
+            .notifications = notifications_payload,
         });
         defer self.alloc.free(event);
 
@@ -709,4 +774,89 @@ test "close session removes terminal runtime" {
     try std.testing.expectError(error.TerminalSessionNotFound, service.readTerminal("dev", 0, 32, 0));
     try std.testing.expectError(error.TerminalSessionNotFound, service.writeTerminal("dev", "hello"));
     try std.testing.expectError(error.TerminalSessionNotFound, service.history("dev", .plain));
+}
+
+test "terminal.output carries notifications:{bell:true} once then null" {
+    if (!pty_pump.supported) return error.SkipZigTest;
+
+    var service = Service.init(std.testing.allocator);
+    defer service.deinit();
+
+    var opened = try service.openTerminal("notif-smoke", "sleep 5", 80, 24);
+    defer opened.status.deinit(std.testing.allocator);
+    defer std.testing.allocator.free(opened.attachment_id);
+
+    var fds: [2]std.c.fd_t = undefined;
+    if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds) != 0) {
+        return error.SocketPairFailed;
+    }
+    defer std.posix.close(fds[1]);
+    var stream = std.net.Stream{ .handle = fds[0] };
+    const flags = try std.posix.fcntl(fds[1], std.posix.F.GETFL, 0);
+    _ = try std.posix.fcntl(fds[1], std.posix.F.SETFL, flags | @as(u32, @bitCast(std.posix.O{ .NONBLOCK = true })));
+
+    var write_mutex: std.Thread.Mutex = .{};
+
+    const snap = try service.subscribeTerminal(&stream, &write_mutex, "notif-smoke", null);
+    std.testing.allocator.free(snap.data);
+
+    const runtime = service.runtimes.get("notif-smoke") orelse return error.MissingRuntime;
+    const entry: pty_pump.Entry = .{
+        .pty = &runtime.pty,
+        .terminal = &runtime.terminal,
+        .lock = &runtime.lock,
+        .session_id = "notif-smoke",
+    };
+
+    // Inject a BEL + printable byte, so the push has both a notification and new bytes.
+    runtime.lock.lock();
+    try runtime.terminal.feed("\x07x");
+    runtime.lock.unlock();
+
+    service.deliverTerminalPushes(entry);
+
+    var buf: [4096]u8 = undefined;
+    var accum: std.ArrayListUnmanaged(u8) = .empty;
+    defer accum.deinit(std.testing.allocator);
+
+    const deadline = std.time.milliTimestamp() + 1000;
+    while (std.time.milliTimestamp() < deadline) {
+        const n = std.posix.read(fds[1], &buf) catch |err| switch (err) {
+            error.WouldBlock => {
+                std.Thread.sleep(5 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        if (n == 0) break;
+        try accum.appendSlice(std.testing.allocator, buf[0..n]);
+        if (std.mem.indexOf(u8, accum.items, "\"bell\":true") != null) break;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, accum.items, "\"bell\":true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, accum.items, "\"notifications\":null") == null);
+
+    accum.clearRetainingCapacity();
+    runtime.lock.lock();
+    try runtime.terminal.feed("y");
+    runtime.lock.unlock();
+
+    service.deliverTerminalPushes(entry);
+
+    const deadline2 = std.time.milliTimestamp() + 1000;
+    while (std.time.milliTimestamp() < deadline2) {
+        const n = std.posix.read(fds[1], &buf) catch |err| switch (err) {
+            error.WouldBlock => {
+                std.Thread.sleep(5 * std.time.ns_per_ms);
+                continue;
+            },
+            else => return err,
+        };
+        if (n == 0) break;
+        try accum.appendSlice(std.testing.allocator, buf[0..n]);
+        if (std.mem.indexOf(u8, accum.items, "\"notifications\":null") != null) break;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, accum.items, "\"notifications\":null") != null);
+    try std.testing.expect(std.mem.indexOf(u8, accum.items, "\"bell\":true") == null);
+
+    _ = service.unsubscribeTerminal(&stream, "notif-smoke");
 }
