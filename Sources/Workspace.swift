@@ -8335,6 +8335,9 @@ final class Workspace: Identifiable, ObservableObject {
         } else {
             customColor = nil
         }
+        if WorkspaceDaemonBridge.customColorOwnedByDaemon {
+            DaemonConnection.shared.sendWorkspaceSetColor(workspaceID: id, color: customColor)
+        }
     }
 
     private static func normalizedCustomDescription(_ description: String?) -> String? {
@@ -8354,6 +8357,9 @@ final class Workspace: Identifiable, ObservableObject {
         } else {
             customTitle = trimmed
             self.title = trimmed
+        }
+        if WorkspaceDaemonBridge.customTitleOwnedByDaemon {
+            DaemonConnection.shared.sendWorkspaceRename(workspaceID: id, title: self.title)
         }
     }
 

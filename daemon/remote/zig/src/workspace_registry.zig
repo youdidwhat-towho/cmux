@@ -208,6 +208,17 @@ pub const Registry = struct {
         self.change_seq += 1;
     }
 
+    pub fn setColor(self: *Registry, workspace_id: []const u8, color: []const u8) !void {
+        const ws = self.workspaces.getPtr(workspace_id) orelse return error.WorkspaceNotFound;
+        if (ws.color) |old| self.alloc.free(old);
+        if (color.len == 0) {
+            ws.color = null;
+        } else {
+            ws.color = try self.alloc.dupe(u8, color);
+        }
+        self.change_seq += 1;
+    }
+
     pub fn close(self: *Registry, workspace_id: []const u8) !void {
         var ws = self.workspaces.fetchRemove(workspace_id) orelse return error.WorkspaceNotFound;
         freeWorkspace(self.alloc, &ws.value);

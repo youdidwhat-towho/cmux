@@ -3571,6 +3571,9 @@ class TabManager: ObservableObject {
         guard tab.isPinned != pinned else { return }
         tab.isPinned = pinned
         reorderTabForPinnedState(tab)
+        if WorkspaceDaemonBridge.pinnedOwnedByDaemon {
+            DaemonConnection.shared.sendWorkspacePin(workspaceID: tab.id, pinned: pinned)
+        }
     }
 
     private func reorderTabForPinnedState(_ tab: Workspace) {

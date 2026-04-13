@@ -59,6 +59,7 @@ fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request
                     "terminal.stream",
                     "terminal.subscribe",
                     "workspace.subscribe",
+                    "workspace.set_color",
                     "notifications.push",
                     "proxy.http_connect",
                     "proxy.socks5",
@@ -91,6 +92,7 @@ fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request
     if (std.mem.eql(u8, req.method, "workspace.create")) return handleWorkspaceCreate(service, req);
     if (std.mem.eql(u8, req.method, "workspace.rename")) return handleWorkspaceRename(service, req);
     if (std.mem.eql(u8, req.method, "workspace.pin")) return handleWorkspacePin(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.set_color")) return handleWorkspaceSetColor(service, req);
     if (std.mem.eql(u8, req.method, "workspace.close")) return handleWorkspaceClose(service, req);
     if (std.mem.eql(u8, req.method, "workspace.select")) return handleWorkspaceSelect(service, req);
     if (std.mem.eql(u8, req.method, "pane.split")) return handlePaneSplit(service, req);
@@ -704,6 +706,8 @@ fn handleWorkspaceRename(service: *session_service.Service, req: *const json_rpc
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -725,6 +729,33 @@ fn handleWorkspacePin(service: *session_service.Service, req: *const json_rpc.Re
     service.workspace_reg.setPin(workspace_id, pinned) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handleWorkspaceSetColor(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.set_color requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "workspace.set_color requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const color: []const u8 = if (params.get("color")) |v| switch (v) {
+        .string => |s| s,
+        .null => "",
+        else => "",
+    } else "";
+
+    service.workspace_reg.setColor(workspace_id, color) catch |err| {
+        return try errorResponse(alloc, req.id, "not_found", @errorName(err));
+    };
+
+    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,

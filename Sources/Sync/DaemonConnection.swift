@@ -145,6 +145,27 @@ final class DaemonConnection: @unchecked Sendable {
         sendRPCAsync(method: "workspace.sync", params: params, completion: nil)
     }
 
+    func sendWorkspacePin(workspaceID: UUID, pinned: Bool) {
+        sendRPCAsync(method: "workspace.pin", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "pinned": pinned,
+        ], completion: nil)
+    }
+
+    func sendWorkspaceRename(workspaceID: UUID, title: String) {
+        sendRPCAsync(method: "workspace.rename", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "title": title,
+        ], completion: nil)
+    }
+
+    func sendWorkspaceSetColor(workspaceID: UUID, color: String?) {
+        sendRPCAsync(method: "workspace.set_color", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "color": color ?? "",
+        ], completion: nil)
+    }
+
     private func performWorkspaceSync() {
         if let provider = workspaceSyncProvider, let params = provider() {
             sendWorkspaceSync(params)

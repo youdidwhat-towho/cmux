@@ -24,20 +24,23 @@ final class WorkspaceDaemonBridge {
     /// trigger, preventing a ping-pong loop.
     private var applyingDaemonState = false
 
-    /// Feature flags for Phase 2.2 field migrations. Default off; Phase 2.2
-    /// flips them on one at a time per field.
-    private static let flagApplyPinned = "cmux.daemon.apply.pinned"
-    private static let flagApplyCustomTitle = "cmux.daemon.apply.customTitle"
-    private static let flagApplyCustomColor = "cmux.daemon.apply.customColor"
+    /// Feature flags for Phase 2.2 field migrations. Default off. When on for
+    /// a given field, the daemon owns it end-to-end: writes go via RPC, the
+    /// field is excluded from workspace.sync, and incoming workspace.changed
+    /// pushes are applied to local state. Flipping a flag off rolls back to
+    /// the local-only behavior without redeploy.
+    static let flagFieldPinned = "cmux.daemon.field.pinned"
+    static let flagFieldCustomTitle = "cmux.daemon.field.customTitle"
+    static let flagFieldCustomColor = "cmux.daemon.field.customColor"
 
-    private var applyPinnedFromDaemon: Bool {
-        UserDefaults.standard.bool(forKey: Self.flagApplyPinned)
+    static var pinnedOwnedByDaemon: Bool {
+        UserDefaults.standard.bool(forKey: flagFieldPinned)
     }
-    private var applyCustomTitleFromDaemon: Bool {
-        UserDefaults.standard.bool(forKey: Self.flagApplyCustomTitle)
+    static var customTitleOwnedByDaemon: Bool {
+        UserDefaults.standard.bool(forKey: flagFieldCustomTitle)
     }
-    private var applyCustomColorFromDaemon: Bool {
-        UserDefaults.standard.bool(forKey: Self.flagApplyCustomColor)
+    static var customColorOwnedByDaemon: Bool {
+        UserDefaults.standard.bool(forKey: flagFieldCustomColor)
     }
 
     private var connection: DaemonConnection { DaemonConnection.shared }
@@ -105,9 +108,9 @@ final class WorkspaceDaemonBridge {
         guard let tabManager else { return }
         guard let workspaces = payload["workspaces"] as? [[String: Any]] else { return }
 
-        let applyPinned = applyPinnedFromDaemon
-        let applyTitle = applyCustomTitleFromDaemon
-        let applyColor = applyCustomColorFromDaemon
+        let applyPinned = Self.pinnedOwnedByDaemon
+        let applyTitle = Self.customTitleOwnedByDaemon
+        let applyColor = Self.customColorOwnedByDaemon
         guard applyPinned || applyTitle || applyColor else { return }
 
         let byID: [UUID: Workspace] = Dictionary(
@@ -212,15 +215,21 @@ final class WorkspaceDaemonBridge {
             }
             var entry: [String: Any] = [
                 "id": workspace.id.uuidString.lowercased(),
-                "title": workspace.title,
                 "directory": workspace.currentDirectory,
                 "preview": preview ?? "",
                 "phase": workspace.activeRemoteTerminalSessionCount > 0 ? "active" : "idle",
-                "color": workspace.customColor ?? "",
                 "unread_count": notificationStore.unreadCount(forTabId: workspace.id),
-                "pinned": workspace.isPinned,
                 "panes": paneInfos,
             ]
+            if !Self.customTitleOwnedByDaemon {
+                entry["title"] = workspace.title
+            }
+            if !Self.customColorOwnedByDaemon {
+                entry["color"] = workspace.customColor ?? ""
+            }
+            if !Self.pinnedOwnedByDaemon {
+                entry["pinned"] = workspace.isPinned
+            }
             if let primarySessionID = sessionIDs.first {
                 entry["session_id"] = primarySessionID
             }
