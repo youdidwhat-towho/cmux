@@ -587,44 +587,121 @@ enum MonacoLanguageResolver {
     static func languageId(for filePath: String) -> String {
         let ext = (filePath as NSString).pathExtension.lowercased()
         switch ext {
-        case "swift": return "swift"
-        case "js", "mjs", "cjs": return "javascript"
-        case "ts": return "typescript"
-        case "tsx": return "typescript"
-        case "jsx": return "javascript"
-        case "json": return "json"
-        case "md", "markdown": return "markdown"
-        case "py": return "python"
-        case "rs": return "rust"
-        case "go": return "go"
-        case "rb": return "ruby"
-        case "sh", "bash", "zsh": return "shell"
-        case "yml", "yaml": return "yaml"
-        case "toml": return "ini"
-        case "html", "htm": return "html"
+        // Web
+        case "js", "mjs", "cjs", "jsx": return "javascript"
+        case "ts", "tsx": return "typescript"
+        case "json", "jsonc": return "json"
+        case "html", "htm", "xhtml": return "html"
         case "css": return "css"
         case "scss": return "scss"
         case "less": return "less"
-        case "xml": return "xml"
+        case "xml", "xsd", "xsl", "xslt", "plist": return "xml"
+        case "svg": return "xml"
+
+        // Docs / markup
+        case "md", "markdown", "mdown", "mdwn", "mdx": return "markdown"
+        case "rst": return "restructuredtext"
+        case "tex": return "plaintext"  // Monaco basic-languages lacks LaTeX
+
+        // Systems
         case "c", "h": return "c"
-        case "cc", "cpp", "hpp", "hh", "cxx": return "cpp"
+        case "cc", "cpp", "hpp", "hh", "cxx", "cppm", "ixx": return "cpp"
         case "m", "mm": return "objective-c"
-        case "sql": return "sql"
-        case "kt", "kts": return "kotlin"
-        case "java": return "java"
-        case "php": return "php"
-        case "lua": return "lua"
+        case "rs": return "rust"
+        case "go": return "go"
         case "zig": return "zig"
+        case "swift": return "swift"
+
+        // JVM
+        case "java": return "java"
+        case "kt", "kts": return "kotlin"
+        case "scala", "sc": return "scala"
+        case "groovy": return "java"
+        case "clj", "cljs", "cljc", "edn": return "clojure"
+
+        // .NET / Functional
+        case "cs": return "csharp"
+        case "fs", "fsx", "fsi": return "fsharp"
+        case "vb": return "vb"
+
+        // Python / data
+        case "py", "pyi", "pyw": return "python"
+        case "r": return "r"
+        case "jl": return "julia"
+
+        // Scripting
+        case "sh", "bash", "zsh", "ksh": return "shell"
+        case "fish": return "shell"
+        case "ps1", "psm1", "psd1": return "powershell"
+        case "pl", "pm": return "perl"
+        case "rb", "rbi", "ru", "rake", "gemspec": return "ruby"
+        case "lua": return "lua"
+        case "tcl": return "tcl"
+
+        // Mobile / web frameworks
         case "dart": return "dart"
+        case "vue": return "html"
+        case "svelte": return "html"
+        case "php", "phtml": return "php"
+        case "twig": return "twig"
+        case "hbs", "handlebars": return "handlebars"
+        case "pug", "jade": return "pug"
+
+        // Query / data formats
+        case "sql", "psql", "mysql": return "sql"
+        case "graphql", "gql": return "graphql"
+        case "proto": return "protobuf"
+        case "toml": return "ini"
+        case "ini", "cfg", "conf", "properties": return "ini"
+        case "yml", "yaml": return "yaml"
+        case "csv", "tsv": return "plaintext"
+
+        // Infra
+        case "tf", "tfvars", "hcl": return "hcl"
+        case "dockerfile": return "dockerfile"
+        case "containerfile": return "dockerfile"
+        case "bicep": return "bicep"
+
+        // Misc / functional / FP / other
         case "ex", "exs": return "elixir"
         case "elm": return "elm"
-        case "dockerfile": return "dockerfile"
+        case "hs", "lhs": return "scheme"  // Monaco has no Haskell; Scheme is the closest built-in Lisp/FP tokenizer
+        case "scm", "ss", "rkt": return "scheme"
+        case "lisp", "lsp", "el": return "scheme"
+        case "ml", "mli": return "fsharp"  // OCaml → F# tokenizer is close enough for basic highlighting
+        case "erl", "hrl": return "plaintext"  // Monaco has no Erlang tokenizer
+        case "sol": return "solidity"
+        case "wgsl": return "wgsl"
+        case "nim", "nims": return "plaintext"
+        case "abap": return "abap"
+        case "apex", "cls", "trigger": return "apex"
+
+        // Shell-adjacent / config
+        case "diff", "patch": return "plaintext"
+        case "log", "txt": return "plaintext"
+        case "env": return "shell"
+
         default:
-            // Filenames with no extension: check the basename for common cases.
+            // Filenames with no extension: match on basename for common files.
             let basename = (filePath as NSString).lastPathComponent.lowercased()
-            if basename == "dockerfile" { return "dockerfile" }
-            if basename == "makefile" { return "makefile" }
-            return "plaintext"
+            switch basename {
+            case "dockerfile", "containerfile": return "dockerfile"
+            case "makefile", "gnumakefile", "bsdmakefile": return "plaintext"  // no basic-language
+            case "rakefile", "gemfile", "guardfile", "capfile", "podfile":
+                return "ruby"
+            case "cmakelists.txt": return "plaintext"
+            case "package.json", "tsconfig.json", "tsconfig.build.json":
+                return "json"
+            case "cargo.toml", "pyproject.toml": return "ini"
+            case ".zshrc", ".zshenv", ".zprofile", ".bashrc", ".bash_profile",
+                 ".profile", ".envrc":
+                return "shell"
+            case ".gitignore", ".gitattributes", ".dockerignore",
+                 ".npmignore", ".eslintignore":
+                return "plaintext"
+            default:
+                return "plaintext"
+            }
         }
     }
 }
