@@ -159,12 +159,19 @@ final class EditorPanel: Panel, ObservableObject {
 
     /// Saves the current content to disk using the file's original encoding.
     /// Returns `true` on success. On failure, the dirty state is preserved.
+    ///
+    /// Atomic writes (`write(toFile:atomically:)`) create a sibling temp file
+    /// and rename over the target. When the target is a symlink, that rename
+    /// replaces the symlink with a regular file, silently breaking the link.
+    /// We resolve symlinks up-front so the atomic write operates on the real
+    /// destination path and the link object in the user's tree is preserved.
     @discardableResult
     func save() -> Bool {
         guard isDirty else { return true }
+        let targetPath = resolvedSavePath()
         do {
             suppressNextReload = true
-            try content.write(toFile: filePath, atomically: true, encoding: originalEncoding)
+            try content.write(toFile: targetPath, atomically: true, encoding: originalEncoding)
             savedContent = content
             isDirty = false
             updateDisplayTitle()
@@ -176,6 +183,21 @@ final class EditorPanel: Panel, ObservableObject {
             #endif
             return false
         }
+    }
+
+    /// Resolve the save target so an atomic write won't clobber a symlink
+    /// with a regular file. If the user opened `foo.txt` and it's a symlink
+    /// to `real.txt`, we write to `real.txt` and the link survives. Falls
+    /// back to the original path when the symlink can't be resolved.
+    private func resolvedSavePath() -> String {
+        let original = (filePath as NSString).expandingTildeInPath
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: original),
+              let type = attrs[.type] as? FileAttributeType,
+              type == .typeSymbolicLink else {
+            return original
+        }
+        let resolved = URL(fileURLWithPath: original).resolvingSymlinksInPath().path
+        return resolved.isEmpty ? original : resolved
     }
 
     // MARK: - File I/O

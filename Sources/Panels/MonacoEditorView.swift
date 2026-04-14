@@ -276,6 +276,15 @@ final class MonacoEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigat
         isReady = true
         sendTheme()
         sendInitialState()
+        // If the panel was already focused before Monaco finished booting,
+        // `focusEditor()` skipped the JS focus command because `isReady`
+        // was false and `updateFocusIfChanged` then flipped `lastIsFocused`
+        // to true, preventing any later transition-based delivery. Retry
+        // now so keystrokes land in the editor on first-open / workspace
+        // switch without the user having to click.
+        if lastIsFocused {
+            focusEditor()
+        }
     }
 
     private func handleChanged(payload: [String: Any]) {
