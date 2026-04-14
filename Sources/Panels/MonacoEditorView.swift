@@ -286,9 +286,14 @@ final class MonacoEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigat
         // was false and `updateFocusIfChanged` then flipped `lastIsFocused`
         // to true, preventing any later transition-based delivery. Retry
         // now so keystrokes land in the editor on first-open / workspace
-        // switch without the user having to click.
+        // switch without the user having to click. Explicitly dispatch
+        // the JS focus command — `focusEditor()` would early-return when
+        // AppKit first-responder is already inside the webview (common
+        // race outcome), leaving Monaco's internal input field still
+        // unfocused.
         if lastIsFocused {
             focusEditor()
+            send(command: ["kind": "focus"])
         }
     }
 

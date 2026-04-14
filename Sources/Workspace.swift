@@ -11872,6 +11872,12 @@ extension Workspace: BonsplitDelegate {
                     case .cancel:
                         return
                     case .discard:
+                        // The user explicitly chose to drop unsaved edits.
+                        // Clear the panel's dirty flag before routing through
+                        // the workspace-close path so `needsConfirmClose()`
+                        // doesn't re-prompt via the generic confirmation
+                        // dialog when this is the last surface.
+                        stillEditor.setBackendDirty(false)
                         self.finalizeEditorCloseAfterDialog(tabId: tabId)
                     case .save:
                         // Pull the live buffer from the backend (Monaco) before
