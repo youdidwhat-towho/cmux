@@ -11871,8 +11871,16 @@ extension Workspace: BonsplitDelegate {
                         // Pull the live buffer from the backend (Monaco) before
                         // writing to disk so a user who typed immediately before
                         // closing still saves the newest characters rather than
-                        // the last debounced snapshot.
-                        await stillEditor.backendFlush?()
+                        // the last debounced snapshot. `backendFlush` is only
+                        // set by backends that own the live buffer (Monaco);
+                        // `nil` means the native backend where `panel.content`
+                        // is always authoritative. `false` means the bridge is
+                        // currently unavailable (webview booting) — bail
+                        // instead of writing stale/empty content.
+                        if let flush = stillEditor.backendFlush, await flush() == false {
+                            self.showEditorSaveFailureAlert(for: stillEditor)
+                            return
+                        }
                         if stillEditor.save() {
                             await stillEditor.backendAfterSave?()
                             self.finalizeEditorCloseAfterDialog(tabId: tabId)

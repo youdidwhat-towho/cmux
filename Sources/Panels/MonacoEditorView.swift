@@ -200,7 +200,7 @@ final class MonacoEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigat
         self.onRequestPanelFocus = onRequestPanelFocus
         super.init()
         panel.backendFlush = { [weak self] in
-            await self?.flushBufferFromMonaco()
+            await self?.flushBufferFromMonaco() ?? true
         }
         panel.backendAfterSave = { [weak self] in
             self?.markMonacoClean()
@@ -313,7 +313,11 @@ final class MonacoEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigat
     private func performSaveAfterFlush() async {
         // Flush the live buffer over the bridge first so the disk write
         // includes the last keystroke, not the last debounced snapshot.
-        await flushBufferFromMonaco()
+        // If the bridge is unavailable (webview still loading, or Monaco
+        // not booted yet), bail out instead of saving — otherwise we'd
+        // clobber the file with the current `panel.content`, which may
+        // predate the user's recent edits.
+        guard await flushBufferFromMonaco() else { return }
         guard panel.isDirty else { return }
         if panel.save() {
             // Tell Monaco the current version is now the clean baseline so
@@ -337,15 +341,27 @@ final class MonacoEditorCoordinator: NSObject, WKScriptMessageHandler, WKNavigat
     /// `panel.content`. Used by the save path so a Cmd+S right after a
     /// keystroke (before the 120ms debounced `changed` lands) still saves
     /// the correct text.
-    func flushBufferFromMonaco() async {
-        guard let webView else { return }
-        let result = try? await webView.evaluateJavaScript(
-            "window.cmuxMonaco && window.cmuxMonaco.getValue ? window.cmuxMonaco.getValue() : ''"
-        )
-        guard let value = result as? String, panel.content != value else { return }
-        lastSyncedContent = value
-        panel.content = value
-        panel.markDirty()
+    ///
+    /// If the bridge is not yet available (webview still loading), return
+    /// `null` from JS so Swift can distinguish "no buffer available" from
+    /// "buffer is the empty string". A caller that proceeds to save must
+    /// treat that as a no-op to avoid writing an empty file over the user's
+    /// real content before Monaco has booted.
+    @discardableResult
+    func flushBufferFromMonaco() async -> Bool {
+        guard let webView else { return false }
+        let script = "(window.cmuxMonaco && typeof window.cmuxMonaco.getValue === 'function') ? window.cmuxMonaco.getValue() : null"
+        let result = try? await webView.evaluateJavaScript(script)
+        // evaluateJavaScript maps JS null → `NSNull`. Treat anything that
+        // isn't a concrete String as "bridge unavailable" and leave
+        // panel.content untouched.
+        guard let value = result as? String else { return false }
+        if panel.content != value {
+            lastSyncedContent = value
+            panel.content = value
+            panel.markDirty()
+        }
+        return true
     }
 
     private func handleViewState(payload: [String: Any]) {

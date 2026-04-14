@@ -38,10 +38,13 @@ final class EditorPanel: Panel, ObservableObject {
 
     /// Optional hook set by a backend view (currently Monaco) that lets callers
     /// synchronously force the live buffer out of the underlying editor into
-    /// `content` before a save or close decision runs. Without this, a fast
-    /// Cmd+W or Cmd+S right after a keystroke can race the Monaco debounced
+    /// `content` before a save or close decision runs. Returns `true` when
+    /// the backend was reachable and any pending edits have been mirrored
+    /// into `content`, `false` when the bridge wasn't available (webview
+    /// still booting) and save must not proceed. Without this, a fast Cmd+W
+    /// or Cmd+S right after a keystroke can race the Monaco debounced
     /// `changed` message and lose the newest edits.
-    var backendFlush: (() async -> Void)?
+    var backendFlush: (() async -> Bool)?
 
     /// Optional hook invoked after a successful `save()` so the backend can
     /// snapshot its "clean" baseline. Monaco uses this to reset its internal
