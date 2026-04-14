@@ -128,13 +128,13 @@ const KqueuePump = struct {
         var events: [64]std.posix.Kevent = undefined;
         while (!self.shutdown.load(.seq_cst)) {
             const n = std.posix.kevent(self.kq, &.{}, &events, null) catch |err| {
-                std.log.warn("pty_pump: kevent failed: {s}", .{@errorName(err)});
-                // Back off so a persistent failure (kq closed, ESRCH quirk
-                // on Darwin when an fd is torn down concurrently, etc.)
-                // does not spin at 100% CPU. The shutdown check on the
-                // next loop header still reacts within 10 ms.
-                std.Thread.sleep(10 * std.time.ns_per_ms);
-                continue;
+                // `std.posix.kevent` already loops on EINTR internally, so
+                // every surfaced error is permanent (ACCES / NOENT / NOMEM
+                // / SRCH). There's no cure for a broken kqueue from this
+                // thread; log + exit so deinit can join cleanly instead
+                // of letting the loop spin silently.
+                std.log.warn("pty_pump: kevent failed, exiting: {s}", .{@errorName(err)});
+                return;
             };
             if (self.shutdown.load(.seq_cst)) return;
 

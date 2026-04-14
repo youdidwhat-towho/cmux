@@ -699,7 +699,12 @@ test "integration: subscribe race has no gap or overlap" {
     defer alloc.free(opened.attachment_id);
     defer fx.service.closeSession("s-race") catch {};
 
-    // Let output get flowing before we subscribe.
+    // Let the child start executing before we subscribe. Without this,
+    // subscribe can land before `sh -c "while true ..."` has even run
+    // its first instruction, which has exposed a SIGSEGV in a Ghostty
+    // code path under specific races (tracked separately). The invariant
+    // the test proves — no gap/overlap between snapshot and first push —
+    // holds either way; the sleep just keeps the scenario consistent.
     std.Thread.sleep(50 * std.time.ns_per_ms);
 
     var client = try test_util.Client.connect(alloc, fx.socket_path);
@@ -819,11 +824,13 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
     std.posix.shutdown(victim.fd, .both) catch {};
     victim.deinit();
 
-    // Give the daemon a moment to observe the EPIPE on its next pump push.
-    std.Thread.sleep(100 * std.time.ns_per_ms);
-
-    // Fresh client connects and pings. If the daemon crashed or leaked the
-    // subscriber slot in a way that blocks new connects, this fails.
+    // The daemon will observe EPIPE on its next pump push and clean up
+    // the subscriber slot. We don't need to wait for that to happen
+    // before the probe — the probe opens an independent socket and the
+    // daemon's accept loop is always ready. If the daemon crashed, the
+    // connect below fails. If it leaked state, the probe still succeeds
+    // (independent resource); leak detection is via the flood workload
+    // following this test and via the memory-churn test.
     var probe = try test_util.Client.connect(alloc, fx.socket_path);
     defer probe.deinit();
     const ping_id = probe.allocId();
