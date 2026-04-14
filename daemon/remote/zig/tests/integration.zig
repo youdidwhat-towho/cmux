@@ -49,8 +49,35 @@ const Fixture = struct {
     }
 };
 
+/// Scale factor applied to every test deadline. Defaults to 1.0 so local
+/// runs stay tight, but loaded hosts (CI runners doing concurrent Xcode
+/// builds, self-hosted macmini, etc.) can export `CMUX_TEST_DEADLINE_SCALE`
+/// to widen every patience window uniformly without editing call sites.
+/// Parsed once at first use and cached.
+var deadline_scale_cache: ?f64 = null;
+
+fn deadlineScale() f64 {
+    if (deadline_scale_cache) |s| return s;
+    const env = std.process.getEnvVarOwned(std.testing.allocator, "CMUX_TEST_DEADLINE_SCALE") catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => {
+            deadline_scale_cache = 1.0;
+            return 1.0;
+        },
+        else => {
+            deadline_scale_cache = 1.0;
+            return 1.0;
+        },
+    };
+    defer std.testing.allocator.free(env);
+    const parsed = std.fmt.parseFloat(f64, env) catch 1.0;
+    const clamped = if (parsed < 1.0) 1.0 else parsed;
+    deadline_scale_cache = clamped;
+    return clamped;
+}
+
 fn deadlineIn(ms: i64) i64 {
-    return std.time.milliTimestamp() + ms;
+    const scaled: i64 = @intFromFloat(@as(f64, @floatFromInt(ms)) * deadlineScale());
+    return std.time.milliTimestamp() + scaled;
 }
 
 // ---------------------------------------------------------------------------
