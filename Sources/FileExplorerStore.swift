@@ -679,9 +679,12 @@ final class FileExplorerStore: ObservableObject {
             objectWillChange.send()
         }
 
-        // Recurse into directories that are already expanded AND have children
-        // loaded, so nested edits also get merged without collapsing anything.
-        for child in merged where child.isDirectory && expandedPaths.contains(child.path) && child.children != nil {
+        // Recurse into every directory whose children were previously loaded,
+        // regardless of current expansion. If we only refreshed expanded
+        // directories, a user who collapsed a directory would see a stale
+        // child list when they re-expanded it (expand() only reloads when
+        // `children == nil`).
+        for child in merged where child.isDirectory && child.children != nil {
             await mergeChildren(parent: child, at: child.path)
         }
     }

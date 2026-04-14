@@ -87888,6 +87888,29 @@
           }
         }
       }
+    },
+    "debug.editor.useMonaco": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Use Monaco Editor Backend"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Monacoエディタバックエンドを使用"
+          }
+        },
+        "uk": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Використовувати Monaco як редактор"
+          }
+        }
+      }
     }
   }
 }

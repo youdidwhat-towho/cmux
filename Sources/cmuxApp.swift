@@ -534,13 +534,19 @@ struct cmuxApp: App {
                     String(localized: "debug.devBuildBanner.show", defaultValue: "Show Dev Build Banner"),
                     isOn: $showSidebarDevBuildBanner
                 )
-                Toggle("Use Monaco Editor Backend", isOn: Binding(
-                    get: { editorBackendMonaco },
-                    set: { newValue in
-                        editorBackendMonaco = newValue
-                        EditorBackendSettings.setUseMonaco(newValue)
-                    }
-                ))
+                Toggle(
+                    String(
+                        localized: "debug.editor.useMonaco",
+                        defaultValue: "Use Monaco Editor Backend"
+                    ),
+                    isOn: Binding(
+                        get: { editorBackendMonaco },
+                        set: { newValue in
+                            editorBackendMonaco = newValue
+                            EditorBackendSettings.setUseMonaco(newValue)
+                        }
+                    )
+                )
 
                 Divider()
 
