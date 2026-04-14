@@ -1368,7 +1368,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertNil(self.window(withId: windowId), "Confirming Cmd+Ctrl+W should close the window")
     }
 
-    func testCmdCtrlWSkipsPromptWhenWarnBeforeClosingTabIsDisabled() {
+    func testCmdCtrlWStillPromptsWhenWarnBeforeClosingTabIsDisabled() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
             return
@@ -1406,8 +1406,8 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
 
-        XCTAssertEqual(promptCallCount, 0, "Disabling the close warning should skip the window confirmation dialog")
-        XCTAssertNil(self.window(withId: windowId), "Cmd+Ctrl+W should close immediately when the close warning is disabled")
+        XCTAssertEqual(promptCallCount, 1, "Disabling the tab-close warning must not bypass the window-close confirmation dialog")
+        XCTAssertNotNil(self.window(withId: windowId), "Rejecting the close-window confirmation should keep the window open")
     }
 
     // NOTE: This test is skipped in CI via -skip-testing in ci.yml because closing

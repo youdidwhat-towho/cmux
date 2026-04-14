@@ -902,7 +902,7 @@ final class TabManagerCloseWorkspacesWithConfirmationTests: XCTestCase {
         XCTAssertEqual(manager.tabs.map(\.title), ["Alpha", "Beta", "Gamma"])
     }
 
-    func testCloseWorkspacesWithConfirmationSkipsPromptWhenWarnBeforeClosingTabIsDisabled() {
+    func testCloseWorkspacesWithConfirmationStillPromptsWhenWarnBeforeClosingTabIsDisabled() {
         let manager = TabManager()
         let second = manager.addWorkspace()
         let third = manager.addWorkspace()
@@ -919,8 +919,8 @@ final class TabManagerCloseWorkspacesWithConfirmationTests: XCTestCase {
         UserDefaults.standard.set(false, forKey: CloseTabWarningSettings.warnBeforeClosingTabKey)
         manager.closeWorkspacesWithConfirmation([manager.tabs[0].id, second.id], allowPinned: true)
 
-        XCTAssertEqual(prompts.count, 0, "Disabling the close warning should skip the multi-workspace confirmation dialog")
-        XCTAssertEqual(manager.tabs.map(\.title), ["Gamma"])
+        XCTAssertEqual(prompts.count, 1, "Disabling the tab-close warning must not bypass explicit workspace-close confirmation")
+        XCTAssertEqual(manager.tabs.map(\.title), ["Alpha", "Beta", "Gamma"])
     }
 }
 
