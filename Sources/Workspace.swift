@@ -261,7 +261,9 @@ extension Workspace {
             allPanelIds.append(panelId)
         }
 
-        let includeGitMetadata = !gitMetadataWatcherDisabled
+        // Remote workspaces ignore the watcher-disabled flag: their git state
+        // originates from the remote daemon, not the local watcher.
+        let includeGitMetadata = isRemoteWorkspace || !gitMetadataWatcherDisabled
         let panelSnapshots = allPanelIds
             .prefix(SessionPersistencePolicy.maxPanelsPerWorkspace)
             .compactMap {
@@ -307,7 +309,7 @@ extension Workspace {
             customDescription: customDescription,
             customColor: customColor,
             isPinned: isPinned,
-            gitMetadataWatcherDisabled: gitMetadataWatcherDisabled,
+            gitMetadataWatcherDisabled: isRemoteWorkspace ? false : gitMetadataWatcherDisabled,
             currentDirectory: currentDirectory,
             focusedPanelId: focusedPanelId,
             layout: layout,
@@ -365,7 +367,7 @@ extension Workspace {
             )
         }
         progress = snapshot.progress.map { SidebarProgressState(value: $0.value, label: $0.label) }
-        if gitMetadataWatcherDisabled {
+        if gitMetadataWatcherDisabled && !isRemoteWorkspace {
             clearCachedSidebarGitMetadata()
         } else {
             gitBranch = snapshot.gitBranch.map { SidebarGitBranchState(branch: $0.branch, isDirty: $0.isDirty) }
@@ -6510,6 +6512,11 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var gitMetadataWatcherDisabled: Bool = false {
         didSet {
             guard gitMetadataWatcherDisabled, gitMetadataWatcherDisabled != oldValue else { return }
+            // The flag only controls the local git metadata watcher. Remote
+            // workspaces receive git state through the remote daemon and must
+            // keep their cached sidebar metadata even if this flag was set
+            // back when the workspace was still local.
+            guard !isRemoteWorkspace else { return }
             clearCachedSidebarGitMetadata()
         }
     }
@@ -8141,6 +8148,12 @@ final class Workspace: Identifiable, ObservableObject {
     func configureRemoteConnection(_ configuration: WorkspaceRemoteConfiguration, autoConnect: Bool = true) {
         skipControlMasterCleanupAfterDetachedRemoteTransfer = false
         remoteConfiguration = configuration
+        // The watcher-disabled flag only governs the local FS watcher; clear
+        // any stale `true` inherited from a prior local-mode session so remote
+        // git state is not accidentally suppressed here or in session snapshots.
+        if gitMetadataWatcherDisabled {
+            gitMetadataWatcherDisabled = false
+        }
         seedInitialRemoteTerminalSessionIfNeeded(configuration: configuration)
         clearRemoteDetectedSurfacePorts()
         remoteDetectedPorts = []

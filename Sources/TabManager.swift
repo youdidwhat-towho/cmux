@@ -267,6 +267,7 @@ private final class WorkspaceGitEventWatcher {
     private var stream: FSEventStreamRef?
     private var debounceTimer: DispatchSourceTimer?
     private var pendingPaths: Set<String> = []
+    private var isInvalidated = false
     private(set) var startFailureReason: String?
 
     init(
@@ -295,7 +296,10 @@ private final class WorkspaceGitEventWatcher {
     func invalidate() {
         let debounceTimer: DispatchSourceTimer?
         let stream: FSEventStreamRef?
+        let shouldTearDownStream: Bool
         stateLock.lock()
+        shouldTearDownStream = !isInvalidated
+        isInvalidated = true
         debounceTimer = self.debounceTimer
         self.debounceTimer = nil
         stream = self.stream
@@ -306,10 +310,15 @@ private final class WorkspaceGitEventWatcher {
         debounceTimer?.setEventHandler {}
         debounceTimer?.cancel()
 
-        guard let stream else { return }
+        guard shouldTearDownStream, let stream else { return }
         FSEventStreamStop(stream)
         FSEventStreamInvalidate(stream)
         FSEventStreamRelease(stream)
+
+        // Drain any in-flight callbacks already dispatched onto `queue` so the
+        // FSEvents trampoline cannot reference `self` (captured unretained)
+        // after this call returns.
+        queue.sync { }
     }
 
     private func start() {
@@ -377,6 +386,10 @@ private final class WorkspaceGitEventWatcher {
 
         guard !relevantPaths.isEmpty else { return }
         stateLock.lock()
+        guard !isInvalidated else {
+            stateLock.unlock()
+            return
+        }
         pendingPaths.formUnion(relevantPaths)
         stateLock.unlock()
         scheduleDebounce()
@@ -390,6 +403,12 @@ private final class WorkspaceGitEventWatcher {
         }
         let previousTimer: DispatchSourceTimer?
         stateLock.lock()
+        if isInvalidated {
+            stateLock.unlock()
+            timer.setEventHandler {}
+            timer.cancel()
+            return
+        }
         previousTimer = debounceTimer
         debounceTimer = timer
         stateLock.unlock()
@@ -400,6 +419,10 @@ private final class WorkspaceGitEventWatcher {
 
     private func flushPendingPaths() {
         stateLock.lock()
+        guard !isInvalidated else {
+            stateLock.unlock()
+            return
+        }
         let paths = pendingPaths.sorted()
         pendingPaths.removeAll(keepingCapacity: true)
         debounceTimer = nil
@@ -1473,27 +1496,6 @@ class TabManager: ObservableObject {
         }
     }
 
-    private func refreshSelectedWorkspaceGitMetadata() {
-        guard let workspace = selectedWorkspace,
-              let focusedPanelId = workspace.focusedPanelId else {
-            return
-        }
-
-        let activeProbeKeys = activeWorkspaceGitProbeKeys
-        let candidatePanelIds = trackedWorkspaceGitMetadataPollCandidatePanelIds(
-            in: workspace,
-            activeProbeKeys: activeProbeKeys
-        )
-        guard candidatePanelIds.contains(focusedPanelId) else { return }
-
-        scheduleWorkspaceGitMetadataRefreshIfPossible(
-            workspaceId: workspace.id,
-            panelId: focusedPanelId,
-            reason: "manualFocusedRefreshForTesting"
-        )
-
-    }
-
     private func refreshFallbackWorkspaceGitMetadataIfNeeded(now: Date = Date()) {
         let activeProbeKeys = activeWorkspaceGitProbeKeys
 
@@ -2500,9 +2502,13 @@ class TabManager: ObservableObject {
     }
 
     nonisolated static func workspaceGitMetadataSummaryForTesting(
-        directory: String
+        directory: String,
+        environmentOverride: [String: String] = [:]
     ) -> (branch: String?, isDirty: Bool?, isWatcherOptedOut: Bool) {
-        let snapshot = initialWorkspaceGitMetadataSnapshot(for: directory)
+        let snapshot = initialWorkspaceGitMetadataSnapshot(
+            for: directory,
+            environmentOverride: environmentOverride
+        )
         return (
             branch: snapshot.branch,
             isDirty: snapshot.isDirty,
@@ -3397,7 +3403,8 @@ class TabManager: ObservableObject {
     }
 
     private nonisolated static func initialWorkspaceGitMetadataSnapshot(
-        for directory: String
+        for directory: String,
+        environmentOverride: [String: String] = [:]
     ) -> InitialWorkspaceGitMetadataSnapshot {
         guard let repositoryInfo = gitRepositoryInfo(for: directory) else {
             return InitialWorkspaceGitMetadataSnapshot(
@@ -3410,7 +3417,10 @@ class TabManager: ObservableObject {
             )
         }
 
-        let configSnapshot = gitConfigSnapshot(for: repositoryInfo)
+        let configSnapshot = gitConfigSnapshot(
+            for: repositoryInfo,
+            environmentOverride: environmentOverride
+        )
         let branchFromHead = gitHeadBranch(for: repositoryInfo)
         let gitMetadataWatcherOptedOut = configSnapshot.metadataWatcherDisabled
             || FileManager.default.fileExists(atPath: repositoryInfo.cmuxIgnorePath)
@@ -3428,9 +3438,15 @@ class TabManager: ObservableObject {
 
         let repositorySlugs = branchFromHead == nil
             ? []
-            : githubRepositorySlugs(directory: repositoryInfo.repoRoot)
+            : githubRepositorySlugs(
+                directory: repositoryInfo.repoRoot,
+                environmentOverride: environmentOverride
+            )
 
-        if let statusSnapshot = gitStatusSnapshot(directory: repositoryInfo.repoRoot) {
+        if let statusSnapshot = gitStatusSnapshot(
+            directory: repositoryInfo.repoRoot,
+            environmentOverride: environmentOverride
+        ) {
             let branch = normalizedBranchName(statusSnapshot.branch) ?? branchFromHead
             return InitialWorkspaceGitMetadataSnapshot(
                 branch: branch,
@@ -3580,9 +3596,13 @@ class TabManager: ObservableObject {
     }
 
     private nonisolated static func gitConfigSnapshot(
-        for repositoryInfo: WorkspaceGitRepositoryInfo
+        for repositoryInfo: WorkspaceGitRepositoryInfo,
+        environmentOverride: [String: String] = [:]
     ) -> WorkspaceGitConfigSnapshot {
-        if let configEntries = gitConfigEntries(for: repositoryInfo) {
+        if let configEntries = gitConfigEntries(
+            for: repositoryInfo,
+            environmentOverride: environmentOverride
+        ) {
             var remoteURLsByName: [String: [String]] = [:]
             var metadataWatcherDisabled = false
             applyGitConfigEntries(
@@ -3666,14 +3686,15 @@ class TabManager: ObservableObject {
     }
 
     private nonisolated static func gitConfigEntries(
-        for repositoryInfo: WorkspaceGitRepositoryInfo
+        for repositoryInfo: WorkspaceGitRepositoryInfo,
+        environmentOverride: [String: String] = [:]
     ) -> [(String, String)]? {
         var entries: [(String, String)] = []
         var parsedAny = false
         let environment = [
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_CONFIG_GLOBAL": "/dev/null",
-        ]
+        ].merging(environmentOverride) { _, new in new }
 
         if let localEntries = gitConfigEntries(
             directory: repositoryInfo.repoRoot,
@@ -3918,11 +3939,14 @@ class TabManager: ObservableObject {
     }
 
     private nonisolated static func gitStatusSnapshot(
-        directory: String
+        directory: String,
+        environmentOverride: [String: String] = [:]
     ) -> WorkspaceGitStatusSnapshot? {
         if forceGitStatusFailureForTesting {
             return nil
         }
+        let environment = ["GIT_OPTIONAL_LOCKS": "0"]
+            .merging(environmentOverride) { _, new in new }
         guard let output = runCommand(
             directory: directory,
             executable: "git",
@@ -3933,7 +3957,7 @@ class TabManager: ObservableObject {
                 "--branch",
                 "--untracked-files=no",
             ],
-            environment: ["GIT_OPTIONAL_LOCKS": "0"],
+            environment: environment,
             timeout: Self.workspacePullRequestProbeTimeout
         ) else {
             return nil
@@ -4609,7 +4633,17 @@ class TabManager: ObservableObject {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
-        if let resolvedExecutable = resolvedCommandPath(executable: executable) {
+        let mergedEnvironment: [String: String]? = environment.map { overrides in
+            ProcessInfo.processInfo.environment.merging(overrides) { _, new in new }
+        }
+        // When the caller injects a `PATH` override, honor it during executable
+        // resolution so tests can point `git` at a shim without mutating the
+        // process-wide environment.
+        let resolutionEnvironment = mergedEnvironment ?? ProcessInfo.processInfo.environment
+        if let resolvedExecutable = resolvedCommandPath(
+            executable: executable,
+            environment: resolutionEnvironment
+        ) {
             process.executableURL = URL(fileURLWithPath: resolvedExecutable)
             process.arguments = arguments
         } else {
@@ -4617,8 +4651,8 @@ class TabManager: ObservableObject {
             process.arguments = [executable] + arguments
         }
         process.currentDirectoryURL = URL(fileURLWithPath: directory)
-        if let environment {
-            process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, new in new }
+        if let mergedEnvironment {
+            process.environment = mergedEnvironment
         }
         process.standardOutput = stdout
         process.standardError = stderr
@@ -4710,19 +4744,27 @@ class TabManager: ObservableObject {
         return orderedSlugs
     }
 
-    private nonisolated static func githubRepositorySlugs(directory: String) -> [String] {
+    private nonisolated static func githubRepositorySlugs(
+        directory: String,
+        environmentOverride: [String: String] = [:]
+    ) -> [String] {
         guard let repositoryInfo = gitRepositoryInfo(for: directory) else { return [] }
+        let environment = ["GIT_OPTIONAL_LOCKS": "0"]
+            .merging(environmentOverride) { _, new in new }
         if let remoteOutput = runCommand(
             directory: repositoryInfo.repoRoot,
             executable: "git",
             arguments: ["--no-optional-locks", "remote", "-v"],
-            environment: ["GIT_OPTIONAL_LOCKS": "0"],
+            environment: environment,
             timeout: 2
         ) {
             return githubRepositorySlugs(fromGitRemoteVOutput: remoteOutput)
         }
 
-        let configSnapshot = gitConfigSnapshot(for: repositoryInfo)
+        let configSnapshot = gitConfigSnapshot(
+            for: repositoryInfo,
+            environmentOverride: environmentOverride
+        )
         guard !configSnapshot.remoteURLsByName.isEmpty else { return [] }
 
         let remoteOutput = configSnapshot.remoteURLsByName

@@ -1041,6 +1041,56 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         XCTAssertNil(workspace.pullRequest)
     }
 
+    func testRemoteWorkspaceIgnoresGitMetadataWatcherDisabledFlag() throws {
+        let manager = TabManager()
+        guard let workspace = manager.selectedWorkspace,
+              let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected selected workspace with focused panel")
+            return
+        }
+
+        // Disable the watcher while the workspace is still local.
+        workspace.gitMetadataWatcherDisabled = true
+
+        // Seed git state the way the remote daemon would push it down.
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "feature/remote-kept", isDirty: true)
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 4242,
+            label: "PR",
+            url: try XCTUnwrap(URL(string: "https://github.com/manaflow-ai/cmux/pull/4242")),
+            status: .open,
+            branch: "feature/remote-kept"
+        )
+
+        workspace.configureRemoteConnection(
+            WorkspaceRemoteConfiguration(
+                destination: "cmux-macmini",
+                port: nil,
+                identityFile: nil,
+                sshOptions: [],
+                localProxyPort: nil,
+                relayPort: 64015,
+                relayID: String(repeating: "a", count: 16),
+                relayToken: String(repeating: "b", count: 64),
+                localSocketPath: "/tmp/cmux-debug-test-remote-flag.sock",
+                terminalStartupCommand: "ssh cmux-macmini"
+            ),
+            autoConnect: false
+        )
+
+        // After promoting to remote, the stale disabled flag must have been
+        // cleared so subsequent remote git updates are preserved.
+        XCTAssertFalse(workspace.gitMetadataWatcherDisabled)
+
+        // Flipping the flag again (e.g. if some code re-sets it) on a remote
+        // workspace must NOT purge cached sidebar git metadata, because the
+        // flag only governs the local watcher.
+        workspace.gitMetadataWatcherDisabled = true
+        XCTAssertEqual(workspace.panelGitBranches[panelId]?.branch, "feature/remote-kept")
+        XCTAssertEqual(workspace.panelPullRequests[panelId]?.number, 4242)
+    }
+
     func testGlobalGitMetadataWatcherDisableClearsUnscopedSidebarMetadata() throws {
         let defaults = UserDefaults.standard
         let originalSetting = defaults.object(forKey: GitMetadataWatcherSettings.disabledKey)
@@ -1501,13 +1551,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
             isDirectory: true
         )
         let shimURL = shimDirectoryURL.appendingPathComponent("git")
-        let originalPath = ProcessInfo.processInfo.environment["PATH"]
         defer {
-            if let originalPath {
-                setenv("PATH", originalPath, 1)
-            } else {
-                unsetenv("PATH")
-            }
             try? fileManager.removeItem(at: shimDirectoryURL)
             try? fileManager.removeItem(at: repoURL)
         }
@@ -1531,10 +1575,16 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         """.write(to: shimURL, atomically: true, encoding: .utf8)
         try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: shimURL.path)
 
+        // Inject the shim directory via the helper's environmentOverride
+        // parameter instead of mutating process-wide PATH. Mutating process
+        // PATH with setenv would bleed into any git subprocess spawned by
+        // other watcher/tests running concurrently in the test host.
+        let originalPath = ProcessInfo.processInfo.environment["PATH"]
         let shimPath = "\(shimDirectoryURL.path):\(originalPath ?? "/usr/bin:/bin:/usr/sbin:/sbin")"
-        setenv("PATH", shimPath, 1)
-
-        let summary = TabManager.workspaceGitMetadataSummaryForTesting(directory: repoURL.path)
+        let summary = TabManager.workspaceGitMetadataSummaryForTesting(
+            directory: repoURL.path,
+            environmentOverride: ["PATH": shimPath]
+        )
         XCTAssertEqual(summary.branch, "main")
         XCTAssertEqual(summary.isDirty, false)
         XCTAssertFalse(summary.isWatcherOptedOut)
@@ -1623,9 +1673,22 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
     }
 
     func testAttachWorkspaceReattachesGitWatcherAfterCrossWindowMove() throws {
+        let defaults = UserDefaults.standard
+        let originalSetting = defaults.object(forKey: GitMetadataWatcherSettings.disabledKey)
         let fileManager = FileManager.default
         let repoURL = try makeTempGitRepoWithInitialCommit(prefix: "cmux-git-move-watcher")
-        defer { try? fileManager.removeItem(at: repoURL) }
+        defer {
+            if let originalSetting {
+                defaults.set(originalSetting, forKey: GitMetadataWatcherSettings.disabledKey)
+            } else {
+                defaults.removeObject(forKey: GitMetadataWatcherSettings.disabledKey)
+            }
+            try? fileManager.removeItem(at: repoURL)
+        }
+
+        // Explicitly enable the global watcher so the test is independent of
+        // whatever prior tests may have left in UserDefaults.
+        defaults.set(false, forKey: GitMetadataWatcherSettings.disabledKey)
 
         let sourceManager = TabManager()
         guard let workspace = sourceManager.selectedWorkspace,
