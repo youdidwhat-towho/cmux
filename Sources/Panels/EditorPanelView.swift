@@ -373,10 +373,11 @@ enum EditorSaveAlert {
     static func show(for editorPanel: EditorPanel) {
         let alert = NSAlert()
         let filename = (editorPanel.filePath as NSString).lastPathComponent
-        alert.messageText = String(
+        let failedTitleFormat = String(
             localized: "editor.saveFailed.title",
-            defaultValue: "Could not save \"\(filename)\""
+            defaultValue: "Could not save \"%@\""
         )
+        alert.messageText = String(format: failedTitleFormat, filename)
         alert.informativeText = String(
             localized: "editor.saveFailed.message",
             defaultValue: "The file may be read-only or the disk may be full. Your changes remain in the editor."
