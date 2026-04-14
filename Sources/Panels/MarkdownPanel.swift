@@ -842,6 +842,186 @@ private final class VncFakeSessionView: NSView {
 }
 
 @MainActor
+final class VncNativeSessionHostView: NSView {
+    private weak var sessionView: NSView?
+
+    init(sessionView: NSView) {
+        self.sessionView = sessionView
+        super.init(frame: .zero)
+
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        sessionView.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(sessionView)
+        NSLayoutConstraint.activate([
+            sessionView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            sessionView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            sessionView.topAnchor.constraint(equalTo: topAnchor),
+            sessionView.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+    override var mouseDownCanMoveWindow: Bool { false }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        _ = event
+        return true
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        if focusSessionViewIfPossible() {
+            return true
+        }
+        return super.becomeFirstResponder()
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard bounds.contains(point) else { return nil }
+        guard let sessionView,
+              !sessionView.isHidden,
+              sessionView.alphaValue > 0 else {
+            return super.hitTest(point)
+        }
+        let pointInSession = convert(point, to: sessionView)
+        if let target = sessionView.hitTest(pointInSession) {
+            return target
+        }
+        return sessionView.frame.contains(point) ? sessionView : super.hitTest(point)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        _ = focusSessionViewIfPossible()
+        if let sessionView {
+            sessionView.mouseDown(with: event)
+            return
+        }
+        super.mouseDown(with: event)
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        _ = focusSessionViewIfPossible()
+        if let sessionView {
+            sessionView.rightMouseDown(with: event)
+            return
+        }
+        super.rightMouseDown(with: event)
+    }
+
+    override func otherMouseDown(with event: NSEvent) {
+        _ = focusSessionViewIfPossible()
+        if let sessionView {
+            sessionView.otherMouseDown(with: event)
+            return
+        }
+        super.otherMouseDown(with: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        if let sessionView {
+            sessionView.mouseDragged(with: event)
+            return
+        }
+        super.mouseDragged(with: event)
+    }
+
+    override func rightMouseDragged(with event: NSEvent) {
+        if let sessionView {
+            sessionView.rightMouseDragged(with: event)
+            return
+        }
+        super.rightMouseDragged(with: event)
+    }
+
+    override func otherMouseDragged(with event: NSEvent) {
+        if let sessionView {
+            sessionView.otherMouseDragged(with: event)
+            return
+        }
+        super.otherMouseDragged(with: event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if let sessionView {
+            sessionView.mouseUp(with: event)
+            return
+        }
+        super.mouseUp(with: event)
+    }
+
+    override func rightMouseUp(with event: NSEvent) {
+        if let sessionView {
+            sessionView.rightMouseUp(with: event)
+            return
+        }
+        super.rightMouseUp(with: event)
+    }
+
+    override func otherMouseUp(with event: NSEvent) {
+        if let sessionView {
+            sessionView.otherMouseUp(with: event)
+            return
+        }
+        super.otherMouseUp(with: event)
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if let sessionView {
+            sessionView.scrollWheel(with: event)
+            return
+        }
+        super.scrollWheel(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        _ = focusSessionViewIfPossible()
+        if let sessionView {
+            sessionView.keyDown(with: event)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func keyUp(with event: NSEvent) {
+        if let sessionView {
+            sessionView.keyUp(with: event)
+            return
+        }
+        super.keyUp(with: event)
+    }
+
+    override func flagsChanged(with event: NSEvent) {
+        if let sessionView {
+            sessionView.flagsChanged(with: event)
+            return
+        }
+        super.flagsChanged(with: event)
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        _ = focusSessionViewIfPossible()
+        if let sessionView, sessionView.performKeyEquivalent(with: event) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    @discardableResult
+    func focusSessionViewIfPossible() -> Bool {
+        guard let window, let sessionView else { return false }
+        if window.firstResponder === sessionView {
+            return true
+        }
+        return window.makeFirstResponder(sessionView)
+    }
+}
+
+@MainActor
 private final class VncNativeSessionController: NSObject {
     private struct PendingConnectRequest {
         let targetAddress: NSObject
@@ -858,6 +1038,7 @@ private final class VncNativeSessionController: NSObject {
     private static let pollInterval: TimeInterval = 0.1
     private static let connectAttemptTimeout: TimeInterval = 6.0
     private static let preferredScreenQualityMode: Int = 0
+    private static let preferredControlMode: Int = 1
     private static let minimumRemotePixelSize = CGSize(width: 960, height: 600)
     private static let maximumRemotePixelSize = CGSize(width: 3840, height: 2160)
     private static let fakeNativeUITestEnvKey = "CMUX_UI_TEST_VNC_FAKE_NATIVE"
@@ -880,7 +1061,7 @@ private final class VncNativeSessionController: NSObject {
         return true
     }()
 
-    let hostView: NSView
+    let hostView: VncNativeSessionHostView
 
     var onStateChange: ((VncPanelConnectionState, String?) -> Void)?
     var onInputEvent: ((InputEvent) -> Void)?
@@ -923,21 +1104,10 @@ private final class VncNativeSessionController: NSObject {
         self.sessionObject = sessionObject
         self.usesFakeNativeSession = usesFakeNativeSession
 
-        let hostView = NSView(frame: .zero)
-        hostView.wantsLayer = true
-        hostView.layer?.backgroundColor = NSColor.black.cgColor
+        let hostView = VncNativeSessionHostView(sessionView: sessionView)
         self.hostView = hostView
 
         super.init()
-
-        sessionView.translatesAutoresizingMaskIntoConstraints = false
-        hostView.addSubview(sessionView)
-        NSLayoutConstraint.activate([
-            sessionView.leadingAnchor.constraint(equalTo: hostView.leadingAnchor),
-            sessionView.trailingAnchor.constraint(equalTo: hostView.trailingAnchor),
-            sessionView.topAnchor.constraint(equalTo: hostView.topAnchor),
-            sessionView.bottomAnchor.constraint(equalTo: hostView.bottomAnchor),
-        ])
 
         configureSessionViewDefaults()
         startPollingState()
@@ -1022,9 +1192,7 @@ private final class VncNativeSessionController: NSObject {
     }
 
     func focus() {
-        if let window = hostView.window {
-            _ = window.makeFirstResponder(sessionView)
-        }
+        _ = hostView.focusSessionViewIfPossible()
         _ = invokeVoid(on: sessionObject, selectorName: "focus")
     }
 
@@ -1042,13 +1210,22 @@ private final class VncNativeSessionController: NSObject {
         setObjectBool(false, on: sessionObject, selectorName: "setHilightCursor:")
         setBool(true, on: sessionObject, selectorName: "setViewerCursorVisible:")
         setBool(true, on: sessionObject, selectorName: "setShouldShowCursorForUnknownCursorState:")
-        setBool(true, on: sessionObject, selectorName: "setKeyboardFocusEnabled:")
+        configureInteractiveControlMode()
         setBool(true, on: sessionObject, selectorName: "setShouldSharePasteboard:")
         setBool(true, on: sessionObject, selectorName: "setShouldAllowSendPasteboard:")
         setBool(false, on: sessionObject, selectorName: "setShouldSuppressFirstControlStateOverlay:")
         if boolValue(on: sessionObject, selectorName: "supportsChangingScreenQualityMode") {
             setInt(Self.preferredScreenQualityMode, on: sessionObject, selectorName: "setScreenQualityMode:")
         }
+    }
+
+    private func configureInteractiveControlMode() {
+        setInt(Self.preferredControlMode, on: sessionObject, selectorName: "setControlMode:")
+        setBool(true, on: sessionObject, selectorName: "setRequestedControl:")
+        setBool(true, on: sessionObject, selectorName: "setSessionAllowsControl:")
+        setBool(true, on: sessionObject, selectorName: "setKeyboardFocusEnabled:")
+        setBool(true, on: sessionObject, selectorName: "_setKeyboardFocus:")
+        _ = invokeVoid(on: sessionObject, selectorName: "configureInputEventConsumer")
     }
 
     private func makeConnectionOptions() -> NSObject? {
@@ -1178,6 +1355,7 @@ private final class VncNativeSessionController: NSObject {
             boolValue(on: sessionObject, selectorName: "isNotConnected")
 
         if isConnected {
+            configureInteractiveControlMode()
             pendingConnectAttempt = false
             attemptDeadline = nil
             emit(.connected, detail: nil)
@@ -1745,10 +1923,11 @@ final class VncPanel: Panel, ObservableObject {
 
     func focus() {
         if let nativeSessionController, let nativeSessionHostView {
-            if let window = nativeSessionHostView.window {
+            nativeSessionController.focus()
+            if let window = nativeSessionHostView.window,
+               window.firstResponder == nil {
                 _ = window.makeFirstResponder(nativeSessionHostView)
             }
-            nativeSessionController.focus()
             return
         }
 
