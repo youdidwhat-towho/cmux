@@ -388,9 +388,14 @@ jobs:
         if: needs.decide.outputs.should_publish != 'true' || (steps.current_head_prebuild.outputs.still_current == 'true' && steps.current_head_postbuild.outputs.still_current == 'true')
         env:
           APPLE_NIGHTLY_PROVISIONING_PROFILE_BASE64: ${{ secrets.APPLE_NIGHTLY_PROVISIONING_PROFILE_BASE64 }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
         run: |
           if [ -z "$APPLE_NIGHTLY_PROVISIONING_PROFILE_BASE64" ]; then
             echo "Missing APPLE_NIGHTLY_PROVISIONING_PROFILE_BASE64 secret" >&2
+            exit 1
+          fi
+          if [ -z "$APPLE_SIGNING_IDENTITY" ]; then
+            echo "Missing APPLE_SIGNING_IDENTITY secret" >&2
             exit 1
           fi
 
@@ -398,7 +403,8 @@ jobs:
           PROFILE_PATH="$APP_PATH/Contents/embedded.provisionprofile"
           TMP_PROFILE="$(mktemp /tmp/cmux-nightly-profile.XXXXXX)"
           TMP_PLIST="$(mktemp /tmp/cmux-nightly-profile.XXXXXX.plist)"
-          trap 'rm -f "$TMP_PROFILE" "$TMP_PLIST"' EXIT
+          TMP_CERT_DIR="$(mktemp -d /tmp/cmux-nightly-profile-certs.XXXXXX)"
+          trap 'rm -f "$TMP_PROFILE" "$TMP_PLIST"; rm -rf "$TMP_CERT_DIR"' EXIT
 
           echo "$APPLE_NIGHTLY_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$TMP_PROFILE"
           security cms -D -i "$TMP_PROFILE" > "$TMP_PLIST"
@@ -418,6 +424,46 @@ jobs:
           PROVISIONS_ALL_DEVICES="$(/usr/libexec/PlistBuddy -c "Print :ProvisionsAllDevices" "$TMP_PLIST")"
           if [ "$PROVISIONS_ALL_DEVICES" != "true" ]; then
             echo "Nightly provisioning profile is not a Developer ID all-devices profile" >&2
+            exit 1
+          fi
+
+          # Developer ID provisioning profiles are leaf-certificate specific.
+          # If the imported signing cert and the profile's DeveloperCertificates
+          # drift apart, codesign/notarization can still pass but AMFI rejects
+          # the app at launch with "No matching profile found".
+          SIGNING_CERT_SHA1="$(
+            security find-certificate -Z -c "$APPLE_SIGNING_IDENTITY" build.keychain \
+              | awk '/SHA-1 hash:/ { print toupper($3); exit }'
+          )"
+          if [ -z "$SIGNING_CERT_SHA1" ]; then
+            echo "Could not find signing certificate for $APPLE_SIGNING_IDENTITY in build.keychain" >&2
+            exit 1
+          fi
+
+          PROFILE_CERT_MATCH=false
+          PROFILE_CERT_SHA1S=""
+          for i in 0 1 2 3; do
+            CERT_B64="$(plutil -extract "DeveloperCertificates.$i" raw -o - "$TMP_PLIST" 2>/dev/null || true)"
+            if [ -z "$CERT_B64" ]; then
+              continue
+            fi
+
+            CERT_PATH="$TMP_CERT_DIR/cert-$i.der"
+            printf '%s' "$CERT_B64" | base64 --decode > "$CERT_PATH"
+            CERT_SHA1="$(
+              openssl x509 -inform DER -in "$CERT_PATH" -noout -fingerprint -sha1 \
+                | awk -F= '{ gsub(/:/, "", $2); print toupper($2) }'
+            )"
+            PROFILE_CERT_SHA1S="${PROFILE_CERT_SHA1S}${CERT_SHA1}\n"
+            if [ "$CERT_SHA1" = "$SIGNING_CERT_SHA1" ]; then
+              PROFILE_CERT_MATCH=true
+              break
+            fi
+          done
+
+          if [ "$PROFILE_CERT_MATCH" != "true" ]; then
+            echo "Nightly provisioning profile does not authorize imported signing cert $SIGNING_CERT_SHA1" >&2
+            printf 'Profile DeveloperCertificates SHA-1 fingerprints:\\n%b' "$PROFILE_CERT_SHA1S" >&2
             exit 1
           fi
 
