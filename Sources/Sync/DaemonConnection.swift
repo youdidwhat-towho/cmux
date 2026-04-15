@@ -181,12 +181,14 @@ final class DaemonConnection: @unchecked Sendable {
     ///
     /// Stable across app restarts; uses surface ID only because it persists in snapshots
     /// while workspace IDs are regenerated.
+    @available(*, deprecated, message: "Use openPane(workspaceID:command:cols:rows:); the daemon mints authoritative session ids.")
     static func computeSessionID(workspaceID: UUID, surfaceID: UUID) -> String {
         "ws-\(surfaceID.uuidString.lowercased())"
     }
 
     /// Pre-create a daemon session so iOS clients can attach before the desktop
     /// surface is materialized. Idempotent (already_exists is treated as success).
+    @available(*, deprecated, message: "Use openPane(workspaceID:command:cols:rows:); the daemon mints authoritative session ids.")
     static func preCreateSession(
         socketPath: String = DaemonConnection.defaultSocketPath,
         workspaceID: UUID,

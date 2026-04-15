@@ -28,10 +28,12 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     deinit { stopInternal() }
 
+    @available(*, deprecated, message: "Use DaemonConnection.openPane; the daemon mints authoritative session ids.")
     static func computeSessionID(workspaceID: UUID, surfaceID: UUID) -> String {
         DaemonConnection.computeSessionID(workspaceID: workspaceID, surfaceID: surfaceID)
     }
 
+    @available(*, deprecated, message: "Use DaemonConnection.openPane; the daemon mints authoritative session ids.")
     static func preCreateSession(
         socketPath: String,
         workspaceID: UUID,
