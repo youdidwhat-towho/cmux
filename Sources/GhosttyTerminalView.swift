@@ -3403,6 +3403,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// Used to convert a pinned (cols, rows) into a pixel rect without
     /// a second set_size round-trip.
     private var cachedCellPixelSize: CGSize = .zero
+    /// The true natural container pixel size — what AppKit would hand us
+    /// if no pin were active. `lastPixelWidth`/`lastPixelHeight` get
+    /// clobbered by the pinned set_size call, so we need a separate
+    /// record to decide whether a pin is actually smaller than our
+    /// capacity. Updated only on non-pin-driven layout passes.
+    private var naturalContainerPixelSize: CGSize = .zero
     private let debugMetadataLock = NSLock()
     private let createdAt: Date = Date()
     private var runtimeSurfaceCreatedAt: Date?
@@ -4510,37 +4516,72 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
 
         if sizeChanged {
+            // Distinguish AppKit-driven natural container updates from our
+            // own pin-driven layout bounces. When the pin shrinks
+            // surfaceView.frame, AppKit re-invokes layout() which calls
+            // updateSize again with the PINNED pixel values. If we treat
+            // that path as a natural update, we'd cache cell metrics from
+            // a smaller grid, report pinned cols/rows to the daemon
+            // (making the daemon think this device's capacity IS the
+            // pinned size), and the min-across-attachments aggregation
+            // collapses. Detect by comparing incoming px to pin px.
+            let incomingMatchesPin: Bool = {
+                guard let pin = effectiveGridPin,
+                      pin.cols > 0, pin.rows > 0,
+                      cachedCellPixelSize.width > 0, cachedCellPixelSize.height > 0 else {
+                    return false
+                }
+                let pinnedPxW = UInt32(max(1, Int((CGFloat(pin.cols) * cachedCellPixelSize.width).rounded(.down))))
+                let pinnedPxH = UInt32(max(1, Int((CGFloat(pin.rows) * cachedCellPixelSize.height).rounded(.down))))
+                return abs(Int(wpx) - Int(pinnedPxW)) <= 1 && abs(Int(hpx) - Int(pinnedPxH)) <= 1
+            }()
+
             ghostty_surface_set_size(surface, wpx, hpx)
             lastPixelWidth = wpx
             lastPixelHeight = hpx
 
-            // Cache cell metrics so we can translate a pinned (cols, rows)
-            // into pixel dimensions in `reapplyEffectiveGridPinIfNeeded`
-            // without a second round-trip through Ghostty.
             let natural = ghostty_surface_size(surface)
-            if natural.columns > 0, natural.rows > 0,
-               natural.width_px > 0, natural.height_px > 0 {
-                cachedCellPixelSize = CGSize(
-                    width: CGFloat(natural.width_px) / CGFloat(natural.columns),
-                    height: CGFloat(natural.height_px) / CGFloat(natural.rows)
-                )
+
+            #if DEBUG
+            dlog("surface.updateSize surface=\(id.uuidString.prefix(8)) incoming=\(wpx)x\(hpx) grid=\(natural.columns)x\(natural.rows) naturalPx=\(natural.width_px)x\(natural.height_px) fromPin=\(incomingMatchesPin ? 1 : 0) pin=\(effectiveGridPin.map { "\($0.cols)x\($0.rows)" } ?? "none") cachedCell=\(cachedCellPixelSize.width)x\(cachedCellPixelSize.height) natContainer=\(naturalContainerPixelSize.width)x\(naturalContainerPixelSize.height)")
+            #endif
+
+            if !incomingMatchesPin {
+                if natural.columns > 0, natural.rows > 0,
+                   natural.width_px > 0, natural.height_px > 0 {
+                    cachedCellPixelSize = CGSize(
+                        width: CGFloat(natural.width_px) / CGFloat(natural.columns),
+                        height: CGFloat(natural.height_px) / CGFloat(natural.rows)
+                    )
+                    naturalContainerPixelSize = CGSize(
+                        width: CGFloat(natural.width_px),
+                        height: CGFloat(natural.height_px)
+                    )
+                }
+                if let bridge = daemonBridge {
+                    bridge.resize(cols: Int(natural.columns), rows: Int(natural.rows))
+                }
             }
 
-            // Notify daemon bridge of this device's natural capacity so
-            // the daemon's min-across-attachments reflects the real
-            // container size. The pin (applied below) only affects local
-            // rendering; the daemon never sees it.
-            if let bridge = daemonBridge {
-                bridge.resize(cols: Int(natural.columns), rows: Int(natural.rows))
-            }
-
-            // Clamp rendering down to the daemon's effective grid if one
-            // is pinned (this device is larger than the smallest sibling).
             reapplyEffectiveGridPinIfNeeded()
         }
 
         // Let Ghostty continue rendering on its own wakeups for steady-state frames.
         return true
+    }
+
+    /// Pushed from GhosttySurfaceScrollView.synchronizeGeometryAndContent
+    /// on every layout pass with the true container px (ignoring any pin).
+    /// reapplyEffectiveGridPinIfNeeded uses this, not lastPixelWidth, to
+    /// decide whether the pin is actually smaller than our capacity.
+    func updateNaturalContainerPixelSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        if naturalContainerPixelSize != size {
+            #if DEBUG
+            dlog("surface.naturalContainer surface=\(id.uuidString.prefix(8)) was=\(naturalContainerPixelSize.width)x\(naturalContainerPixelSize.height) now=\(size.width)x\(size.height)")
+            #endif
+            naturalContainerPixelSize = size
+        }
     }
 
     /// Apply a daemon-reported `effective_cols × effective_rows` pin to the
@@ -4600,12 +4641,20 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
         let pinnedPxW = UInt32(max(1, Int((CGFloat(pin.cols) * cachedCellPixelSize.width).rounded(.down))))
         let pinnedPxH = UInt32(max(1, Int((CGFloat(pin.rows) * cachedCellPixelSize.height).rounded(.down))))
-        // If the pin would meet or exceed the container's natural size,
-        // no letterboxing is needed (this device is the smallest or size
-        // race landed out of order). Leave the natural set_size in place
-        // and clear the border.
-        if pinnedPxW >= lastPixelWidth && pinnedPxH >= lastPixelHeight {
+        // Compare against the TRUE natural container px, not `lastPixelWidth`
+        // which gets overwritten by our own pinned set_size call. Using
+        // lastPixelWidth here caused the "weird resize" feedback loop:
+        // after we pinned, lastPixelWidth == pinnedPxW, this guard
+        // returned early + cleared letterboxRect, which bounced the
+        // scroll view back to full size, which triggered another
+        // reapplyEffectiveGridPinIfNeeded that re-pinned, etc.
+        let naturalPxW = naturalContainerPixelSize.width > 0 ? UInt32(naturalContainerPixelSize.width.rounded(.down)) : lastPixelWidth
+        let naturalPxH = naturalContainerPixelSize.height > 0 ? UInt32(naturalContainerPixelSize.height.rounded(.down)) : lastPixelHeight
+        if pinnedPxW >= naturalPxW && pinnedPxH >= naturalPxH {
             attachedView?.letterboxRect = nil
+            #if DEBUG
+            dlog("effectiveGrid.pin.noop surface=\(id.uuidString.prefix(8)) pinnedPx=\(pinnedPxW)x\(pinnedPxH) naturalPx=\(naturalPxW)x\(naturalPxH) — we are the smallest, clear border")
+            #endif
             return
         }
         ghostty_surface_set_size(surface, pinnedPxW, pinnedPxH)
@@ -9423,6 +9472,19 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
         logLayoutDuringActiveDrag(targetSize: targetSize)
 #endif
+        // Tell the terminal surface the TRUE natural container px so it
+        // can distinguish "AppKit laid out the container at size S" from
+        // "we pinned surfaceView smaller and AppKit bounced back through
+        // updateSize with the pinned size." Without this distinction the
+        // pin reshapes lastPixelWidth and confuses the pin guard.
+        let scale = surfaceView.window?.backingScaleFactor ?? 2.0
+        surfaceView.terminalSurface?.updateNaturalContainerPixelSize(
+            CGSize(
+                width: (targetSize.width * scale).rounded(.down),
+                height: (targetSize.height * scale).rounded(.down)
+            )
+        )
+
         // When the daemon has pinned this surface to a smaller effective
         // grid (another attached device has a smaller container),
         // shrink the surfaceView so AppKit resizes its CAMetalLayer to
