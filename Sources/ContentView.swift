@@ -2090,10 +2090,10 @@ struct ContentView: View {
             unreadRects = layoutSnapshot.panes.compactMap { pane in
                 guard let selectedTabId = pane.selectedTabId,
                       let tabUUID = UUID(uuidString: selectedTabId),
-                      let panelId = workspace.panelIdFromSurfaceId(TabID(uuid: tabUUID)),
-                      let panel = workspace.panels[panelId] else {
+                      let panel = workspace.panel(for: TabID(uuid: tabUUID)) else {
                     return nil
                 }
+                let panelId = panel.id
 
                 let shouldShowUnread = Workspace.shouldShowUnreadIndicator(
                     hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(

@@ -5,7 +5,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import ObjectiveC.runtime
-import Bonsplit
 import UserNotifications
 
 #if canImport(cmux_DEV)
@@ -1142,11 +1141,11 @@ final class BrowserDevToolsButtonDebugSettingsTests: XCTestCase {
     func testCopyPayloadUsesPersistedValues() {
         let defaults = makeIsolatedDefaults()
         defaults.set(BrowserDevToolsIconOption.scope.rawValue, forKey: BrowserDevToolsButtonDebugSettings.iconNameKey)
-        defaults.set(BrowserDevToolsIconColorOption.bonsplitActive.rawValue, forKey: BrowserDevToolsButtonDebugSettings.iconColorKey)
+        defaults.set(BrowserDevToolsIconColorOption.workspaceSplitActive.rawValue, forKey: BrowserDevToolsButtonDebugSettings.iconColorKey)
 
         let payload = BrowserDevToolsButtonDebugSettings.copyPayload(defaults: defaults)
         XCTAssertTrue(payload.contains("browserDevToolsIconName=scope"))
-        XCTAssertTrue(payload.contains("browserDevToolsIconColor=bonsplitActive"))
+        XCTAssertTrue(payload.contains("browserDevToolsIconColor=workspaceSplitActive"))
     }
 }
 
@@ -1819,10 +1818,10 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
 
     func testResetSidebarContextClearsBrowserPanelsIntoNewTabState() throws {
         let workspace = Workspace()
-        let paneId = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
+        let paneId = try XCTUnwrap(workspace.splitController.allPaneIds.first)
         let contextPanelId = try XCTUnwrap(workspace.focusedPanelId)
         let browser = try XCTUnwrap(
-            workspace.newBrowserSurface(
+            workspace.createBrowserPanel(
                 inPane: paneId,
                 url: URL(string: "https://example.com"),
                 focus: false
@@ -3091,7 +3090,7 @@ final class CmuxWebViewDragRoutingTests: XCTestCase {
     func testRejectsInternalPaneDragEvenWhenFilePromiseTypesArePresent() {
         XCTAssertTrue(
             CmuxWebView.shouldRejectInternalPaneDrag([
-                DragOverlayRoutingPolicy.bonsplitTabTransferType,
+                DragOverlayRoutingPolicy.splitTabTransferType,
                 NSPasteboard.PasteboardType("com.apple.pasteboard.promised-file-url"),
             ])
         )

@@ -4070,7 +4070,7 @@ class TabManager: ObservableObject {
         var targetPanelIds: [UUID] = []
         var targetTitles: [String] = []
         for tab in tabsInPane where tab.id != selectedTabId {
-            guard let panelId = workspace.panelIdFromSurfaceId(tab.id) else { continue }
+            guard let panelId = workspace.panel(for: tab.id)?.id else { continue }
             if workspace.isPanelPinned(panelId) {
                 continue
             }
@@ -4238,7 +4238,7 @@ class TabManager: ObservableObject {
         if let candidatePane,
            let selectedTabId = workspace.splitController.selectedTab(inPane: candidatePane)?.id
                 ?? workspace.splitController.tabs(inPane: candidatePane).first?.id,
-           let panelId = workspace.panelIdFromSurfaceId(selectedTabId),
+           let panelId = workspace.panel(for: selectedTabId)?.id,
            workspace.panels[panelId] != nil {
             return panelId
         }
@@ -5005,7 +5005,10 @@ class TabManager: ObservableObject {
     func newSurface() {
         // Cmd+T should always focus the newly created surface.
         selectedWorkspace?.clearSplitZoom()
-        selectedWorkspace?.newTerminalSurfaceInFocusedPane(focus: true)
+        if let workspace = selectedWorkspace,
+           let paneId = workspace.splitController.focusedPaneId {
+            _ = workspace.performLayoutCommand(.createTerminal(inPane: paneId, focus: true))
+        }
     }
 
     // MARK: - Split Creation
@@ -5071,13 +5074,14 @@ class TabManager: ObservableObject {
               let tab = tabs.first(where: { $0.id == selectedTabId }),
               let focusedPanelId = tab.focusedPanelId else { return nil }
         tab.clearSplitZoom()
-        return newBrowserSplit(
-            tabId: selectedTabId,
-            fromPanelId: focusedPanelId,
-            orientation: direction.orientation,
-            insertFirst: direction.insertFirst,
-            url: url
-        )
+        return tab.performLayoutCommand(
+            .splitBrowser(
+                fromPanelId: focusedPanelId,
+                orientation: direction.orientation,
+                insertFirst: direction.insertFirst,
+                url: url
+            )
+        ).browserPanel?.id
     }
 
     /// Refresh WorkspaceSplit right-side action button tooltips for all workspaces.
@@ -5178,12 +5182,14 @@ class TabManager: ObservableObject {
     /// Returns the new panel's ID (which is also the surface ID for terminals)
     func newSplit(tabId: UUID, surfaceId: UUID, direction: SplitDirection, focus: Bool = true) -> UUID? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
-        let result = tab.newTerminalSplit(
-            from: surfaceId,
-            orientation: direction.orientation,
-            insertFirst: direction.insertFirst,
-            focus: focus
-        )?.id
+        let result = tab.performLayoutCommand(
+            .splitTerminal(
+                fromPanelId: surfaceId,
+                orientation: direction.orientation,
+                insertFirst: direction.insertFirst,
+                focus: focus
+            )
+        ).terminalPanel?.id
 #if DEBUG
         if direction == .right {
             latencyLog(
@@ -5379,42 +5385,6 @@ class TabManager: ObservableObject {
 
     // MARK: - Browser Panel Operations
 
-    /// Create a new browser panel in a split
-    func newBrowserSplit(
-        tabId: UUID,
-        fromPanelId: UUID,
-        orientation: SplitOrientation,
-        insertFirst: Bool = false,
-        url: URL? = nil,
-        preferredProfileID: UUID? = nil,
-        focus: Bool = true
-    ) -> UUID? {
-        guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
-        return tab.newBrowserSplit(
-            from: fromPanelId,
-            orientation: orientation,
-            insertFirst: insertFirst,
-            url: url,
-            preferredProfileID: preferredProfileID,
-            focus: focus
-        )?.id
-    }
-
-    /// Create a new browser surface in a pane
-    func newBrowserSurface(
-        tabId: UUID,
-        inPane paneId: PaneID,
-        url: URL? = nil,
-        preferredProfileID: UUID? = nil
-    ) -> UUID? {
-        guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
-        return tab.newBrowserSurface(
-            inPane: paneId,
-            url: url,
-            preferredProfileID: preferredProfileID
-        )?.id
-    }
-
     /// Get a browser panel by ID
     func browserPanel(tabId: UUID, panelId: UUID) -> BrowserPanel? {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return nil }
@@ -5437,7 +5407,7 @@ class TabManager: ObservableObject {
 
         if preferSplitRight {
             if let targetPaneId = workspace.topRightBrowserReusePane(),
-               let browserPanel = workspace.newBrowserSurface(
+               let browserPanel = workspace.createBrowserPanel(
                    inPane: targetPaneId,
                    url: url,
                    focus: true,
@@ -5464,8 +5434,8 @@ class TabManager: ObservableObject {
             }()
 
             if let splitSourcePanelId,
-               let browserPanel = workspace.newBrowserSplit(
-                   from: splitSourcePanelId,
+               let browserPanel = workspace.splitBrowserPanel(
+                   fromPanelId: splitSourcePanelId,
                    orientation: .horizontal,
                    url: url,
                    preferredProfileID: preferredProfileID,
@@ -5477,7 +5447,7 @@ class TabManager: ObservableObject {
         }
 
         guard let paneId = workspace.splitController.focusedPaneId ?? workspace.splitController.allPaneIds.first,
-              let browserPanel = workspace.newBrowserSurface(
+              let browserPanel = workspace.createBrowserPanel(
                   inPane: paneId,
                   url: url,
                   focus: true,
@@ -5598,7 +5568,7 @@ class TabManager: ObservableObject {
         in workspace: Workspace
     ) -> UUID? {
         if let originalPane = workspace.splitController.allPaneIds.first(where: { $0.id == snapshot.originalPaneId }),
-           let browserPanel = workspace.newBrowserSurface(
+           let browserPanel = workspace.createBrowserPanel(
                inPane: originalPane,
                url: snapshot.url,
                focus: true,
@@ -5615,9 +5585,9 @@ class TabManager: ObservableObject {
            let fallbackAnchorPaneId = snapshot.fallbackAnchorPaneId,
            let anchorPane = workspace.splitController.allPaneIds.first(where: { $0.id == fallbackAnchorPaneId }),
            let anchorTab = workspace.splitController.selectedTab(inPane: anchorPane) ?? workspace.splitController.tabs(inPane: anchorPane).first,
-           let anchorPanelId = workspace.panelIdFromSurfaceId(anchorTab.id),
-           let browserPanelId = workspace.newBrowserSplit(
-               from: anchorPanelId,
+           let anchorPanelId = workspace.panel(for: anchorTab.id)?.id,
+           let browserPanelId = workspace.splitBrowserPanel(
+               fromPanelId: anchorPanelId,
                orientation: orientation,
                insertFirst: snapshot.fallbackSplitInsertFirst,
                url: snapshot.url,
@@ -5629,7 +5599,7 @@ class TabManager: ObservableObject {
         guard let focusedPane = workspace.splitController.focusedPaneId ?? workspace.splitController.allPaneIds.first else {
             return nil
         }
-        return workspace.newBrowserSurface(
+        return workspace.createBrowserPanel(
             inPane: focusedPane,
             url: snapshot.url,
             focus: true,
@@ -5927,16 +5897,16 @@ class TabManager: ObservableObject {
 
                 // Layout goal: 2x2 grid (2 top, 2 bottom), then close both right panels.
                 // Order matters: split down first, then split right in each row (matches UI shortcut repro).
-                guard let bottomLeft = tab.newTerminalSplit(from: topLeftPanelId, orientation: .vertical) else {
+                guard let bottomLeft = tab.splitTerminalPanel(fromPanelId: topLeftPanelId, orientation: .vertical) else {
                     self.writeSplitCloseRightTestData(["setupError": "Failed to create bottom-left split"], at: path)
                     return
                 }
-                guard let bottomRight = tab.newTerminalSplit(from: bottomLeft.id, orientation: .horizontal) else {
+                guard let bottomRight = tab.splitTerminalPanel(fromPanelId: bottomLeft.id, orientation: .horizontal) else {
                     self.writeSplitCloseRightTestData(["setupError": "Failed to create bottom-right split"], at: path)
                     return
                 }
                 tab.focusPanel(topLeftPanelId)
-                guard let topRight = tab.newTerminalSplit(from: topLeftPanelId, orientation: .horizontal) else {
+                guard let topRight = tab.splitTerminalPanel(fromPanelId: topLeftPanelId, orientation: .horizontal) else {
                     self.writeSplitCloseRightTestData(["setupError": "Failed to create top-right split"], at: path)
                     return
                 }
@@ -6094,22 +6064,22 @@ class TabManager: ObservableObject {
 
             switch pattern {
             case "close_right_single":
-                guard let tr = tab.newTerminalSplit(from: topLeftId, orientation: .horizontal) else {
+                guard let tr = tab.splitTerminalPanel(fromPanelId: topLeftId, orientation: .horizontal) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split right from top-left (iteration \(i))"], at: path)
                     return
                 }
                 topRight = tr
             case "close_right_lrtd", "close_right_lrtd_bottom_first", "close_right_bottom_first", "close_right_lrtd_unfocused":
                 // User repro: split left/right first, then split top/down in each column.
-                guard let tr = tab.newTerminalSplit(from: topLeftId, orientation: .horizontal) else {
+                guard let tr = tab.splitTerminalPanel(fromPanelId: topLeftId, orientation: .horizontal) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split right from top-left (iteration \(i))"], at: path)
                     return
                 }
-                guard let bl = tab.newTerminalSplit(from: topLeftId, orientation: .vertical) else {
+                guard let bl = tab.splitTerminalPanel(fromPanelId: topLeftId, orientation: .vertical) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split down from left (iteration \(i))"], at: path)
                     return
                 }
-                guard let br = tab.newTerminalSplit(from: tr.id, orientation: .vertical) else {
+                guard let br = tab.splitTerminalPanel(fromPanelId: tr.id, orientation: .vertical) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split down from right (iteration \(i))"], at: path)
                     return
                 }
@@ -6118,15 +6088,15 @@ class TabManager: ObservableObject {
                 bottomRight = br
             default:
                 // Default: split top/down first, then split left/right in each row.
-                guard let bl = tab.newTerminalSplit(from: topLeftId, orientation: .vertical) else {
+                guard let bl = tab.splitTerminalPanel(fromPanelId: topLeftId, orientation: .vertical) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split down from top-left (iteration \(i))"], at: path)
                     return
                 }
-                guard let br = tab.newTerminalSplit(from: bl.id, orientation: .horizontal) else {
+                guard let br = tab.splitTerminalPanel(fromPanelId: bl.id, orientation: .horizontal) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split right from bottom-left (iteration \(i))"], at: path)
                     return
                 }
-                guard let tr = tab.newTerminalSplit(from: topLeftId, orientation: .horizontal) else {
+                guard let tr = tab.splitTerminalPanel(fromPanelId: topLeftId, orientation: .horizontal) else {
                     writeSplitCloseRightTestData(["setupError": "Failed to split right from top-left (iteration \(i))"], at: path)
                     return
                 }
@@ -6258,12 +6228,12 @@ class TabManager: ObservableObject {
                     let tabs = tab.splitController.tabs(inPane: paneId)
                     let selected = tab.splitController.selectedTab(inPane: paneId)
                     let selectedId = selected.map { String(describing: $0.id) } ?? "nil"
-                    let selectedPanelId = selected.flatMap { tab.panelIdFromSurfaceId($0.id) }
+                    let selectedPanelId = selected.flatMap { tab.panel(for: $0.id)?.id }
                     let selectedPanelLive: String = {
                         guard let selected else { return "0" }
                         return tab.panel(for: selected.id) != nil ? "1" : "0"
                     }()
-                    let mappedCount = tabs.filter { tab.panelIdFromSurfaceId($0.id) != nil }.count
+                    let mappedCount = tabs.filter { tab.panel(for: $0.id) != nil }.count
                     let selectedPanel = selectedPanelId?.uuidString.prefix(8) ?? "nil"
                     return "pane=\(paneId.id.uuidString.prefix(8)):tabs=\(tabs.count):mapped=\(mappedCount):selected=\(selectedId.prefix(8)):selectedPanel=\(selectedPanel):selectedLive=\(selectedPanelLive)"
                 }.joined(separator: ";")
@@ -6434,7 +6404,7 @@ class TabManager: ObservableObject {
                     }
                 }
 
-                guard let rightPanel = tab.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+                guard let rightPanel = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .horizontal) else {
                     write(["setupError": "Failed to create right split at iteration \(i)", "done": "1"])
                     return
                 }
@@ -6564,7 +6534,7 @@ class TabManager: ObservableObject {
                 write(["setupError": "Missing initial focused panel", "done": "1"])
                 return
             }
-            guard let rightPanel = tab.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+            guard let rightPanel = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .horizontal) else {
                 write(["setupError": "Failed to create right split", "done": "1"])
                 return
             }
@@ -6575,17 +6545,17 @@ class TabManager: ObservableObject {
             var exitPanelId = rightPanel.id
 
             if layout == "lr_left_vertical" {
-                guard let bottomLeft = tab.newTerminalSplit(from: leftPanelId, orientation: .vertical) else {
+                guard let bottomLeft = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .vertical) else {
                     write(["setupError": "Failed to create bottom-left split", "done": "1"])
                     return
                 }
                 bottomLeftPanelId = bottomLeft.id.uuidString
             } else if layout == "lrtd_close_right_then_exit_top_left" {
-                guard let bottomLeft = tab.newTerminalSplit(from: leftPanelId, orientation: .vertical) else {
+                guard let bottomLeft = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .vertical) else {
                     write(["setupError": "Failed to create bottom-left split", "done": "1"])
                     return
                 }
-                guard let bottomRight = tab.newTerminalSplit(from: rightPanel.id, orientation: .vertical) else {
+                guard let bottomRight = tab.splitTerminalPanel(fromPanelId: rightPanel.id, orientation: .vertical) else {
                     write(["setupError": "Failed to create bottom-right split", "done": "1"])
                     return
                 }
@@ -6619,15 +6589,15 @@ class TabManager: ObservableObject {
                 // 2) split left/right for each row (2x2)
                 // 3) close both bottom panes
                 // 4) trigger Ctrl+D in top-left
-                guard let bottomLeft = tab.newTerminalSplit(from: leftPanelId, orientation: .vertical) else {
+                guard let bottomLeft = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .vertical) else {
                     write(["setupError": "Failed to create bottom-left split", "done": "1"])
                     return
                 }
-                guard let topRight = tab.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+                guard let topRight = tab.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .horizontal) else {
                     write(["setupError": "Failed to create top-right split", "done": "1"])
                     return
                 }
-                guard let bottomRight = tab.newTerminalSplit(from: bottomLeft.id, orientation: .horizontal) else {
+                guard let bottomRight = tab.splitTerminalPanel(fromPanelId: bottomLeft.id, orientation: .horizontal) else {
                     write(["setupError": "Failed to create bottom-right split", "done": "1"])
                     return
                 }

@@ -4227,7 +4227,7 @@ extension BrowserPanel {
 #endif
             return
         }
-        workspace.newBrowserSurface(
+        workspace.createBrowserPanel(
             inPane: paneId,
             url: url,
             focus: true,

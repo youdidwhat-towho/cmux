@@ -4,7 +4,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import ObjectiveC.runtime
-import Bonsplit
 import UserNotifications
 
 #if canImport(cmux_DEV)
@@ -945,7 +944,7 @@ final class FocusedNotificationIndicatorTests: XCTestCase {
 
         guard let workspace = manager.selectedWorkspace,
               let leftPanelId = workspace.focusedPanelId,
-              let rightPanel = workspace.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+              let rightPanel = workspace.splitTerminalPanel(fromPanelId: leftPanelId, orientation: .horizontal) else {
             XCTFail("Expected split workspace setup")
             return
         }

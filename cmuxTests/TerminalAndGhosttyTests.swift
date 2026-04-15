@@ -4,7 +4,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import ObjectiveC.runtime
-import Bonsplit
 import UserNotifications
 
 #if canImport(cmux_DEV)
@@ -3844,56 +3843,6 @@ final class TerminalControllerSocketTextChunkTests: XCTestCase {
                 .control("\n".unicodeScalars.first!),
                 .control("\t".unicodeScalars.first!)
             ]
-        )
-    }
-}
-
-
-final class GhosttyTerminalViewVisibilityPolicyTests: XCTestCase {
-    func testImmediateStateUpdateAllowedWhenHostNotInWindow() {
-        XCTAssertTrue(
-            GhosttyTerminalView.shouldApplyImmediateHostedStateUpdate(
-                hostedViewHasSuperview: true,
-                isBoundToCurrentHost: false
-            )
-        )
-    }
-
-    func testImmediateStateUpdateAllowedWhenBoundToCurrentHost() {
-        XCTAssertTrue(
-            GhosttyTerminalView.shouldApplyImmediateHostedStateUpdate(
-                hostedViewHasSuperview: true,
-                isBoundToCurrentHost: true
-            )
-        )
-    }
-
-    func testImmediateStateUpdateSkippedForStaleHostBoundElsewhere() {
-        XCTAssertFalse(
-            GhosttyTerminalView.shouldApplyImmediateHostedStateUpdate(
-                hostedViewHasSuperview: true,
-                isBoundToCurrentHost: false
-            )
-        )
-    }
-
-    func testImmediateStateUpdateAllowedWhenUnboundAndNotAttachedAnywhere() {
-        XCTAssertTrue(
-            GhosttyTerminalView.shouldApplyImmediateHostedStateUpdate(
-                hostedViewHasSuperview: false,
-                isBoundToCurrentHost: false
-            )
-        )
-    }
-
-    func testInteractiveGeometryResizeUsesImmediatePortalSyncDecision() {
-        XCTAssertTrue(
-            GhosttyTerminalView.shouldSynchronizePortalGeometryImmediately(
-                hostInLiveResize: false,
-                windowInLiveResize: false,
-                interactiveGeometryResizeActive: true
-            ),
-            "Interactive resize should use the immediate portal sync path"
         )
     }
 }

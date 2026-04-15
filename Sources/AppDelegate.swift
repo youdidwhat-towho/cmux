@@ -5045,7 +5045,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let splitTabId = TabID(uuid: tabId)
         for context in mainWindowContexts.values {
             for workspace in context.tabManager.tabs {
-                if let panelId = workspace.panelIdFromSurfaceId(splitTabId) {
+                if let panelId = workspace.panel(for: splitTabId)?.id {
                     return (context.windowId, workspace.id, panelId, context.tabManager)
                 }
             }
@@ -8011,24 +8011,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let topLeftPanelId = workspace.focusedTerminalPanel?.id ?? workspace.focusedPanelId else {
             return false
         }
-        guard let topRight = workspace.newTerminalSplit(
-            from: topLeftPanelId,
+        guard let topRight = workspace.splitTerminalPanel(
+            fromPanelId: topLeftPanelId,
             orientation: .horizontal,
             focus: false
         ) else {
             return false
         }
         await Task.yield()
-        guard workspace.newTerminalSplit(
-            from: topLeftPanelId,
+        guard workspace.splitTerminalPanel(
+            fromPanelId: topLeftPanelId,
             orientation: .vertical,
             focus: false
         ) != nil else {
             return false
         }
         await Task.yield()
-        guard workspace.newTerminalSplit(
-            from: topRight.id,
+        guard workspace.splitTerminalPanel(
+            fromPanelId: topRight.id,
             orientation: .vertical,
             focus: false
         ) != nil else {
@@ -8043,7 +8043,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if additionalTabsPerPane > 0 {
             for (paneIndex, paneId) in paneIds.enumerated() {
                 for tabOffset in 0..<additionalTabsPerPane {
-                    guard workspace.newTerminalSurface(inPane: paneId, focus: false) != nil else {
+                    guard workspace.createTerminalPanel(inPane: paneId, focus: false) != nil else {
                         return false
                     }
                     if ((tabOffset + 1) % debugStressYieldInterval) == 0 {
@@ -8150,7 +8150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for (workspaceIndex, workspace) in workspaces.enumerated() {
             for paneId in workspace.splitController.allPaneIds {
                 for tab in workspace.splitController.tabs(inPane: paneId) {
-                    guard let panelId = workspace.panelIdFromSurfaceId(tab.id),
+                    guard let panelId = workspace.panel(for: tab.id)?.id,
                           workspace.panel(for: tab.id) is TerminalPanel else {
                         continue
                     }
@@ -8638,12 +8638,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.writeGotoSplitTestData(["setupError": "Invalid browser URL"])
                 return
             }
-            guard let browserPanelId = tabManager.newBrowserSplit(
-                tabId: tab.id,
+            guard let browserPanelId = tab.splitBrowserPanel(
                 fromPanelId: initialPanelId,
                 orientation: .horizontal,
                 url: url
-            ) else {
+            )?.id else {
                 self.writeGotoSplitTestData(["setupError": "Failed to create browser split"])
                 return
             }
@@ -8795,11 +8794,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let trackedPaneId else { return }
 
         let titles: [String] = workspace.splitController.tabs(inPane: trackedPaneId).compactMap { tab in
-            guard let panelId = workspace.panelIdFromSurfaceId(tab.id) else { return nil }
+            guard let panelId = workspace.panel(for: tab.id)?.id else { return nil }
             return workspace.panelTitle(panelId: panelId)
         }
         let selectedTitle = workspace.splitController.selectedTab(inPane: trackedPaneId)
-            .flatMap { workspace.panelIdFromSurfaceId($0.id) }
+            .flatMap { workspace.panel(for: $0.id)?.id }
             .flatMap { workspace.panelTitle(panelId: $0) } ?? ""
 
         writeSplitTabDragUITestData([
@@ -9023,7 +9022,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         var terminalPane: PaneID?
         for paneId in paneIds {
             guard let selected = tab.splitController.selectedTab(inPane: paneId),
-                  let panelId = tab.panelIdFromSurfaceId(selected.id) else { continue }
+                  let panelId = tab.panel(for: selected.id)?.id else { continue }
             if panelId == browserPanelId {
                 browserPane = paneId
             } else if terminalPane == nil {

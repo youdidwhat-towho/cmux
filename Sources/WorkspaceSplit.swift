@@ -345,13 +345,13 @@ struct WorkspaceLayoutConfiguration: Sendable {
 }
 
 enum WorkspaceLayout {
-    struct Tab: Identifiable, Hashable, Sendable {
+    struct Tab: Identifiable, Hashable, Codable, Sendable {
         var id: TabID
         var title: String
         var hasCustomTitle: Bool
         var icon: String?
         var iconImageData: Data?
-        var kind: String?
+        var kind: PanelType?
         var isDirty: Bool
         var showsNotificationBadge: Bool
         var isLoading: Bool
@@ -363,7 +363,7 @@ enum WorkspaceLayout {
             hasCustomTitle: Bool = false,
             icon: String? = nil,
             iconImageData: Data? = nil,
-            kind: String? = nil,
+            kind: PanelType? = nil,
             isDirty: Bool = false,
             showsNotificationBadge: Bool = false,
             isLoading: Bool = false,
@@ -383,6 +383,8 @@ enum WorkspaceLayout {
     }
 }
 
+typealias WorkspaceLayoutTabChromeProvider = @MainActor (WorkspaceLayout.Tab, PaneID) -> WorkspaceLayout.Tab
+
 protocol WorkspaceLayoutDelegate: AnyObject {
     func workspaceSplit(_ controller: WorkspaceLayoutController, shouldCreateTab tab: WorkspaceLayout.Tab, inPane pane: PaneID) -> Bool
     func workspaceSplit(_ controller: WorkspaceLayoutController, shouldCloseTab tab: WorkspaceLayout.Tab, inPane pane: PaneID) -> Bool
@@ -395,7 +397,7 @@ protocol WorkspaceLayoutDelegate: AnyObject {
     func workspaceSplit(_ controller: WorkspaceLayoutController, didSplitPane originalPane: PaneID, newPane: PaneID, orientation: SplitOrientation)
     func workspaceSplit(_ controller: WorkspaceLayoutController, didClosePane paneId: PaneID)
     func workspaceSplit(_ controller: WorkspaceLayoutController, didFocusPane pane: PaneID)
-    func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestNewTab kind: String, inPane pane: PaneID)
+    func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestNewTab kind: PanelType, inPane pane: PaneID)
     func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestTabContextAction action: TabContextAction, for tab: WorkspaceLayout.Tab, inPane pane: PaneID)
     func workspaceSplit(_ controller: WorkspaceLayoutController, didChangeGeometry snapshot: LayoutSnapshot)
     func workspaceSplit(_ controller: WorkspaceLayoutController, shouldNotifyDuringDrag: Bool) -> Bool
@@ -413,7 +415,7 @@ extension WorkspaceLayoutDelegate {
     func workspaceSplit(_ controller: WorkspaceLayoutController, didSplitPane originalPane: PaneID, newPane: PaneID, orientation: SplitOrientation) {}
     func workspaceSplit(_ controller: WorkspaceLayoutController, didClosePane paneId: PaneID) {}
     func workspaceSplit(_ controller: WorkspaceLayoutController, didFocusPane pane: PaneID) {}
-    func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestNewTab kind: String, inPane pane: PaneID) {}
+    func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestNewTab kind: PanelType, inPane pane: PaneID) {}
     func workspaceSplit(_ controller: WorkspaceLayoutController, didRequestTabContextAction action: TabContextAction, for tab: WorkspaceLayout.Tab, inPane pane: PaneID) {}
     func workspaceSplit(_ controller: WorkspaceLayoutController, didChangeGeometry snapshot: LayoutSnapshot) {}
     func workspaceSplit(_ controller: WorkspaceLayoutController, shouldNotifyDuringDrag: Bool) -> Bool { false }
@@ -441,13 +443,6 @@ extension WorkspaceLayout.Tab {
         self.init(
             id: TabID(id: tabItem.id),
             title: tabItem.title,
-            hasCustomTitle: tabItem.hasCustomTitle,
-            icon: tabItem.icon,
-            iconImageData: tabItem.iconImageData,
-            kind: tabItem.kind,
-            isDirty: tabItem.isDirty,
-            showsNotificationBadge: tabItem.showsNotificationBadge,
-            isLoading: tabItem.isLoading,
             isPinned: tabItem.isPinned
         )
     }
@@ -709,37 +704,31 @@ extension UTType {
 struct TabItem: Identifiable, Hashable, Codable {
     let id: UUID
     var title: String
-    var hasCustomTitle: Bool
-    var icon: String?
-    var iconImageData: Data?
-    var kind: String?
-    var isDirty: Bool
-    var showsNotificationBadge: Bool
-    var isLoading: Bool
     var isPinned: Bool
 
     init(
         id: UUID = UUID(),
         title: String,
+        isPinned: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.isPinned = isPinned
+    }
+
+    init(
+        id: UUID = UUID(),
+        title: String,
         hasCustomTitle: Bool = false,
-        icon: String? = "doc.text",
+        icon: String? = nil,
         iconImageData: Data? = nil,
-        kind: String? = nil,
+        kind: PanelType? = nil,
         isDirty: Bool = false,
         showsNotificationBadge: Bool = false,
         isLoading: Bool = false,
         isPinned: Bool = false
     ) {
-        self.id = id
-        self.title = title
-        self.hasCustomTitle = hasCustomTitle
-        self.icon = icon
-        self.iconImageData = iconImageData
-        self.kind = kind
-        self.isDirty = isDirty
-        self.showsNotificationBadge = showsNotificationBadge
-        self.isLoading = isLoading
-        self.isPinned = isPinned
+        self.init(id: id, title: title, isPinned: isPinned)
     }
 
     func hash(into hasher: inout Hasher) {
@@ -753,13 +742,6 @@ struct TabItem: Identifiable, Hashable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id
         case title
-        case hasCustomTitle
-        case icon
-        case iconImageData
-        case kind
-        case isDirty
-        case showsNotificationBadge
-        case isLoading
         case isPinned
     }
 
@@ -767,13 +749,6 @@ struct TabItem: Identifiable, Hashable, Codable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         self.id = try c.decode(UUID.self, forKey: .id)
         self.title = try c.decode(String.self, forKey: .title)
-        self.hasCustomTitle = try c.decodeIfPresent(Bool.self, forKey: .hasCustomTitle) ?? false
-        self.icon = try c.decodeIfPresent(String.self, forKey: .icon)
-        self.iconImageData = try c.decodeIfPresent(Data.self, forKey: .iconImageData)
-        self.kind = try c.decodeIfPresent(String.self, forKey: .kind)
-        self.isDirty = try c.decodeIfPresent(Bool.self, forKey: .isDirty) ?? false
-        self.showsNotificationBadge = try c.decodeIfPresent(Bool.self, forKey: .showsNotificationBadge) ?? false
-        self.isLoading = try c.decodeIfPresent(Bool.self, forKey: .isLoading) ?? false
         self.isPinned = try c.decodeIfPresent(Bool.self, forKey: .isPinned) ?? false
     }
 
@@ -781,32 +756,17 @@ struct TabItem: Identifiable, Hashable, Codable {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(id, forKey: .id)
         try c.encode(title, forKey: .title)
-        try c.encode(hasCustomTitle, forKey: .hasCustomTitle)
-        try c.encodeIfPresent(icon, forKey: .icon)
-        try c.encodeIfPresent(iconImageData, forKey: .iconImageData)
-        try c.encodeIfPresent(kind, forKey: .kind)
-        try c.encode(isDirty, forKey: .isDirty)
-        try c.encode(showsNotificationBadge, forKey: .showsNotificationBadge)
-        try c.encode(isLoading, forKey: .isLoading)
         try c.encode(isPinned, forKey: .isPinned)
-    }
-}
-
-// MARK: - Transferable for Drag & Drop
-
-extension TabItem: Transferable {
-    static var transferRepresentation: some TransferRepresentation {
-        CodableRepresentation(contentType: .tabItem)
     }
 }
 
 /// Transfer data that includes source pane information for cross-pane moves
 struct TabTransferData: Codable, Transferable {
-    let tab: TabItem
+    let tab: WorkspaceLayout.Tab
     let sourcePaneId: UUID
     let sourceProcessId: Int32
 
-    init(tab: TabItem, sourcePaneId: UUID, sourceProcessId: Int32 = Int32(ProcessInfo.processInfo.processIdentifier)) {
+    init(tab: WorkspaceLayout.Tab, sourcePaneId: UUID, sourceProcessId: Int32 = Int32(ProcessInfo.processInfo.processIdentifier)) {
         self.tab = tab
         self.sourcePaneId = sourcePaneId
         self.sourceProcessId = sourceProcessId
@@ -824,7 +784,7 @@ struct TabTransferData: Codable, Transferable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.tab = try container.decode(TabItem.self, forKey: .tab)
+        self.tab = try container.decode(WorkspaceLayout.Tab.self, forKey: .tab)
         self.sourcePaneId = try container.decode(UUID.self, forKey: .sourcePaneId)
         // Legacy payloads won't include this field. Treat as foreign process to reject cross-instance drops.
         self.sourceProcessId = try container.decodeIfPresent(Int32.self, forKey: .sourceProcessId) ?? -1
@@ -1136,7 +1096,7 @@ final class SplitViewController {
 
     /// Tab currently being dragged (for visual feedback and hit-testing).
     /// This is @Observable so SwiftUI views react (e.g. allowsHitTesting).
-    var draggingTab: TabItem?
+    var draggingTab: WorkspaceLayout.Tab?
 
     /// Monotonic counter incremented on each drag start. Used to invalidate stale
     /// timeout timers that would otherwise cancel a new drag of the same tab.
@@ -1148,7 +1108,7 @@ final class SplitViewController {
     /// Non-observable drag session state. Drop delegates read these instead of the
     /// @Observable properties above, because SwiftUI batches observable updates and
     /// createItemProvider's writes may not be visible to validateDrop/performDrop yet.
-    @ObservationIgnored var activeDragTab: TabItem?
+    @ObservationIgnored var activeDragTab: WorkspaceLayout.Tab?
     @ObservationIgnored var activeDragSourcePaneId: PaneID?
 
     /// When false, drop delegates reject all drags and NSViews are hidden.
@@ -1182,7 +1142,7 @@ final class SplitViewController {
             self.rootNode = rootNode
         } else {
             // Initialize with a single pane containing a welcome tab
-            let welcomeTab = TabItem(title: "Welcome", icon: "star")
+            let welcomeTab = TabItem(title: "Welcome")
             let initialPane = PaneState(tabs: [welcomeTab])
             self.rootNode = .pane(initialPane)
             self.focusedPaneId = initialPane.id
@@ -1568,7 +1528,7 @@ final class SplitViewController {
     func createNewTab() {
         guard let pane = focusedPane else { return }
         let count = pane.tabs.count + 1
-        let newTab = TabItem(title: "Untitled \(count)", icon: "doc")
+        let newTab = TabItem(title: "Untitled \(count)")
         pane.addTab(newTab)
     }
 
@@ -2203,43 +2163,20 @@ final class WorkspaceLayoutController {
 
     /// Create a new tab in the focused pane (or specified pane)
     /// - Parameters:
+    ///   - id: Optional stable surface ID to use for the tab
     ///   - title: The tab title
-    ///   - icon: Optional SF Symbol name for the tab icon
-    ///   - iconImageData: Optional image data (PNG recommended) for the tab icon. When present, takes precedence over `icon`.
-    ///   - kind: Consumer-defined tab kind identifier (e.g. "terminal", "browser")
-    ///   - hasCustomTitle: Whether the tab title came from a custom user override
-    ///   - isDirty: Whether the tab shows a dirty indicator
-    ///   - showsNotificationBadge: Whether the tab shows an "unread/activity" badge
-    ///   - isLoading: Whether the tab shows an activity/loading indicator (e.g. spinning icon)
     ///   - isPinned: Whether the tab should be treated as pinned
     ///   - pane: Optional pane to add the tab to (defaults to focused pane)
     /// - Returns: The TabID of the created tab, or nil if creation was vetoed by delegate
     @discardableResult
     func createTab(
+        id: TabID? = nil,
         title: String,
-        hasCustomTitle: Bool = false,
-        icon: String? = "doc.text",
-        iconImageData: Data? = nil,
-        kind: String? = nil,
-        isDirty: Bool = false,
-        showsNotificationBadge: Bool = false,
-        isLoading: Bool = false,
         isPinned: Bool = false,
         inPane pane: PaneID? = nil
     ) -> TabID? {
-        let tabId = TabID()
-        let tab = WorkspaceLayout.Tab(
-            id: tabId,
-            title: title,
-            hasCustomTitle: hasCustomTitle,
-            icon: icon,
-            iconImageData: iconImageData,
-            kind: kind,
-            isDirty: isDirty,
-            showsNotificationBadge: showsNotificationBadge,
-            isLoading: isLoading,
-            isPinned: isPinned
-        )
+        let tabId = id ?? TabID()
+        let tab = WorkspaceLayout.Tab(id: tabId, title: title, isPinned: isPinned)
         let targetPane = pane ?? focusedPaneId ?? PaneID(id: internalController.rootNode.allPaneIds.first!.id)
 
         // Check with delegate
@@ -2268,13 +2205,6 @@ final class WorkspaceLayoutController {
         let tabItem = TabItem(
             id: tabId.id,
             title: title,
-            hasCustomTitle: hasCustomTitle,
-            icon: icon,
-            iconImageData: iconImageData,
-            kind: kind,
-            isDirty: isDirty,
-            showsNotificationBadge: showsNotificationBadge,
-            isLoading: isLoading,
             isPinned: isPinned
         )
         internalController.addTab(tabItem, toPane: PaneID(id: targetPane.id), atIndex: insertIndex)
@@ -2287,7 +2217,7 @@ final class WorkspaceLayoutController {
 
     /// Request the delegate to create a new tab of the given kind in a pane.
     /// The delegate is responsible for the actual creation logic.
-    func requestNewTab(kind: String, inPane pane: PaneID) {
+    func requestNewTab(kind: PanelType, inPane pane: PaneID) {
         delegate?.workspaceSplit(self, didRequestNewTab: kind, inPane: pane)
     }
 
@@ -2297,28 +2227,14 @@ final class WorkspaceLayoutController {
         delegate?.workspaceSplit(self, didRequestTabContextAction: action, for: tab, inPane: pane)
     }
 
-    /// Update an existing tab's metadata
+    /// Update an existing tab's layout-affecting metadata
     /// - Parameters:
     ///   - tabId: The tab to update
-    ///   - title: New title (pass nil to keep current)
-    ///   - icon: New icon (pass nil to keep current, pass .some(nil) to remove icon)
-    ///   - iconImageData: New icon image data (pass nil to keep current, pass .some(nil) to remove)
-    ///   - kind: New tab kind (pass nil to keep current, pass .some(nil) to clear)
-    ///   - hasCustomTitle: New custom-title state (pass nil to keep current)
-    ///   - isDirty: New dirty state (pass nil to keep current)
-    ///   - showsNotificationBadge: New badge state (pass nil to keep current)
-    ///   - isLoading: New loading/busy state (pass nil to keep current)
+    ///   - title: New fallback title (pass nil to keep current)
     ///   - isPinned: New pinned state (pass nil to keep current)
     func updateTab(
         _ tabId: TabID,
         title: String? = nil,
-        icon: String?? = nil,
-        iconImageData: Data?? = nil,
-        kind: String?? = nil,
-        hasCustomTitle: Bool? = nil,
-        isDirty: Bool? = nil,
-        showsNotificationBadge: Bool? = nil,
-        isLoading: Bool? = nil,
         isPinned: Bool? = nil
     ) {
         guard let (pane, tabIndex) = findTabInternal(tabId) else { return }
@@ -2327,48 +2243,6 @@ final class WorkspaceLayoutController {
         if let title = title {
             if pane.tabs[tabIndex].title != title {
                 pane.tabs[tabIndex].title = title
-                didMutate = true
-            }
-        }
-        if let icon = icon {
-            if pane.tabs[tabIndex].icon != icon {
-                pane.tabs[tabIndex].icon = icon
-                didMutate = true
-            }
-        }
-        if let iconImageData = iconImageData {
-            if pane.tabs[tabIndex].iconImageData != iconImageData {
-                pane.tabs[tabIndex].iconImageData = iconImageData
-                didMutate = true
-            }
-        }
-        if let kind = kind {
-            if pane.tabs[tabIndex].kind != kind {
-                pane.tabs[tabIndex].kind = kind
-                didMutate = true
-            }
-        }
-        if let hasCustomTitle = hasCustomTitle {
-            if pane.tabs[tabIndex].hasCustomTitle != hasCustomTitle {
-                pane.tabs[tabIndex].hasCustomTitle = hasCustomTitle
-                didMutate = true
-            }
-        }
-        if let isDirty = isDirty {
-            if pane.tabs[tabIndex].isDirty != isDirty {
-                pane.tabs[tabIndex].isDirty = isDirty
-                didMutate = true
-            }
-        }
-        if let showsNotificationBadge = showsNotificationBadge {
-            if pane.tabs[tabIndex].showsNotificationBadge != showsNotificationBadge {
-                pane.tabs[tabIndex].showsNotificationBadge = showsNotificationBadge
-                didMutate = true
-            }
-        }
-        if let isLoading = isLoading {
-            if pane.tabs[tabIndex].isLoading != isLoading {
-                pane.tabs[tabIndex].isLoading = isLoading
                 didMutate = true
             }
         }
@@ -2537,13 +2411,6 @@ final class WorkspaceLayoutController {
             internalTab = TabItem(
                 id: tab.id.id,
                 title: tab.title,
-                hasCustomTitle: tab.hasCustomTitle,
-                icon: tab.icon,
-                iconImageData: tab.iconImageData,
-                kind: tab.kind,
-                isDirty: tab.isDirty,
-                showsNotificationBadge: tab.showsNotificationBadge,
-                isLoading: tab.isLoading,
                 isPinned: tab.isPinned
             )
         } else {
@@ -2599,13 +2466,6 @@ final class WorkspaceLayoutController {
         let internalTab = TabItem(
             id: tab.id.id,
             title: tab.title,
-            hasCustomTitle: tab.hasCustomTitle,
-            icon: tab.icon,
-            iconImageData: tab.iconImageData,
-            kind: tab.kind,
-            isDirty: tab.isDirty,
-            showsNotificationBadge: tab.showsNotificationBadge,
-            isLoading: tab.isLoading,
             isPinned: tab.isPinned
         )
 
@@ -2668,7 +2528,7 @@ final class WorkspaceLayoutController {
                 // Keep a placeholder tab so the original pane isn't left "tabless".
                 // This makes the empty side closable via tab close, and avoids apps
                 // needing to special-case empty panes.
-                sourcePane.addTab(TabItem(title: "Empty", icon: nil), select: true)
+                sourcePane.addTab(TabItem(title: "Empty"), select: true)
             } else if internalController.rootNode.allPaneIds.count > 1 {
                 // If the source pane is now empty, close it (unless it's also the split target).
                 internalController.closePane(sourcePane.id)
@@ -3003,6 +2863,7 @@ struct WorkspaceLayoutView<Content: View, EmptyContent: View>: View {
     private let contentBuilder: (WorkspaceLayout.Tab, PaneID) -> Content
     private let emptyPaneBuilder: (PaneID) -> EmptyContent
     private let nativeContentBuilder: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)?
+    private let tabChromeProvider: WorkspaceLayoutTabChromeProvider?
 
     /// Initialize with a controller, content builder, and empty pane builder
     /// - Parameters:
@@ -3012,19 +2873,28 @@ struct WorkspaceLayoutView<Content: View, EmptyContent: View>: View {
     init(
         controller: WorkspaceLayoutController,
         nativeContent: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)? = nil,
+        tabChrome: WorkspaceLayoutTabChromeProvider? = nil,
         @ViewBuilder content: @escaping (WorkspaceLayout.Tab, PaneID) -> Content,
         @ViewBuilder emptyPane: @escaping (PaneID) -> EmptyContent
     ) {
         self.controller = controller
         self.nativeContentBuilder = nativeContent
+        self.tabChromeProvider = tabChrome
         self.contentBuilder = content
         self.emptyPaneBuilder = emptyPane
     }
 
     var body: some View {
+        let renderSnapshot = workspaceLayoutMakeRenderSnapshot(
+            controller: controller,
+            tabChromeBuilder: tabChromeProvider,
+            showSplitButtons: controller.configuration.allowSplits && controller.configuration.appearance.showSplitButtons
+        )
         WorkspaceLayoutNativeHost(
             controller: controller,
+            renderSnapshot: renderSnapshot,
             nativeContent: nativeContentBuilder,
+            tabChrome: tabChromeProvider,
             content: contentBuilder,
             emptyPane: emptyPaneBuilder,
             showSplitButtons: controller.configuration.allowSplits && controller.configuration.appearance.showSplitButtons,
@@ -3046,10 +2916,12 @@ extension WorkspaceLayoutView where EmptyContent == DefaultEmptyPaneView {
     init(
         controller: WorkspaceLayoutController,
         nativeContent: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)? = nil,
+        tabChrome: WorkspaceLayoutTabChromeProvider? = nil,
         @ViewBuilder content: @escaping (WorkspaceLayout.Tab, PaneID) -> Content
     ) {
         self.controller = controller
         self.nativeContentBuilder = nativeContent
+        self.tabChromeProvider = tabChrome
         self.contentBuilder = content
         self.emptyPaneBuilder = { _ in DefaultEmptyPaneView() }
     }
@@ -3073,7 +2945,7 @@ extension WorkspaceNativePaneContent {
 extension WorkspaceLayout.Tab {
     var prefersNativeDropOverlay: Bool {
         switch kind {
-        case "browser":
+        case .browser:
             true
         default:
             false

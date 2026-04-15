@@ -4,7 +4,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import ObjectiveC.runtime
-import Bonsplit
 import UserNotifications
 
 #if canImport(cmux_DEV)
@@ -178,8 +177,7 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
             XCTFail("Expected initial terminal panel")
             return
         }
-        guard let browserPanel = workspace.newBrowserSplit(
-            from: terminalId,
+        guard let browserPanel = workspace.splitBrowserPanel(fromPanelId: terminalId,
             orientation: .horizontal
         ) else {
             XCTFail("Expected browser split panel")
@@ -201,8 +199,7 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
     func testDoesNotFallbackWhenPreferredTerminalTargetIsMissing() {
         let workspace = Workspace(title: "Tests")
         guard let terminalId = workspace.focusedPanelId,
-              let browserPanel = workspace.newBrowserSplit(
-                from: terminalId,
+              let browserPanel = workspace.splitBrowserPanel(fromPanelId: terminalId,
                 orientation: .horizontal
               ) else {
             XCTFail("Expected initial workspace split")
@@ -223,8 +220,7 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
         let manager = TabManager()
         guard let workspace = manager.selectedWorkspace,
               let terminalId = workspace.focusedPanelId,
-              let browserPanel = workspace.newBrowserSplit(
-                from: terminalId,
+              let browserPanel = workspace.splitBrowserPanel(fromPanelId: terminalId,
                 orientation: .horizontal
               ) else {
             XCTFail("Expected initial workspace with terminal and browser split")
@@ -242,8 +238,7 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
         let manager = TabManager()
         guard let workspace = manager.selectedWorkspace,
               let terminalId = workspace.focusedPanelId,
-              let browserPanel = workspace.newBrowserSplit(
-                from: terminalId,
+              let browserPanel = workspace.splitBrowserPanel(fromPanelId: terminalId,
                 orientation: .horizontal
               ) else {
             XCTFail("Expected initial workspace with terminal and browser split")
@@ -252,10 +247,10 @@ final class ReactGrabPastebackTargetTests: XCTestCase {
 
         workspace.focusPanel(terminalId)
         XCTAssertTrue(workspace.toggleSplitZoom(panelId: terminalId))
-        XCTAssertTrue(workspace.bonsplitController.isSplitZoomed)
+        XCTAssertTrue(workspace.splitController.isSplitZoomed)
 
         XCTAssertTrue(manager.toggleReactGrabFromCurrentFocus())
-        XCTAssertFalse(workspace.bonsplitController.isSplitZoomed)
+        XCTAssertFalse(workspace.splitController.isSplitZoomed)
         XCTAssertEqual(workspace.focusedPanelId, browserPanel.id)
         XCTAssertEqual(browserPanel.pendingReactGrabReturnTargetPanelId, terminalId)
     }

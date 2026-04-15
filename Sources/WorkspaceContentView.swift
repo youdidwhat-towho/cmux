@@ -274,6 +274,9 @@ struct WorkspaceContentView: View {
         let isSplit = workspace.splitController.allPaneIds.count > 1 ||
             workspace.panels.count > 1
         let usesWorkspacePaneOverlay = TmuxOverlayExperimentSettings.target().usesWorkspacePaneOverlay
+        let tabChromeProjectionState = workspace.makeTabChromeProjectionState(
+            notificationStore: notificationStore
+        )
 
         // Inactive workspaces are kept alive in a ZStack (for state preservation) but their
         // AppKit-backed views can still intercept drags. Disable drop acceptance for them.
@@ -287,8 +290,7 @@ struct WorkspaceContentView: View {
                 guard let workspace else { return false }
                 // Find the focused panel in this pane and drop the files into it.
                 guard let tabId = workspace.splitController.selectedTab(inPane: paneId)?.id,
-                      let panelId = workspace.panelIdFromSurfaceId(tabId),
-                      let panel = workspace.panels[panelId] as? TerminalPanel else { return false }
+                      let panel = workspace.terminalPanel(for: tabId) else { return false }
                 return panel.hostedView.handleDroppedURLs(urls)
             }
         }()
@@ -351,58 +353,54 @@ struct WorkspaceContentView: View {
                 }
 
                 return nil
+            },
+            tabChrome: { tab, _ in
+                workspace.renderTabChrome(for: tab, using: tabChromeProjectionState)
             }
         ) { tab, paneId in
-            // Workspace terminal panes are mounted directly by the AppKit split host.
-            // Browser panes now use the native host path too, leaving SwiftUI for markdown.
             let _ = Self.debugPanelLookup(tab: tab, workspace: workspace)
             if let panel = workspace.panel(for: tab.id) {
-                if panel is TerminalPanel || panel is BrowserPanel {
-                    Color.clear
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    let isFocused = isWorkspaceInputActive && workspace.focusedPanelId == panel.id
-                    let isSelectedInPane = workspace.splitController.selectedTab(inPane: paneId)?.id == tab.id
-                    let isVisibleInUI = Self.panelVisibleInUI(
-                        isWorkspaceVisible: isWorkspaceVisible,
-                        isSelectedInPane: isSelectedInPane,
-                        isFocused: isFocused
-                    )
-                    let showsNotificationRing = Workspace.shouldShowUnreadIndicator(
-                        hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
-                            forTabId: workspace.id,
-                            surfaceId: panel.id
-                        ),
-                        isManuallyUnread: workspace.manualUnreadPanelIds.contains(panel.id)
-                    )
-                    PanelContentView(
-                        panel: panel,
-                        paneId: paneId,
-                        isFocused: isFocused,
-                        isSelectedInPane: isSelectedInPane,
-                        isVisibleInUI: isVisibleInUI,
-                        portalPriority: workspacePortalPriority,
-                        isSplit: isSplit,
-                        appearance: appearance,
-                        hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
-                        onFocus: {
-                            // Keep WorkspaceSplit focus in sync with the AppKit first responder for the
-                            // active workspace. This prevents divergence between the blue focused-tab
-                            // indicator and where keyboard input/flash-focus actually lands.
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
-                        },
-                        onRequestPanelFocus: {
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            workspace.focusPanel(panel.id)
-                        },
-                        onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
-                    )
-                    .onTapGesture {
-                        workspace.splitController.focusPane(paneId)
-                    }
+                let isFocused = isWorkspaceInputActive && workspace.focusedPanelId == panel.id
+                let isSelectedInPane = workspace.splitController.selectedTab(inPane: paneId)?.id == tab.id
+                let isVisibleInUI = Self.panelVisibleInUI(
+                    isWorkspaceVisible: isWorkspaceVisible,
+                    isSelectedInPane: isSelectedInPane,
+                    isFocused: isFocused
+                )
+                let showsNotificationRing = Workspace.shouldShowUnreadIndicator(
+                    hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
+                        forTabId: workspace.id,
+                        surfaceId: panel.id
+                    ),
+                    isManuallyUnread: workspace.manualUnreadPanelIds.contains(panel.id)
+                )
+                PanelContentView(
+                    panel: panel,
+                    paneId: paneId,
+                    isFocused: isFocused,
+                    isSelectedInPane: isSelectedInPane,
+                    isVisibleInUI: isVisibleInUI,
+                    portalPriority: workspacePortalPriority,
+                    isSplit: isSplit,
+                    appearance: appearance,
+                    hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
+                    onFocus: {
+                        // Keep WorkspaceSplit focus in sync with the AppKit first responder for the
+                        // active workspace. This prevents divergence between the blue focused-tab
+                        // indicator and where keyboard input/flash-focus actually lands.
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
+                    },
+                    onRequestPanelFocus: {
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        workspace.focusPanel(panel.id)
+                    },
+                    onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
+                )
+                .onTapGesture {
+                    workspace.splitController.focusPane(paneId)
                 }
             } else {
                 // Fallback for tabs without panels (shouldn't happen normally)
@@ -422,14 +420,7 @@ struct WorkspaceContentView: View {
         .id(splitZoomRenderIdentity)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            syncSplitNotificationBadges()
             refreshGhosttyAppearanceConfig(reason: "onAppear")
-        }
-        .onChange(of: notificationStore.notifications) { _, _ in
-            syncSplitNotificationBadges()
-        }
-        .onChange(of: workspace.manualUnreadPanelIds) { _, _ in
-            syncSplitNotificationBadges()
         }
         .onReceive(NotificationCenter.default.publisher(for: .ghosttyConfigDidReload)) { _ in
             GhosttyConfig.invalidateLoadCache()
@@ -488,34 +479,6 @@ struct WorkspaceContentView: View {
                     "focused=\(workspace.focusedPanelId?.uuidString.prefix(5) ?? "nil")"
             )
             #endif
-        }
-    }
-
-    private func syncSplitNotificationBadges() {
-        let manualUnread = workspace.manualUnreadPanelIds
-
-        for paneId in workspace.splitController.allPaneIds {
-            for tab in workspace.splitController.tabs(inPane: paneId) {
-                let panelId = workspace.panelIdFromSurfaceId(tab.id)
-                let expectedKind = panelId.flatMap { workspace.panelKind(panelId: $0) }
-                let expectedPinned = panelId.map { workspace.isPanelPinned($0) } ?? false
-                let shouldShow = panelId.map {
-                    notificationStore.hasVisibleNotificationIndicator(forTabId: workspace.id, surfaceId: $0) ||
-                        manualUnread.contains($0)
-                } ?? false
-                let kindUpdate: String?? = expectedKind.map { .some($0) }
-
-                if tab.showsNotificationBadge != shouldShow ||
-                    tab.isPinned != expectedPinned ||
-                    (expectedKind != nil && tab.kind != expectedKind) {
-                    workspace.splitController.updateTab(
-                        tab.id,
-                        kind: kindUpdate,
-                        showsNotificationBadge: shouldShow,
-                        isPinned: expectedPinned
-                    )
-                }
-            }
         }
     }
 
@@ -588,9 +551,10 @@ struct WorkspaceContentView: View {
         return layoutSnapshot.panes.compactMap { pane in
             guard let selectedTabId = pane.selectedTabId,
                   let tabUUID = UUID(uuidString: selectedTabId),
-                  let panelId = workspace.panelIdFromSurfaceId(TabID(uuid: tabUUID)) else {
+                  let panel = workspace.panel(for: TabID(uuid: tabUUID)) else {
                 return nil
             }
+            let panelId = panel.id
 
             let shouldShowUnread = Workspace.shouldShowUnreadIndicator(
                 hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
@@ -847,7 +811,7 @@ struct EmptyPanelView: View {
         dlog("emptyPane.newTerminal pane=\(paneId.id.uuidString.prefix(5))")
         #endif
         focusPane()
-        _ = workspace.newTerminalSurface(inPane: paneId)
+        _ = workspace.createTerminalPanel(inPane: paneId)
     }
 
     private func createBrowser() {
@@ -855,7 +819,7 @@ struct EmptyPanelView: View {
         dlog("emptyPane.newBrowser pane=\(paneId.id.uuidString.prefix(5))")
         #endif
         focusPane()
-        _ = workspace.newBrowserSurface(inPane: paneId)
+        _ = workspace.createBrowserPanel(inPane: paneId)
     }
 
     private var newSurfaceShortcut: StoredShortcut {

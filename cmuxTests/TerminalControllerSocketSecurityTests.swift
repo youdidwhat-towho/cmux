@@ -205,7 +205,7 @@ final class TerminalControllerSocketSecurityTests: XCTestCase {
             XCTFail("Expected selected workspace with a focused panel")
             return
         }
-        guard let targetPanel = workspace.newTerminalSplit(from: focusedPanelId, orientation: .horizontal) else {
+        guard let targetPanel = workspace.splitTerminalPanel(fromPanelId: focusedPanelId, orientation: .horizontal) else {
             XCTFail("Expected split panel to be created")
             return
         }

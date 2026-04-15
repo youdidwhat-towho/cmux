@@ -642,7 +642,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         workspace.configureRemoteConnection(config, autoConnect: false)
 
-        let paneID = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
+        let paneID = try XCTUnwrap(workspace.splitController.allPaneIds.first)
         let panelID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
         let detached = try XCTUnwrap(workspace.detachSurface(panelId: panelID))
 
@@ -693,7 +693,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
         let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
+        let destinationPaneID = try XCTUnwrap(destinationWorkspace.splitController.allPaneIds.first)
 
         let restoredPanelID = destinationWorkspace.attachDetachedSurface(
             detached,
@@ -718,7 +718,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         let manager = TabManager()
         let sourceWorkspace = try XCTUnwrap(manager.selectedWorkspace)
         let destinationWorkspace = manager.addWorkspace()
-        let sourcePaneID = try XCTUnwrap(sourceWorkspace.bonsplitController.allPaneIds.first)
+        let sourcePaneID = try XCTUnwrap(sourceWorkspace.splitController.allPaneIds.first)
         let config = WorkspaceRemoteConfiguration(
             destination: "cmux-macmini",
             port: nil,
@@ -744,11 +744,11 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
 
         sourceWorkspace.configureRemoteConnection(config, autoConnect: false)
-        _ = sourceWorkspace.newBrowserSurface(inPane: sourcePaneID, url: URL(string: "https://example.com"), focus: false)
+        _ = sourceWorkspace.createBrowserPanel(inPane: sourcePaneID, url: URL(string: "https://example.com"), focus: false)
 
         let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
         let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
+        let destinationPaneID = try XCTUnwrap(destinationWorkspace.splitController.allPaneIds.first)
 
         let restoredPanelID = destinationWorkspace.attachDetachedSurface(
             detached,
@@ -802,7 +802,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         let panelID = try XCTUnwrap(sourceWorkspace.focusedTerminalPanel?.id)
         let detached = try XCTUnwrap(sourceWorkspace.detachSurface(panelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destinationWorkspace.bonsplitController.allPaneIds.first)
+        let destinationPaneID = try XCTUnwrap(destinationWorkspace.splitController.allPaneIds.first)
 
         let restoredPanelID = destinationWorkspace.attachDetachedSurface(
             detached,
@@ -826,7 +826,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
     @MainActor
     func testRemoteTerminalSessionEndSkipsControlMasterCleanupWhenBrowserPanelsKeepWorkspaceRemote() throws {
         let workspace = Workspace()
-        let paneID = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
+        let paneID = try XCTUnwrap(workspace.splitController.allPaneIds.first)
         let initialTerminalID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
         let config = WorkspaceRemoteConfiguration(
             destination: "cmux-macmini",
@@ -853,7 +853,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         defer { Workspace.runSSHControlMasterCommandOverrideForTesting = nil }
 
         workspace.configureRemoteConnection(config, autoConnect: false)
-        _ = workspace.newBrowserSurface(inPane: paneID, url: URL(string: "https://example.com"), focus: false)
+        _ = workspace.createBrowserPanel(inPane: paneID, url: URL(string: "https://example.com"), focus: false)
 
         workspace.markRemoteTerminalSessionEnded(surfaceId: initialTerminalID, relayPort: 64013)
 
@@ -893,7 +893,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         let originalPanelID = try XCTUnwrap(workspace.focusedTerminalPanel?.id)
         let originalPaneID = try XCTUnwrap(workspace.paneId(forPanelId: originalPanelID))
         let movedPanel = try XCTUnwrap(
-            workspace.newTerminalSplit(from: originalPanelID, orientation: .horizontal)
+            workspace.splitTerminalPanel(fromPanelId: originalPanelID, orientation: .horizontal)
         )
 
         XCTAssertTrue(workspace.isRemoteTerminalSurface(originalPanelID))
@@ -920,7 +920,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         let panelID = try XCTUnwrap(source.focusedTerminalPanel?.id)
         let sourcePaneID = try XCTUnwrap(source.paneId(forPanelId: panelID))
-        let destinationPaneID = try XCTUnwrap(destination.bonsplitController.allPaneIds.first)
+        let destinationPaneID = try XCTUnwrap(destination.splitController.allPaneIds.first)
         source.surfaceTTYNames[panelID] = "/dev/ttys004"
 
         let detached = try XCTUnwrap(source.detachSurface(panelId: panelID))
@@ -934,7 +934,7 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
 
         XCTAssertEqual(restoredPanelID, panelID)
         XCTAssertEqual(destination.surfaceTTYNames[panelID], "/dev/ttys004")
-        XCTAssertEqual(source.bonsplitController.tabs(inPane: sourcePaneID).count, 0)
+        XCTAssertEqual(source.splitController.tabs(inPane: sourcePaneID).count, 0)
     }
 
     func testDetectedSSHUploadFailureCleansUpEarlierRemoteUploads() throws {

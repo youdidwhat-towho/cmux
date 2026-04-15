@@ -3,6 +3,66 @@ import WebKit
 import AppKit
 import ObjectiveC
 
+@MainActor
+final class BrowserPanelWorkspaceContentView: NSView {
+    private let hostingController = NSHostingController(rootView: AnyView(EmptyView()))
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.clear.cgColor
+        installHostedViewIfNeeded()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func update(
+        descriptor: WorkspaceBrowserPaneContent,
+        activeDropZone: DropZone?,
+        selectedTabId: UUID?
+    ) {
+        let rootView = AnyView(
+            BrowserPanelView(
+                panel: descriptor.panel,
+                paneId: descriptor.paneId,
+                isFocused: descriptor.isFocused,
+                isVisibleInUI: descriptor.isVisibleInUI,
+                portalPriority: descriptor.portalPriority,
+                onRequestPanelFocus: descriptor.onRequestPanelFocus
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .environment(\.paneDropZone, activeDropZone)
+            .transaction { tx in
+                tx.disablesAnimations = true
+            }
+            .animation(nil, value: selectedTabId)
+        )
+
+        hostingController.rootView = rootView
+        installHostedViewIfNeeded()
+    }
+
+    override func layout() {
+        super.layout()
+        hostingController.view.frame = bounds
+    }
+
+    private func installHostedViewIfNeeded() {
+        let hostedView = hostingController.view
+        hostedView.translatesAutoresizingMaskIntoConstraints = true
+        hostedView.autoresizingMask = [.width, .height]
+        hostedView.frame = bounds
+
+        if hostedView.superview !== self {
+            hostedView.removeFromSuperview()
+            addSubview(hostedView)
+        }
+    }
+}
+
 private var cmuxBrowserPanelNeedsRenderingStateReattachKey: UInt8 = 0
 let browserOmnibarTextFieldIdentifier = NSUserInterfaceItemIdentifier("cmux.browserOmnibarTextField")
 

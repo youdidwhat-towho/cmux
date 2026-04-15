@@ -3360,12 +3360,12 @@ class GhosttyApp {
                         #if DEBUG
                         dlog("link.openURL opening in existing browser pane=\(targetPane)")
                         #endif
-                        return workspace.newBrowserSurface(inPane: targetPane, url: url, focus: true) != nil
+                        return workspace.createBrowserPanel(inPane: targetPane, url: url, focus: true) != nil
                     } else {
                         #if DEBUG
                         dlog("link.openURL opening as new browser split from surface=\(sourcePanelId)")
                         #endif
-                        return workspace.newBrowserSplit(from: sourcePanelId, orientation: .horizontal, url: url) != nil
+                        return workspace.splitBrowserPanel(fromPanelId: sourcePanelId, orientation: .horizontal, url: url) != nil
                     }
                 }
             }

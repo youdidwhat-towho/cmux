@@ -4,7 +4,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 import ObjectiveC.runtime
-import Bonsplit
 import UserNotifications
 
 #if canImport(cmux_DEV)
@@ -573,13 +572,13 @@ final class WindowBrowserHostViewTests: XCTestCase {
     func testDragHoverEventsPassThroughForTabTransferOnBrowserHoverEvents() {
         XCTAssertTrue(
             WindowBrowserHostView.shouldPassThroughToDragTargets(
-                pasteboardTypes: [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+                pasteboardTypes: [DragOverlayRoutingPolicy.splitTabTransferType],
                 eventType: .cursorUpdate
             )
         )
         XCTAssertTrue(
             WindowBrowserHostView.shouldPassThroughToDragTargets(
-                pasteboardTypes: [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+                pasteboardTypes: [DragOverlayRoutingPolicy.splitTabTransferType],
                 eventType: .mouseEntered
             )
         )
@@ -1896,13 +1895,13 @@ final class BrowserPaneDropRoutingTests: XCTestCase {
     func testHitTestingCapturesOnlyForRelevantDragEvents() {
         XCTAssertTrue(
             BrowserPaneDropTargetView.shouldCaptureHitTesting(
-                pasteboardTypes: [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+                pasteboardTypes: [DragOverlayRoutingPolicy.splitTabTransferType],
                 eventType: .cursorUpdate
             )
         )
         XCTAssertFalse(
             BrowserPaneDropTargetView.shouldCaptureHitTesting(
-                pasteboardTypes: [DragOverlayRoutingPolicy.bonsplitTabTransferType],
+                pasteboardTypes: [DragOverlayRoutingPolicy.splitTabTransferType],
                 eventType: .leftMouseDown
             )
         )
@@ -1989,14 +1988,14 @@ final class WorkspacePaneDropRoutingTests: XCTestCase {
             in: size,
             targetPaneId: targetPaneId,
             sourcePaneId: sourcePaneId,
-            draggedKind: "terminal"
+            draggedKind: .terminal
         )
 
         XCTAssertEqual(decision.defaultZone, .left)
         XCTAssertEqual(decision.finalZone, .left)
         XCTAssertEqual(decision.targetPaneId, targetPaneId)
         XCTAssertEqual(decision.sourcePaneId, sourcePaneId)
-        XCTAssertEqual(decision.draggedKind, "terminal")
+        XCTAssertEqual(decision.draggedKind, .terminal)
         XCTAssertNil(decision.remapReason)
     }
 
@@ -2010,14 +2009,14 @@ final class WorkspacePaneDropRoutingTests: XCTestCase {
             in: size,
             targetPaneId: targetPaneId,
             sourcePaneId: sourcePaneId,
-            draggedKind: "terminal"
+            draggedKind: .terminal
         )
 
         XCTAssertEqual(decision.defaultZone, .right)
         XCTAssertEqual(decision.finalZone, .right)
         XCTAssertEqual(decision.targetPaneId, targetPaneId)
         XCTAssertEqual(decision.sourcePaneId, sourcePaneId)
-        XCTAssertEqual(decision.draggedKind, "terminal")
+        XCTAssertEqual(decision.draggedKind, .terminal)
         XCTAssertNil(decision.remapReason)
     }
 

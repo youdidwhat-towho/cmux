@@ -3519,7 +3519,7 @@ private func workspaceTabChromeDebugPreviewScenario(
     isClosePressed: Bool
 ) -> WorkspaceLayoutTabChromeDebugScenario {
     let appearance = workspaceLayoutTabChromeDebugAppearance()
-    let tab = TabItem(title: "~/fun/cmuxterm-hq", icon: "terminal.fill", kind: "terminal")
+    let tab = WorkspaceLayout.Tab(title: "~/fun/cmuxterm-hq", icon: "terminal.fill", kind: .terminal)
 
     return WorkspaceLayoutTabChromeDebugScenario(
         id: "interactive-preview",
@@ -4024,7 +4024,7 @@ private struct WorkspaceTabChromeLiveInteractivePreviewCanvas: NSViewRepresentab
         host.update(
             title: "~/fun/cmuxterm-hq",
             icon: "terminal.fill",
-            kind: "terminal",
+            kind: .terminal,
             appearance: appearance,
             isSelected: isSelected,
             isHovered: isHovered,
@@ -4038,7 +4038,7 @@ private struct WorkspaceTabChromeLiveInteractivePreviewCanvas: NSViewRepresentab
         nsView.update(
             title: "~/fun/cmuxterm-hq",
             icon: "terminal.fill",
-            kind: "terminal",
+            kind: .terminal,
             appearance: appearance,
             isSelected: isSelected,
             isHovered: isHovered,
