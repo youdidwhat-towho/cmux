@@ -39,6 +39,17 @@ actor TerminalDaemonConnection {
     func currentClient() -> TerminalRemoteDaemonClient? { client }
     func currentHello() -> TerminalRemoteDaemonHello? { hello }
 
+    /// Called by `TerminalDaemonConnectionPool.connection(...)` to decide
+    /// whether a cached pool entry still matches the requested endpoint.
+    /// Returns false if any of host/port/secret differ so the pool can
+    /// evict the stale entry. Nonisolated (stored params are `let`)
+    /// because the pool lookup path is synchronous.
+    nonisolated func matches(hostname: String, port: Int, secret: String) -> Bool {
+        self.hostname == hostname
+            && self.port == port
+            && self.secret == secret
+    }
+
     /// Returns a live client for this daemon, opening a new ws if needed
     /// or replacing a stale one whose transport has failed.
     func acquireClient() async throws -> (TerminalRemoteDaemonClient, TerminalRemoteDaemonHello) {

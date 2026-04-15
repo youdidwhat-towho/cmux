@@ -37,7 +37,24 @@ final class TerminalDaemonConnectionPool: @unchecked Sendable {
     ) -> TerminalDaemonConnection {
         lock.lock()
         defer { lock.unlock() }
-        if let existing = connections[stableID] { return existing }
+        // Invalidate and recreate when the host/port/secret changes for a
+        // given stableID. Local dev daemons move ports between restarts
+        // (tag-derived hash, CMUX_MOBILE_WS_PORT override, etc.). Without
+        // this check a cached pool entry keeps pointing at a dead port
+        // and every workspace tap hangs on "Could not connect to the
+        // server." because acquireClient keeps retrying the stale URL.
+        if let existing = connections[stableID] {
+            if existing.matches(hostname: hostname, port: port, secret: secret) {
+                return existing
+            }
+            NSLog(
+                "[WebSocket] pool invalidating stableID=%@ (endpoint changed -> %@:%d)",
+                stableID,
+                hostname,
+                port
+            )
+            connections.removeValue(forKey: stableID)
+        }
         let connection = TerminalDaemonConnection(
             hostname: hostname,
             port: port,
