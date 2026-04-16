@@ -32,11 +32,20 @@ Implemented on `issue-2289-appkit-split-host`:
 - browser portal presentation refresh now uses the same immediate-plus-next-runloop reattach shape as the local inline host, and the fixed 30 ms follow-up pass is gone
 - external divider updates in `WorkspaceSplit` now suppress only the immediate geometry echo instead of reopening notifications after a fixed 50 ms delay
 - browser import modal presentation now waits on popover dismissal state instead of a fixed 120 ms delay
+- checkpoint commit `520b8483` preserves the pre-reset branch state before the architecture cleanup
+- `ContentView` no longer owns `mountedWorkspaceIds`, `retiringWorkspaceId`, workspace handoff timers, or background workspace priming
+- the window now keeps all workspaces mounted and lets selection control visibility and input instead of maintaining a second mount cache
+- `TabManager` no longer defers unfocus through `pendingWorkspaceUnfocusTarget`; switching workspaces now focuses the target and unfocuses the previous workspace directly
+- temporary blank-pane debug probes such as `close.blankstate.*`, `ws.handoff.*`, and `ws.mount.reconcile` are gone
 
-Current remaining work is validation, not more ownership surgery:
+Current remaining work is the fresh architecture pass:
 
-- dogfood split, close, zoom, move, and browser cases against the tagged build
-- add or tighten behavior-level coverage where a deterministic harness exists
+1. make `Workspace` the single main-actor owner of workspace runtime state, instead of splitting selection and visibility responsibility across `TabManager`, `ContentView`, and the host
+2. reduce `WorkspaceLayoutState` to pure layout facts only, with no runtime chrome payload
+3. move surface chrome into workspace-owned surface models keyed by canonical `SurfaceID`
+4. make the AppKit host a pure snapshot applier over retained surface views
+5. push browser portal and similar surface-specific behavior behind surface-local adapters, not the shell
+6. add behavior-level coverage for split, close, move, and selection invariants once the ownership cut lands
 
 `TabItem.title` remains intentionally as the serialized fallback title used by layout snapshots, placeholders, and export/debug paths. Runtime tab chrome truth no longer depends on it.
 

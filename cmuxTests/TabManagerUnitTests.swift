@@ -1353,36 +1353,6 @@ final class TabManagerNotificationFocusTests: XCTestCase {
 
 
 @MainActor
-final class TabManagerPendingUnfocusPolicyTests: XCTestCase {
-    func testDoesNotUnfocusWhenPendingTabIsCurrentlySelected() {
-        let tabId = UUID()
-
-        XCTAssertFalse(
-            TabManager.shouldUnfocusPendingWorkspace(
-                pendingTabId: tabId,
-                selectedTabId: tabId
-            )
-        )
-    }
-
-    func testUnfocusesWhenPendingTabIsNotSelected() {
-        XCTAssertTrue(
-            TabManager.shouldUnfocusPendingWorkspace(
-                pendingTabId: UUID(),
-                selectedTabId: UUID()
-            )
-        )
-        XCTAssertTrue(
-            TabManager.shouldUnfocusPendingWorkspace(
-                pendingTabId: UUID(),
-                selectedTabId: nil
-            )
-        )
-    }
-}
-
-
-@MainActor
 final class TabManagerSurfaceCreationTests: XCTestCase {
     func testNewSurfaceFocusesCreatedSurface() {
         let manager = TabManager()

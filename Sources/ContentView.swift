@@ -1672,113 +1672,6 @@ private func commandPaletteOwningWebView(for responder: NSResponder?) -> WKWebVi
     return nil
 }
 
-enum WorkspaceMountPolicy {
-    // Keep only the selected workspace mounted to minimize layer-tree traversal.
-    static let maxMountedWorkspaces = 1
-    // During workspace cycling, keep only a minimal handoff pair (selected + retiring).
-    static let maxMountedWorkspacesDuringCycle = 2
-
-    static func nextMountedWorkspaceIds(
-        current: [UUID],
-        selected: UUID?,
-        pinnedIds: Set<UUID>,
-        orderedTabIds: [UUID],
-        isCycleHot: Bool,
-        maxMounted: Int
-    ) -> [UUID] {
-        let existing = Set(orderedTabIds)
-        let clampedMax = max(1, maxMounted)
-        var ordered = current.filter { existing.contains($0) }
-
-        if let selected, existing.contains(selected) {
-            ordered.removeAll { $0 == selected }
-            ordered.insert(selected, at: 0)
-        }
-
-        if isCycleHot, let selected {
-            let warmIds = cycleWarmIds(selected: selected, orderedTabIds: orderedTabIds)
-            for id in warmIds.reversed() {
-                ordered.removeAll { $0 == id }
-                ordered.insert(id, at: 0)
-            }
-        }
-
-        if isCycleHot,
-           pinnedIds.isEmpty,
-           let selected {
-            ordered.removeAll { $0 != selected }
-        }
-
-        // Ensure pinned ids (retiring handoff workspaces) are always retained at highest priority.
-        // This runs after warming to prevent neighbor warming from evicting the retiring workspace.
-        let prioritizedPinnedIds = pinnedIds
-            .filter { existing.contains($0) && $0 != selected }
-            .sorted { lhs, rhs in
-                let lhsIndex = orderedTabIds.firstIndex(of: lhs) ?? .max
-                let rhsIndex = orderedTabIds.firstIndex(of: rhs) ?? .max
-                return lhsIndex < rhsIndex
-            }
-        if let selected, existing.contains(selected) {
-            ordered.removeAll { $0 == selected }
-            ordered.insert(selected, at: 0)
-        }
-        var pinnedInsertionIndex = (selected != nil) ? 1 : 0
-        for pinnedId in prioritizedPinnedIds {
-            ordered.removeAll { $0 == pinnedId }
-            let insertionIndex = min(pinnedInsertionIndex, ordered.count)
-            ordered.insert(pinnedId, at: insertionIndex)
-            pinnedInsertionIndex += 1
-        }
-
-        if ordered.count > clampedMax {
-            ordered.removeSubrange(clampedMax...)
-        }
-
-        return ordered
-    }
-
-    private static func cycleWarmIds(selected: UUID, orderedTabIds: [UUID]) -> [UUID] {
-        guard orderedTabIds.contains(selected) else { return [selected] }
-        // Keep warming focused to the selected workspace. Retiring/target workspaces are
-        // pinned by handoff logic, so warming adjacent neighbors here just adds layout work.
-        return [selected]
-    }
-}
-
-struct MountedWorkspacePresentation: Equatable {
-    let isRenderedVisible: Bool
-    let isPanelVisible: Bool
-    let renderOpacity: Double
-}
-
-enum MountedWorkspacePresentationPolicy {
-    static func resolve(
-        isSelectedWorkspace: Bool,
-        isRetiringWorkspace: Bool,
-        shouldPrimeInBackground: Bool
-    ) -> MountedWorkspacePresentation {
-        let isRenderedVisible = isSelectedWorkspace || isRetiringWorkspace
-        let renderOpacity: Double = {
-            if isRenderedVisible {
-                return 1
-            }
-            if shouldPrimeInBackground {
-                // Keep the workspace mounted long enough to warm the terminal surface, but do
-                // not mark it panel-visible. Visible portal entries intentionally survive
-                // transient anchor loss during WorkspaceSplit drag/reparent churn.
-                return 0.001
-            }
-            return 0
-        }()
-
-        return MountedWorkspacePresentation(
-            isRenderedVisible: isRenderedVisible,
-            isPanelVisible: isRenderedVisible,
-            renderOpacity: renderOpacity
-        )
-    }
-}
-
 /// Installs a FileDropOverlayView on the window's theme frame for Finder file drag support.
 func installFileDropOverlay(on window: NSWindow, tabManager: TabManager) {
     guard objc_getAssociatedObject(window, &fileDropOverlayKey) == nil,
@@ -1819,7 +1712,6 @@ struct ContentView: View {
     @State private var isResizerDragging = false
     @State private var sidebarDragStartWidth: CGFloat?
     @State private var selectedTabIds: Set<UUID> = []
-    @State private var mountedWorkspaceIds: [UUID] = []
     @State private var lastSidebarSelectionIndex: Int? = nil
     @State private var titlebarText: String = ""
     @State private var isFullScreen: Bool = false
@@ -1828,10 +1720,6 @@ struct ContentView: View {
     @StateObject private var fileExplorerStore = FileExplorerStore()
     @State private var fileExplorerWidth: CGFloat = 220
     @State private var fileExplorerDragStartWidth: CGFloat?
-    @State private var previousSelectedWorkspaceId: UUID?
-    @State private var retiringWorkspaceId: UUID?
-    @State private var workspaceHandoffGeneration: UInt64 = 0
-    @State private var workspaceHandoffFallbackTask: Task<Void, Never>?
     @State private var didApplyUITestSidebarSelection = false
     @State private var titlebarThemeGeneration: UInt64 = 0
     @State private var sidebarDraggedTabId: UUID?
@@ -2677,34 +2565,18 @@ struct ContentView: View {
     }
 
     private var terminalContent: some View {
-        let mountedWorkspaceIdSet = Set(mountedWorkspaceIds)
-        let mountedWorkspaces = tabManager.tabs.filter { mountedWorkspaceIdSet.contains($0.id) }
         let selectedWorkspaceId = tabManager.selectedTabId
-        let retiringWorkspaceId = self.retiringWorkspaceId
 
         return ZStack {
             ZStack {
-                ForEach(mountedWorkspaces) { tab in
+                ForEach(tabManager.tabs) { tab in
                     let isSelectedWorkspace = selectedWorkspaceId == tab.id
-                    let isRetiringWorkspace = retiringWorkspaceId == tab.id
-                    let shouldPrimeInBackground = tabManager.pendingBackgroundWorkspaceLoadIds.contains(tab.id)
-                    let presentation = MountedWorkspacePresentationPolicy.resolve(
-                        isSelectedWorkspace: isSelectedWorkspace,
-                        isRetiringWorkspace: isRetiringWorkspace,
-                        shouldPrimeInBackground: shouldPrimeInBackground
-                    )
-                    // Keep the retiring workspace visible during handoff, but never input-active.
-                    // Allowing both selected+retiring workspaces to be input-active lets the
-                    // old workspace steal first responder (notably with WKWebView), which can
-                    // delay handoff completion and make browser returns feel laggy.
-                    let isInputActive = isSelectedWorkspace
-                    let portalPriority = isSelectedWorkspace ? 2 : (isRetiringWorkspace ? 1 : 0)
                     WorkspaceContentView(
                         workspace: tab,
-                        isWorkspaceVisible: presentation.isPanelVisible,
-                        isWorkspaceInputActive: isInputActive,
+                        isWorkspaceVisible: isSelectedWorkspace,
+                        isWorkspaceInputActive: isSelectedWorkspace,
                         isFullScreen: isFullScreen,
-                        workspacePortalPriority: portalPriority,
+                        workspacePortalPriority: isSelectedWorkspace ? 1 : 0,
                         onThemeRefreshRequest: { reason, eventId, source, payloadHex in
                             scheduleTitlebarThemeRefreshFromWorkspace(
                                 workspaceId: tab.id,
@@ -2715,13 +2587,10 @@ struct ContentView: View {
                             )
                         }
                     )
-                    .opacity(presentation.renderOpacity)
+                    .opacity(isSelectedWorkspace ? 1 : 0)
                     .allowsHitTesting(isSelectedWorkspace)
-                    .accessibilityHidden(!presentation.isRenderedVisible)
-                    .zIndex(isSelectedWorkspace ? 2 : (isRetiringWorkspace ? 1 : 0))
-                    .task(id: shouldPrimeInBackground ? tab.id : nil) {
-                        await primeBackgroundWorkspaceIfNeeded(workspaceId: tab.id)
-                    }
+                    .accessibilityHidden(!isSelectedWorkspace)
+                    .zIndex(isSelectedWorkspace ? 1 : 0)
                 }
             }
             .opacity(sidebarSelectionState.selection == .tabs ? 1 : 0)
@@ -3080,8 +2949,6 @@ struct ContentView: View {
 
         view = AnyView(view.onAppear {
             tabManager.applyWindowBackgroundForSelectedTab()
-            reconcileMountedWorkspaceIds()
-            previousSelectedWorkspaceId = tabManager.selectedTabId
             installSidebarResizerPointerMonitorIfNeeded()
             let restoredWidth = normalizedSidebarWidth(sidebarState.persistedWidth)
             if abs(sidebarWidth - restoredWidth) > 0.5 {
@@ -3098,53 +2965,6 @@ struct ContentView: View {
             applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
             updateTitlebarText()
             syncTrafficLightInset()
-
-            // Startup recovery (#399): if session restore or a race condition leaves the
-            // view in a broken state (empty tabs, no selection, unmounted workspaces),
-            // detect and recover after a short delay.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak tabManager] in
-                guard let tabManager else { return }
-                var didRecover = false
-
-                // Ensure there is at least one workspace.
-                if tabManager.tabs.isEmpty {
-                    tabManager.addWorkspace()
-                    didRecover = true
-                }
-
-                // Ensure selectedTabId points to an existing workspace.
-                if tabManager.selectedTabId == nil || !tabManager.tabs.contains(where: { $0.id == tabManager.selectedTabId }) {
-                    tabManager.selectedTabId = tabManager.tabs.first?.id
-                    didRecover = true
-                }
-
-                // Ensure mountedWorkspaceIds is populated.
-                if mountedWorkspaceIds.isEmpty || !mountedWorkspaceIds.contains(where: { id in tabManager.tabs.contains { $0.id == id } }) {
-                    reconcileMountedWorkspaceIds()
-                    didRecover = true
-                }
-
-                // Ensure sidebar selection is valid.
-                if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
-                    selectedTabIds = [selectedId]
-                    lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == selectedId }
-                    didRecover = true
-                }
-
-                syncSidebarSelectedWorkspaceIds()
-                applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
-
-                if didRecover {
-#if DEBUG
-                    dlog("startup.recovery tabCount=\(tabManager.tabs.count) selected=\(tabManager.selectedTabId?.uuidString.prefix(8) ?? "nil") mounted=\(mountedWorkspaceIds.count)")
-#endif
-                    sentryBreadcrumb("startup.recovery", data: [
-                        "tabCount": tabManager.tabs.count,
-                        "selectedTabId": tabManager.selectedTabId?.uuidString ?? "nil",
-                        "mountedCount": mountedWorkspaceIds.count
-                    ])
-                }
-            }
         })
 
         view = AnyView(view.onChange(of: tabManager.selectedTabId) { newValue in
@@ -3159,8 +2979,6 @@ struct ContentView: View {
             }
 #endif
             tabManager.applyWindowBackgroundForSelectedTab()
-            startWorkspaceHandoffIfNeeded(newSelectedId: newValue)
-            reconcileMountedWorkspaceIds(selectedId: newValue)
             guard let newValue else { return }
             if selectedTabIds.count <= 1 {
                 selectedTabIds = [newValue]
@@ -3191,32 +3009,6 @@ struct ContentView: View {
             syncFileExplorerDirectory()
         })
 
-        view = AnyView(view.onChange(of: tabManager.isWorkspaceCycleHot) { _ in
-#if DEBUG
-            if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
-                let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
-                dlog(
-                    "ws.view.hotChange id=\(snapshot.id) dt=\(debugMsText(dtMs)) hot=\(tabManager.isWorkspaceCycleHot ? 1 : 0)"
-                )
-            } else {
-                dlog("ws.view.hotChange id=none hot=\(tabManager.isWorkspaceCycleHot ? 1 : 0)")
-            }
-#endif
-            reconcileMountedWorkspaceIds()
-        })
-
-        view = AnyView(view.onChange(of: retiringWorkspaceId) { _ in
-            reconcileMountedWorkspaceIds()
-        })
-
-        view = AnyView(view.onReceive(tabManager.$pendingBackgroundWorkspaceLoadIds) { _ in
-            reconcileMountedWorkspaceIds()
-        })
-
-        view = AnyView(view.onReceive(tabManager.$debugPinnedWorkspaceLoadIds) { _ in
-            reconcileMountedWorkspaceIds()
-        })
-
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidSetTitle)) { notification in
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
@@ -3231,7 +3023,6 @@ struct ContentView: View {
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidFocusSurface)) { notification in
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
-            completeWorkspaceHandoffIfNeeded(focusedTabId: tabId, reason: "focus")
             attemptCommandPaletteFocusRestoreIfNeeded()
             scheduleTitlebarTextRefresh()
         })
@@ -3246,7 +3037,6 @@ struct ContentView: View {
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidBecomeFirstResponderSurface)) { notification in
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
-            completeWorkspaceHandoffIfNeeded(focusedTabId: tabId, reason: "first_responder")
             attemptCommandPaletteFocusRestoreIfNeeded()
         })
 
@@ -3257,7 +3047,6 @@ struct ContentView: View {
                   let focusedPanelId = selectedWorkspace.focusedPanelId,
                   let focusedBrowser = selectedWorkspace.browserPanel(for: focusedPanelId),
                   focusedBrowser.webView === webView else { return }
-            completeWorkspaceHandoffIfNeeded(focusedTabId: selectedTabId, reason: "browser_first_responder")
             attemptCommandPaletteFocusRestoreIfNeeded()
         })
 
@@ -3267,7 +3056,6 @@ struct ContentView: View {
                   let selectedWorkspace = tabManager.selectedWorkspace,
                   selectedWorkspace.focusedPanelId == panelId,
                   selectedWorkspace.browserPanel(for: panelId) != nil else { return }
-            completeWorkspaceHandoffIfNeeded(focusedTabId: selectedTabId, reason: "browser_address_bar")
             attemptCommandPaletteFocusRestoreIfNeeded()
         })
 
@@ -3302,16 +3090,7 @@ struct ContentView: View {
 
         view = AnyView(view.onReceive(tabManager.$tabs) { tabs in
             let existingIds = Set(tabs.map { $0.id })
-            if let retiringWorkspaceId, !existingIds.contains(retiringWorkspaceId) {
-                self.retiringWorkspaceId = nil
-                workspaceHandoffFallbackTask?.cancel()
-                workspaceHandoffFallbackTask = nil
-            }
-            if let previousSelectedWorkspaceId, !existingIds.contains(previousSelectedWorkspaceId) {
-                self.previousSelectedWorkspaceId = tabManager.selectedTabId
-            }
             tabManager.pruneBackgroundWorkspaceLoads(existingIds: existingIds)
-            reconcileMountedWorkspaceIds(tabs: tabs)
             selectedTabIds = selectedTabIds.filter { existingIds.contains($0) }
             if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
                 selectedTabIds = [selectedId]
@@ -3686,221 +3465,6 @@ struct ContentView: View {
         return view
     }
 
-    private func reconcileMountedWorkspaceIds(tabs: [Workspace]? = nil, selectedId: UUID? = nil) {
-        let currentTabs = tabs ?? tabManager.tabs
-        let orderedTabIds = currentTabs.map { $0.id }
-        let effectiveSelectedId = selectedId ?? tabManager.selectedTabId
-        let handoffPinnedIds = retiringWorkspaceId.map { Set([ $0 ]) } ?? []
-        let pinnedIds = handoffPinnedIds
-            .union(tabManager.pendingBackgroundWorkspaceLoadIds)
-            .union(tabManager.debugPinnedWorkspaceLoadIds)
-        let isCycleHot = tabManager.isWorkspaceCycleHot
-        let shouldKeepHandoffPair = isCycleHot && !handoffPinnedIds.isEmpty
-        let baseMaxMounted = shouldKeepHandoffPair
-            ? WorkspaceMountPolicy.maxMountedWorkspacesDuringCycle
-            : WorkspaceMountPolicy.maxMountedWorkspaces
-        let selectedCount = effectiveSelectedId == nil ? 0 : 1
-        let maxMounted = max(baseMaxMounted, selectedCount + pinnedIds.count)
-        let previousMountedIds = mountedWorkspaceIds
-        mountedWorkspaceIds = WorkspaceMountPolicy.nextMountedWorkspaceIds(
-            current: mountedWorkspaceIds,
-            selected: effectiveSelectedId,
-            pinnedIds: pinnedIds,
-            orderedTabIds: orderedTabIds,
-            isCycleHot: isCycleHot,
-            maxMounted: maxMounted
-        )
-#if DEBUG
-        if mountedWorkspaceIds != previousMountedIds {
-            let added = mountedWorkspaceIds.filter { !previousMountedIds.contains($0) }
-            let removed = previousMountedIds.filter { !mountedWorkspaceIds.contains($0) }
-            if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
-                let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
-                dlog(
-                    "ws.mount.reconcile id=\(snapshot.id) dt=\(debugMsText(dtMs)) hot=\(isCycleHot ? 1 : 0) " +
-                    "selected=\(debugShortWorkspaceId(effectiveSelectedId)) " +
-                    "mounted=\(debugShortWorkspaceIds(mountedWorkspaceIds)) " +
-                    "added=\(debugShortWorkspaceIds(added)) removed=\(debugShortWorkspaceIds(removed))"
-                )
-            } else {
-                dlog(
-                    "ws.mount.reconcile id=none hot=\(isCycleHot ? 1 : 0) selected=\(debugShortWorkspaceId(effectiveSelectedId)) " +
-                    "mounted=\(debugShortWorkspaceIds(mountedWorkspaceIds))"
-                )
-            }
-        }
-#endif
-    }
-
-    private enum BackgroundWorkspacePrimeState {
-        case pending
-        case completed(reason: String)
-    }
-
-    private enum BackgroundWorkspacePrimePolicy {
-        static let timeoutSeconds: TimeInterval = 2.0
-    }
-
-    private func primeBackgroundWorkspaceIfNeeded(workspaceId: UUID) async {
-        let shouldPrime = await MainActor.run {
-            tabManager.pendingBackgroundWorkspaceLoadIds.contains(workspaceId)
-        }
-        guard shouldPrime else { return }
-
-#if DEBUG
-        let startedAt = ProcessInfo.processInfo.systemUptime
-        dlog("workspace.backgroundPrime.start workspace=\(workspaceId.uuidString.prefix(5))")
-#endif
-
-        let initialState = await MainActor.run {
-            stepBackgroundWorkspacePrime(workspaceId: workspaceId)
-        }
-        let completionReason: String
-        switch initialState {
-        case .completed(let reason):
-            completionReason = reason
-        case .pending:
-            completionReason = await waitForBackgroundWorkspacePrimeCompletion(
-                workspaceId: workspaceId,
-                timeoutSeconds: BackgroundWorkspacePrimePolicy.timeoutSeconds
-            )
-        }
-#if DEBUG
-        let elapsedMs = (ProcessInfo.processInfo.systemUptime - startedAt) * 1000
-        dlog(
-            "workspace.backgroundPrime.finish workspace=\(workspaceId.uuidString.prefix(5)) " +
-            "reason=\(completionReason) ms=\(String(format: "%.2f", elapsedMs))"
-        )
-#endif
-    }
-
-    @MainActor
-    private func stepBackgroundWorkspacePrime(workspaceId: UUID) -> BackgroundWorkspacePrimeState {
-        guard tabManager.pendingBackgroundWorkspaceLoadIds.contains(workspaceId) else {
-            return .completed(reason: "already_cleared")
-        }
-        guard let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) else {
-            tabManager.completeBackgroundWorkspaceLoad(for: workspaceId)
-            return .completed(reason: "workspace_removed")
-        }
-
-        workspace.requestBackgroundTerminalSurfaceStartIfNeeded()
-        guard workspace.hasLoadedTerminalSurface() else {
-            return .pending
-        }
-
-        tabManager.completeBackgroundWorkspaceLoad(for: workspaceId)
-        return .completed(reason: "surface_ready")
-    }
-
-    @MainActor
-    private func waitForBackgroundWorkspacePrimeCompletion(
-        workspaceId: UUID,
-        timeoutSeconds: TimeInterval
-    ) async -> String {
-        await withCheckedContinuation { (continuation: CheckedContinuation<String, Never>) in
-            var resolved = false
-            var workspacePanelsCancellable: AnyCancellable?
-            var pendingLoadsCancellable: AnyCancellable?
-            var tabsCancellable: AnyCancellable?
-            var readyObserver: NSObjectProtocol?
-            var hostedViewObserver: NSObjectProtocol?
-            var timeoutWorkItem: DispatchWorkItem?
-
-            @MainActor
-            func finish(_ reason: String) {
-                guard !resolved else { return }
-                resolved = true
-                workspacePanelsCancellable?.cancel()
-                pendingLoadsCancellable?.cancel()
-                tabsCancellable?.cancel()
-                if let readyObserver {
-                    NotificationCenter.default.removeObserver(readyObserver)
-                }
-                if let hostedViewObserver {
-                    NotificationCenter.default.removeObserver(hostedViewObserver)
-                }
-                timeoutWorkItem?.cancel()
-                continuation.resume(returning: reason)
-            }
-
-            @MainActor
-            func evaluate() {
-                switch stepBackgroundWorkspacePrime(workspaceId: workspaceId) {
-                case .pending:
-                    break
-                case .completed(let reason):
-                    finish(reason)
-                }
-            }
-
-            if let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) {
-                workspacePanelsCancellable = workspace.$panels
-                    .map { _ in () }
-                    .sink { _ in
-                        Task { @MainActor in
-                            evaluate()
-                        }
-                    }
-            }
-
-            pendingLoadsCancellable = tabManager.$pendingBackgroundWorkspaceLoadIds
-                .map { _ in () }
-                .sink { _ in
-                    Task { @MainActor in
-                        evaluate()
-                    }
-                }
-
-            tabsCancellable = tabManager.$tabs
-                .map { _ in () }
-                .sink { _ in
-                    Task { @MainActor in
-                        evaluate()
-                    }
-                }
-
-            readyObserver = NotificationCenter.default.addObserver(
-                forName: .terminalSurfaceDidBecomeReady,
-                object: nil,
-                queue: .main
-            ) { notification in
-                guard let readyWorkspaceId = notification.userInfo?["workspaceId"] as? UUID,
-                      readyWorkspaceId == workspaceId else { return }
-                Task { @MainActor in
-                    evaluate()
-                }
-            }
-
-            hostedViewObserver = NotificationCenter.default.addObserver(
-                forName: .terminalSurfaceHostedViewDidMoveToWindow,
-                object: nil,
-                queue: .main
-            ) { notification in
-                guard let hostedWorkspaceId = notification.userInfo?["workspaceId"] as? UUID,
-                      hostedWorkspaceId == workspaceId else { return }
-                Task { @MainActor in
-                    evaluate()
-                }
-            }
-
-            let timeoutWork = DispatchWorkItem {
-                Task { @MainActor in
-                    if tabManager.pendingBackgroundWorkspaceLoadIds.contains(workspaceId) {
-                        tabManager.completeBackgroundWorkspaceLoad(for: workspaceId)
-                    }
-                    finish("timeout")
-                }
-            }
-            timeoutWorkItem = timeoutWork
-            DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds, execute: timeoutWork)
-
-            Task { @MainActor in
-                evaluate()
-            }
-        }
-    }
-
     private func addTab() {
         tabManager.addTab()
         sidebarSelectionState.selection = .tabs
@@ -3931,120 +3495,6 @@ struct ContentView: View {
                 accessory.view.alphaValue = hidden ? 0 : 1
             }
         }
-    }
-
-    private func startWorkspaceHandoffIfNeeded(newSelectedId: UUID?) {
-        let oldSelectedId = previousSelectedWorkspaceId
-        previousSelectedWorkspaceId = newSelectedId
-#if DEBUG
-        startupLog(
-            "startup.handoff.start old=\(debugShortWorkspaceId(oldSelectedId)) " +
-                "new=\(debugShortWorkspaceId(newSelectedId))"
-        )
-#endif
-
-        guard let oldSelectedId, let newSelectedId, oldSelectedId != newSelectedId else {
-            tabManager.completePendingWorkspaceUnfocus(reason: "no_handoff")
-            retiringWorkspaceId = nil
-            workspaceHandoffFallbackTask?.cancel()
-            workspaceHandoffFallbackTask = nil
-            return
-        }
-
-        workspaceHandoffGeneration &+= 1
-        let generation = workspaceHandoffGeneration
-        retiringWorkspaceId = oldSelectedId
-        workspaceHandoffFallbackTask?.cancel()
-
-#if DEBUG
-        if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
-            let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
-            dlog(
-                "ws.handoff.start id=\(snapshot.id) dt=\(debugMsText(dtMs)) old=\(debugShortWorkspaceId(oldSelectedId)) " +
-                "new=\(debugShortWorkspaceId(newSelectedId))"
-            )
-        } else {
-            dlog(
-                "ws.handoff.start id=none old=\(debugShortWorkspaceId(oldSelectedId)) new=\(debugShortWorkspaceId(newSelectedId))"
-            )
-        }
-#endif
-
-        if canCompleteWorkspaceHandoffImmediately(for: newSelectedId) {
-#if DEBUG
-            if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
-                let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
-                dlog(
-                    "ws.handoff.fastReady id=\(snapshot.id) dt=\(debugMsText(dtMs)) selected=\(debugShortWorkspaceId(newSelectedId))"
-                )
-            } else {
-                dlog("ws.handoff.fastReady id=none selected=\(debugShortWorkspaceId(newSelectedId))")
-            }
-#endif
-            completeWorkspaceHandoff(reason: "ready")
-            return
-        }
-
-        workspaceHandoffFallbackTask = Task { [generation] in
-            do {
-                try await Task.sleep(nanoseconds: 150_000_000)
-            } catch {
-                return
-            }
-            await MainActor.run {
-                guard workspaceHandoffGeneration == generation else { return }
-                completeWorkspaceHandoff(reason: "timeout")
-            }
-        }
-    }
-
-    private func completeWorkspaceHandoffIfNeeded(focusedTabId: UUID, reason: String) {
-        guard focusedTabId == tabManager.selectedTabId else { return }
-        guard retiringWorkspaceId != nil else { return }
-        completeWorkspaceHandoff(reason: reason)
-    }
-
-    private func canCompleteWorkspaceHandoffImmediately(for workspaceId: UUID) -> Bool {
-        guard let workspace = tabManager.tabs.first(where: { $0.id == workspaceId }) else { return true }
-        if let focusedPanelId = workspace.focusedPanelId,
-           workspace.browserPanel(for: focusedPanelId) != nil {
-            return true
-        }
-        return workspace.hasLoadedTerminalSurface()
-    }
-
-    private func completeWorkspaceHandoff(reason: String) {
-        workspaceHandoffFallbackTask?.cancel()
-        workspaceHandoffFallbackTask = nil
-        let retiring = retiringWorkspaceId
-#if DEBUG
-        startupLog(
-            "startup.handoff.complete reason=\(reason) retiring=\(debugShortWorkspaceId(retiring)) " +
-                "selected=\(debugShortWorkspaceId(tabManager.selectedTabId))"
-        )
-#endif
-
-        // Hide portal-hosted browser views for the retiring workspace BEFORE clearing
-        // retiringWorkspaceId. Once cleared, reconcileMountedWorkspaceIds unmounts
-        // the workspace — but dismantleNSView intentionally doesn't hide browser
-        // portal views during transient rebuilds. Hiding here prevents stale browser
-        // portals from covering the newly selected workspace.
-        if let retiring, let workspace = tabManager.tabs.first(where: { $0.id == retiring }) {
-            workspace.hideAllBrowserPortalViews()
-        }
-
-        retiringWorkspaceId = nil
-        tabManager.completePendingWorkspaceUnfocus(reason: reason)
-#if DEBUG
-        if let snapshot = tabManager.debugCurrentWorkspaceSwitchSnapshot() {
-            let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
-            dlog(
-                "ws.handoff.complete id=\(snapshot.id) dt=\(debugMsText(dtMs)) reason=\(reason) retiring=\(debugShortWorkspaceId(retiring))"
-            )
-        } else {
-            dlog("ws.handoff.complete id=none reason=\(reason) retiring=\(debugShortWorkspaceId(retiring))")
-        }
-#endif
     }
 
     private var commandPaletteOverlay: some View {

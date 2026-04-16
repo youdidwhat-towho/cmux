@@ -914,12 +914,6 @@ private final class WorkspaceLayoutPaneHostView<Content: View, EmptyContent: Vie
 
     private func refreshContent() {
         guard !snapshot.tabs.isEmpty else {
-#if DEBUG
-            dlog(
-                "close.blankstate.host.empty pane=\(snapshot.paneId.id.uuidString.prefix(5)) " +
-                "selected=\(snapshot.selectedTabId?.uuidString.prefix(5) ?? "nil")"
-            )
-#endif
             dropOverlayView.prefersNativeDropOverlay = false
             removeAllMountedTabContent()
             showEmptyContent()
@@ -1036,16 +1030,6 @@ private final class WorkspaceLayoutPaneHostView<Content: View, EmptyContent: Vie
             return
         }
 
-#if DEBUG
-        if isSelected {
-            let mountedKeys = mountedTabContent.keys.map { String($0.uuidString.prefix(5)) }.sorted().joined(separator: ",")
-            dlog(
-                "close.blankstate.host.fallback pane=\(snapshot.paneId.id.uuidString.prefix(5)) " +
-                "tab=\(tab.id.id.uuidString.prefix(5)) mounted=[\(mountedKeys)] " +
-                "snapshotTabs=\(snapshot.tabs.count)"
-            )
-        }
-#endif
         if isSelected {
             dropOverlayView.prefersNativeDropOverlay = tabModel.prefersNativeDropOverlay
         }

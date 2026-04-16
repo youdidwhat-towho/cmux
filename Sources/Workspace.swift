@@ -11150,15 +11150,6 @@ extension Workspace: WorkspaceLayoutDelegate {
                 postCloseSelectTabId.removeValue(forKey: tab.id)
             }
 
-#if DEBUG
-            let targetShort = target.map { String($0.uuid.uuidString.prefix(5)) } ?? "nil"
-            let paneTabs = tabs.map { String($0.id.uuid.uuidString.prefix(5)) }.joined(separator: ",")
-            dlog(
-                "close.blankstate.plan ws=\(id.uuidString.prefix(5)) " +
-                "pane=\(pane.id.uuidString.prefix(5)) closing=\(tab.id.uuid.uuidString.prefix(5)) " +
-                "target=\(targetShort) tabs=[\(paneTabs)]"
-            )
-#endif
         }
 
         let explicitUserClose = explicitUserCloseTabIds.remove(tab.id) != nil
@@ -11230,32 +11221,9 @@ extension Workspace: WorkspaceLayoutDelegate {
         let closedBrowserRestoreSnapshot = pendingClosedBrowserRestoreSnapshots.removeValue(forKey: tabId)
         let isDetaching = detachingTabIds.remove(tabId) != nil || isDetachingCloseTransaction
 
-#if DEBUG
-        let focusedPaneBefore = splitController.focusedPaneId.map { String($0.id.uuidString.prefix(5)) } ?? "nil"
-        let focusedTabBefore = splitController.focusedPaneId
-            .flatMap { splitController.selectedTab(inPane: $0)?.id }
-            .map { String($0.uuid.uuidString.prefix(5)) } ?? "nil"
-        let paneTabsAfterClose = splitController.tabs(inPane: pane).map { String($0.id.uuid.uuidString.prefix(5)) }.joined(separator: ",")
-        let selectTabShort = selectTabId.map { String($0.uuid.uuidString.prefix(5)) } ?? "nil"
-        dlog(
-            "close.blankstate.didClose.begin ws=\(id.uuidString.prefix(5)) " +
-            "pane=\(pane.id.uuidString.prefix(5)) closed=\(tabId.uuid.uuidString.prefix(5)) " +
-            "select=\(selectTabShort) detaching=\(isDetaching ? 1 : 0) " +
-            "panels=\(panels.count) focusedPane=\(focusedPaneBefore) focusedTab=\(focusedTabBefore) " +
-            "paneTabs=[\(paneTabsAfterClose)]"
-        )
-#endif
-
         // Clean up our panel
         let panelId = tabId.id
         guard let panel = panels[panelId] else {
-#if DEBUG
-            dlog(
-                "close.blankstate.didClose.missingPanel ws=\(id.uuidString.prefix(5)) " +
-                "pane=\(pane.id.uuidString.prefix(5)) closed=\(tabId.uuid.uuidString.prefix(5)) " +
-                "detaching=\(isDetaching ? 1 : 0)"
-            )
-#endif
             if !isDetaching {
                 scheduleFocusReconcile()
             }
@@ -11358,23 +11326,6 @@ extension Workspace: WorkspaceLayoutDelegate {
         if !isDetaching {
             scheduleFocusReconcile()
         }
-
-#if DEBUG
-        let focusedPaneAfter = splitController.focusedPaneId.map { String($0.id.uuidString.prefix(5)) } ?? "nil"
-        let focusedTabAfter = splitController.focusedPaneId
-            .flatMap { splitController.selectedTab(inPane: $0)?.id }
-            .map { String($0.uuid.uuidString.prefix(5)) } ?? "nil"
-        let survivingPanel = splitController.focusedPaneId
-            .flatMap { splitController.selectedTab(inPane: $0)?.id.id }
-            .flatMap { panels[$0] }
-        dlog(
-            "close.blankstate.didClose.end ws=\(id.uuidString.prefix(5)) " +
-            "pane=\(pane.id.uuidString.prefix(5)) closed=\(tabId.uuid.uuidString.prefix(5)) " +
-            "panels=\(panels.count) focusedPane=\(focusedPaneAfter) focusedTab=\(focusedTabAfter) " +
-            "focusedPanelLive=\(survivingPanel != nil ? 1 : 0) " +
-            "focusedPanelId=\(survivingPanel?.id.uuidString.prefix(5) ?? "nil")"
-        )
-#endif
     }
 
     func workspaceSplit(_ controller: WorkspaceLayoutController, didSelectTab tab: WorkspaceLayout.Tab, inPane pane: PaneID) {
