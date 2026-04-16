@@ -77,6 +77,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
     private let popupUIDelegate: PopupUIDelegate
     private let popupNavigationDelegate: PopupNavigationDelegate
     private let downloadDelegate: BrowserDownloadDelegate
+    private let webAuthnCoordinator: BrowserWebAuthnCoordinator
 
     private static var associatedObjectKey: UInt8 = 0
 
@@ -112,6 +113,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         webView.customUserAgent = BrowserUserAgentSettings.safariUserAgent
         BrowserThemeSettings.apply(openerPanel?.currentBrowserThemeMode ?? BrowserThemeSettings.mode(), to: webView)
         self.webView = webView
+        self.webAuthnCoordinator = BrowserWebAuthnCoordinator()
 
         // --- Window sizing from WKWindowFeatures ---
         let defaultWidth: CGFloat = 800
@@ -204,6 +206,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         navDel.downloadDelegate = dlDel
         webView.uiDelegate = uiDel
         webView.navigationDelegate = navDel
+        webAuthnCoordinator.install(on: webView)
 
         // Context menu "Open Link in New Tab" → open in opener's workspace,
         // not as a nested popup. Falls back to system browser if opener is gone.
@@ -289,6 +292,7 @@ final class BrowserPopupWindowController: NSObject, NSWindowDelegate {
         urlObservation = nil
 
         // Tear down web view
+        webAuthnCoordinator.uninstall(from: webView)
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil

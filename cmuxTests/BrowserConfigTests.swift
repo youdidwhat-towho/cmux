@@ -1,6 +1,7 @@
 import XCTest
 import Combine
 import AppKit
+import AuthenticationServices
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -1546,6 +1547,41 @@ final class BrowserNilTargetFallbackDecisionTests: XCTestCase {
             browserNavigationShouldFallbackNilTargetToNewTab(
                 navigationType: .linkActivated
             )
+        )
+    }
+}
+
+
+final class BrowserWebAuthnCapabilityDecisionTests: XCTestCase {
+    func testCrossOriginFrameWithoutAuthorizationDoesNotAdvertisePlatformPasskeys() {
+        XCTAssertEqual(
+            browserWebAuthnAdvertisedPlatformPasskeyAvailability(
+                authorizationState: .notDetermined,
+                deviceConfiguredForPasskeys: nil,
+                callerMayPromptForPlatformAuthorization: false
+            ),
+            false
+        )
+    }
+
+    func testPromptableFrameFallsBackWhenDeviceConfigurationIsUnknown() {
+        XCTAssertNil(
+            browserWebAuthnAdvertisedPlatformPasskeyAvailability(
+                authorizationState: .notDetermined,
+                deviceConfiguredForPasskeys: nil,
+                callerMayPromptForPlatformAuthorization: true
+            )
+        )
+    }
+
+    func testAuthorizedBrowserUsesKnownDeviceConfiguration() {
+        XCTAssertEqual(
+            browserWebAuthnAdvertisedPlatformPasskeyAvailability(
+                authorizationState: .authorized,
+                deviceConfiguredForPasskeys: true,
+                callerMayPromptForPlatformAuthorization: false
+            ),
+            true
         )
     }
 }
