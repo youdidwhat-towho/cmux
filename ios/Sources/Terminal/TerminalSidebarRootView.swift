@@ -302,6 +302,15 @@ struct TerminalSidebarRootView: View {
             }
             .listStyle(.plain)
             .listSectionSpacing(.compact)
+            .refreshable {
+                // Pull-to-refresh kicks every pooled daemon connection to
+                // tear down + reconnect now, so users don't have to wait
+                // out the 2s+5s reconnect/probe cycle after a mac reload.
+                await TerminalDaemonConnectionPool.shared.refreshAll()
+                // Brief settle so the spinner doesn't snap away before the
+                // subscribe loop has a chance to complete its first round.
+                try? await Task.sleep(nanoseconds: 600_000_000)
+            }
             .accessibilityIdentifier("terminal.home")
             .navigationTitle(TerminalHomeStrings.navigationTitle)
             .navigationBarTitleDisplayMode(.inline)

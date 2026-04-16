@@ -310,6 +310,13 @@ actor TerminalRemoteDaemonClient {
     private var pendingRequests: [Int: CheckedContinuation<String, Error>] = [:]
     private var pushHandlers: [String: @Sendable (TerminalPushEvent) -> Void] = [:]
     private var workspaceEventHandler: (@Sendable (String) -> Void)?
+    /// Buffered workspace.* push lines that arrived before the handler was
+    /// installed. The daemon pushes a workspace.changed snapshot the moment
+    /// it accepts a connection (so reconnects don't have to wait for the
+    /// client's explicit subscribe roundtrip), and the handler is set later
+    /// in the subscribe loop. Without this buffer, that early push gets
+    /// dropped and we fall back to the slower path.
+    private var pendingWorkspaceEvents: [String] = []
     private var dispatcher: Task<Void, Never>?
     private var transportFailure: Error?
 
@@ -336,6 +343,11 @@ actor TerminalRemoteDaemonClient {
 
     func setWorkspaceEventHandler(_ handler: @escaping @Sendable (String) -> Void) {
         workspaceEventHandler = handler
+        // Drain anything the daemon pushed before this handler was wired
+        // (the post-auth workspace.changed snapshot is the common case).
+        let buffered = pendingWorkspaceEvents
+        pendingWorkspaceEvents.removeAll(keepingCapacity: false)
+        for line in buffered { handler(line) }
         ensureDispatcher()
     }
 
@@ -647,7 +659,12 @@ actor TerminalRemoteDaemonClient {
             if let handler = workspaceEventHandler {
                 handler(line)
             } else {
-                NSLog("📱 dispatcher: no workspace handler for event %@", event)
+                // Buffer for the handler to drain when it's eventually
+                // installed. Cap the queue so a misbehaving daemon can't
+                // grow unbounded memory.
+                if pendingWorkspaceEvents.count < 32 {
+                    pendingWorkspaceEvents.append(line)
+                }
             }
             return
         }

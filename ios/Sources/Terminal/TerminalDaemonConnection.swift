@@ -79,6 +79,16 @@ actor TerminalDaemonConnection {
         await teardownClient()
     }
 
+    /// Force an immediate reconnect: tear down the current client so the
+    /// subscription loop wakes from `waitForTransportFailure` and goes
+    /// through `ensureConnected` again on the next iteration. Used by
+    /// pull-to-refresh and the (planned) scenePhase-active hook so the
+    /// user doesn't have to wait for the 5s hello probe + 2s backoff
+    /// after a known-good reconnect signal.
+    func kickReconnect() async {
+        await teardownClient()
+    }
+
     func workspaceRename(workspaceID: String, title: String) async throws {
         let (client, _) = try await acquireClient()
         try await client.workspaceRename(workspaceID: workspaceID, title: title)

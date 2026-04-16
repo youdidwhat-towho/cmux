@@ -70,6 +70,21 @@ final class TerminalDaemonConnectionPool: @unchecked Sendable {
         return connections.removeValue(forKey: stableID)
     }
 
+    /// Kick every pooled connection to tear down + reconnect immediately.
+    /// Backs the workspace-list pull-to-refresh.
+    func refreshAll() async {
+        let snapshot: [TerminalDaemonConnection] = {
+            lock.lock()
+            defer { lock.unlock() }
+            return Array(connections.values)
+        }()
+        await withTaskGroup(of: Void.self) { group in
+            for connection in snapshot {
+                group.addTask { await connection.kickReconnect() }
+            }
+        }
+    }
+
     private func reprovisionAllRemotePush() {
         let snapshot: [TerminalDaemonConnection] = {
             lock.lock()

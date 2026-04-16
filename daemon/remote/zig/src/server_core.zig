@@ -1120,10 +1120,11 @@ fn handleWorkspaceSubscribe(service: *session_service.Service, req: *const json_
 /// Notify all workspace subscribers that state has changed.
 /// Called after any workspace/pane mutation.
 /// Includes the full workspace list so clients don't need a round-trip re-fetch.
-pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
-    const alloc = service.alloc;
+/// Encode the current workspace state as a workspace.changed push event.
+/// Caller owns the returned buffer (must free via the same allocator).
+/// Returns null on failure (caller can ignore).
+pub fn encodeWorkspaceChangedEvent(service: *session_service.Service, alloc: std.mem.Allocator) ?[]u8 {
     const reg = &service.workspace_reg;
-
     const PaneEntry = struct {
         id: []const u8,
         session_id: ?[]const u8,
@@ -1131,7 +1132,6 @@ pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
         directory: []const u8,
         has_unread_output: bool,
     };
-
     const WorkspaceEntry = struct {
         id: []const u8,
         title: []const u8,
@@ -1214,14 +1214,19 @@ pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
         }) catch continue;
     }
 
-    const event = json_rpc.encodeResponse(alloc, .{
+    return json_rpc.encodeResponse(alloc, .{
         .event = "workspace.changed",
         .change_seq = reg.change_seq,
         .result = .{
             .workspaces = entries.items,
             .selected_workspace_id = reg.selected_id,
         },
-    }) catch return;
+    }) catch null;
+}
+
+pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
+    const alloc = service.alloc;
+    const event = encodeWorkspaceChangedEvent(service, alloc) orelse return;
     defer alloc.free(event);
     service.subscriptions.notifyAllAlloc(alloc, event);
 }

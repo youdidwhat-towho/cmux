@@ -76,6 +76,16 @@ fn handleClient(service: *session_service.Service, secret: []const u8, stream: s
         return;
     }
 
+    // Broadcast the current workspace state to the freshly connected
+    // client. iOS reconnect path then has the full picture before it
+    // even sends `workspace.subscribe`, so a mac reload that tears down
+    // the daemon and respawns recovers in a single round-trip instead
+    // of waiting for the client's exponential-backoff probe.
+    if (server_core.encodeWorkspaceChangedEvent(service, std.heap.page_allocator)) |snapshot| {
+        defer std.heap.page_allocator.free(snapshot);
+        sendWsTextMessage(stream, snapshot) catch {};
+    }
+
     var subscribed = false;
     var write_mutex: std.Thread.Mutex = .{};
     defer if (subscribed) {
