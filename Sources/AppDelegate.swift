@@ -2914,10 +2914,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         isTerminatingApp = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
 
-        if SocketControlSettings.isTaggedDevBuild() {
-            return .terminateNow
-        }
-
         // If the user already confirmed via the Cmd+Q shortcut warning dialog
         // (handleQuitShortcutWarning), skip the check to avoid a second alert.
         if isQuitWarningConfirmed {
@@ -2925,7 +2921,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         // Respect the "Warn Before Quit" setting even when Cmd+Q arrives via
-        // the Cmd+Tab app switcher, bypassing handleCustomShortcut.
+        // the Cmd+Tab app switcher, bypassing handleCustomShortcut. Applies
+        // to tagged DEV builds too — if you opted in to the warning, you
+        // want it regardless of build configuration.
         guard QuitWarningSettings.isEnabled() else {
             return .terminateNow
         }
