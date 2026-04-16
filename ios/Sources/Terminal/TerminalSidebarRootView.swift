@@ -65,6 +65,16 @@ struct TerminalSidebarRootView: View {
         }
     }
 
+    private var visibleHosts: [TerminalHost] {
+        // Discovered (scanned) hosts disappear when offline; the scanner will
+        // re-add them the moment they come back. Custom hosts stay visible
+        // offline so the user can reconnect them manually.
+        store.hosts.filter { host in
+            guard host.source == .discovered else { return true }
+            return host.machineStatus != .offline
+        }
+    }
+
     private var filteredWorkspaces: [TerminalWorkspace] {
         let staleThreshold = Date.now.addingTimeInterval(-24 * 60 * 60)
 
@@ -80,6 +90,14 @@ struct TerminalSidebarRootView: View {
         }
 
         let visible = base.filter { workspace in
+            // Hide workspaces belonging to offline discovered hosts. Custom
+            // (user-configured) hosts stay visible offline so they can be
+            // reconnected; ephemeral scan results should not linger.
+            if let host = store.server(for: workspace.hostID),
+               host.source == .discovered,
+               host.machineStatus == .offline {
+                return false
+            }
             // Hide stale workspaces: idle with no activity in 24 hours
             if workspace.phase == .idle, workspace.lastActivity < staleThreshold {
                 return false
@@ -132,7 +150,7 @@ struct TerminalSidebarRootView: View {
                 Section {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: 14) {
-                            ForEach(store.hosts) { host in
+                            ForEach(visibleHosts) { host in
                                 TerminalServerPinView(
                                     host: host,
                                     workspaceCount: store.workspaceCount(for: host),
