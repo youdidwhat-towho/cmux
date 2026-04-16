@@ -7534,18 +7534,83 @@ final class Workspace: Identifiable, ObservableObject {
         )
     }
 
+    private func makeNativePaneContent(
+        for tab: WorkspaceLayout.Tab,
+        in paneId: PaneID,
+        context: WorkspaceLayoutRenderContext
+    ) -> WorkspaceNativePaneContent? {
+        guard let panel = panel(for: tab.id) else { return nil }
+
+        let isFocused = context.isWorkspaceInputActive && focusedPanelId == panel.id
+        let isSelectedInPane = splitController.selectedTab(inPane: paneId)?.id == tab.id
+        let isVisibleInUI = context.panelVisibleInUI(
+            isSelectedInPane: isSelectedInPane,
+            isFocused: isFocused
+        )
+        let showsNotificationRing = Self.shouldShowUnreadIndicator(
+            hasUnreadNotification: context.notificationStore?.hasVisibleNotificationIndicator(
+                forTabId: id,
+                surfaceId: panel.id
+            ) ?? false,
+            isManuallyUnread: isPanelManuallyUnread(panel.id)
+        )
+
+        if let terminalPanel = panel as? TerminalPanel {
+            return .terminal(
+                WorkspaceTerminalPaneContent(
+                    panel: terminalPanel,
+                    isFocused: isFocused,
+                    isVisibleInUI: isVisibleInUI,
+                    isSplit: splitController.allPaneIds.count > 1 || panels.count > 1,
+                    appearance: context.appearance,
+                    hasUnreadNotification: showsNotificationRing && !context.usesWorkspacePaneOverlay,
+                    onFocus: { [weak self, weak terminalPanel] in
+                        guard let self, let terminalPanel else { return }
+                        guard context.isWorkspaceInputActive else { return }
+                        guard self.panels[terminalPanel.id] != nil else { return }
+                        self.focusPanel(terminalPanel.id, trigger: .terminalFirstResponder)
+                    },
+                    onTriggerFlash: { [weak self, weak terminalPanel] in
+                        guard let self, let terminalPanel else { return }
+                        self.triggerDebugFlash(panelId: terminalPanel.id)
+                    }
+                )
+            )
+        }
+
+        if let browserPanel = panel as? BrowserPanel {
+            return .browser(
+                WorkspaceBrowserPaneContent(
+                    panel: browserPanel,
+                    paneId: paneId,
+                    isFocused: isFocused,
+                    isVisibleInUI: isVisibleInUI,
+                    portalPriority: context.workspacePortalPriority,
+                    onRequestPanelFocus: { [weak self, weak browserPanel] in
+                        guard let self, let browserPanel else { return }
+                        guard context.isWorkspaceInputActive else { return }
+                        guard self.panels[browserPanel.id] != nil else { return }
+                        self.focusPanel(browserPanel.id)
+                    }
+                )
+            )
+        }
+
+        return nil
+    }
+
     @MainActor
-    func makeLayoutRenderSnapshot(
-        notificationStore: TerminalNotificationStore?,
-        showSplitButtons: Bool
-    ) -> WorkspaceLayoutRenderSnapshot {
-        let projectionState = makeTabChromeProjectionState(notificationStore: notificationStore)
+    func makeLayoutRenderSnapshot(context: WorkspaceLayoutRenderContext) -> WorkspaceLayoutRenderSnapshot {
+        let projectionState = makeTabChromeProjectionState(notificationStore: context.notificationStore)
         return workspaceLayoutMakeRenderSnapshot(
             controller: splitController,
             tabChromeBuilder: { [projectionState] tab, _ in
                 self.renderTabChrome(for: tab, using: projectionState)
             },
-            showSplitButtons: showSplitButtons
+            nativeContentBuilder: { [weak self] tab, paneId in
+                self?.makeNativePaneContent(for: tab, in: paneId, context: context)
+            },
+            showSplitButtons: context.showSplitButtons
         )
     }
 
@@ -9633,11 +9698,6 @@ final class Workspace: Identifiable, ObservableObject {
     /// Called before the workspace is removed from TabManager to ensure child
     /// processes receive SIGHUP even if ARC deallocation is delayed.
     func teardownAllPanels() {
-        // Hide browser portal-hosted content up front so a workspace being torn down
-        // cannot keep drawing above the next selected/restored workspace while
-        // panel close work is still unwinding.
-        hideAllBrowserPortalViews()
-
         let panelEntries = Array(panels)
         for (panelId, panel) in panelEntries {
             panelSubscriptions.removeValue(forKey: panelId)
@@ -10466,19 +10526,6 @@ final class Workspace: Identifiable, ObservableObject {
         guard panels[panelId] != nil else { return }
         focusPanel(panelId)
         requestAttentionFlash(panelId: panelId, reason: .debug)
-    }
-
-    // MARK: - Portal Lifecycle
-
-    func hideAllBrowserPortalViews() {
-        for panel in panels.values {
-            guard let browser = panel as? BrowserPanel else { continue }
-            browser.setBrowserPortalVisibility(
-                visibleInUI: false,
-                zPriority: 0,
-                source: "workspaceRetire"
-            )
-        }
     }
 
     // MARK: - Utility

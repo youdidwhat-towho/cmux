@@ -3344,6 +3344,11 @@ final class BrowserPanel: Panel, ObservableObject {
         // Ensure we don't keep a hidden WKWebView (or its content view) as first responder while
         // WorkspaceSplit/SwiftUI reshuffles views during close.
         unfocus()
+        setBrowserPortalVisibility(
+            visibleInUI: false,
+            zPriority: 0,
+            source: "browserPanelClose"
+        )
 
         // Snapshot first: popup close unregisters itself from popupControllers.
         let popupsToClose = popupControllers

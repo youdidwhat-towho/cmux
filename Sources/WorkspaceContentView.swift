@@ -235,6 +235,23 @@ struct TmuxWorkspacePaneOverlayObservedView: View {
     }
 }
 
+struct WorkspaceLayoutRenderContext {
+    let notificationStore: TerminalNotificationStore?
+    let isWorkspaceVisible: Bool
+    let isWorkspaceInputActive: Bool
+    let appearance: PanelAppearance
+    let workspacePortalPriority: Int
+    let usesWorkspacePaneOverlay: Bool
+    let showSplitButtons: Bool
+
+    func panelVisibleInUI(isSelectedInPane: Bool, isFocused: Bool) -> Bool {
+        guard isWorkspaceVisible else { return false }
+        // During pane/tab reparenting, WorkspaceSplit can transiently report selected=false
+        // for the currently focused panel. Keep focused content visible to avoid blank frames.
+        return isSelectedInPane || isFocused
+    }
+}
+
 /// View that renders a Workspace's content using WorkspaceLayoutView
 struct WorkspaceContentView: View {
     @ObservedObject var workspace: Workspace
@@ -263,10 +280,22 @@ struct WorkspaceContentView: View {
         isSelectedInPane: Bool,
         isFocused: Bool
     ) -> Bool {
-        guard isWorkspaceVisible else { return false }
-        // During pane/tab reparenting, WorkspaceSplit can transiently report selected=false
-        // for the currently focused panel. Keep focused content visible to avoid blank frames.
-        return isSelectedInPane || isFocused
+        WorkspaceLayoutRenderContext(
+            notificationStore: nil,
+            isWorkspaceVisible: isWorkspaceVisible,
+            isWorkspaceInputActive: false,
+            appearance: PanelAppearance(
+                dividerColor: .clear,
+                unfocusedOverlayNSColor: .clear,
+                unfocusedOverlayOpacity: 0
+            ),
+            workspacePortalPriority: 0,
+            usesWorkspacePaneOverlay: false,
+            showSplitButtons: false
+        ).panelVisibleInUI(
+            isSelectedInPane: isSelectedInPane,
+            isFocused: isFocused
+        )
     }
 
     var body: some View {
@@ -277,10 +306,16 @@ struct WorkspaceContentView: View {
         let showSplitButtons =
             workspace.splitController.configuration.allowSplits &&
             workspace.splitController.configuration.appearance.showSplitButtons
-        let renderSnapshot = workspace.makeLayoutRenderSnapshot(
+        let renderContext = WorkspaceLayoutRenderContext(
             notificationStore: notificationStore,
+            isWorkspaceVisible: isWorkspaceVisible,
+            isWorkspaceInputActive: isWorkspaceInputActive,
+            appearance: appearance,
+            workspacePortalPriority: workspacePortalPriority,
+            usesWorkspacePaneOverlay: usesWorkspacePaneOverlay,
             showSplitButtons: showSplitButtons
         )
+        let renderSnapshot = workspace.makeLayoutRenderSnapshot(context: renderContext)
 
         // Inactive workspaces are kept alive in a ZStack (for state preservation) but their
         // AppKit-backed views can still intercept drags. Disable drop acceptance for them.
@@ -301,81 +336,21 @@ struct WorkspaceContentView: View {
 
         let splitView = WorkspaceLayoutView(
             controller: workspace.splitController,
-            renderSnapshot: renderSnapshot,
-            nativeContent: { tab, paneId in
-                let _ = Self.debugPanelLookup(tab: tab, workspace: workspace)
-                guard let panel = workspace.panel(for: tab.id) else {
-                    return nil
-                }
-
-                let isFocused = isWorkspaceInputActive && workspace.focusedPanelId == panel.id
-                let isSelectedInPane = workspace.splitController.selectedTab(inPane: paneId)?.id == tab.id
-                let isVisibleInUI = Self.panelVisibleInUI(
-                    isWorkspaceVisible: isWorkspaceVisible,
-                    isSelectedInPane: isSelectedInPane,
-                    isFocused: isFocused
-                )
-                let showsNotificationRing = Workspace.shouldShowUnreadIndicator(
-                    hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
-                        forTabId: workspace.id,
-                        surfaceId: panel.id
-                    ),
-                    isManuallyUnread: workspace.isPanelManuallyUnread(panel.id)
-                )
-
-                if let terminalPanel = panel as? TerminalPanel {
-                    return .terminal(
-                        WorkspaceTerminalPaneContent(
-                            panel: terminalPanel,
-                            isFocused: isFocused,
-                            isVisibleInUI: isVisibleInUI,
-                            isSplit: isSplit,
-                            appearance: appearance,
-                            hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
-                            onFocus: {
-                                guard isWorkspaceInputActive else { return }
-                                guard workspace.panels[terminalPanel.id] != nil else { return }
-                                workspace.focusPanel(terminalPanel.id, trigger: .terminalFirstResponder)
-                            },
-                            onTriggerFlash: { workspace.triggerDebugFlash(panelId: terminalPanel.id) }
-                        )
-                    )
-                }
-
-                if let browserPanel = panel as? BrowserPanel {
-                    return .browser(
-                        WorkspaceBrowserPaneContent(
-                            panel: browserPanel,
-                            paneId: paneId,
-                            isFocused: isFocused,
-                            isVisibleInUI: isVisibleInUI,
-                            portalPriority: workspacePortalPriority,
-                            onRequestPanelFocus: {
-                                guard isWorkspaceInputActive else { return }
-                                guard workspace.panels[browserPanel.id] != nil else { return }
-                                workspace.focusPanel(browserPanel.id)
-                            }
-                        )
-                    )
-                }
-
-                return nil
-            }
+            renderSnapshot: renderSnapshot
         ) { tab, paneId in
             let _ = Self.debugPanelLookup(tab: tab, workspace: workspace)
             if let panel = workspace.panel(for: tab.id) {
                 let isFocused = isWorkspaceInputActive && workspace.focusedPanelId == panel.id
                 let isSelectedInPane = workspace.splitController.selectedTab(inPane: paneId)?.id == tab.id
-                let isVisibleInUI = Self.panelVisibleInUI(
-                    isWorkspaceVisible: isWorkspaceVisible,
+                let isVisibleInUI = renderContext.panelVisibleInUI(
                     isSelectedInPane: isSelectedInPane,
                     isFocused: isFocused
                 )
                 let showsNotificationRing = Workspace.shouldShowUnreadIndicator(
-                    hasUnreadNotification: notificationStore.hasVisibleNotificationIndicator(
+                    hasUnreadNotification: renderContext.notificationStore?.hasVisibleNotificationIndicator(
                         forTabId: workspace.id,
                         surfaceId: panel.id
-                    ),
+                    ) ?? false,
                     isManuallyUnread: workspace.isPanelManuallyUnread(panel.id)
                 )
                 PanelContentView(
@@ -384,10 +359,10 @@ struct WorkspaceContentView: View {
                     isFocused: isFocused,
                     isSelectedInPane: isSelectedInPane,
                     isVisibleInUI: isVisibleInUI,
-                    portalPriority: workspacePortalPriority,
+                    portalPriority: renderContext.workspacePortalPriority,
                     isSplit: isSplit,
-                    appearance: appearance,
-                    hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
+                    appearance: renderContext.appearance,
+                    hasUnreadNotification: showsNotificationRing && !renderContext.usesWorkspacePaneOverlay,
                     onFocus: {
                         // Keep WorkspaceSplit focus in sync with the AppKit first responder for the
                         // active workspace. This prevents divergence between the blue focused-tab

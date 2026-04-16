@@ -376,6 +376,7 @@ enum WorkspaceLayout {
 }
 
 typealias WorkspaceLayoutTabChromeProvider = @MainActor (WorkspaceLayout.Tab, PaneID) -> WorkspaceLayout.Tab
+typealias WorkspaceLayoutNativeContentProvider = @MainActor (WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?
 
 protocol WorkspaceLayoutDelegate: AnyObject {
     func workspaceSplit(_ controller: WorkspaceLayoutController, shouldCreateTab tab: WorkspaceLayout.Tab, inPane pane: PaneID) -> Bool
@@ -2902,7 +2903,6 @@ struct WorkspaceLayoutView<Content: View, EmptyContent: View>: View {
     private let renderSnapshot: WorkspaceLayoutRenderSnapshot?
     private let contentBuilder: (WorkspaceLayout.Tab, PaneID) -> Content
     private let emptyPaneBuilder: (PaneID) -> EmptyContent
-    private let nativeContentBuilder: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)?
     private let tabChromeProvider: WorkspaceLayoutTabChromeProvider?
 
     /// Initialize with a controller, content builder, and empty pane builder
@@ -2913,14 +2913,12 @@ struct WorkspaceLayoutView<Content: View, EmptyContent: View>: View {
     init(
         controller: WorkspaceLayoutController,
         renderSnapshot: WorkspaceLayoutRenderSnapshot? = nil,
-        nativeContent: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)? = nil,
         tabChrome: WorkspaceLayoutTabChromeProvider? = nil,
         @ViewBuilder content: @escaping (WorkspaceLayout.Tab, PaneID) -> Content,
         @ViewBuilder emptyPane: @escaping (PaneID) -> EmptyContent
     ) {
         self.controller = controller
         self.renderSnapshot = renderSnapshot
-        self.nativeContentBuilder = nativeContent
         self.tabChromeProvider = tabChrome
         self.contentBuilder = content
         self.emptyPaneBuilder = emptyPane
@@ -2936,7 +2934,6 @@ struct WorkspaceLayoutView<Content: View, EmptyContent: View>: View {
         WorkspaceLayoutNativeHost(
             controller: controller,
             renderSnapshot: resolvedRenderSnapshot,
-            nativeContent: nativeContentBuilder,
             content: contentBuilder,
             emptyPane: emptyPaneBuilder,
             showSplitButtons: showSplitButtons,
@@ -2957,13 +2954,11 @@ extension WorkspaceLayoutView where EmptyContent == DefaultEmptyPaneView {
     init(
         controller: WorkspaceLayoutController,
         renderSnapshot: WorkspaceLayoutRenderSnapshot? = nil,
-        nativeContent: ((WorkspaceLayout.Tab, PaneID) -> WorkspaceNativePaneContent?)? = nil,
         tabChrome: WorkspaceLayoutTabChromeProvider? = nil,
         @ViewBuilder content: @escaping (WorkspaceLayout.Tab, PaneID) -> Content
     ) {
         self.controller = controller
         self.renderSnapshot = renderSnapshot
-        self.nativeContentBuilder = nativeContent
         self.tabChromeProvider = tabChrome
         self.contentBuilder = content
         self.emptyPaneBuilder = { _ in DefaultEmptyPaneView() }
@@ -2981,17 +2976,6 @@ extension WorkspaceNativePaneContent {
         switch self {
         case .terminal, .browser:
             true
-        }
-    }
-}
-
-extension WorkspaceLayout.Tab {
-    var prefersNativeDropOverlay: Bool {
-        switch kind {
-        case .browser:
-            true
-        default:
-            false
         }
     }
 }

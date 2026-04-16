@@ -40,10 +40,13 @@ Implemented on `issue-2289-appkit-split-host`:
 - `Workspace` now owns canonical per-surface runtime metadata in one `surfaceStatesByPanelId` map instead of parallel title, directory, pin, unread, browser chrome, git, PR, port, and tty stores
 - `Workspace` internals now read and mutate that canonical surface state directly for session restore, focus, close, detach/attach, sidebar ordering, browser/markdown creation, remote tty/port updates, and tab chrome projection
 - `WorkspaceContentView` no longer assembles tab chrome projection state locally, and `Workspace` now builds the layout render snapshot that the AppKit host applies
+- `Workspace` now also resolves terminal/browser native pane content while building that render snapshot, so the AppKit host no longer asks `WorkspaceContentView` to rebuild runtime native descriptors from tabs during rendering
+- `WorkspaceLayoutView` and `WorkspaceLayoutNativeHost` no longer expose a separate native-content builder seam; the host consumes one canonical snapshot tree plus the SwiftUI fallback builder for non-native surfaces
 - `TabManager`, `ContentView`, `WorkspaceContentView`, `TerminalController`, `AppleScriptSupport`, `GhosttyTerminalView`, and `TerminalImageTransfer` now consume canonical surface snapshots/accessors instead of wrapper-shaped metadata dictionaries
 - the old wrapper-shaped surface metadata API is gone from `Workspace`, so production code no longer reaches into parallel `panelTitles`-style stores
 - `TerminalController` workspace resolution now prefers its attached `TabManager` and only falls back to `AppDelegate` window contexts for cross-window routing, which keeps socket and telemetry ownership aligned with the runtime workspace owner
 - focused behavior coverage for the ownership cut passes, including workspace state, content visibility, socket security, session persistence, sidebar ordering, browser config, and remote connection suites
+- browser portal teardown is now owned by `BrowserPanel.close()` instead of a workspace-wide pre-close sweep, which keeps portal lifecycle at the retained-surface boundary
 
 No required architecture work from this simplification plan remains on this branch.
 
