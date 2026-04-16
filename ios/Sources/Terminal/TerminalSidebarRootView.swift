@@ -98,6 +98,15 @@ struct TerminalSidebarRootView: View {
                host.machineStatus == .offline {
                 return false
             }
+            // For discovered hosts the daemon's workspace.list is
+            // authoritative. Hide unbound placeholders (no remoteWorkspaceID)
+            // so iOS mirrors the mac sidebar exactly and never shows orphan
+            // rows for workspaces that don't exist on the daemon.
+            if let host = store.server(for: workspace.hostID),
+               host.source == .discovered,
+               workspace.remoteWorkspaceID == nil {
+                return false
+            }
             // Hide stale workspaces: idle with no activity in 24 hours
             if workspace.phase == .idle, workspace.lastActivity < staleThreshold {
                 return false
