@@ -393,6 +393,14 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
         TerminalRemoteDaemonSessionHistoryResult(sessionID: sessionID, history: "")
     }
 
+    func workspaceList() async throws -> TerminalRemoteDaemonWorkspaceListResult {
+        TerminalRemoteDaemonWorkspaceListResult(
+            workspaces: [],
+            selectedWorkspaceID: nil,
+            changeSeq: 0
+        )
+    }
+
     func openedCommands() -> [String] {
         openedCommandValues
     }
