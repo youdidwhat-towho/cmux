@@ -12,6 +12,7 @@ Status on `2026-04-16`:
 6. done, new pure transition/presentation structs are value types with explicit `Sendable` conformance where appropriate.
 7. done, deterministic tests now cover the new transition resolver plus split/close and child-exit behavior. `cmux-unit` targeted run passed with `13` tests and `0` failures (`WorkspaceContentViewVisibilityTests`, selected `WorkspaceUnitTests` split-close cases, and `TabManagerChildExitCloseTests`).
    Re-verified on `2026-04-16` with the same targeted suite, `13` tests and `0` failures, using `-derivedDataPath /tmp/cmux-issue-2289-7steps-verify`.
+   Re-verified on `2026-04-16` on `ssh cmux-macmini` from branch commit `0c1aaa8e`, same targeted suite, `11` executed tests and `0` failures (`/tmp/cmux-issue-2289-7steps-remote-verify`), with `CMUX_SKIP_ZIG_BUILD=1` because that machine does not have `zig` installed.
 
 ## Status
 
