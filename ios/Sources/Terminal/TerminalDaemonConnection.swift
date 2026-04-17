@@ -85,6 +85,9 @@ actor TerminalDaemonConnection {
         task?.cancel()
         await task?.value
         await teardownClient()
+        // Any pull-to-refresh waiters still pending against this connection
+        // would never complete after the loop is gone — release them now.
+        resumeSubscribeRoundWaiters()
     }
 
     /// Force an immediate reconnect: tear down the current client so the
@@ -100,6 +103,14 @@ actor TerminalDaemonConnection {
     /// (success or error). Lets the refreshable spinner dismiss only after
     /// fresh state has arrived instead of after a blind delay.
     func kickAndAwaitFirstSync() async {
+        // If no subscription loop is running (e.g., pool entry left over from
+        // a daemon that has since gone offline), nothing will ever call
+        // resumeSubscribeRoundWaiters, so awaiting a round here would hang
+        // the pull-to-refresh spinner forever. Just tear down and return.
+        guard subscribed, subscriptionTask != nil else {
+            await teardownClient()
+            return
+        }
         await withCheckedContinuation { continuation in
             pendingSubscribeRoundWaiters.append(continuation)
             Task { await self.teardownClient() }
