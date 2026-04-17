@@ -28,13 +28,16 @@ if [ -n "$TAG" ]; then
     DERIVED_DATA_PATH="$HOME/Library/Developer/Xcode/DerivedData/cmux-$TAG"
 fi
 
-# Tagged build identity
+# Tagged build identity. The home-screen label is just the tag (e.g. "mvios")
+# because iOS truncates long names; the "cmux DEV" prefix wastes the width
+# that every tagged build would otherwise share. Untagged builds keep the
+# full "cmux DEV" label for discoverability.
 BUNDLE_ID="dev.cmux.app.dev"
 APP_NAME="cmux DEV"
 if [ -n "$TAG" ]; then
     SANITIZED_TAG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/./g; s/^\.+//; s/\.+$//; s/\.+/./g')
     BUNDLE_ID="dev.cmux.app.dev.${SANITIZED_TAG}"
-    APP_NAME="cmux DEV ${TAG}"
+    APP_NAME="${TAG}"
 fi
 
 # Discover wsPort from macOS daemon's .wsport file.
