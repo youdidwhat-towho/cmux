@@ -8950,160 +8950,161 @@ private final class GhosttyWindowFocusCoordinator {
     }
 }
 
-final class GhosttySurfaceScrollView: NSView {
-    private enum RuntimeActivationDemand: Int, Comparable, Sendable {
-        case none
-        case background
-        case visible
+enum TerminalViewportRuntimeActivationDemand: Int, Comparable, Sendable {
+    case none
+    case background
+    case visible
 
-        static func < (lhs: RuntimeActivationDemand, rhs: RuntimeActivationDemand) -> Bool {
-            lhs.rawValue < rhs.rawValue
+    static func < (lhs: TerminalViewportRuntimeActivationDemand, rhs: TerminalViewportRuntimeActivationDemand) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+enum TerminalViewportLifecyclePhase: String, Equatable, Sendable {
+    case detached
+    case mountedHidden
+    case mountedAwaitingWindow
+    case mountedAwaitingGeometry
+    case runtimeRealized
+    case awaitingFirstFrame
+    case visible
+    case visibleFocused
+}
+
+struct TerminalViewportLifecycleFacts: Equatable, Sendable {
+    let isVisibleInUI: Bool
+    let isWindowed: Bool
+    let hasUsableGeometry: Bool
+    let hasRuntime: Bool
+    let hasPresentedFrame: Bool
+    let isActive: Bool
+}
+
+enum TerminalViewportLifecycleCommand: Equatable, Sendable {
+    case realizeRuntime
+    case synchronizeVisibleGeometry
+    case requestFirstFrame
+    case resumeFocus
+}
+
+struct TerminalViewportLifecycleUpdate: Equatable, Sendable {
+    let phase: TerminalViewportLifecyclePhase
+    let demand: TerminalViewportRuntimeActivationDemand
+    let commands: [TerminalViewportLifecycleCommand]
+}
+
+@MainActor
+final class TerminalViewportLifecycleController {
+    private(set) var phase: TerminalViewportLifecyclePhase = .detached
+    private var backgroundRuntimeRequested = false
+    private var lastFacts: TerminalViewportLifecycleFacts?
+    private var lastDemand: TerminalViewportRuntimeActivationDemand = .none
+    private var issuedFirstFrameRequestForCurrentAwait = false
+
+    func requestBackgroundRuntime() {
+        backgroundRuntimeRequested = true
+    }
+
+    func reset() {
+        phase = .detached
+        backgroundRuntimeRequested = false
+        lastFacts = nil
+        lastDemand = .none
+        issuedFirstFrameRequestForCurrentAwait = false
+    }
+
+    private func effectiveDemand(for facts: TerminalViewportLifecycleFacts) -> TerminalViewportRuntimeActivationDemand {
+        if facts.isVisibleInUI {
+            return .visible
         }
+        return backgroundRuntimeRequested ? .background : .none
     }
 
-    private enum ViewportLifecyclePhase: String, Equatable, Sendable {
-        case detached
-        case mountedHidden
-        case mountedAwaitingWindow
-        case mountedAwaitingGeometry
-        case runtimeRealized
-        case awaitingFirstFrame
-        case visible
-        case visibleFocused
-    }
+    func reconcile(facts: TerminalViewportLifecycleFacts, force: Bool) -> TerminalViewportLifecycleUpdate? {
+        let previousFacts = lastFacts
+        let demand = effectiveDemand(for: facts)
+        let previousPhase = phase
+        let previousDemand = lastDemand
+        var commands: [TerminalViewportLifecycleCommand] = []
+        let nextPhase: TerminalViewportLifecyclePhase
 
-    private struct ViewportLifecycleFacts: Equatable, Sendable {
-        let isVisibleInUI: Bool
-        let isWindowed: Bool
-        let hasUsableGeometry: Bool
-        let hasRuntime: Bool
-        let hasPresentedFrame: Bool
-        let isActive: Bool
-    }
-
-    private enum ViewportLifecycleCommand: Equatable, Sendable {
-        case realizeRuntime
-        case synchronizeVisibleGeometry
-        case requestFirstFrame
-        case resumeFocus
-    }
-
-    private struct ViewportLifecycleUpdate: Equatable, Sendable {
-        let phase: ViewportLifecyclePhase
-        let demand: RuntimeActivationDemand
-        let commands: [ViewportLifecycleCommand]
-    }
-
-    @MainActor
-    private final class TerminalViewportLifecycleController {
-        private(set) var phase: ViewportLifecyclePhase = .detached
-        private var backgroundRuntimeRequested = false
-        private var lastFacts: ViewportLifecycleFacts?
-        private var lastDemand: RuntimeActivationDemand = .none
-        private var issuedFirstFrameRequestForCurrentAwait = false
-
-        func requestBackgroundRuntime() {
-            backgroundRuntimeRequested = true
-        }
-
-        func reset() {
-            phase = .detached
-            backgroundRuntimeRequested = false
-            lastFacts = nil
-            lastDemand = .none
+        switch demand {
+        case .none:
             issuedFirstFrameRequestForCurrentAwait = false
-        }
+            nextPhase = facts.isWindowed ? .mountedHidden : .detached
 
-        private func effectiveDemand(for facts: ViewportLifecycleFacts) -> RuntimeActivationDemand {
-            if facts.isVisibleInUI {
-                return .visible
+        case .background:
+            issuedFirstFrameRequestForCurrentAwait = false
+            if !facts.isWindowed {
+                nextPhase = .mountedAwaitingWindow
+            } else if !facts.hasUsableGeometry {
+                nextPhase = .mountedHidden
+            } else if facts.hasRuntime {
+                nextPhase = .runtimeRealized
+                backgroundRuntimeRequested = false
+            } else {
+                nextPhase = .runtimeRealized
+                commands.append(.realizeRuntime)
             }
-            return backgroundRuntimeRequested ? .background : .none
-        }
 
-        func reconcile(facts: ViewportLifecycleFacts, force: Bool) -> ViewportLifecycleUpdate? {
-            let previousFacts = lastFacts
-            let demand = effectiveDemand(for: facts)
-            let previousPhase = phase
-            let previousDemand = lastDemand
-            var commands: [ViewportLifecycleCommand] = []
-            let nextPhase: ViewportLifecyclePhase
-
-            switch demand {
-            case .none:
+        case .visible:
+            if !facts.isWindowed {
                 issuedFirstFrameRequestForCurrentAwait = false
-                nextPhase = facts.isWindowed ? .mountedHidden : .detached
-
-            case .background:
+                nextPhase = .mountedAwaitingWindow
+            } else if !facts.hasUsableGeometry {
                 issuedFirstFrameRequestForCurrentAwait = false
-                if !facts.isWindowed {
-                    nextPhase = .mountedAwaitingWindow
-                } else if !facts.hasUsableGeometry {
-                    nextPhase = .mountedHidden
-                } else if facts.hasRuntime {
-                    nextPhase = .runtimeRealized
-                    backgroundRuntimeRequested = false
-                } else {
-                    nextPhase = .runtimeRealized
-                    commands.append(.realizeRuntime)
+                nextPhase = .mountedAwaitingGeometry
+            } else if !facts.hasRuntime {
+                issuedFirstFrameRequestForCurrentAwait = false
+                nextPhase = .runtimeRealized
+                commands.append(.realizeRuntime)
+                commands.append(.synchronizeVisibleGeometry)
+            } else if !facts.hasPresentedFrame {
+                nextPhase = .awaitingFirstFrame
+                commands.append(.synchronizeVisibleGeometry)
+                if !issuedFirstFrameRequestForCurrentAwait || previousPhase != .awaitingFirstFrame {
+                    commands.append(.requestFirstFrame)
+                    issuedFirstFrameRequestForCurrentAwait = true
                 }
-
-            case .visible:
-                if !facts.isWindowed {
-                    issuedFirstFrameRequestForCurrentAwait = false
-                    nextPhase = .mountedAwaitingWindow
-                } else if !facts.hasUsableGeometry {
-                    issuedFirstFrameRequestForCurrentAwait = false
-                    nextPhase = .mountedAwaitingGeometry
-                } else if !facts.hasRuntime {
-                    issuedFirstFrameRequestForCurrentAwait = false
-                    nextPhase = .runtimeRealized
-                    commands.append(.realizeRuntime)
-                    commands.append(.synchronizeVisibleGeometry)
-                } else if !facts.hasPresentedFrame {
-                    nextPhase = .awaitingFirstFrame
-                    commands.append(.synchronizeVisibleGeometry)
-                    if !issuedFirstFrameRequestForCurrentAwait || previousPhase != .awaitingFirstFrame {
-                        commands.append(.requestFirstFrame)
-                        issuedFirstFrameRequestForCurrentAwait = true
-                    }
-                } else {
-                    issuedFirstFrameRequestForCurrentAwait = false
-                    nextPhase = facts.isActive ? .visibleFocused : .visible
-                    commands.append(.synchronizeVisibleGeometry)
-                    if facts.isActive {
-                        commands.append(.resumeFocus)
-                    }
+            } else {
+                issuedFirstFrameRequestForCurrentAwait = false
+                nextPhase = facts.isActive ? .visibleFocused : .visible
+                commands.append(.synchronizeVisibleGeometry)
+                if facts.isActive {
+                    commands.append(.resumeFocus)
                 }
             }
-
-            phase = nextPhase
-            lastFacts = facts
-            lastDemand = demand
-
-            if !force,
-               nextPhase == previousPhase,
-               demand == previousDemand,
-               facts == previousFacts,
-               commands.isEmpty {
-                return nil
-            }
-
-            return ViewportLifecycleUpdate(
-                phase: nextPhase,
-                demand: demand,
-                commands: Self.deduplicated(commands)
-            )
         }
 
-        private static func deduplicated(_ commands: [ViewportLifecycleCommand]) -> [ViewportLifecycleCommand] {
-            var result: [ViewportLifecycleCommand] = []
-            for command in commands where !result.contains(command) {
-                result.append(command)
-            }
-            return result
+        phase = nextPhase
+        lastFacts = facts
+        lastDemand = demand
+
+        if !force,
+           nextPhase == previousPhase,
+           demand == previousDemand,
+           facts == previousFacts,
+           commands.isEmpty {
+            return nil
         }
+
+        return TerminalViewportLifecycleUpdate(
+            phase: nextPhase,
+            demand: demand,
+            commands: Self.deduplicated(commands)
+        )
     }
+
+    private static func deduplicated(_ commands: [TerminalViewportLifecycleCommand]) -> [TerminalViewportLifecycleCommand] {
+        var result: [TerminalViewportLifecycleCommand] = []
+        for command in commands where !result.contains(command) {
+            result.append(command)
+        }
+        return result
+    }
+}
+
+final class GhosttySurfaceScrollView: NSView {
 
     enum FlashStyle {
         case navigation
@@ -10205,8 +10206,8 @@ final class GhosttySurfaceScrollView: NSView {
         reconcileViewportLifecycle(reason: "hostedView.firstDrawable", force: true)
     }
 
-    private func currentViewportLifecycleFacts() -> ViewportLifecycleFacts {
-        ViewportLifecycleFacts(
+    private func currentViewportLifecycleFacts() -> TerminalViewportLifecycleFacts {
+        TerminalViewportLifecycleFacts(
             isVisibleInUI: surfaceView.isVisibleInUI,
             isWindowed: window != nil,
             hasUsableGeometry: bounds.width > 1 && bounds.height > 1,
@@ -10216,7 +10217,7 @@ final class GhosttySurfaceScrollView: NSView {
         )
     }
 
-    private func applyViewportLifecycleUpdate(_ update: ViewportLifecycleUpdate, reason: String) {
+    private func applyViewportLifecycleUpdate(_ update: TerminalViewportLifecycleUpdate, reason: String) {
         for command in update.commands {
             switch command {
             case .realizeRuntime:

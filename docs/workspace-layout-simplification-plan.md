@@ -37,37 +37,19 @@ Status on `2026-04-17`:
 7. done, background terminal startup demand now lives on `GhosttySurfaceScrollView` instead of `TerminalSurface`, so pre-window background-start requests are no longer lossy and delayed text-send now uses `onRuntimeReady(...)` in `AppDelegate` rather than another runtime-ready NotificationCenter observer.
 8. done, `GhosttyNSView.ensureSurfaceReadyForInput()` no longer creates runtime surfaces directly. Focus and input paths now bounce through viewport reconcile, which removed the last production side door that could realize Ghostty at `0x0` before the lifecycle controller admitted usable geometry.
 9. done, temporary terminal-host probe logs from this refactor were removed after the lifecycle-owner cut stabilized, so the branch ends with the controller change instead of permanent dogfood instrumentation.
+10. done, the viewport phase machine now lives in a first-class `TerminalViewportLifecycleController` with explicit `TerminalViewportLifecycleFacts`, `TerminalViewportLifecyclePhase`, and `TerminalViewportLifecycleUpdate` types instead of being private nested state inside `GhosttySurfaceScrollView`.
+11. done, direct controller tests now cover the transition matrix for visible startup, awaiting-first-frame entry, visible-focused promotion, and background-demand persistence, so the lifecycle contract is verified independently from AppKit host behavior.
 
-## Current Diagnosis (2026-04-17)
+## Finalized Terminal Lifecycle Shape
 
-The remaining blank-after-`cmd+d` and blank-after-`cmd+n` failures are not a missing mount bug. The runtime evidence shows the new terminal surface is attached, the Ghostty runtime is created, the surface recovers from `0x0` to the correct size, and the hosted view even forces a redraw. The pane still renders blank.
+The terminal runtime path now has one owner:
 
-That means the current failure is later than mount and later than geometry recovery. The underlying problem is still architectural: visible terminal presentation is spread across too many owners.
+1. `Workspace` and the retained host bind surfaces and pass desired visibility/focus facts into viewport reconcile.
+2. `TerminalViewportLifecycleController` owns the terminal phase machine on `@MainActor`.
+3. `GhosttySurfaceScrollView` reports AppKit facts such as window attachment, geometry readiness, frame presentation, and focus state, then applies controller-issued commands.
+4. `TerminalSurface` is the Ghostty runtime wrapper only. It no longer decides visible startup or background-prewarm policy itself.
 
-Today the same lifecycle is mutated from all of these places:
-
-- workspace retained-host mount and presentation diffing
-- viewport host phase reconcile
-- `GhosttySurfaceScrollView.layout()`
-- `GhosttySurfaceScrollView.viewDidMoveToWindow()`
-- background-start demand on `TerminalSurface`
-- runtime-ready callbacks and remaining NotificationCenter glue
-
-Per the Swift guidance rules, this is the wrong shape for AppKit UI ownership. One visible terminal should have one `@MainActor` lifecycle owner. View callbacks should report facts. They should not be business-logic entry points that decide whether the runtime should exist.
-
-## Proposed End State
-
-The next cut should replace the current mixed lifecycle with one explicit viewport lifecycle controller for every retained surface host.
-
-Responsibilities:
-
-1. `Workspace` remains the canonical source of desired presentation. It emits value-only viewport facts: mounted identity, visibility intent, focus intent, bounds, window attachment, and demand (`hidden-prewarm` or `visible`).
-2. A dedicated `TerminalViewportLifecycleController` owns the terminal phase machine on `@MainActor`.
-3. `GhosttySurfaceScrollView` becomes a passive AppKit host that reports facts, not an owner that decides runtime creation from `layout()` or `viewDidMoveToWindow()`.
-4. `TerminalSurface` becomes the Ghostty runtime wrapper only. It no longer owns background-start policy or UI lifecycle branching.
-5. Runtime readiness and first-frame readiness become explicit lifecycle facts, not inferred by side effects such as redraw, fallback fill, or later window events.
-
-Suggested explicit phases:
+The explicit phases are:
 
 - `detached`
 - `mountedHidden`
@@ -78,29 +60,12 @@ Suggested explicit phases:
 - `visible`
 - `visibleFocused`
 
-## First Migration Cut
+## Verification Bar For This Cut
 
-The first real architecture cut should be:
+This cut is considered complete when both of these hold:
 
-1. introduce the terminal viewport lifecycle controller and move the phase enum there
-2. make workspace/viewport apply only update desired facts on that controller
-3. strip runtime creation out of `layout()` and `viewDidMoveToWindow()`
-4. make those AppKit callbacks publish facts to the controller instead
-5. replace redraw-based recovery with an explicit `awaitingFirstFrame` transition
-6. delete the current overlapping visible-start and background-start entry points once the controller owns both demands
-
-## Test Strategy For That Cut
-
-The next cut is only done when these cases are deterministic without hover, resize, or focus churn:
-
-1. new workspace, first terminal visible immediately
-2. `cmd+d`, new right terminal visible immediately
-3. `cmd+shift+d`, new lower terminal visible immediately
-4. `cmd+w` and child-exit close preserve the surviving terminal frame with no blank intermediate state
-5. off-window prewarm followed by reveal works without special-case repair logic
-6. resize does not wake hidden terminals or require redraw repair on reveal
-
-The tests should target lifecycle behavior, not source shape. The harness should drive phase facts and assert runtime creation, geometry sync, first-frame readiness, and focus behavior through the controller boundary.
+1. retained-host behavior passes through the workspace and AppKit host boundary
+2. the phase machine itself passes direct transition tests without relying on window hover, resize, or other incidental callbacks
 
 ## Status
 

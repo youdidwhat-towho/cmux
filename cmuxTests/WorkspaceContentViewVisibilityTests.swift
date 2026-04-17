@@ -184,3 +184,219 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+final class TerminalViewportLifecycleControllerTests: XCTestCase {
+    private func facts(
+        visible: Bool,
+        windowed: Bool,
+        geometry: Bool,
+        runtime: Bool,
+        presentedFrame: Bool,
+        active: Bool
+    ) -> TerminalViewportLifecycleFacts {
+        TerminalViewportLifecycleFacts(
+            isVisibleInUI: visible,
+            isWindowed: windowed,
+            hasUsableGeometry: geometry,
+            hasRuntime: runtime,
+            hasPresentedFrame: presentedFrame,
+            isActive: active
+        )
+    }
+
+    func testVisibleLifecycleWaitsForWindowAndGeometryBeforeRuntimeCreation() {
+        let controller = TerminalViewportLifecycleController()
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: true,
+                    windowed: false,
+                    geometry: false,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .mountedAwaitingWindow,
+                demand: .visible,
+                commands: []
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: true,
+                    windowed: true,
+                    geometry: false,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .mountedAwaitingGeometry,
+                demand: .visible,
+                commands: []
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: true,
+                    windowed: true,
+                    geometry: true,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .runtimeRealized,
+                demand: .visible,
+                commands: [.realizeRuntime, .synchronizeVisibleGeometry]
+            )
+        )
+    }
+
+    func testAwaitingFirstFrameRequestsRedrawOnlyOnEntry() {
+        let controller = TerminalViewportLifecycleController()
+        let awaitingFirstFrameFacts = facts(
+            visible: true,
+            windowed: true,
+            geometry: true,
+            runtime: true,
+            presentedFrame: false,
+            active: false
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(facts: awaitingFirstFrameFacts, force: false),
+            TerminalViewportLifecycleUpdate(
+                phase: .awaitingFirstFrame,
+                demand: .visible,
+                commands: [.synchronizeVisibleGeometry, .requestFirstFrame]
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(facts: awaitingFirstFrameFacts, force: false),
+            TerminalViewportLifecycleUpdate(
+                phase: .awaitingFirstFrame,
+                demand: .visible,
+                commands: [.synchronizeVisibleGeometry]
+            )
+        )
+    }
+
+    func testVisibleFocusedPhaseResumesFocusOnlyAfterFramePresentation() {
+        let controller = TerminalViewportLifecycleController()
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: true,
+                    windowed: true,
+                    geometry: true,
+                    runtime: true,
+                    presentedFrame: true,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .visible,
+                demand: .visible,
+                commands: [.synchronizeVisibleGeometry]
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: true,
+                    windowed: true,
+                    geometry: true,
+                    runtime: true,
+                    presentedFrame: true,
+                    active: true
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .visibleFocused,
+                demand: .visible,
+                commands: [.synchronizeVisibleGeometry, .resumeFocus]
+            )
+        )
+    }
+
+    func testBackgroundDemandPersistsUntilRuntimeCreationBecomesPossible() {
+        let controller = TerminalViewportLifecycleController()
+        controller.requestBackgroundRuntime()
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: false,
+                    windowed: false,
+                    geometry: false,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .mountedAwaitingWindow,
+                demand: .background,
+                commands: []
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: false,
+                    windowed: true,
+                    geometry: false,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .mountedHidden,
+                demand: .background,
+                commands: []
+            )
+        )
+
+        XCTAssertEqual(
+            controller.reconcile(
+                facts: facts(
+                    visible: false,
+                    windowed: true,
+                    geometry: true,
+                    runtime: false,
+                    presentedFrame: false,
+                    active: false
+                ),
+                force: false
+            ),
+            TerminalViewportLifecycleUpdate(
+                phase: .runtimeRealized,
+                demand: .background,
+                commands: [.realizeRuntime]
+            )
+        )
+    }
+}
