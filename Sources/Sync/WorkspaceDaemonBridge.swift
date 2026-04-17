@@ -321,22 +321,19 @@ final class WorkspaceDaemonBridge {
             for panel in workspace.panels.values {
                 guard let terminal = panel as? TerminalPanel else { continue }
                 if terminal.surface.savedDaemonSessionID != nil { continue }
-                if let bridge = terminal.surface.daemonBridge, bridge.bootstrapFailed {
-                    continue
-                }
-                // Pending: either the bridge is alive with nil sessionID
-                // (openPane in flight), or the surface hasn't been created
-                // yet and will fire openPane on its first render. Either
-                // way reporting this pane to workspace.sync now would emit
-                // a session_id-less pane that the daemon's syncAll would
-                // rebuild the tree around.
+                // Only count surfaces with an *active* bridge that is still
+                // bootstrapping. A nil bridge means the pane is local-only
+                // and will never gain a daemon session — deferring sync for
+                // those would block every rename/pin/color change forever.
+                // A failed bridge likewise won't produce a session.
+                guard let bridge = terminal.surface.daemonBridge else { continue }
+                if bridge.bootstrapFailed { continue }
                 #if DEBUG
                 dlog(
                     "sync.defer workspace=\(workspace.id.uuidString.prefix(8)) " +
                     "panel=\(panel.id.uuidString.prefix(8)) " +
                     "surface=\(terminal.surface.id.uuidString.prefix(8)) " +
-                    "bridge=\(terminal.surface.daemonBridge == nil ? "nil" : "alive") " +
-                    "reason=no_authoritative_session_id"
+                    "reason=daemon_session_bootstrap_in_flight"
                 )
                 #endif
                 return true
