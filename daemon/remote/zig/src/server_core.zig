@@ -1104,6 +1104,10 @@ fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.R
         return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
     };
 
+    // Broadcast the new state so subscribed clients (iOS, other desktops)
+    // pick up title / pinned / pane updates without waiting for a poll.
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
