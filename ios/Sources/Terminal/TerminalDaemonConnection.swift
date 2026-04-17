@@ -26,11 +26,11 @@ actor TerminalDaemonConnection {
     private var subscribed = false
     private let pushConfigurator: PushNotificationConfigurator
     private var lastPushConfiguration: PushNotificationConfigurator.DaemonConfiguration?
-    /// Continuations waiting for the next post-reconnect workspace.subscribe
-    /// round to complete. Resumed after the subscribe RPC returns, whether
-    /// it succeeded or not — by that point the refresh cycle has made one
-    /// full pass and the caller can dismiss its spinner.
-    private var pendingSubscribeRoundWaiters: [CheckedContinuation<Void, Never>] = []
+    /// Waiters suspended on the next post-reconnect workspace.subscribe
+    /// round. Resumed after the subscribe RPC returns (success or error) or
+    /// after a safety timeout so the refresh spinner can dismiss cleanly
+    /// even when the subscription loop is idle / torn down.
+    private var pendingSubscribeRoundWaiters: [SubscribeRoundWaiter] = []
 
     init(
         hostname: String,
@@ -102,19 +102,24 @@ actor TerminalDaemonConnection {
     /// the subscription loop completes its next workspace.subscribe round
     /// (success or error). Lets the refreshable spinner dismiss only after
     /// fresh state has arrived instead of after a blind delay.
+    ///
+    /// Hard-capped at 5s so a pool entry whose subscription loop has exited
+    /// (e.g., daemon went offline) can't leave the spinner stuck forever.
     func kickAndAwaitFirstSync() async {
-        // If no subscription loop is running (e.g., pool entry left over from
-        // a daemon that has since gone offline), nothing will ever call
-        // resumeSubscribeRoundWaiters, so awaiting a round here would hang
-        // the pull-to-refresh spinner forever. Just tear down and return.
-        guard subscribed, subscriptionTask != nil else {
-            await teardownClient()
-            return
-        }
         await withCheckedContinuation { continuation in
-            pendingSubscribeRoundWaiters.append(continuation)
+            let waiter = SubscribeRoundWaiter(continuation: continuation)
+            pendingSubscribeRoundWaiters.append(waiter)
             Task { await self.teardownClient() }
+            Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                await self?.dropExpiredSubscribeRoundWaiter(waiter)
+            }
         }
+    }
+
+    private func dropExpiredSubscribeRoundWaiter(_ waiter: SubscribeRoundWaiter) {
+        pendingSubscribeRoundWaiters.removeAll { $0 === waiter }
+        waiter.resume()
     }
 
     private func resumeSubscribeRoundWaiters() {
@@ -333,5 +338,25 @@ actor TerminalDaemonConnection {
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: envelope) else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+}
+
+/// Idempotent wrapper around a one-shot CheckedContinuation so both the
+/// subscription loop and the pull-to-refresh timeout can race to resume it
+/// without risking a double-resume crash.
+private final class SubscribeRoundWaiter: @unchecked Sendable {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private let lock = NSLock()
+
+    init(continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        lock.lock()
+        let pending = continuation
+        continuation = nil
+        lock.unlock()
+        pending?.resume()
     }
 }
