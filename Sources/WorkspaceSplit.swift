@@ -1205,7 +1205,7 @@ enum TabBarMetrics {
     static let tabCornerRadius: CGFloat = 0
     static let tabHorizontalPadding: CGFloat = 6
     static let tabSpacing: CGFloat = 0
-    static let activeIndicatorHeight: CGFloat = 2
+    static let activeIndicatorHeight: CGFloat = 1.5
 
     // MARK: - Tab Content
 
@@ -1250,8 +1250,10 @@ enum TabBarColors {
     private enum Constants {
         static let darkTextAlpha: CGFloat = 0.82
         static let darkSecondaryTextAlpha: CGFloat = 0.62
+        static let darkTertiaryTextAlpha: CGFloat = 0.35
         static let lightTextAlpha: CGFloat = 0.82
         static let lightSecondaryTextAlpha: CGFloat = 0.68
+        static let lightTertiaryTextAlpha: CGFloat = 0.35
     }
 
     private static func chromeBackgroundColor(
@@ -1290,6 +1292,20 @@ enum TabBarColors {
 
         let alpha = secondary ? Constants.lightSecondaryTextAlpha : Constants.lightTextAlpha
         return NSColor.white.withAlphaComponent(alpha)
+    }
+
+    private static func effectiveInactiveSelectedIndicatorColor(
+        for appearance: WorkspaceLayoutConfiguration.Appearance
+    ) -> NSColor {
+        guard let custom = chromeBackgroundColor(for: appearance) else {
+            return .tertiaryLabelColor
+        }
+
+        if custom.isWorkspaceLayoutLightColor {
+            return NSColor.black.withAlphaComponent(Constants.darkTertiaryTextAlpha)
+        }
+
+        return NSColor.white.withAlphaComponent(Constants.lightTertiaryTextAlpha)
     }
 
     static func paneBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
@@ -1408,6 +1424,24 @@ enum TabBarColors {
             ? custom.workspaceSplitDarken(by: 0.12)
             : custom.workspaceSplitLighten(by: 0.16)
         return tone.withAlphaComponent(alpha)
+    }
+
+    static func selectedIndicator(
+        for appearance: WorkspaceLayoutConfiguration.Appearance,
+        focused: Bool
+    ) -> Color {
+        Color(nsColor: nsColorSelectedIndicator(for: appearance, focused: focused))
+    }
+
+    static func nsColorSelectedIndicator(
+        for appearance: WorkspaceLayoutConfiguration.Appearance,
+        focused: Bool
+    ) -> NSColor {
+        if focused {
+            return .controlAccentColor
+        }
+
+        return effectiveInactiveSelectedIndicatorColor(for: appearance)
     }
 
     static var dropIndicator: Color {

@@ -64,6 +64,67 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testDismantlingWorkspaceLayoutRootHostHidesBrowserPortal() throws {
+        let manager = TabManager()
+        guard let workspace = manager.selectedWorkspace,
+              let paneId = workspace.focusedPaneId,
+              let browserPanel = workspace.createBrowserPanel(inPane: paneId, focus: true) else {
+            XCTFail("Expected focused workspace and browser panel")
+            return
+        }
+
+        let renderContext = WorkspaceLayoutRenderContext(
+            notificationStore: nil,
+            isWorkspaceVisible: true,
+            isWorkspaceInputActive: true,
+            isMinimalMode: false,
+            appearance: PanelAppearance(
+                dividerColor: .clear,
+                unfocusedOverlayNSColor: .clear,
+                unfocusedOverlayOpacity: 0
+            ),
+            workspacePortalPriority: 1,
+            usesWorkspacePaneOverlay: false,
+            showSplitButtons: workspace.showsSplitButtons
+        )
+        let renderSnapshot = workspace.makeLayoutRenderSnapshot(context: renderContext)
+        let rootHost = WorkspaceLayoutRootHostView(
+            hostBridge: workspace.layoutInteractionHandlers,
+            renderSnapshot: renderSnapshot,
+            surfaceRegistry: workspace.surfaceRegistry
+        )
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        let anchor = NSView(frame: NSRect(x: 40, y: 36, width: 220, height: 150))
+        window.contentView?.addSubview(anchor)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        BrowserWindowPortalRegistry.bind(
+            webView: browserPanel.webView,
+            to: anchor,
+            visibleInUI: true,
+            zPriority: 1
+        )
+        BrowserWindowPortalRegistry.synchronizeForAnchor(anchor)
+        XCTAssertEqual(BrowserWindowPortalRegistry.debugSnapshot(for: browserPanel.webView)?.visibleInUI, true)
+
+        WorkspaceLayoutNativeHost.dismantleNSView(rootHost, coordinator: ())
+
+        XCTAssertEqual(BrowserWindowPortalRegistry.debugSnapshot(for: browserPanel.webView)?.visibleInUI, false)
+
+        BrowserWindowPortalRegistry.detach(webView: browserPanel.webView)
+        NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: window)
+        window.orderOut(nil)
+    }
+
     func testPanelVisibleInUIReturnsFalseWhenWorkspaceHidden() {
         XCTAssertFalse(
             WorkspaceContentView.panelVisibleInUI(
@@ -129,6 +190,29 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
         )
         XCTAssertFalse(hidden.isVisibleInUI)
         XCTAssertFalse(hidden.wantsFirstResponder)
+    }
+
+    func testSelectedIndicatorUsesAccentOnlyForFocusedPane() {
+        let appearance = WorkspaceLayoutConfiguration.Appearance(
+            chromeColors: .init(backgroundHex: "#272822")
+        )
+
+        let focused = TabBarColors.nsColorSelectedIndicator(for: appearance, focused: true).usingColorSpace(.sRGB)!
+        let unfocused = TabBarColors.nsColorSelectedIndicator(for: appearance, focused: false).usingColorSpace(.sRGB)!
+        let inactive = TabBarColors.nsColorInactiveText(for: appearance).usingColorSpace(.sRGB)!
+        let accent = NSColor.controlAccentColor.usingColorSpace(.sRGB)!
+        let expectedInactiveIndicator = NSColor.white.withAlphaComponent(0.35).usingColorSpace(.sRGB)!
+
+        XCTAssertEqual(focused.redComponent, accent.redComponent, accuracy: 0.01)
+        XCTAssertEqual(focused.greenComponent, accent.greenComponent, accuracy: 0.01)
+        XCTAssertEqual(focused.blueComponent, accent.blueComponent, accuracy: 0.01)
+
+        XCTAssertEqual(unfocused.redComponent, expectedInactiveIndicator.redComponent, accuracy: 0.01)
+        XCTAssertEqual(unfocused.greenComponent, expectedInactiveIndicator.greenComponent, accuracy: 0.01)
+        XCTAssertEqual(unfocused.blueComponent, expectedInactiveIndicator.blueComponent, accuracy: 0.01)
+        XCTAssertEqual(unfocused.alphaComponent, expectedInactiveIndicator.alphaComponent, accuracy: 0.01)
+        XCTAssertNotEqual(unfocused.redComponent, accent.redComponent, accuracy: 0.05)
+        XCTAssertNotEqual(unfocused.alphaComponent, inactive.alphaComponent, accuracy: 0.05)
     }
 
     func testTerminalPresentationTransitionResolverEmitsOnlyEdgeOperations() {

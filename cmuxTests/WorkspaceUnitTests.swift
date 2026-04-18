@@ -2623,6 +2623,68 @@ final class WorkspaceLayoutSimplificationTests: XCTestCase {
         }
     }
 
+    func testViewportSnapshotUsesPaneContentFrameBelowTabBar() {
+        let workspace = Workspace()
+        guard let paneId = workspace.paneIds.first,
+              let browserPanel = workspace.createBrowserPanel(
+                inPane: paneId,
+                url: URL(string: "about:blank"),
+                focus: false
+              ) else {
+            XCTFail("Expected browser panel")
+            return
+        }
+
+        XCTAssertTrue(workspace.selectSurface(browserPanel.id))
+
+        let snapshot = workspace.makeLayoutRenderSnapshot(
+            context: WorkspaceLayoutRenderContext(
+                notificationStore: nil,
+                isWorkspaceVisible: true,
+                isWorkspaceInputActive: true,
+                isMinimalMode: false,
+                appearance: PanelAppearance(
+                    dividerColor: .clear,
+                    unfocusedOverlayNSColor: .clear,
+                    unfocusedOverlayOpacity: 0
+                ),
+                workspacePortalPriority: 0,
+                usesWorkspacePaneOverlay: false,
+                showSplitButtons: true
+            )
+        )
+
+        guard let viewport = viewport(in: snapshot, for: paneId) else {
+            XCTFail("Expected browser viewport")
+            return
+        }
+
+        let layoutSnapshot = workspace.splitController.layoutSnapshot()
+        guard let paneGeometry = layoutSnapshot.panes.first(where: { $0.paneId == paneId.id.uuidString }) else {
+            XCTFail("Expected pane geometry")
+            return
+        }
+
+        let paneFrame = CGRect(
+            x: CGFloat(paneGeometry.frame.x) - CGFloat(layoutSnapshot.containerFrame.x),
+            y: CGFloat(paneGeometry.frame.y) - CGFloat(layoutSnapshot.containerFrame.y),
+            width: CGFloat(paneGeometry.frame.width),
+            height: CGFloat(paneGeometry.frame.height)
+        )
+        let expectedHeight = max(
+            0,
+            paneFrame.height - min(
+                workspace.splitController.configuration.appearance.tabBarHeight,
+                max(0, paneFrame.height - 1)
+            )
+        )
+
+        XCTAssertEqual(viewport.frame.origin.x, paneFrame.origin.x, accuracy: 0.001)
+        XCTAssertEqual(viewport.frame.origin.y, paneFrame.origin.y, accuracy: 0.001)
+        XCTAssertEqual(viewport.frame.width, paneFrame.width, accuracy: 0.001)
+        XCTAssertEqual(viewport.frame.height, expectedHeight, accuracy: 0.001)
+    }
+
     func testRootHostMountsSelectedTerminalDirectlyInPaneHost() throws {
         _ = NSApplication.shared
 
@@ -5238,6 +5300,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
 
         XCTAssertNotEqual(replacementPanelId, browserPanel.id)
         XCTAssertEqual(replacementBrowser.profileID, browserPanel.profileID)
+        XCTAssertTrue(replacementBrowser.shouldRenderWebView)
         XCTAssertEqual(workspace.selectedSurfaceId(inPane: sourcePaneId), replacementPanelId)
     }
 

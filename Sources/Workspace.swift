@@ -8594,7 +8594,7 @@ final class Workspace: Identifiable, ObservableObject {
             let topInset = min(tabBarHeight, max(0, paneFrame.height - 1))
             let contentFrame = CGRect(
                 x: paneFrame.origin.x,
-                y: paneFrame.origin.y + topInset,
+                y: paneFrame.origin.y,
                 width: paneFrame.width,
                 height: max(0, paneFrame.height - topInset)
             )
@@ -11193,6 +11193,7 @@ final class Workspace: Identifiable, ObservableObject {
         if let browser = browserPanel(for: panelId) {
             return createBrowserPanel(
                 inPane: sourcePaneId,
+                url: URL(string: "about:blank"),
                 focus: false,
                 preferredProfileID: browser.profileID
             )?.id

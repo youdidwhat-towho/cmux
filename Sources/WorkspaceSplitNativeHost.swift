@@ -302,6 +302,10 @@ struct WorkspaceLayoutNativeHost: NSViewRepresentable {
             surfaceRegistry: surfaceRegistry
         )
     }
+
+    static func dismantleNSView(_ nsView: WorkspaceLayoutRootHostView, coordinator: ()) {
+        nsView.prepareForRemoval()
+    }
 }
 
 @MainActor
@@ -376,6 +380,33 @@ final class WorkspaceLayoutRootHostView: NSView {
 #endif
         refreshPresentation()
         syncContainerFrameIfNeeded(isDragging: false)
+    }
+
+    func prepareForRemoval() {
+        viewportCanvas.clear(surfaceRegistry: surfaceRegistry)
+
+        for (_, host) in paneHosts {
+            host.prepareForRemoval()
+            if host.superview != nil {
+                host.removeFromSuperview()
+            }
+        }
+        paneHosts.removeAll()
+
+        for (_, host) in splitHosts {
+            host.removeAllChildren()
+            if host.superview != nil {
+                host.removeFromSuperview()
+            }
+        }
+        splitHosts.removeAll()
+
+        paneDropZones.removeAll()
+        renderedPaneIds.removeAll()
+        renderedSplitIds.removeAll()
+
+        currentRootView?.removeFromSuperview()
+        currentRootView = nil
     }
 
     private func updateBackground() {
@@ -1475,6 +1506,7 @@ private final class WorkspaceLayoutNativeTabBarView: NSView {
                 tab: tabSnapshot.tab,
                 paneId: snapshot.paneId,
                 isSelected: tabSnapshot.isSelected,
+                isPaneFocused: snapshot.isFocused,
                 showsZoomIndicator: tabSnapshot.showsZoomIndicator,
                 appearance: presentation.appearance,
                 contextMenuState: tabSnapshot.contextMenuState,
@@ -2000,6 +2032,7 @@ final class WorkspaceLayoutNativeTabButtonView: NSView, NSDraggingSource {
     private(set) var tab: WorkspaceLayout.Tab = WorkspaceLayout.Tab(title: "")
     private var paneId: PaneID = PaneID()
     private var isSelected: Bool = false
+    private var isPaneFocused: Bool = false
     private var showsZoomIndicator: Bool = false
     private var splitAppearance: WorkspaceLayoutConfiguration.Appearance = .default
     private var contextMenuState = TabContextMenuState(
@@ -2212,6 +2245,7 @@ final class WorkspaceLayoutNativeTabButtonView: NSView, NSDraggingSource {
         tab: WorkspaceLayout.Tab,
         paneId: PaneID,
         isSelected: Bool,
+        isPaneFocused: Bool,
         showsZoomIndicator: Bool,
         appearance: WorkspaceLayoutConfiguration.Appearance,
         contextMenuState: TabContextMenuState,
@@ -2225,6 +2259,7 @@ final class WorkspaceLayoutNativeTabButtonView: NSView, NSDraggingSource {
         self.tab = tab
         self.paneId = paneId
         self.isSelected = isSelected
+        self.isPaneFocused = isPaneFocused
         self.showsZoomIndicator = showsZoomIndicator
         self.splitAppearance = appearance
         self.contextMenuState = contextMenuState
@@ -2431,8 +2466,16 @@ final class WorkspaceLayoutNativeTabButtonView: NSView, NSDraggingSource {
         dirtyRect.fill()
 
         if isSelected {
-            NSColor.controlAccentColor.setFill()
-            CGRect(x: 0, y: bounds.height - TabBarMetrics.activeIndicatorHeight, width: bounds.width, height: TabBarMetrics.activeIndicatorHeight).fill()
+            TabBarColors.nsColorSelectedIndicator(
+                for: splitAppearance,
+                focused: isPaneFocused
+            ).setFill()
+            CGRect(
+                x: 0,
+                y: bounds.height - TabBarMetrics.activeIndicatorHeight,
+                width: max(0, bounds.width - 1),
+                height: TabBarMetrics.activeIndicatorHeight
+            ).fill()
         }
 
         TabBarColors.nsColorSeparator(for: splitAppearance).setFill()
@@ -2665,6 +2708,7 @@ final class WorkspaceLayoutNativeTabButtonView: NSView, NSDraggingSource {
             tab: tab,
             paneId: paneId,
             isSelected: isSelected,
+            isPaneFocused: isPaneFocused,
             showsZoomIndicator: showsZoomIndicator,
             appearance: splitAppearance,
             contextMenuState: contextMenuState,
@@ -3906,6 +3950,7 @@ func workspaceLayoutRenderAppKitTabChromeImage(
         tab: renderTab,
         paneId: PaneID(),
         isSelected: scenario.isSelected,
+        isPaneFocused: true,
         showsZoomIndicator: scenario.showsZoomIndicator,
         appearance: scenario.appearance,
         contextMenuState: TabContextMenuState(
@@ -4175,6 +4220,7 @@ final class WorkspaceLayoutNativeTabButtonDebugPreviewHost: NSView {
             tab: tab,
             paneId: PaneID(),
             isSelected: isSelected,
+            isPaneFocused: true,
             showsZoomIndicator: false,
             appearance: appearance,
             contextMenuState: contextMenuState,
