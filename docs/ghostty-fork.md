@@ -14,7 +14,7 @@ When we change the fork, update this document and the parent submodule SHA.
 
 Fork main has advanced beyond the March 30, 2026 rebase onto upstream `main`
 at `3509ccf78` (`v1.3.1-457-g3509ccf78`).
-Current cmux pinned fork head: `a2f864d61` (`issue-2738-search-resize-race`).
+Current cmux pinned fork head: `e36dd9d50` (`issue-2738-search-resize-race`).
 
 ### 1) macOS display link restart on display changes
 
@@ -125,7 +125,9 @@ the current cmux pin is the head listed above.
 
 ### 9) Search snapshot isolation during page reflow
 
-- Commit: `a2f864d61` (terminal/search: snapshot pages before formatting)
+- Commits:
+  - `a2f864d61` (terminal/search: snapshot pages before formatting)
+  - `e36dd9d50` (terminal/search: fix snapshot build errors)
 - Files:
   - `src/terminal/highlight.zig`
   - `src/terminal/search/sliding_window.zig`
@@ -133,6 +135,7 @@ the current cmux pin is the head listed above.
   - Snapshots page contents before `SlidingWindow` runs `PageFormatter`, so background search never formats from live page storage that `PageList.resizeCols` can free or recycle.
   - Caches page row counts alongside flattened search chunks so later highlight assembly no longer dereferences live page nodes after the source screen has mutated.
   - Adds a regression test that destroys the source screen after taking search snapshots and verifies the retained search data still produces the expected cross-page match.
+  - Fixes the nested `PageSnapshot` test reference and preserves the existing `Allocator.Error` contract when cloning pages for retained snapshots.
 
 ## Upstreamed fork changes
 
