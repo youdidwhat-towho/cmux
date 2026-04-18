@@ -1257,35 +1257,59 @@ private final class SessionPopoverRowView: NSView {
         let iconX: CGFloat = 12
         iconView.frame = NSRect(x: iconX, y: (h - iconSize) / 2, width: iconSize, height: iconSize)
 
-        let dateSize = dateField.intrinsicContentSize
+        // Use each field's font line height rather than intrinsicContentSize.
+        // intrinsicContentSize reports the full MULTI-LINE height when the
+        // string has embedded newlines (session titles often wrap because
+        // they include `<command-message>...\n\n...` envelopes), even with
+        // usesSingleLineMode = true. That inflated height drove the frame
+        // off the top of the cell and into the row above.
+        let dateLineHeight = lineHeight(for: dateField.font)
+        let dateContentWidth = dateField.intrinsicContentSize.width
         let datePaddingRight: CGFloat = 12
-        let dateX = max(0, w - datePaddingRight - dateSize.width)
+        let dateX = max(0, w - datePaddingRight - dateContentWidth)
         dateField.frame = NSRect(
             x: dateX,
-            y: (h - dateSize.height) / 2,
-            width: dateSize.width,
-            height: dateSize.height
+            y: (h - dateLineHeight) / 2,
+            width: dateContentWidth,
+            height: dateLineHeight
         )
 
         let titleX = iconX + iconSize + 6
         let titleWidth = max(0, dateX - 8 - titleX)
-        let titleHeight = titleField.intrinsicContentSize.height
+        let titleLineHeight = lineHeight(for: titleField.font)
         titleField.frame = NSRect(
             x: titleX,
-            y: (h - titleHeight) / 2,
+            y: (h - titleLineHeight) / 2,
             width: titleWidth,
-            height: titleHeight
+            height: titleLineHeight
         )
+    }
+
+    private func lineHeight(for font: NSFont?) -> CGFloat {
+        guard let font else { return 16 }
+        return ceil(font.ascender - font.descender + font.leading)
     }
 
     func configure(with entry: SessionEntry) {
         iconView.image = NSImage(named: entry.agent.assetName)
-        titleField.stringValue = entry.displayTitle
+        // Flatten newlines / tabs so the single-line truncation lines up
+        // with the cell's line-height. Session titles routinely include
+        // embedded newlines in structured command envelopes.
+        titleField.stringValue = Self.flatten(entry.displayTitle)
         dateField.stringValue = SessionIndexView.relativeFormatter.localizedString(
             for: entry.modified, relativeTo: Date()
         )
         toolTip = entry.cwdLabel ?? entry.displayTitle
         needsLayout = true
+    }
+
+    private static func flatten(_ s: String) -> String {
+        var out = s
+        out = out.replacingOccurrences(of: "\r\n", with: " ")
+        out = out.replacingOccurrences(of: "\n", with: " ")
+        out = out.replacingOccurrences(of: "\r", with: " ")
+        out = out.replacingOccurrences(of: "\t", with: " ")
+        return out
     }
 
     override func updateTrackingAreas() {
