@@ -713,6 +713,10 @@ private struct SectionPopoverView: View {
                             .equatable()
                         }
                         if hasMore {
+                            // Always visible while more pages exist. Serves
+                            // as both the "Loading…" indicator and the
+                            // pagination sentinel — its .onAppear fires
+                            // loadMore() when it scrolls into view.
                             loadingRow
                                 .onAppear { loadMore() }
                         } else {
@@ -786,14 +790,8 @@ private struct SectionPopoverView: View {
             hasMore = !section.entries.isEmpty
             isLoading = false
             errorMessages = []
-            #if DEBUG
-            dlog("sessions.popover.reset.fastpath section=\(section.key.raw.prefix(48)) count=\(loaded.count) hasMore=\(hasMore) gen=\(generation)")
-            #endif
             return
         }
-        #if DEBUG
-        dlog("sessions.popover.reset.search section=\(section.key.raw.prefix(48)) q=\"\(trimmed.prefix(20))\" gen=\(generation)")
-        #endif
 
         loaded = []
         hasMore = true
@@ -819,9 +817,6 @@ private struct SectionPopoverView: View {
         let search = self.search
         let query = activeQuery
         let offset = loaded.count
-        #if DEBUG
-        dlog("sessions.popover.loadMore.fire section=\(section.key.raw.prefix(48)) offset=\(offset) gen=\(generation)")
-        #endif
         loadTask = Task { @MainActor in
             let outcome = await search(query, scope, offset, Self.pageSize)
             if Task.isCancelled || generation != loadGeneration { return }
@@ -834,29 +829,18 @@ private struct SectionPopoverView: View {
     /// error/loading bookkeeping lives in one place.
     @MainActor
     private func applyOutcome(_ outcome: SessionIndexStore.SearchOutcome, append: Bool) {
-        #if DEBUG
-        let beforeCount = loaded.count
-        #endif
         if append {
             // Dedupe on entry.id — the empty-query fast path seeded `loaded`
             // from `section.entries` (top-N from the initial scan), but
             // `loadMore` then pages the store's search API starting at
             // `offset = loaded.count`. The two sources don't share a
             // canonical ordering, so an unfiltered append can produce
-            // duplicate IDs in `loaded[]`. SwiftUI ForEach with duplicate
-            // IDs renders zero-height placeholders that manifest as
-            // "gaps" in the popover.
+            // duplicate IDs at depth (observed dupes=7/30 at depth 271).
+            // SwiftUI ForEach with duplicate IDs renders zero-height
+            // placeholders that manifest as "gaps" in the popover.
             let existingIDs = Set(loaded.map(\.id))
-            let novel = outcome.entries.filter { !existingIDs.contains($0.id) }
-            #if DEBUG
-            let dupes = outcome.entries.count - novel.count
-            dlog("sessions.popover.apply append=true fetched=\(outcome.entries.count) novel=\(novel.count) dupes=\(dupes) loaded.before=\(beforeCount) errors=\(outcome.errors.count)")
-            #endif
-            loaded.append(contentsOf: novel)
+            loaded.append(contentsOf: outcome.entries.filter { !existingIDs.contains($0.id) })
         } else {
-            #if DEBUG
-            dlog("sessions.popover.apply append=false fetched=\(outcome.entries.count) loaded.before=\(beforeCount) errors=\(outcome.errors.count)")
-            #endif
             loaded = outcome.entries
         }
         hasMore = outcome.entries.count >= Self.pageSize
@@ -1130,10 +1114,6 @@ private struct SectionPopoverHost: NSViewRepresentable {
             )
             hostingController.view.invalidateIntrinsicContentSize()
             hostingController.view.layoutSubtreeIfNeeded()
-            #if DEBUG
-            let fs = hostingController.view.fittingSize
-            dlog("sessions.popover.refreshContent id=\(identity) fitting=\(Int(fs.width))x\(Int(fs.height))")
-            #endif
             updateContentSize()
         }
 
@@ -1148,15 +1128,11 @@ private struct SectionPopoverHost: NSViewRepresentable {
             // updateNSView (which fires on parent re-renders, e.g. ObservedObject
             // store changes) would reset SectionPopoverView's @State on every
             // tick — typed query gone, loaded reset, looks like infinite loading.
-            let transitionHiddenToShown = !popover.isShown
-            if transitionHiddenToShown {
+            if !popover.isShown {
                 presentationCount += 1
                 refreshContent()
             }
             updateContentSize()
-            #if DEBUG
-            dlog("sessions.popover.present transitionHiddenToShown=\(transitionHiddenToShown) presentationCount=\(presentationCount) contentSize=\(Int(popover.contentSize.width))x\(Int(popover.contentSize.height))")
-            #endif
             guard !popover.isShown else { return }
             popover.show(relativeTo: anchorView.bounds, of: anchorView, preferredEdge: .maxX)
         }
