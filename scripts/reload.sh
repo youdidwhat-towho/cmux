@@ -328,8 +328,21 @@ fi
 XCODEBUILD_ARGS+=(build)
 
 XCODE_LOG="/tmp/cmux-xcodebuild-${TAG_SLUG}.log"
+XCODEBUILD_LOCK="/tmp/cmux-xcodebuild.lock"
+# Xcode 26's SWBBuildService is a per-user singleton. Concurrent xcodebuild
+# invocations (even with separate -derivedDataPath) share that daemon and can
+# crash it, SIGTERMing in-flight builds. Serialize via a global flock so
+# parallel reload.sh runs queue instead of trampling each other.
+if ! perl -MFcntl=:flock -e 'open(F, ">>", $ARGV[0]) or exit 0; exit(flock(F, LOCK_EX|LOCK_NB) ? 0 : 1)' "$XCODEBUILD_LOCK" 2>/dev/null; then
+  echo "==> Another xcodebuild is running; waiting for $XCODEBUILD_LOCK..."
+fi
 set +e
-xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | tee "$XCODE_LOG" | grep -E '(warning:|error:|fatal:|BUILD FAILED|BUILD SUCCEEDED|\*\* BUILD)'
+perl -MFcntl=:flock -e '
+  open(my $fh, ">>", $ARGV[0]) or die "open lock: $!\n";
+  flock($fh, LOCK_EX) or die "flock: $!\n";
+  shift @ARGV;
+  exec { $ARGV[0] } @ARGV or die "exec: $!\n";
+' "$XCODEBUILD_LOCK" xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | tee "$XCODE_LOG" | grep -E '(warning:|error:|fatal:|BUILD FAILED|BUILD SUCCEEDED|\*\* BUILD)'
 XCODE_PIPESTATUS=("${PIPESTATUS[@]}")
 set -e
 XCODE_EXIT="${XCODE_PIPESTATUS[0]}"
