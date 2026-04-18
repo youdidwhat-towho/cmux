@@ -715,15 +715,26 @@ private struct SectionPopoverView: View {
                         if hasMore {
                             loadingRow
                                 .onAppear { loadMore() }
+                        } else {
+                            Text(String(localized: "sessionIndex.popover.endOfList",
+                                        defaultValue: "You've reached the end"))
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary.opacity(0.5))
+                                .frame(maxWidth: .infinity, alignment: .center)
+                                .padding(.vertical, 8)
                         }
                     }
                 }
                 .padding(.top, 4)
                 .padding(.bottom, 10)
             }
-            .frame(maxHeight: 420)
+            .frame(height: 420)
         }
-        .frame(width: 360)
+        // Fixed height pins the NSHostingController's preferred size so the
+        // NSPopover can't grow unboundedly when sizingOptions reports the
+        // LazyVStack's full intrinsic content height. Short lists scroll
+        // within 420; long lists scroll within 420; popover stays stable.
+        .frame(width: 360, height: 500)
         .background(
             EscapeKeyCatcher { onDismiss() }
         )
@@ -774,8 +785,14 @@ private struct SectionPopoverView: View {
             hasMore = !section.entries.isEmpty
             isLoading = false
             errorMessages = []
+            #if DEBUG
+            dlog("sessions.popover.reset.fastpath section=\(section.key.raw.prefix(48)) count=\(loaded.count) hasMore=\(hasMore) gen=\(generation)")
+            #endif
             return
         }
+        #if DEBUG
+        dlog("sessions.popover.reset.search section=\(section.key.raw.prefix(48)) q=\"\(trimmed.prefix(20))\" gen=\(generation)")
+        #endif
 
         loaded = []
         hasMore = true
@@ -801,6 +818,9 @@ private struct SectionPopoverView: View {
         let search = self.search
         let query = activeQuery
         let offset = loaded.count
+        #if DEBUG
+        dlog("sessions.popover.loadMore.fire section=\(section.key.raw.prefix(48)) offset=\(offset) gen=\(generation)")
+        #endif
         loadTask = Task { @MainActor in
             let outcome = await search(query, scope, offset, Self.pageSize)
             if Task.isCancelled || generation != loadGeneration { return }
@@ -813,9 +833,29 @@ private struct SectionPopoverView: View {
     /// error/loading bookkeeping lives in one place.
     @MainActor
     private func applyOutcome(_ outcome: SessionIndexStore.SearchOutcome, append: Bool) {
+        #if DEBUG
+        let beforeCount = loaded.count
+        #endif
         if append {
-            loaded.append(contentsOf: outcome.entries)
+            // Dedupe on entry.id — the empty-query fast path seeded `loaded`
+            // from `section.entries` (top-N from the initial scan), but
+            // `loadMore` then pages the store's search API starting at
+            // `offset = loaded.count`. The two sources don't share a
+            // canonical ordering, so an unfiltered append can produce
+            // duplicate IDs in `loaded[]`. SwiftUI ForEach with duplicate
+            // IDs renders zero-height placeholders that manifest as
+            // "gaps" in the popover.
+            let existingIDs = Set(loaded.map(\.id))
+            let novel = outcome.entries.filter { !existingIDs.contains($0.id) }
+            #if DEBUG
+            let dupes = outcome.entries.count - novel.count
+            dlog("sessions.popover.apply append=true fetched=\(outcome.entries.count) novel=\(novel.count) dupes=\(dupes) loaded.before=\(beforeCount) errors=\(outcome.errors.count)")
+            #endif
+            loaded.append(contentsOf: novel)
         } else {
+            #if DEBUG
+            dlog("sessions.popover.apply append=false fetched=\(outcome.entries.count) loaded.before=\(beforeCount) errors=\(outcome.errors.count)")
+            #endif
             loaded = outcome.entries
         }
         hasMore = outcome.entries.count >= Self.pageSize
@@ -864,6 +904,15 @@ private struct PopoverRow: View, Equatable {
         lhs.entry == rhs.entry
     }
 
+    fileprivate static func flatten(_ s: String) -> String {
+        var out = s
+        out = out.replacingOccurrences(of: "\r\n", with: " ")
+        out = out.replacingOccurrences(of: "\n", with: " ")
+        out = out.replacingOccurrences(of: "\r", with: " ")
+        out = out.replacingOccurrences(of: "\t", with: " ")
+        return out
+    }
+
     var body: some View {
         HStack(spacing: 6) {
             Image(entry.agent.assetName)
@@ -871,7 +920,11 @@ private struct PopoverRow: View, Equatable {
                 .interpolation(.high)
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 12, height: 12)
-            Text(entry.displayTitle)
+            // Flatten newlines so titles containing `<command-message>…\n…`
+            // envelopes stay single-line; SwiftUI's `lineLimit(1)` doesn't
+            // always constrain a Text that has hard line breaks in the
+            // source string.
+            Text(Self.flatten(entry.displayTitle))
                 .font(.system(size: 12))
                 .foregroundColor(.primary.opacity(0.92))
                 .lineLimit(1)
