@@ -182,7 +182,7 @@ enum GhosttyPasteboardHelper {
     static func stringContents(from pasteboard: NSPasteboard) -> String? {
         let types = pasteboard.types ?? []
 
-        if types.contains(.fileURL),
+        if (types.contains(.fileURL) || types.contains(.URL)),
            let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
            !urls.isEmpty {
             return urls
@@ -191,6 +191,7 @@ enum GhosttyPasteboardHelper {
         }
 
         let hasImagePayload = hasImageData(in: pasteboard)
+        let hasRTFDAttachmentPayload = types.contains(.rtfd)
         if hasImagePayload,
            let html = pasteboard.string(forType: .html),
            htmlHasNoVisibleText(html) {
@@ -201,7 +202,7 @@ enum GhosttyPasteboardHelper {
         // Large clipboard payloads often also advertise HTML/RTF variants, and
         // eagerly rendering those rich-text flavors makes Cmd-V much slower than
         // vanilla Ghostty before the bytes ever reach the PTY.
-        if !hasImagePayload,
+        if !hasImagePayload && !hasRTFDAttachmentPayload,
            let value = plainTextContents(from: pasteboard) {
             return value
         }
@@ -297,7 +298,7 @@ enum GhosttyPasteboardHelper {
 
     private static func hasPasteableContents(in pasteboard: NSPasteboard) -> Bool {
         let types = pasteboard.types ?? []
-        if types.contains(.fileURL) || types.contains(.html) || types.contains(.rtf) || types.contains(.rtfd) {
+        if types.contains(.fileURL) || types.contains(.URL) || types.contains(.html) || types.contains(.rtf) || types.contains(.rtfd) {
             return true
         }
         if types.contains(where: isPlainTextType) {
