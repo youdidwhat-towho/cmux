@@ -100,6 +100,26 @@ func cmuxGhosttyModifierActionForFlagsChanged(
 
     return sidePressed ? GHOSTTY_ACTION_PRESS : GHOSTTY_ACTION_RELEASE
 }
+
+func cmuxTerminalSelectionCopyIntentAvailable(
+    selectionActive: Bool,
+    recentSelectionDragCompleted: Bool
+) -> Bool {
+    let _ = recentSelectionDragCompleted
+    return selectionActive
+}
+
+func cmuxShouldSuppressTerminalCommandPathHover(
+    modifierFlags: NSEvent.ModifierFlags,
+    selectionActive: Bool,
+    recentSelectionDragCompleted: Bool
+) -> Bool {
+    modifierFlags.contains(.command) &&
+        cmuxTerminalSelectionCopyIntentAvailable(
+            selectionActive: selectionActive,
+            recentSelectionDragCompleted: recentSelectionDragCompleted
+        )
+}
 #endif
 
 private func cmuxRuntimeReadClipboardCallback(
