@@ -811,6 +811,14 @@ final class ShortcutHintModifierPolicyTests: XCTestCase {
         }
     }
 
+    func testShortcutHintShowsForControlModifier() {
+        withDefaultsSuite { defaults in
+            defaults.set(true, forKey: ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
+
+            XCTAssertTrue(ShortcutHintModifierPolicy.shouldShowHints(for: [.control], defaults: defaults))
+        }
+    }
+
     func testCommandHintCanBeDisabledInSettings() {
         withDefaultsSuite { defaults in
             defaults.set(false, forKey: ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
