@@ -754,6 +754,19 @@ class TabManager: ObservableObject {
         let repoSlugs: [String]
     }
 
+    private struct WorkspacePullRequestCandidateSeed: Sendable {
+        let workspaceId: UUID
+        let panelId: UUID
+        let branch: String
+        let directory: String?
+    }
+
+    private struct WorkspacePullRequestCandidateBuildResult: Sendable {
+        let candidates: [WorkspacePullRequestCandidate]
+        let candidateBranchesByRepo: [String: Set<String>]
+        let repoDirectoriesBySlug: [String: String]
+    }
+
     private struct WorkspacePullRequestResolvedItem: Sendable {
         let number: Int
         let urlString: String
@@ -773,6 +786,11 @@ class TabManager: ObservableObject {
         let panelId: UUID
         let resolution: Resolution
         let usedCachedRepoData: Bool
+    }
+
+    private struct WorkspacePullRequestDetachedRefreshOutput: Sendable {
+        let results: [WorkspacePullRequestRefreshResult]
+        let repoResults: [String: WorkspacePullRequestRepoFetchResult]
     }
 
     private struct WorkspacePullRequestRepoCacheEntry: Sendable {
@@ -1210,9 +1228,7 @@ class TabManager: ObservableObject {
         allowCachedResultsOverride: Bool? = nil
     ) {
         let now = Date()
-        var candidates: [WorkspacePullRequestCandidate] = []
-        var candidateBranchesByRepo: [String: Set<String>] = [:]
-        var repoDirectoriesBySlug: [String: String] = [:]
+        var candidateSeeds: [WorkspacePullRequestCandidateSeed] = []
         var requestedKeys: [WorkspaceGitProbeKey] = []
         var validKeys: Set<WorkspaceGitProbeKey> = []
 
@@ -1251,21 +1267,15 @@ class TabManager: ObservableObject {
                     continue
                 }
 
-                let candidate = workspacePullRequestCandidate(
-                    workspace: workspace,
-                    panelId: panelId,
-                    branch: branch
+                candidateSeeds.append(
+                    WorkspacePullRequestCandidateSeed(
+                        workspaceId: workspace.id,
+                        panelId: panelId,
+                        branch: branch,
+                        directory: gitProbeDirectory(for: workspace, panelId: panelId)
+                    )
                 )
-                candidates.append(candidate)
                 requestedKeys.append(key)
-                for repoSlug in candidate.repoSlugs {
-                    candidateBranchesByRepo[repoSlug, default: []].insert(candidate.branch)
-                }
-                if let directory = gitProbeDirectory(for: workspace, panelId: panelId) {
-                    for repoSlug in candidate.repoSlugs where repoDirectoriesBySlug[repoSlug] == nil {
-                        repoDirectoriesBySlug[repoSlug] = directory
-                    }
-                }
             }
         }
 
@@ -1274,7 +1284,7 @@ class TabManager: ObservableObject {
             updateWorkspacePullRequestPollTimer()
             return
         }
-        guard !candidates.isEmpty else {
+        guard !candidateSeeds.isEmpty else {
             updateWorkspacePullRequestPollTimer()
             return
         }
@@ -1288,25 +1298,37 @@ class TabManager: ObservableObject {
         let allowCachedResults = allowCachedResultsOverride
             ?? Self.workspacePullRequestRefreshAllowsRepoCache(reason: reason)
         workspacePullRequestRefreshTask = Task { [weak self] in
-            let repoResults = await Self.fetchWorkspacePullRequestRepoResults(
-                repoDirectoriesBySlug: repoDirectoriesBySlug,
-                candidateBranchesByRepo: candidateBranchesByRepo,
-                cacheBySlug: cacheBySlug,
-                now: now,
-                allowCachedResults: allowCachedResults
-            )
-            let results = Self.resolveWorkspacePullRequestRefreshResults(
-                candidates: candidates,
-                repoResults: repoResults
-            )
+            let detachedRefresh = Task.detached(priority: .utility) {
+                let builtCandidates = Self.buildWorkspacePullRequestCandidates(from: candidateSeeds)
+                let repoResults = await Self.fetchWorkspacePullRequestRepoResults(
+                    repoDirectoriesBySlug: builtCandidates.repoDirectoriesBySlug,
+                    candidateBranchesByRepo: builtCandidates.candidateBranchesByRepo,
+                    cacheBySlug: cacheBySlug,
+                    now: now,
+                    allowCachedResults: allowCachedResults
+                )
+                let results = Self.resolveWorkspacePullRequestRefreshResults(
+                    candidates: builtCandidates.candidates,
+                    repoResults: repoResults
+                )
+                return WorkspacePullRequestDetachedRefreshOutput(
+                    results: results,
+                    repoResults: repoResults
+                )
+            }
+            let refreshOutput = await withTaskCancellationHandler(operation: {
+                await detachedRefresh.value
+            }, onCancel: {
+                detachedRefresh.cancel()
+            })
             guard !Task.isCancelled else { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 guard !Task.isCancelled else { return }
                 self.workspacePullRequestRefreshTask = nil
                 self.applyWorkspacePullRequestRefreshResults(
-                    results,
-                    repoResults: repoResults,
+                    refreshOutput.results,
+                    repoResults: refreshOutput.repoResults,
                     requestedKeys: requestedKeys,
                     now: Date(),
                     reason: reason
@@ -1328,18 +1350,49 @@ class TabManager: ObservableObject {
         )
     }
 
-    private func workspacePullRequestCandidate(
-        workspace: Workspace,
-        panelId: UUID,
-        branch: String
-    ) -> WorkspacePullRequestCandidate {
-        let directory = gitProbeDirectory(for: workspace, panelId: panelId)
-        let repoSlugs = directory.map(Self.githubRepositorySlugs(directory:)) ?? []
-        return WorkspacePullRequestCandidate(
-            workspaceId: workspace.id,
-            panelId: panelId,
-            branch: branch,
-            repoSlugs: repoSlugs
+    private nonisolated static func buildWorkspacePullRequestCandidates(
+        from seeds: [WorkspacePullRequestCandidateSeed]
+    ) -> WorkspacePullRequestCandidateBuildResult {
+        var repoSlugsByDirectory: [String: [String]] = [:]
+        var candidates: [WorkspacePullRequestCandidate] = []
+        var candidateBranchesByRepo: [String: Set<String>] = [:]
+        var repoDirectoriesBySlug: [String: String] = [:]
+        candidates.reserveCapacity(seeds.count)
+
+        for seed in seeds {
+            let repoSlugs: [String]
+            if let directory = seed.directory {
+                if let cached = repoSlugsByDirectory[directory] {
+                    repoSlugs = cached
+                } else {
+                    let resolved = githubRepositorySlugs(directory: directory)
+                    repoSlugsByDirectory[directory] = resolved
+                    repoSlugs = resolved
+                }
+            } else {
+                repoSlugs = []
+            }
+
+            candidates.append(
+                WorkspacePullRequestCandidate(
+                    workspaceId: seed.workspaceId,
+                    panelId: seed.panelId,
+                    branch: seed.branch,
+                    repoSlugs: repoSlugs
+                )
+            )
+            for repoSlug in repoSlugs {
+                candidateBranchesByRepo[repoSlug, default: []].insert(seed.branch)
+                if let directory = seed.directory, repoDirectoriesBySlug[repoSlug] == nil {
+                    repoDirectoriesBySlug[repoSlug] = directory
+                }
+            }
+        }
+
+        return WorkspacePullRequestCandidateBuildResult(
+            candidates: candidates,
+            candidateBranchesByRepo: candidateBranchesByRepo,
+            repoDirectoriesBySlug: repoDirectoriesBySlug
         )
     }
 
