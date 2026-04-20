@@ -22,42 +22,93 @@ private enum CLIBrokenPipeDisposition {
     case ignore
 }
 
+private let cliSIGPIPEDispositionLock = NSLock()
+
+private func withCLISIGPIPEDisposition<T>(
+    _ handler: sig_t?,
+    body: () throws -> T
+) rethrows -> T {
+    cliSIGPIPEDispositionLock.lock()
+    defer { cliSIGPIPEDispositionLock.unlock() }
+
+    var previousAction = sigaction()
+    guard sigaction(SIGPIPE, nil, &previousAction) == 0 else {
+        return try body()
+    }
+
+    var action = previousAction
+    action.__sigaction_u = __sigaction_u(__sa_handler: handler)
+    action.sa_flags = (previousAction.sa_flags | SA_RESTART) & ~SA_SIGINFO
+    let installed = sigaction(SIGPIPE, &action, nil) == 0
+
+    defer {
+        guard installed else { return }
+        _ = sigaction(SIGPIPE, &previousAction, nil)
+    }
+
+    return try body()
+}
+
+private func withCLISIGPIPEIgnored<T>(body: () throws -> T) rethrows -> T {
+    try withCLISIGPIPEDisposition(SIG_IGN, body: body)
+}
+
+private func withCLIDefaultSIGPIPEForChildLaunch<T>(body: () throws -> T) rethrows -> T {
+    try withCLISIGPIPEDisposition(SIG_DFL, body: body)
+}
+
+private func cliRunProcess(_ process: Process) throws {
+    try withCLIDefaultSIGPIPEForChildLaunch {
+        try process.run()
+    }
+}
+
+private func cliExecFailureErrno(_ body: () -> Void) -> Int32 {
+    withCLIDefaultSIGPIPEForChildLaunch {
+        body()
+        return errno
+    }
+}
+
 // Route CLI stdio through write(2) so broken pipes never surface as NSFileHandle exceptions.
 @discardableResult
 private func cliWrite(_ data: Data, to handle: FileHandle, onBrokenPipe: CLIBrokenPipeDisposition) -> Bool {
     guard !data.isEmpty else { return true }
-    return data.withUnsafeBytes { rawBuffer in
-        guard let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
-            return true
-        }
-
-        var offset = 0
-        while offset < rawBuffer.count {
-            let written = Darwin.write(handle.fileDescriptor, baseAddress.advanced(by: offset), rawBuffer.count - offset)
-            if written > 0 {
-                offset += written
-                continue
-            }
-            if written == 0 {
-                return false
+    return withCLISIGPIPEIgnored {
+        data.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.bindMemory(to: UInt8.self).baseAddress else {
+                return true
             }
 
-            switch errno {
-            case EINTR:
-                continue
-            case EPIPE:
-                switch onBrokenPipe {
-                case .exit(let code):
-                    Darwin.exit(code)
-                case .ignore:
+            var offset = 0
+            while offset < rawBuffer.count {
+                let written = Darwin.write(handle.fileDescriptor, baseAddress.advanced(by: offset), rawBuffer.count - offset)
+                if written > 0 {
+                    offset += written
+                    continue
+                }
+                if written == 0 {
                     return false
                 }
-            default:
-                return false
-            }
-        }
 
-        return true
+                let errorCode = errno
+                switch errorCode {
+                case EINTR, EAGAIN, EWOULDBLOCK:
+                    continue
+                case EPIPE:
+                    switch onBrokenPipe {
+                    case .exit(let code):
+                        Darwin.exit(code)
+                    case .ignore:
+                        return false
+                    }
+                default:
+                    return false
+                }
+            }
+
+            return true
+        }
     }
 }
 
@@ -75,11 +126,19 @@ private func cliWriteStderr(_ text: String) {
     _ = cliWrite(text, to: FileHandle.standardError, onBrokenPipe: .ignore)
 }
 
-private func cliWriteFatalStderr(_ text: String) {
-    _ = cliWrite(text, to: FileHandle.standardError, onBrokenPipe: .exit(0))
+@discardableResult
+// Leave brokenPipeExitCode nil for normal command failures so the caller's exit status wins.
+private func cliWriteFatalStderr(_ text: String, brokenPipeExitCode: Int32? = nil) -> Bool {
+    let disposition: CLIBrokenPipeDisposition
+    if let brokenPipeExitCode {
+        disposition = .exit(brokenPipeExitCode)
+    } else {
+        disposition = .ignore
+    }
+    return cliWrite(text, to: FileHandle.standardError, onBrokenPipe: disposition)
 }
 
-private func print(_ items: Any..., separator: String = " ", terminator: String = "\n") {
+private func cliPrint(_ items: Any..., separator: String = " ", terminator: String = "\n") {
     let body = items.map { String(describing: $0) }.joined(separator: separator)
     cliWriteStdout(body + terminator)
 }
@@ -1254,6 +1313,8 @@ final class SocketClient {
         timeoutMessage: String,
         failureMessage: String
     ) throws {
+        // Relay sockets opt into SO_NOSIGPIPE in configureSocketWriteSafety(), so write(2)
+        // reports EPIPE instead of terminating the process if the peer disappears.
         try data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
                 return
@@ -1572,13 +1633,14 @@ enum CLIProcessRunner {
         }
 
         do {
-            try process.run()
+            try cliRunProcess(process)
         } catch {
             return CLIProcessResult(status: 1, stdout: "", stderr: String(describing: error), timedOut: false)
         }
 
         if let stdinText, let stdinPipe {
             if let data = stdinText.data(using: .utf8) {
+                // The child may exit before consuming stdin; treat the owned pipe as best-effort.
                 _ = cliWrite(data, to: stdinPipe.fileHandleForWriting, onBrokenPipe: .ignore)
             }
             stdinPipe.fileHandleForWriting.closeFile()
@@ -1634,6 +1696,18 @@ struct CMUXCLI {
     let args: [String]
 
     private static let debugLastSocketHintPath = "/tmp/cmux-last-socket-path"
+    private static let sigpipeProbePythonScript = """
+    import signal
+    import sys
+
+    handler = signal.getsignal(signal.SIGPIPE)
+    if handler == signal.SIG_IGN:
+        sys.stdout.write("ignored\\n")
+    elif handler == signal.SIG_DFL:
+        sys.stdout.write("default\\n")
+    else:
+        sys.stdout.write("custom\\n")
+    """
 
     private static func normalizedEnvValue(_ value: String?) -> String? {
         guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1647,6 +1721,59 @@ struct CMUXCLI {
         var st = stat()
         guard lstat(path, &st) == 0 else { return false }
         return (st.st_mode & S_IFMT) == S_IFSOCK
+    }
+
+    private func sigpipeProbeExecutablePath() throws -> String {
+        let pythonPath = "/usr/bin/python3"
+        guard FileManager.default.isExecutableFile(atPath: pythonPath) else {
+            throw CLIError(message: "SIGPIPE probe requires /usr/bin/python3")
+        }
+        return pythonPath
+    }
+
+    private func runSIGPIPEProbe(commandArgs: [String]) throws {
+        let mode = commandArgs.first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "spawn"
+        let pythonPath = try sigpipeProbeExecutablePath()
+
+        switch mode {
+        case "spawn":
+            let process = Process()
+            let stdout = Pipe()
+            let stderr = Pipe()
+            process.executableURL = URL(fileURLWithPath: pythonPath)
+            process.arguments = ["-c", Self.sigpipeProbePythonScript]
+            process.standardInput = FileHandle.nullDevice
+            process.standardOutput = stdout
+            process.standardError = stderr
+            try cliRunProcess(process)
+            process.waitUntilExit()
+
+            let stdoutText = String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            let stderrText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            guard process.terminationStatus == 0 else {
+                throw CLIError(
+                    message: "SIGPIPE spawn probe failed (\(process.terminationStatus)): \(stderrText.trimmingCharacters(in: .whitespacesAndNewlines))"
+                )
+            }
+            cliWriteStdout(stdoutText)
+
+        case "exec":
+            var argv = ([pythonPath, "-c", Self.sigpipeProbePythonScript]).map { strdup($0) }
+            defer {
+                for item in argv {
+                    free(item)
+                }
+            }
+            argv.append(nil)
+
+            let code = cliExecFailureErrno {
+                execv(pythonPath, &argv)
+            }
+            throw CLIError(message: "SIGPIPE exec probe failed: \(String(cString: strerror(code)))")
+
+        default:
+            throw CLIError(message: "Unknown SIGPIPE probe mode '\(mode)'. Expected spawn or exec.")
+        }
     }
 
     private static func debugSocketPathFromHintFile() -> String? {
@@ -1746,18 +1873,18 @@ struct CMUXCLI {
                 continue
             }
             if arg == "-v" || arg == "--version" {
-                print(versionSummary())
+                cliPrint(versionSummary())
                 return
             }
             if arg == "-h" || arg == "--help" {
-                print(usage())
+                cliPrint(usage())
                 return
             }
             break
         }
 
         guard index < args.count else {
-            print(usage())
+            cliPrint(usage())
             throw CLIError(message: "Missing command")
         }
 
@@ -1776,12 +1903,17 @@ struct CMUXCLI {
         )
 
         if command == "version" {
-            print(versionSummary())
+            cliPrint(versionSummary())
             return
         }
 
         if command == "remote-daemon-status" {
             try runRemoteDaemonStatus(commandArgs: commandArgs, jsonOutput: jsonOutput)
+            return
+        }
+
+        if command == "__sigpipe-probe" {
+            try runSIGPIPEProbe(commandArgs: commandArgs)
             return
         }
 
@@ -1800,7 +1932,7 @@ struct CMUXCLI {
             if dispatchSubcommandHelp(command: command, commandArgs: commandArgs) {
                 return
             }
-            print("Unknown command '\(command)'. Run 'cmux help' to see available commands.")
+            cliPrint("Unknown command '\(command)'. Run 'cmux help' to see available commands.")
             return
         }
 
@@ -1889,7 +2021,7 @@ struct CMUXCLI {
         // (before socket connection, so it doesn't fail when no socket exists)
         if command == "codex-hook" {
             guard ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] != nil else {
-                print("{}")
+                cliPrint("{}")
                 return
             }
         }
@@ -1909,7 +2041,7 @@ struct CMUXCLI {
         // Cursor hook handler: gracefully no-op when not inside cmux
         if command == "cursor-hook" {
             guard ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] != nil else {
-                print("{}")
+                cliPrint("{}")
                 return
             }
         }
@@ -1929,7 +2061,7 @@ struct CMUXCLI {
         // Gemini hook handler: gracefully no-op when not inside cmux
         if command == "gemini-hook" {
             guard ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] != nil else {
-                print("{}")
+                cliPrint("{}")
                 return
             }
         }
@@ -1950,7 +2082,7 @@ struct CMUXCLI {
         // Generic agent hook handlers: gracefully no-op outside cmux
         if ["copilot-hook", "codebuddy-hook", "factory-hook", "qoder-hook"].contains(command) {
             guard ProcessInfo.processInfo.environment["CMUX_SURFACE_ID"] != nil else {
-                print("{}")
+                cliPrint("{}")
                 return
             }
         }
@@ -2005,11 +2137,11 @@ struct CMUXCLI {
         switch command {
         case "ping":
             let response = try sendV1Command("ping", client: client)
-            print(response)
+            cliPrint(response)
 
         case "capabilities":
             let response = try client.sendV2(method: "system.capabilities")
-            print(jsonString(formatIDs(response, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(response, mode: idFormat)))
 
         case "rpc":
             guard let method = commandArgs.first?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -2019,7 +2151,7 @@ struct CMUXCLI {
             let params = try parseRPCParams(Array(commandArgs.dropFirst()))
             let response = try client.sendV2(method: method, params: params)
             let output: Any = idFormatArg == nil ? response : formatIDs(response, mode: idFormat)
-            print(jsonString(output))
+            cliPrint(jsonString(output))
 
         case "identify":
             var params: [String: Any] = [:]
@@ -2054,7 +2186,7 @@ struct CMUXCLI {
                 }
             }
             let response = try client.sendV2(method: "system.identify", params: params)
-            print(jsonString(formatIDs(response, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(response, mode: idFormat)))
 
         case "list-windows":
             let response = try sendV1Command("list_windows", client: client)
@@ -2070,36 +2202,36 @@ struct CMUXCLI {
                     dict["selected_workspace_id"] = item.selectedWorkspaceId ?? NSNull()
                     return dict
                 }
-                print(jsonString(payload))
+                cliPrint(jsonString(payload))
             } else {
-                print(response)
+                cliPrint(response)
             }
 
         case "current-window":
             let response = try sendV1Command("current_window", client: client)
             if jsonOutput {
-                print(jsonString(["window_id": response]))
+                cliPrint(jsonString(["window_id": response]))
             } else {
-                print(response)
+                cliPrint(response)
             }
 
         case "new-window":
             let response = try sendV1Command("new_window", client: client)
-            print(response)
+            cliPrint(response)
 
         case "focus-window":
             guard let target = optionValue(commandArgs, name: "--window") else {
                 throw CLIError(message: "focus-window requires --window")
             }
             let response = try sendV1Command("focus_window \(target)", client: client)
-            print(response)
+            cliPrint(response)
 
         case "close-window":
             guard let target = optionValue(commandArgs, name: "--window") else {
                 throw CLIError(message: "close-window requires --window")
             }
             let response = try sendV1Command("close_window \(target)", client: client)
-            print(response)
+            cliPrint(response)
 
         case "move-workspace-to-window":
             guard let workspaceRaw = optionValue(commandArgs, name: "--workspace") else {
@@ -2137,11 +2269,11 @@ struct CMUXCLI {
         case "list-workspaces":
             let payload = try client.sendV2(method: "workspace.list")
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
                 let workspaces = payload["workspaces"] as? [[String: Any]] ?? []
                 if workspaces.isEmpty {
-                    print("No workspaces")
+                    cliPrint("No workspaces")
                 } else {
                     for ws in workspaces {
                         let selected = (ws["selected"] as? Bool) == true
@@ -2158,7 +2290,7 @@ struct CMUXCLI {
                         let prefix = selected ? "* " : "  "
                         let selTag = selected ? "  [selected]" : ""
                         let titlePart = title.isEmpty ? "" : "  \(title)"
-                        print("\(prefix)\(handle)\(titlePart)\(remoteTag)\(selTag)")
+                        cliPrint("\(prefix)\(handle)\(titlePart)\(remoteTag)\(selTag)")
                     }
                 }
             }
@@ -2197,7 +2329,7 @@ struct CMUXCLI {
             }
             let response = try client.sendV2(method: "workspace.create", params: params)
             let wsId = (response["workspace_ref"] as? String) ?? (response["workspace_id"] as? String) ?? ""
-            print("OK \(wsId)")
+            cliPrint("OK \(wsId)")
             if layoutOpt == nil, let commandText = commandOpt, !wsId.isEmpty {
                 let text = unescapeSendText(commandText + "\\n")
                 let sendParams: [String: Any] = ["text": text, "workspace_id": wsId]
@@ -2228,11 +2360,11 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let payload = try client.sendV2(method: "pane.list", params: params)
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
                 let panes = payload["panes"] as? [[String: Any]] ?? []
                 if panes.isEmpty {
-                    print("No panes")
+                    cliPrint("No panes")
                 } else {
                     for pane in panes {
                         let focused = (pane["focused"] as? Bool) == true
@@ -2240,7 +2372,7 @@ struct CMUXCLI {
                         let count = pane["surface_count"] as? Int ?? 0
                         let prefix = focused ? "* " : "  "
                         let focusTag = focused ? "  [focused]" : ""
-                        print("\(prefix)\(handle)  [\(count) surface\(count == 1 ? "" : "s")]\(focusTag)")
+                        cliPrint("\(prefix)\(handle)  [\(count) surface\(count == 1 ? "" : "s")]\(focusTag)")
                     }
                 }
             }
@@ -2255,11 +2387,11 @@ struct CMUXCLI {
             if let paneId { params["pane_id"] = paneId }
             let payload = try client.sendV2(method: "pane.surfaces", params: params)
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
                 let surfaces = payload["surfaces"] as? [[String: Any]] ?? []
                 if surfaces.isEmpty {
-                    print("No surfaces in pane")
+                    cliPrint("No surfaces in pane")
                 } else {
                     for surface in surfaces {
                         let selected = (surface["selected"] as? Bool) == true
@@ -2267,7 +2399,7 @@ struct CMUXCLI {
                         let title = (surface["title"] as? String) ?? ""
                         let prefix = selected ? "* " : "  "
                         let selTag = selected ? "  [selected]" : ""
-                        print("\(prefix)\(handle)  \(title)\(selTag)")
+                        cliPrint("\(prefix)\(handle)  \(title)\(selTag)")
                     }
                 }
             }
@@ -2347,17 +2479,17 @@ struct CMUXCLI {
                 throw CLIError(message: "drag-surface-to-split requires a direction")
             }
             let response = try sendV1Command("drag_surface_to_split \(surface) \(direction)", client: client)
-            print(response)
+            cliPrint(response)
 
         case "refresh-surfaces":
             let response = try sendV1Command("refresh_surfaces", client: client)
-            print(response)
+            cliPrint(response)
         case "reload-config":
             if let unexpected = commandArgs.first {
                 throw CLIError(message: "reload-config does not accept arguments. Unexpected argument '\(unexpected)'")
             }
             let response = try sendV1Command("reload_config", client: client)
-            print(response)
+            cliPrint(response)
 
         case "surface-health":
             let workspaceArg = workspaceFromArgsOrEnv(commandArgs, windowOverride: windowId)
@@ -2366,11 +2498,11 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let payload = try client.sendV2(method: "surface.health", params: params)
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
                 let surfaces = payload["surfaces"] as? [[String: Any]] ?? []
                 if surfaces.isEmpty {
-                    print("No surfaces")
+                    cliPrint("No surfaces")
                 } else {
                     for surface in surfaces {
                         let handle = textHandle(surface, idFormat: idFormat)
@@ -2382,7 +2514,7 @@ struct CMUXCLI {
                         } else {
                             inWindowStr = ""
                         }
-                        print("\(handle)  type=\(sType)\(inWindowStr)")
+                        cliPrint("\(handle)  type=\(sType)\(inWindowStr)")
                     }
                 }
             }
@@ -2394,9 +2526,9 @@ struct CMUXCLI {
             }
             let payload = try client.sendV2(method: "debug.terminals")
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
-                print(formatDebugTerminalsPayload(payload, idFormat: idFormat))
+                cliPrint(formatDebugTerminalsPayload(payload, idFormat: idFormat))
             }
 
         case "trigger-flash":
@@ -2442,11 +2574,11 @@ struct CMUXCLI {
             if let wsId { params["workspace_id"] = wsId }
             let payload = try client.sendV2(method: "surface.list", params: params)
             if jsonOutput {
-                print(jsonString(formatIDs(payload, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
             } else {
                 let surfaces = payload["surfaces"] as? [[String: Any]] ?? []
                 if surfaces.isEmpty {
-                    print("No surfaces")
+                    cliPrint("No surfaces")
                 } else {
                     for surface in surfaces {
                         let focused = (surface["focused"] as? Bool) == true
@@ -2456,7 +2588,7 @@ struct CMUXCLI {
                         let prefix = focused ? "* " : "  "
                         let focusTag = focused ? "  [focused]" : ""
                         let titlePart = title.isEmpty ? "" : "  \"\(title)\""
-                        print("\(prefix)\(handle)  \(sType)\(focusTag)\(titlePart)")
+                        cliPrint("\(prefix)\(handle)  \(sType)\(focusTag)\(titlePart)")
                     }
                 }
             }
@@ -2513,12 +2645,12 @@ struct CMUXCLI {
         case "current-workspace":
             let response = try client.sendV2(method: "workspace.current")
             if jsonOutput {
-                print(jsonString(formatIDs(response, mode: idFormat)))
+                cliPrint(jsonString(formatIDs(response, mode: idFormat)))
             } else {
                 let handle = formatHandle(response, kind: "workspace", idFormat: idFormat)
                     ?? (response["workspace_id"] as? String)
                     ?? ""
-                print(handle)
+                cliPrint(handle)
             }
 
         case "read-screen":
@@ -2553,9 +2685,9 @@ struct CMUXCLI {
 
             let payload = try client.sendV2(method: "surface.read_text", params: params)
             if jsonOutput {
-                print(jsonString(payload))
+                cliPrint(jsonString(payload))
             } else {
-                print((payload["text"] as? String) ?? "")
+                cliPrint((payload["text"] as? String) ?? "")
             }
 
         case "send":
@@ -2661,7 +2793,7 @@ struct CMUXCLI {
 
             let payload = "\(title)|\(subtitle)|\(body)"
             let response = try sendV1Command("notify_target \(targetWorkspace) \(targetSurface) \(payload)", client: client)
-            print(response)
+            cliPrint(response)
 
         case "list-notifications":
             let response = try sendV1Command("list_notifications", client: client)
@@ -2679,9 +2811,9 @@ struct CMUXCLI {
                     dict["surface_id"] = item.surfaceId ?? NSNull()
                     return dict
                 }
-                print(jsonString(payload))
+                cliPrint(jsonString(payload))
             } else {
-                print(response)
+                cliPrint(response)
             }
 
         case "clear-notifications":
@@ -2695,7 +2827,7 @@ struct CMUXCLI {
                 socketCmd += " --tab=\(wsId)"
             }
             let response = try sendV1Command(socketCmd, client: client)
-            print(response)
+            cliPrint(response)
 
         case "set-status":
             let response = try forwardSidebarMetadataCommand(
@@ -2704,7 +2836,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "clear-status":
             let response = try forwardSidebarMetadataCommand(
@@ -2713,7 +2845,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "list-status":
             let response = try forwardSidebarMetadataCommand(
@@ -2722,7 +2854,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "set-progress":
             let response = try forwardSidebarMetadataCommand(
@@ -2731,7 +2863,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "clear-progress":
             let response = try forwardSidebarMetadataCommand(
@@ -2740,7 +2872,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "log":
             let response = try forwardSidebarMetadataCommand(
@@ -2749,7 +2881,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "clear-log":
             let response = try forwardSidebarMetadataCommand(
@@ -2758,7 +2890,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "list-log":
             let response = try forwardSidebarMetadataCommand(
@@ -2767,7 +2899,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "sidebar-state":
             let response = try forwardSidebarMetadataCommand(
@@ -2776,7 +2908,7 @@ struct CMUXCLI {
                 client: client,
                 windowOverride: windowId
             )
-            print(response)
+            cliPrint(response)
 
         case "claude-hook":
             cliTelemetry.breadcrumb("claude-hook.dispatch")
@@ -2840,11 +2972,11 @@ struct CMUXCLI {
         case "set-app-focus":
             guard let value = commandArgs.first else { throw CLIError(message: "set-app-focus requires a value") }
             let response = try sendV1Command("set_app_focus \(value)", client: client)
-            print(response)
+            cliPrint(response)
 
         case "simulate-app-active":
             let response = try sendV1Command("simulate_app_active", client: client)
-            print(response)
+            cliPrint(response)
 
         case "__tmux-compat":
             try runClaudeTeamsTmuxCompat(
@@ -2888,7 +3020,7 @@ struct CMUXCLI {
             )
 
         case "help":
-            print(usage())
+            cliPrint(usage())
 
         // Browser commands
         case "browser":
@@ -2931,7 +3063,7 @@ struct CMUXCLI {
             try runMarkdownCommand(commandArgs: commandArgs, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
 
         default:
-            print(usage())
+            cliPrint(usage())
             throw CLIError(message: "Unknown command: \(command)")
         }
     }
@@ -3065,12 +3197,12 @@ struct CMUXCLI {
         let payload = try client.sendV2(method: "markdown.open", params: params)
 
         if jsonOutput {
-            print(jsonString(formatIDs(payload, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
         } else {
             let surfaceText = formatHandle(payload, kind: "surface", idFormat: idFormat) ?? "unknown"
             let paneText = formatHandle(payload, kind: "pane", idFormat: idFormat) ?? "unknown"
             let filePath = (payload["path"] as? String) ?? absolutePath
-            print("OK surface=\(surfaceText) pane=\(paneText) path=\(filePath)")
+            cliPrint("OK surface=\(surfaceText) pane=\(paneText) path=\(filePath)")
         }
     }
 
@@ -3110,7 +3242,7 @@ struct CMUXCLI {
             let response = try launchedClient.sendV2(method: "workspace.create", params: params)
             let wsRef = (response["workspace_ref"] as? String) ?? (response["workspace_id"] as? String) ?? ""
             if !wsRef.isEmpty {
-                print("OK \(wsRef)")
+                cliPrint("OK \(wsRef)")
             }
             try activateApp()
             return
@@ -3121,7 +3253,7 @@ struct CMUXCLI {
         let response = try client.sendV2(method: "workspace.create", params: params)
         let wsRef = (response["workspace_ref"] as? String) ?? (response["workspace_id"] as? String) ?? ""
         if !wsRef.isEmpty {
-            print("OK \(wsRef)")
+            cliPrint("OK \(wsRef)")
         }
 
         // Bring the app to front
@@ -3162,9 +3294,9 @@ struct CMUXCLI {
             }
             let response = try client.sendV2(method: "feedback.open", params: params)
             if jsonOutput {
-                print(jsonString(response))
+                cliPrint(jsonString(response))
             } else {
-                print("OK")
+                cliPrint("OK")
             }
             return
         }
@@ -3184,9 +3316,9 @@ struct CMUXCLI {
             "image_paths": resolvedImages,
         ])
         if jsonOutput {
-            print(jsonString(response))
+            cliPrint(jsonString(response))
         } else {
-            print("OK")
+            cliPrint("OK")
         }
     }
 
@@ -3213,9 +3345,9 @@ struct CMUXCLI {
             "activate": true,
         ])
         if jsonOutput {
-            print(jsonString(response))
+            cliPrint(jsonString(response))
         } else {
-            print("OK")
+            cliPrint("OK")
         }
     }
 
@@ -3267,7 +3399,7 @@ struct CMUXCLI {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-a", "cmux"]
-        try process.run()
+        try cliRunProcess(process)
         process.waitUntilExit()
     }
 
@@ -3275,7 +3407,7 @@ struct CMUXCLI {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
         process.arguments = ["-a", "cmux"]
-        try process.run()
+        try cliRunProcess(process)
         process.waitUntilExit()
     }
 
@@ -3622,9 +3754,9 @@ struct CMUXCLI {
         fallbackText: String
     ) {
         if jsonOutput {
-            print(jsonString(formatIDs(payload, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
         } else {
-            print(fallbackText)
+            cliPrint(fallbackText)
         }
     }
 
@@ -4377,12 +4509,12 @@ struct CMUXCLI {
         payload["remote_relay_port"] = remoteRelayPort
         logSSHTiming("complete", extra: "workspace=\(String(workspaceId.prefix(8)))")
         if jsonOutput {
-            print(jsonString(formatIDs(payload, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
         } else {
             let workspaceHandle = formatHandle(payload, kind: "workspace", idFormat: idFormat) ?? workspaceId
             let remote = payload["remote"] as? [String: Any]
             let state = (remote?["state"] as? String) ?? "unknown"
-            print("OK workspace=\(workspaceHandle) target=\(sshOptions.destination) state=\(state)")
+            cliPrint("OK workspace=\(workspaceHandle) target=\(sshOptions.destination) state=\(state)")
         }
     }
 
@@ -5169,39 +5301,39 @@ struct CMUXCLI {
         ]
 
         if jsonOutput {
-            print(jsonString(payload))
+            cliPrint(jsonString(payload))
             return
         }
 
-        print("app version: \(payload["app_version"] as? String ?? "unknown")")
+        cliPrint("app version: \(payload["app_version"] as? String ?? "unknown")")
         if let build = payload["build"] as? String {
-            print("build: \(build)")
+            cliPrint("build: \(build)")
         }
         if let commit = payload["commit"] as? String {
-            print("commit: \(commit)")
+            cliPrint("commit: \(commit)")
         }
-        print("manifest: \(manifest != nil ? "present" : "missing")")
-        print("platform: \(platform.goOS)/\(platform.goArch)")
-        print("release: \(releaseTag)")
-        print("asset: \(assetName)")
-        print("download url: \(downloadURL)")
-        print("checksums asset: \(checksumsAssetName)")
-        print("checksums: \(checksumsURL)")
+        cliPrint("manifest: \(manifest != nil ? "present" : "missing")")
+        cliPrint("platform: \(platform.goOS)/\(platform.goArch)")
+        cliPrint("release: \(releaseTag)")
+        cliPrint("asset: \(assetName)")
+        cliPrint("download url: \(downloadURL)")
+        cliPrint("checksums asset: \(checksumsAssetName)")
+        cliPrint("checksums: \(checksumsURL)")
         if let expectedSHA = entry?.sha256 {
-            print("expected sha256: \(expectedSHA)")
+            cliPrint("expected sha256: \(expectedSHA)")
         }
-        print("cache: \(cacheURL.path)")
-        print("cache exists: \(cacheExists ? "yes" : "no")")
+        cliPrint("cache: \(cacheURL.path)")
+        cliPrint("cache exists: \(cacheExists ? "yes" : "no")")
         if let cacheSHA {
-            print("cache sha256: \(cacheSHA)")
+            cliPrint("cache sha256: \(cacheSHA)")
         }
-        print("cache verified: \(cacheVerified ? "yes" : "no")")
-        print("download command: \(downloadCommand)")
-        print("download checksums: \(downloadChecksumsCommand)")
-        print("verify checksum: \(checksumVerifyCommand)")
-        print("attestation verify: \(verifyCommand)")
+        cliPrint("cache verified: \(cacheVerified ? "yes" : "no")")
+        cliPrint("download command: \(downloadCommand)")
+        cliPrint("download checksums: \(downloadChecksumsCommand)")
+        cliPrint("verify checksum: \(checksumVerifyCommand)")
+        cliPrint("attestation verify: \(verifyCommand)")
         if manifest == nil {
-            print("note: this build has no embedded remote daemon manifest. Set CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD=1 only for dev builds.")
+            cliPrint("note: this build has no embedded remote daemon manifest. Set CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD=1 only for dev builds.")
         }
     }
 
@@ -5511,13 +5643,13 @@ struct CMUXCLI {
 
         func output(_ payload: [String: Any], fallback: String) {
             if effectiveJSONOutput {
-                print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
                 return
             }
-            print(fallback)
+            cliPrint(fallback)
             if let snapshot = payload["post_action_snapshot"] as? String,
                !snapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                print(snapshot)
+                cliPrint(snapshot)
             }
         }
 
@@ -5713,9 +5845,9 @@ struct CMUXCLI {
             let sid = try requireSurface()
             let payload = try client.sendV2(method: "browser.url.get", params: ["surface_id": sid])
             if effectiveJSONOutput {
-                print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
             } else {
-                print((payload["url"] as? String) ?? "")
+                cliPrint((payload["url"] as? String) ?? "")
             }
             return
         }
@@ -5731,9 +5863,9 @@ struct CMUXCLI {
             let sid = try requireSurface()
             let payload = try client.sendV2(method: "browser.is_webview_focused", params: ["surface_id": sid])
             if effectiveJSONOutput {
-                print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
             } else {
-                print((payload["focused"] as? Bool) == true ? "true" : "false")
+                cliPrint((payload["focused"] as? Bool) == true ? "true" : "false")
             }
             return
         }
@@ -5765,9 +5897,9 @@ struct CMUXCLI {
 
             let payload = try client.sendV2(method: "browser.snapshot", params: params)
             if effectiveJSONOutput {
-                print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
             } else {
-                print(displaySnapshotText(payload))
+                cliPrint(displaySnapshotText(payload))
             }
             return
         }
@@ -6096,20 +6228,20 @@ struct CMUXCLI {
                     if hasText(screenshotPath) || hasText(screenshotURL) {
                         outputPayload.removeValue(forKey: "png_base64")
                     }
-                    print(jsonString(outputPayload))
+                    cliPrint(jsonString(outputPayload))
                 } else {
-                    print(jsonString(formattedPayload))
+                    cliPrint(jsonString(formattedPayload))
                 }
             } else if let outPathOpt {
-                print("OK \(outPathOpt)")
+                cliPrint("OK \(outPathOpt)")
             } else if let screenshotURL,
                       hasText(screenshotURL) {
-                print("OK \(screenshotURL)")
+                cliPrint("OK \(screenshotURL)")
             } else if let screenshotPath,
                       hasText(screenshotPath) {
-                print("OK \(screenshotPath)")
+                cliPrint("OK \(screenshotPath)")
             } else {
-                print("OK")
+                cliPrint("OK")
             }
             return
         }
@@ -6166,17 +6298,17 @@ struct CMUXCLI {
                 ]
                 let payload = try client.sendV2(method: methodMap[getVerb]!, params: params)
                 if effectiveJSONOutput {
-                    print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                    cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
                 } else if let value = payload["value"] {
                     if let str = value as? String {
-                        print(str)
+                        cliPrint(str)
                     } else {
-                        print(jsonString(value))
+                        cliPrint(jsonString(value))
                     }
                 } else if let count = payload["count"] {
-                    print("\(count)")
+                    cliPrint("\(count)")
                 } else {
-                    print("OK")
+                    cliPrint("OK")
                 }
             default:
                 throw CLIError(message: "Unsupported browser get subcommand: \(getVerb)")
@@ -6206,11 +6338,11 @@ struct CMUXCLI {
             }
             let payload = try client.sendV2(method: method, params: ["surface_id": sid, "selector": selector])
             if effectiveJSONOutput {
-                print(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
+                cliPrint(jsonString(formatIDs(payload, mode: effectiveIDFormat)))
             } else if let value = payload["value"] {
-                print("\(value)")
+                cliPrint("\(value)")
             } else {
-                print("false")
+                cliPrint("false")
             }
             return
         }
@@ -6522,7 +6654,7 @@ struct CMUXCLI {
             if effectiveJSONOutput || consoleVerb == "clear" {
                 output(payload, fallback: "OK")
             } else {
-                print(displayBrowserLogItems(payload["entries"]) ?? "No console entries")
+                cliPrint(displayBrowserLogItems(payload["entries"]) ?? "No console entries")
             }
             return
         }
@@ -6540,7 +6672,7 @@ struct CMUXCLI {
             if effectiveJSONOutput || errorsVerb == "clear" {
                 output(payload, fallback: "OK")
             } else {
-                print(displayBrowserLogItems(payload["errors"]) ?? "No browser errors")
+                cliPrint(displayBrowserLogItems(payload["errors"]) ?? "No browser errors")
             }
             return
         }
@@ -8189,9 +8321,9 @@ struct CMUXCLI {
     private func dispatchSubcommandHelp(command: String, commandArgs: [String]) -> Bool {
         guard commandArgs.contains("--help") || commandArgs.contains("-h") else { return false }
         guard let text = subcommandUsage(command) else { return false }
-        print("cmux \(command)")
-        print("")
-        print(text)
+        cliPrint("cmux \(command)")
+        cliPrint("")
+        cliPrint(text)
         return true
     }
 
@@ -8326,8 +8458,9 @@ struct CMUXCLI {
         }
         envp.append(nil)
 
-        execve(executablePath, &argv, &envp)
-        let code = errno
+        let code = cliExecFailureErrno {
+            execve(executablePath, &argv, &envp)
+        }
         throw CLIError(message: "Failed to launch interactive theme picker: \(String(cString: strerror(code)))")
     }
 
@@ -8428,20 +8561,20 @@ struct CMUXCLI {
                 "current": currentPayload,
                 "config_path": configPath
             ]
-            print(jsonString(payload))
+            cliPrint(jsonString(payload))
             return
         }
 
-        print("Current light: \(current.light ?? "inherit")")
-        print("Current dark: \(current.dark ?? "inherit")")
-        print("Config: \(configPath)")
+        cliPrint("Current light: \(current.light ?? "inherit")")
+        cliPrint("Current dark: \(current.dark ?? "inherit")")
+        cliPrint("Config: \(configPath)")
         if let sourcePath = current.sourcePath {
-            print("Source: \(sourcePath)")
+            cliPrint("Source: \(sourcePath)")
         }
-        print("")
+        cliPrint("")
 
         guard !themes.isEmpty else {
-            print("No themes found.")
+            cliPrint("No themes found.")
             return
         }
 
@@ -8454,7 +8587,7 @@ struct CMUXCLI {
                 badges.append("dark")
             }
             let badgeText = badges.isEmpty ? "" : "  [\(badges.joined(separator: ", "))]"
-            print("\(theme)\(badgeText)")
+            cliPrint("\(theme)\(badgeText)")
         }
     }
 
@@ -8505,11 +8638,11 @@ struct CMUXCLI {
                 "reload_requested": reloadStatus.requested,
                 "reload_target_bundle_id": reloadStatus.targetBundleIdentifier
             ]
-            print(jsonString(payload))
+            cliPrint(jsonString(payload))
             return
         }
 
-        print(
+        cliPrint(
             "OK light=\(lightTheme ?? "-") dark=\(darkTheme ?? "-") config=\(configURL.path) reload=requested"
         )
     }
@@ -8526,11 +8659,11 @@ struct CMUXCLI {
                 "reload_requested": reloadStatus.requested,
                 "reload_target_bundle_id": reloadStatus.targetBundleIdentifier
             ]
-            print(jsonString(payload))
+            cliPrint(jsonString(payload))
             return
         }
 
-        print("OK cleared config=\(configURL.path) reload=requested")
+        cliPrint("OK cleared config=\(configURL.path) reload=requested")
     }
 
     private func currentThemeSelection() -> ThemeSelection {
@@ -9097,10 +9230,10 @@ struct CMUXCLI {
         let options = try parseTreeCommandOptions(commandArgs)
         let payload = try buildTreePayload(options: options, client: client)
         if jsonOutput || options.jsonOutput {
-            print(jsonString(formatIDs(payload, mode: idFormat)))
+            cliPrint(jsonString(formatIDs(payload, mode: idFormat)))
         } else {
             let windows = payload["windows"] as? [[String: Any]] ?? []
-            print(renderTreeText(windows: windows, idFormat: idFormat))
+            cliPrint(renderTreeText(windows: windows, idFormat: idFormat))
         }
     }
 
@@ -10640,12 +10773,13 @@ struct CMUXCLI {
         }
         argv.append(nil)
 
-        if claudeExecutablePath != nil {
-            execv(launchPath, &argv)
-        } else {
-            execvp("claude", &argv)
+        let code = cliExecFailureErrno {
+            if claudeExecutablePath != nil {
+                execv(launchPath, &argv)
+            } else {
+                execvp("claude", &argv)
+            }
         }
-        let code = errno
         throw CLIError(message: "Failed to launch claude: \(String(cString: strerror(code)))")
     }
 
@@ -10822,7 +10956,7 @@ struct CMUXCLI {
         process.arguments = arguments
         process.standardOutput = FileHandle.standardError
         process.standardError = FileHandle.standardError
-        try process.run()
+        try cliRunProcess(process)
         process.waitUntilExit()
         return process.terminationStatus
     }
@@ -11117,7 +11251,7 @@ struct CMUXCLI {
             checkProcess.arguments = ["opencode"]
             checkProcess.standardOutput = Pipe()
             checkProcess.standardError = Pipe()
-            try? checkProcess.run()
+            try? cliRunProcess(checkProcess)
             checkProcess.waitUntilExit()
             if checkProcess.terminationStatus != 0 {
                 throw CLIError(message: "opencode is not installed. Install it first:\n  npm install -g opencode-ai\n  # or\n  bun install -g opencode-ai\n\nThen run: cmux omo")
@@ -11165,12 +11299,13 @@ struct CMUXCLI {
         }
         argv.append(nil)
 
-        if openCodeExecutablePath != nil {
-            execv(launchPath, &argv)
-        } else {
-            execvp("opencode", &argv)
+        let code = cliExecFailureErrno {
+            if openCodeExecutablePath != nil {
+                execv(launchPath, &argv)
+            } else {
+                execvp("opencode", &argv)
+            }
         }
-        let code = errno
         throw CLIError(message: "Failed to launch opencode: \(String(cString: strerror(code)))\n\nIs opencode installed? Install with:\n  npm install -g opencode-ai")
     }
 
@@ -11237,7 +11372,7 @@ struct CMUXCLI {
             checkProcess.arguments = ["omx"]
             checkProcess.standardOutput = Pipe()
             checkProcess.standardError = Pipe()
-            try? checkProcess.run()
+            try? cliRunProcess(checkProcess)
             checkProcess.waitUntilExit()
             if checkProcess.terminationStatus != 0 {
                 throw CLIError(message: "omx is not installed. Install it first:\n  npm install -g oh-my-codex\n\nThen run: cmux omx")
@@ -11268,12 +11403,13 @@ struct CMUXCLI {
         }
         argv.append(nil)
 
-        if omxExecutablePath != nil {
-            execv(launchPath, &argv)
-        } else {
-            execvp("omx", &argv)
+        let code = cliExecFailureErrno {
+            if omxExecutablePath != nil {
+                execv(launchPath, &argv)
+            } else {
+                execvp("omx", &argv)
+            }
         }
-        let code = errno
         throw CLIError(message: "Failed to launch omx: \(String(cString: strerror(code)))\n\nIs oh-my-codex installed? Install with:\n  npm install -g oh-my-codex")
     }
 
@@ -11361,7 +11497,7 @@ struct CMUXCLI {
             checkProcess.arguments = ["omc"]
             checkProcess.standardOutput = Pipe()
             checkProcess.standardError = Pipe()
-            try? checkProcess.run()
+            try? cliRunProcess(checkProcess)
             checkProcess.waitUntilExit()
             if checkProcess.terminationStatus != 0 {
                 throw CLIError(message: "omc is not installed. Install it first:\n  npm install -g oh-my-claude-sisyphus\n\nThen run: cmux omc")
@@ -11392,12 +11528,13 @@ struct CMUXCLI {
         }
         argv.append(nil)
 
-        if omcExecutablePath != nil {
-            execv(launchPath, &argv)
-        } else {
-            execvp("omc", &argv)
+        let code = cliExecFailureErrno {
+            if omcExecutablePath != nil {
+                execv(launchPath, &argv)
+            } else {
+                execvp("omc", &argv)
+            }
         }
-        let code = errno
         throw CLIError(message: "Failed to launch omc: \(String(cString: strerror(code)))\n\nIs oh-my-claude-sisyphus installed? Install with:\n  npm install -g oh-my-claude-sisyphus")
     }
 
@@ -11445,7 +11582,7 @@ struct CMUXCLI {
             }
             if parsed.hasFlag("-P") {
                 let context = try tmuxFormatContext(workspaceId: workspaceId, client: client)
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: "@\(workspaceId)"))
+                cliPrint(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: "@\(workspaceId)"))
             }
 
         case "new-window", "neww":
@@ -11482,7 +11619,7 @@ struct CMUXCLI {
             }
             if parsed.hasFlag("-P") {
                 let context = try tmuxFormatContext(workspaceId: workspaceId, client: client)
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: "@\(workspaceId)"))
+                cliPrint(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: "@\(workspaceId)"))
             }
 
         case "split-window", "splitw":
@@ -11569,7 +11706,7 @@ struct CMUXCLI {
                     client: client
                 )
                 let fallback = context["pane_id"] ?? surfaceId
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
+                cliPrint(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
             }
 
         case "select-window", "selectw":
@@ -11642,7 +11779,7 @@ struct CMUXCLI {
             let payload = try client.sendV2(method: "surface.read_text", params: params)
             let text = (payload["text"] as? String) ?? ""
             if parsed.hasFlag("-p") {
-                print(text)
+                cliPrint(text)
             } else {
                 var store = loadTmuxCompatStore()
                 store.buffers["default"] = text
@@ -11671,7 +11808,7 @@ struct CMUXCLI {
             let format = parsed.positional.isEmpty ? parsed.value("-F") : parsed.positional.joined(separator: " ")
             let rendered = tmuxRenderFormat(format, context: context, fallback: "")
             if parsed.hasFlag("-p") || !rendered.isEmpty {
-                print(rendered)
+                cliPrint(rendered)
             }
 
         case "list-windows", "lsw":
@@ -11684,7 +11821,7 @@ struct CMUXCLI {
                     context["window_index"] ?? "?",
                     context["window_name"] ?? workspaceId
                 ].joined(separator: " ")
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
+                cliPrint(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
             }
 
         case "list-panes", "lsp":
@@ -11706,7 +11843,7 @@ struct CMUXCLI {
                 var context = try tmuxFormatContext(workspaceId: workspaceId, paneId: paneId, client: client)
                 tmuxEnrichContextWithGeometry(&context, pane: pane, containerFrame: containerFrame)
                 let fallback = context["pane_id"] ?? paneId
-                print(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
+                cliPrint(tmuxRenderFormat(parsed.value("-F"), context: context, fallback: fallback))
             }
 
         case "rename-window", "renamew":
@@ -11793,7 +11930,7 @@ struct CMUXCLI {
             let name = parsed.value("-b") ?? "default"
             let store = loadTmuxCompatStore()
             if let buffer = store.buffers[name] {
-                print(buffer)
+                cliPrint(buffer)
             }
 
         case "save-buffer", "saveb":
@@ -11806,7 +11943,7 @@ struct CMUXCLI {
             if let outputPath = parsed.positional.last, !outputPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 try buffer.write(toFile: resolvePath(outputPath), atomically: true, encoding: .utf8)
             } else {
-                print(buffer)
+                cliPrint(buffer)
             }
 
         case "last-window", "next-window", "previous-window", "set-hook", "set-buffer", "list-buffers":
@@ -11876,7 +12013,7 @@ struct CMUXCLI {
             return
 
         case "-V", "-v":
-            print("tmux 3.4")
+            cliPrint("tmux 3.4")
             return
 
         default:
@@ -12077,8 +12214,9 @@ struct CMUXCLI {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
-        try process.run()
+        try cliRunProcess(process)
         if let data = stdinText.data(using: .utf8) {
+            // The child may exit before consuming stdin; treat the owned pipe as best-effort.
             _ = cliWrite(data, to: stdinPipe.fileHandleForWriting, onBrokenPipe: .ignore)
         }
         stdinPipe.fileHandleForWriting.closeFile()
@@ -12131,9 +12269,9 @@ struct CMUXCLI {
 
             let payload = try client.sendV2(method: "surface.read_text", params: params)
             if jsonOutput {
-                print(jsonString(payload))
+                cliPrint(jsonString(payload))
             } else {
-                print((payload["text"] as? String) ?? "")
+                cliPrint((payload["text"] as? String) ?? "")
             }
 
         case "resize-pane":
@@ -12186,7 +12324,7 @@ struct CMUXCLI {
                 throw CLIError(message: "pipe-pane command failed (\(shell.status)): \(shell.stderr)")
             }
             if jsonOutput {
-                print(jsonString([
+                cliPrint(jsonString([
                     "ok": true,
                     "status": shell.status,
                     "stdout": shell.stdout,
@@ -12194,9 +12332,9 @@ struct CMUXCLI {
                 ]))
             } else {
                 if !shell.stdout.isEmpty {
-                    print(shell.stdout, terminator: "")
+                    cliPrint(shell.stdout, terminator: "")
                 }
-                print("OK")
+                cliPrint("OK")
             }
 
         case "wait-for":
@@ -12210,19 +12348,19 @@ struct CMUXCLI {
             let signalURL = tmuxWaitForSignalURL(name: name)
             if signal {
                 FileManager.default.createFile(atPath: signalURL.path, contents: Data())
-                print("OK")
+                cliPrint("OK")
                 return
             }
             let deadline = Date().addingTimeInterval(timeout)
             do {
                 try SocketClient.waitForFilesystemPath(signalURL.path, timeout: max(0, deadline.timeIntervalSinceNow))
                 try? FileManager.default.removeItem(at: signalURL)
-                print("OK")
+                cliPrint("OK")
                 return
             } catch {
                 if FileManager.default.fileExists(atPath: signalURL.path) {
                     try? FileManager.default.removeItem(at: signalURL)
-                    print("OK")
+                    cliPrint("OK")
                     return
                 }
             }
@@ -12331,14 +12469,14 @@ struct CMUXCLI {
 
             if jsonOutput {
                 let formatted = formatIDs(["matches": matches], mode: idFormat) as? [String: Any]
-                print(jsonString(["matches": formatted?["matches"] ?? []]))
+                cliPrint(jsonString(["matches": formatted?["matches"] ?? []]))
             } else if matches.isEmpty {
-                print("No matches")
+                cliPrint("No matches")
             } else {
                 for item in matches {
                     let handle = textHandle(item, idFormat: idFormat)
                     let title = (item["title"] as? String) ?? ""
-                    print("\(handle)  \"\(title)\"")
+                    cliPrint("\(handle)  \"\(title)\"")
                 }
             }
 
@@ -12357,12 +12495,12 @@ struct CMUXCLI {
             var store = loadTmuxCompatStore()
             if commandArgs.contains("--list") {
                 if jsonOutput {
-                    print(jsonString(["hooks": store.hooks]))
+                    cliPrint(jsonString(["hooks": store.hooks]))
                 } else if store.hooks.isEmpty {
-                    print("No hooks configured")
+                    cliPrint("No hooks configured")
                 } else {
                     for (event, hookCmd) in store.hooks.sorted(by: { $0.key < $1.key }) {
-                        print("\(event) -> \(hookCmd)")
+                        cliPrint("\(event) -> \(hookCmd)")
                     }
                 }
                 return
@@ -12373,7 +12511,7 @@ struct CMUXCLI {
                 }
                 store.hooks.removeValue(forKey: event)
                 try saveTmuxCompatStore(store)
-                print("OK")
+                cliPrint("OK")
                 return
             }
             guard let event = commandArgs.first(where: { !$0.hasPrefix("-") }) else {
@@ -12385,7 +12523,7 @@ struct CMUXCLI {
             }
             store.hooks[event] = commandText
             try saveTmuxCompatStore(store)
-            print("OK")
+            cliPrint("OK")
 
         case "popup":
             throw CLIError(message: "popup is not supported yet in cmux CLI parity mode")
@@ -12403,19 +12541,19 @@ struct CMUXCLI {
             var store = loadTmuxCompatStore()
             store.buffers[name] = content
             try saveTmuxCompatStore(store)
-            print("OK")
+            cliPrint("OK")
 
         case "list-buffers":
             let store = loadTmuxCompatStore()
             if jsonOutput {
                 let payload = store.buffers.map { key, value in ["name": key, "size": value.count] }
-                print(jsonString(["buffers": payload.sorted { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }]))
+                cliPrint(jsonString(["buffers": payload.sorted { ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "") }]))
             } else if store.buffers.isEmpty {
-                print("No buffers")
+                cliPrint("No buffers")
             } else {
                 for key in store.buffers.keys.sorted() {
                     let size = store.buffers[key]?.count ?? 0
-                    print("\(key)\t\(size)")
+                    cliPrint("\(key)\t\(size)")
                 }
             }
 
@@ -12459,14 +12597,14 @@ struct CMUXCLI {
                 throw CLIError(message: "display-message requires text")
             }
             if printOnly {
-                print(message)
+                cliPrint(message)
                 return
             }
             let payload = try client.sendV2(method: "notification.create", params: ["title": "cmux", "body": message])
             if jsonOutput {
-                print(jsonString(payload))
+                cliPrint(jsonString(payload))
             } else {
-                print(message)
+                cliPrint(message)
             }
 
         default:
@@ -12539,7 +12677,7 @@ struct CMUXCLI {
                     client: client
                 )
             }
-            print("OK")
+            cliPrint("OK")
 
         case "stop", "idle":
             telemetry.breadcrumb("claude-hook.stop")
@@ -12590,11 +12728,11 @@ struct CMUXCLI {
                     icon: "pause.circle.fill",
                     color: "#8E8E93"
                 )
-                print("OK")
+                cliPrint("OK")
             } catch {
                 if shouldIgnoreClaudeHookTeardownError(error) {
                     telemetry.breadcrumb("claude-hook.stop.ignored", data: ["error": String(describing: error)])
-                    print("OK")
+                    cliPrint("OK")
                     return
                 }
                 throw error
@@ -12616,7 +12754,7 @@ struct CMUXCLI {
                 icon: "bolt.fill",
                 color: "#4C8DFF"
             )
-            print("OK")
+            cliPrint("OK")
 
         case "notification", "notify":
             telemetry.breadcrumb("claude-hook.notification")
@@ -12665,7 +12803,7 @@ struct CMUXCLI {
                 icon: "bell.fill",
                 color: "#4C8DFF"
             )
-            print(response)
+            cliPrint(response)
 
         case "session-end":
             telemetry.breadcrumb("claude-hook.session-end")
@@ -12699,7 +12837,7 @@ struct CMUXCLI {
                 _ = try? sendV1Command("clear_agent_pid claude_code --tab=\(workspaceId)", client: client)
                 _ = try? sendV1Command("clear_notifications --tab=\(workspaceId)", client: client)
             }
-            print("OK")
+            cliPrint("OK")
 
         case "pre-tool-use":
             telemetry.breadcrumb("claude-hook.pre-tool-use")
@@ -12733,7 +12871,7 @@ struct CMUXCLI {
                 )
                 // Don't clear notifications or set status here.
                 // The Notification hook fires right after and will use the saved question.
-                print("OK")
+                cliPrint("OK")
                 return
             }
 
@@ -12754,11 +12892,11 @@ struct CMUXCLI {
                 color: "#4C8DFF",
                 pid: claudePid
             )
-            print("OK")
+            cliPrint("OK")
 
         case "help", "--help", "-h":
             telemetry.breadcrumb("claude-hook.help")
-            print(
+            cliPrint(
                 """
                 cmux claude-hook <session-start|stop|session-end|notification|prompt-submit|pre-tool-use> [--workspace <id|index>] [--surface <id|index>]
                 """
@@ -13530,7 +13668,7 @@ struct CMUXCLI {
         process.standardError = FileHandle.nullDevice
 
         do {
-            try process.run()
+            try cliRunProcess(process)
         } catch {
             return nil
         }
@@ -13735,7 +13873,7 @@ struct CMUXCLI {
             || ProcessInfo.processInfo.arguments.contains("-y")
 
         guard fm.fileExists(atPath: configDir) else {
-            print("~/\(def.configDir)/ does not exist. Install \(def.displayName) first.")
+            cliPrint("~/\(def.configDir)/ does not exist. Install \(def.displayName) first.")
             return
         }
 
@@ -13787,17 +13925,17 @@ struct CMUXCLI {
         let newData = try JSONSerialization.data(withJSONObject: existing, options: [.prettyPrinted, .sortedKeys])
 
         if !skipConfirm {
-            print("Will write to \(filePath):")
-            print(String(data: newData, encoding: .utf8) ?? "{}")
-            print("\nProceed? [y/N] ", terminator: "")
+            cliPrint("Will write to \(filePath):")
+            cliPrint(String(data: newData, encoding: .utf8) ?? "{}")
+            cliPrint("\nProceed? [y/N] ", terminator: "")
             guard readLine()?.lowercased().hasPrefix("y") == true else {
-                print("Aborted.")
+                cliPrint("Aborted.")
                 return
             }
         }
 
         try newData.write(to: URL(fileURLWithPath: filePath), options: .atomic)
-        print("\(def.displayName) hooks installed at \(filePath)")
+        cliPrint("\(def.displayName) hooks installed at \(filePath)")
 
         // Post-install actions
         if let action = def.postInstallAction {
@@ -13825,7 +13963,7 @@ struct CMUXCLI {
                 }
                 if newContent != existingContent {
                     try newContent.write(toFile: configPath, atomically: true, encoding: .utf8)
-                    print("Enabled codex_hooks in \(configPath)")
+                    cliPrint("Enabled codex_hooks in \(configPath)")
                 }
             }
         }
@@ -13838,7 +13976,7 @@ struct CMUXCLI {
 
         guard let data = fm.contents(atPath: filePath),
               var json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            print("No \(def.configFile) found at \(filePath)")
+            cliPrint("No \(def.configFile) found at \(filePath)")
             return
         }
 
@@ -13868,7 +14006,7 @@ struct CMUXCLI {
         json["hooks"] = hooks
         let newData = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
         try newData.write(to: URL(fileURLWithPath: filePath), options: .atomic)
-        print("Removed \(removed) cmux hook(s) from \(filePath)")
+        cliPrint("Removed \(removed) cmux hook(s) from \(filePath)")
 
         // Post-uninstall actions
         if let action = def.postInstallAction {
@@ -13886,7 +14024,7 @@ struct CMUXCLI {
                 )
                 if newContent != content {
                     try newContent.write(toFile: configPath, atomically: true, encoding: .utf8)
-                    print("Removed codex_hooks from \(configPath)")
+                    cliPrint("Removed codex_hooks from \(configPath)")
                 }
             }
         }
@@ -13994,7 +14132,7 @@ struct CMUXCLI {
             break
         }
 
-        print("{}")
+        cliPrint("{}")
     }
 
     // MARK: Convenience wrappers
@@ -14020,11 +14158,11 @@ struct CMUXCLI {
         let fm = FileManager.default
         let verb = isUninstall ? "uninstalling" : "installing"
 
-        print("cmux \(isUninstall ? "uninstall" : "setup")-hooks: \(verb) agent hooks")
+        cliPrint("cmux \(isUninstall ? "uninstall" : "setup")-hooks: \(verb) agent hooks")
         if !isUninstall {
-            print("  (Claude Code hooks are injected automatically via the claude wrapper)")
+            cliPrint("  (Claude Code hooks are injected automatically via the claude wrapper)")
         }
-        print("")
+        cliPrint("")
 
         var count = 0
         var skipped = 0
@@ -14033,21 +14171,21 @@ struct CMUXCLI {
             if let filter = agentFilter, filter.lowercased() != def.name { continue }
             let configDir = def.resolvedConfigDir()
             if !fm.fileExists(atPath: configDir) {
-                print("  \(def.name): skipped (not found)")
+                cliPrint("  \(def.name): skipped (not found)")
                 skipped += 1
                 continue
             }
-            print("  \(def.name):")
+            cliPrint("  \(def.name):")
             if isUninstall {
                 try uninstallAgentHooks(def)
             } else {
                 try installAgentHooks(def)
             }
             count += 1
-            print("")
+            cliPrint("")
         }
 
-        print("Done: \(count) \(isUninstall ? "uninstalled" : "installed"), \(skipped) skipped")
+        cliPrint("Done: \(count) \(isUninstall ? "uninstalled" : "installed"), \(skipped) skipped")
     }
 
 
@@ -14120,20 +14258,20 @@ struct CMUXCLI {
           \(bold)\u{2318}\u{21E7}U\(reset)\(subdued)                 Jump to latest unread\(reset)
         """
 
-        print()
-        print(logo)
-        print()
-        print(shortcuts)
-        print()
-        print("  \(bold)Docs\(reset)\(subdued)                https://cmux.com/docs\(reset)")
-        print("  \(bold)Discord\(reset)\(subdued)             https://discord.gg/xsgFEVrWCZ\(reset)")
-        print("  \(bold)GitHub\(reset)\(subdued)              https://github.com/manaflow-ai/cmux (please leave a star ⭐)\(reset)")
-        print("  \(bold)Email\(reset)\(subdued)               founders@manaflow.com\(reset)")
-        print()
-        print("  \(subdued)Run \(reset)\(bold)cmux --help\(reset)\(subdued) for all commands.\(reset)")
-        print("  \(subdued)Run \(reset)\(bold)cmux shortcuts\(reset)\(subdued) to edit shortcuts.\(reset)")
-        print("  \(subdued)Run \(reset)\(bold)cmux feedback\(reset)\(subdued) to report a bug.\(reset)")
-        print()
+        cliPrint()
+        cliPrint(logo)
+        cliPrint()
+        cliPrint(shortcuts)
+        cliPrint()
+        cliPrint("  \(bold)Docs\(reset)\(subdued)                https://cmux.com/docs\(reset)")
+        cliPrint("  \(bold)Discord\(reset)\(subdued)             https://discord.gg/xsgFEVrWCZ\(reset)")
+        cliPrint("  \(bold)GitHub\(reset)\(subdued)              https://github.com/manaflow-ai/cmux (please leave a star ⭐)\(reset)")
+        cliPrint("  \(bold)Email\(reset)\(subdued)               founders@manaflow.com\(reset)")
+        cliPrint()
+        cliPrint("  \(subdued)Run \(reset)\(bold)cmux --help\(reset)\(subdued) for all commands.\(reset)")
+        cliPrint("  \(subdued)Run \(reset)\(bold)cmux shortcuts\(reset)\(subdued) to edit shortcuts.\(reset)")
+        cliPrint("  \(subdued)Run \(reset)\(bold)cmux feedback\(reset)\(subdued) to report a bug.\(reset)")
+        cliPrint()
     }
 
     private func resolvedVersionInfo() -> [String: String] {
@@ -14269,7 +14407,7 @@ struct CMUXCLI {
         process.standardError = Pipe()
 
         do {
-            try process.run()
+            try cliRunProcess(process)
         } catch {
             return nil
         }
@@ -14575,13 +14713,11 @@ struct CMUXCLI {
 @main
 struct CMUXTermMain {
     static func main() {
-        // CLI tools should ignore SIGPIPE so closed stdout pipes do not terminate the process.
-        _ = signal(SIGPIPE, SIG_IGN)
         let cli = CMUXCLI(args: CommandLine.arguments)
         do {
             try cli.run()
         } catch {
-            cliWriteFatalStderr("Error: \(error)\n")
+            _ = cliWriteFatalStderr("Error: \(error)\n")
             exit(1)
         }
     }
