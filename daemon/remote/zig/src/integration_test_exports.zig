@@ -11,4 +11,6 @@ pub const json_rpc = @import("json_rpc.zig");
 pub const outbound_queue = @import("outbound_queue.zig");
 pub const pty_pump = @import("pty_pump.zig");
 pub const server_core = @import("server_core.zig");
+pub const service_command = @import("service_command.zig");
+pub const session_registry = @import("session_registry.zig");
 pub const session_service = @import("session_service.zig");

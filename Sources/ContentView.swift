@@ -2915,6 +2915,17 @@ struct ContentView: View {
                             .padding(.top, 4)
                     }
                 }
+                .overlay(alignment: .top) {
+#if DEBUG
+                    // Daemon supervisor banner (PR 3 of the SSOT refactor).
+                    // Hidden when daemon is healthy; slides in when
+                    // reconnecting / failed. Positioned at top-center so it
+                    // doesn't collide with the sidebar fullscreen controls.
+                    DaemonHealthBanner()
+                        .padding(.top, 4)
+                        .animation(.easeInOut(duration: 0.15), value: MobileDaemonBridgeInline.shared.healthState)
+#endif
+                }
                 .frame(minWidth: CGFloat(SessionPersistencePolicy.minimumWindowWidth), minHeight: CGFloat(SessionPersistencePolicy.minimumWindowHeight))
                 .background(Color.clear)
         )

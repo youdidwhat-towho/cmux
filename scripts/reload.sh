@@ -325,6 +325,42 @@ if [[ "${CMUX_SKIP_ZIG_BUILD:-}" == "1" ]]; then
 fi
 XCODEBUILD_ARGS+=(build)
 
+# Kick off zig builds in parallel with xcodebuild. The mac app and the
+# zig daemon (cmuxd-remote) are independent compilation units — running
+# them sequentially doubles wall time for no reason. Their outputs are
+# collected after xcodebuild finishes and copied into the .app bundle.
+ZIG_DAEMON_LOG="/tmp/cmux-zig-daemon-${TAG_SLUG}.log"
+ZIG_CMUXD_LOG="/tmp/cmux-zig-cmuxd-${TAG_SLUG}.log"
+ZIG_GHOSTTY_LOG="/tmp/cmux-zig-ghostty-${TAG_SLUG}.log"
+ZIG_PIDS=()
+ZIG_LABELS=()
+ZIG_LOGS=()
+if [[ -d "$PWD/cmuxd" ]]; then
+  (cd "$PWD/cmuxd" && zig build -Doptimize=ReleaseFast) >"$ZIG_CMUXD_LOG" 2>&1 &
+  ZIG_PIDS+=($!)
+  ZIG_LABELS+=("cmuxd")
+  ZIG_LOGS+=("$ZIG_CMUXD_LOG")
+fi
+if [[ -d "$PWD/daemon/remote/zig" ]]; then
+  # ReleaseSafe for the daemon so safety-check panics land as named
+  # crashes with a stack trace. PTY-throughput-bound workload eats the
+  # ~10-15% cost without user-visible effect.
+  (cd "$PWD/daemon/remote/zig" && zig build -Doptimize=ReleaseSafe) >"$ZIG_DAEMON_LOG" 2>&1 &
+  ZIG_PIDS+=($!)
+  ZIG_LABELS+=("cmuxd-remote")
+  ZIG_LOGS+=("$ZIG_DAEMON_LOG")
+fi
+if [[ -d "$PWD/ghostty" ]]; then
+  if [[ "${CMUX_SKIP_ZIG_BUILD:-}" == "1" ]]; then
+    echo "Skipping direct ghostty CLI helper zig build (CMUX_SKIP_ZIG_BUILD=1)"
+  else
+    (cd "$PWD/ghostty" && zig build cli-helper -Dapp-runtime=none -Demit-macos-app=false -Demit-xcframework=false -Doptimize=ReleaseFast) >"$ZIG_GHOSTTY_LOG" 2>&1 &
+    ZIG_PIDS+=($!)
+    ZIG_LABELS+=("ghostty-cli-helper")
+    ZIG_LOGS+=("$ZIG_GHOSTTY_LOG")
+  fi
+fi
+
 XCODE_LOG="/tmp/cmux-xcodebuild-${TAG_SLUG}.log"
 set +e
 xcodebuild "${XCODEBUILD_ARGS[@]}" 2>&1 | tee "$XCODE_LOG" | grep -E '(warning:|error:|fatal:|BUILD FAILED|BUILD SUCCEEDED|\*\* BUILD)'
@@ -334,7 +370,25 @@ XCODE_EXIT="${XCODE_PIPESTATUS[0]}"
 echo "Full build log: $XCODE_LOG"
 if [[ "$XCODE_EXIT" -ne 0 ]]; then
   echo "error: xcodebuild failed with exit code $XCODE_EXIT" >&2
+  # Don't leave orphaned zig builds running if xcodebuild failed.
+  for pid in "${ZIG_PIDS[@]}"; do
+    kill "$pid" 2>/dev/null || true
+  done
   exit "$XCODE_EXIT"
+fi
+
+# Wait on all zig builds. Surface failures without aborting the rest
+# (some stages like ghostty CLI helper are optional).
+ZIG_FAILED=0
+for idx in "${!ZIG_PIDS[@]}"; do
+  if ! wait "${ZIG_PIDS[$idx]}"; then
+    echo "warning: zig build ${ZIG_LABELS[$idx]} failed (log: ${ZIG_LOGS[$idx]})" >&2
+    ZIG_FAILED=1
+  fi
+done
+if [[ "$ZIG_FAILED" -eq 1 ]]; then
+  echo "error: one or more zig builds failed; see logs above" >&2
+  exit 1
 fi
 sleep 0.2
 
@@ -450,30 +504,10 @@ if [[ -x "$CLI_PATH" ]]; then
   fi
 fi
 
-# Build cmuxd and ghostty helper binaries (needed for both launch and no-launch).
+# Collect outputs from the zig builds that ran in parallel with
+# xcodebuild above and stage them into the .app bundle.
 CMUXD_SRC="$PWD/cmuxd/zig-out/bin/cmuxd"
 GHOSTTY_HELPER_SRC="$PWD/ghostty/zig-out/bin/ghostty"
-# Build zig binaries in parallel (independent of each other).
-ZIG_PIDS=()
-if [[ -d "$PWD/cmuxd" ]]; then
-  (cd "$PWD/cmuxd" && zig build -Doptimize=ReleaseFast) &
-  ZIG_PIDS+=($!)
-fi
-if [[ -d "$PWD/daemon/remote/zig" ]]; then
-  (cd "$PWD/daemon/remote/zig" && zig build -Doptimize=ReleaseFast) &
-  ZIG_PIDS+=($!)
-fi
-if [[ -d "$PWD/ghostty" ]]; then
-  if [[ "${CMUX_SKIP_ZIG_BUILD:-}" == "1" ]]; then
-    echo "Skipping direct ghostty CLI helper zig build (CMUX_SKIP_ZIG_BUILD=1)"
-  else
-    (cd "$PWD/ghostty" && zig build cli-helper -Dapp-runtime=none -Demit-macos-app=false -Demit-xcframework=false -Doptimize=ReleaseFast) &
-    ZIG_PIDS+=($!)
-  fi
-fi
-for pid in "${ZIG_PIDS[@]}"; do
-  wait "$pid" || true
-done
 if [[ -x "$CMUXD_SRC" ]]; then
   BIN_DIR="$APP_PATH/Contents/Resources/bin"
   mkdir -p "$BIN_DIR"
@@ -489,6 +523,17 @@ fi
 CLI_PATH="$APP_PATH/Contents/Resources/bin/cmux"
 if [[ -x "$CLI_PATH" ]]; then
   echo "$CLI_PATH" > /tmp/cmux-last-cli-path || true
+fi
+
+# Respawn the tagged zig daemon regardless of --launch so a running
+# mac app's supervisor picks up the freshly built cmuxd-remote binary.
+# Without this, the old daemon keeps serving until the mac app is
+# restarted — which defeats "reload the daemon too".
+if [[ -n "$TAG" && "$LAUNCH" -eq 0 ]]; then
+  if pkill -f "cmuxd-remote.*--socket.*cmuxd-dev-${TAG_SLUG}" >/dev/null 2>&1; then
+    echo "Killed tagged cmuxd-remote; mac supervisor will respawn with the new binary."
+  fi
+  rm -f "$HOME/Library/Application Support/cmux/cmuxd-dev-${TAG_SLUG}.sock" || true
 fi
 
 if [[ "$LAUNCH" -eq 1 ]]; then

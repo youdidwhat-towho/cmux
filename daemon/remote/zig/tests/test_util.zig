@@ -77,7 +77,12 @@ pub const Server = struct {
         self.workers_mutex.unlock();
 
         for (snapshot.items) |w| {
-            std.posix.shutdown(w.client_fd, .both) catch {};
+            // Direct syscall with unchecked errno. `std.posix.shutdown`
+            // panics on errnos it doesn't recognize (e.g. EBADF if the
+            // worker thread's `defer close` already fired), and under
+            // ReleaseSafe that panic tears the whole process down.
+            // Best-effort wake-up is all we need here.
+            _ = std.c.shutdown(w.client_fd, std.c.SHUT.RDWR);
         }
 
         if (self.accept_thread) |t| t.join();

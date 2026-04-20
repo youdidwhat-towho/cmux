@@ -3863,6 +3863,7 @@ class TerminalController {
                 guard MobileDaemonBridgeInline.shared.isRunning else { continue }
                 let savedSessionID = surface.savedDaemonSessionID
                 let bridge = DaemonTerminalBridge(
+                    surfaceID: surface.id,
                     sessionID: savedSessionID,
                     shellCommand: "/bin/zsh -l"
                 )

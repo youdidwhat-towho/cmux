@@ -2996,6 +2996,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         self.tabManager = tabManager
         self.notificationStore = notificationStore
         self.sidebarState = sidebarState
+#if DEBUG
+        // Must run before prepareStartupSessionSnapshotIfNeeded — session
+        // restore creates TerminalSurfaces, which synchronously check
+        // MobileDaemonBridgeInline for daemon readiness. If this runs
+        // later (e.g. applicationDidFinishLaunching), every restored
+        // surface falls into Exec mode and workspace.sync ships
+        // session_id=null forever. startIfNeeded blocks until the
+        // daemon's Unix socket is accepting connections.
+        MobileDaemonBridgeInline.shared.startIfNeeded()
+#endif
         mobilePresenceCoordinator.start(tabManager: tabManager)
         disableSuddenTerminationIfNeeded()
         installLifecycleSnapshotObserversIfNeeded()
@@ -3976,7 +3986,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         fallbackDisplay: SessionDisplayGeometry?
     ) -> CGRect? {
         guard let frameSnapshot else { return nil }
-        let frame = frameSnapshot.cgRect
+        var frame = frameSnapshot.cgRect
         guard frame.width.isFinite,
               frame.height.isFinite,
               frame.origin.x.isFinite,
@@ -3989,6 +3999,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard frame.width >= minWidth,
               frame.height >= minHeight else {
             return nil
+        }
+
+        // One-shot migration: frames persisted from versions before
+        // WindowGroup had .defaultSize were small (SwiftUI's intrinsic
+        // default landed around 985x719). That left the terminal cramped
+        // inside a ~180pt sidebar + ~62pt chrome. Bump undersized frames
+        // up to the comfortable threshold; the subsequent autosave will
+        // persist the enlarged rect so we only pay this tax once.
+        let comfortableWidth = CGFloat(SessionPersistencePolicy.comfortableWindowWidth)
+        let comfortableHeight = CGFloat(SessionPersistencePolicy.comfortableWindowHeight)
+        if frame.width < comfortableWidth {
+            frame.size.width = comfortableWidth
+        }
+        if frame.height < comfortableHeight {
+            frame.size.height = comfortableHeight
         }
 
         guard !availableDisplays.isEmpty else { return frame }
@@ -14636,6 +14661,78 @@ final class AuthManager: ObservableObject {
 // MARK: - Mobile Daemon Bridge (inline to avoid xcodeproj file additions)
 
 #if DEBUG
+/// Thin banner that surfaces daemon supervisor state to the user. Visible
+/// only when the daemon is not healthy (starting, reconnecting, or failed).
+/// Wired into ContentView's overlay chain so it floats above the terminal.
+struct DaemonHealthBanner: View {
+    @State private var state: DaemonHealthState = MobileDaemonBridgeInline.shared.healthState
+
+    var body: some View {
+        Group {
+            switch state {
+            case .healthy, .notStarted:
+                EmptyView()
+            case .reconnecting:
+                bannerContent(
+                    text: "Daemon reconnecting…",
+                    background: Color.orange.opacity(0.85),
+                    foreground: .white
+                )
+            case .failed:
+                bannerContent(
+                    text: "Daemon failed — quit and relaunch cmux to recover.",
+                    background: Color.red.opacity(0.9),
+                    foreground: .white
+                )
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .cmuxDaemonHealthChanged)) { note in
+            if let newState = note.userInfo?["state"] as? DaemonHealthState {
+                state = newState
+            }
+        }
+    }
+
+    private func bannerContent(text: String, background: Color, foreground: Color) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(foreground)
+                .opacity(state == .failed ? 0 : 1)
+            Text(text)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(foreground)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(background)
+        )
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+#endif
+
+/// Health state of the daemon, as tracked by the supervisor. Transitions
+/// are broadcast on `Notification.Name.cmuxDaemonHealthChanged` so UI can
+/// surface a reconnecting banner (PR 3 of the SSOT refactor).
+enum DaemonHealthState: Equatable {
+    /// Not yet started.
+    case notStarted
+    /// Process is running and passing health checks.
+    case healthy
+    /// Process died or stopped responding; supervisor is restarting.
+    case reconnecting
+    /// Gave up after repeated restart failures. Requires user intervention.
+    case failed
+}
+
+extension Notification.Name {
+    static let cmuxDaemonHealthChanged = Notification.Name("cmuxDaemonHealthChanged")
+}
+
+#if DEBUG
 final class MobileDaemonBridgeInline {
     static let shared = MobileDaemonBridgeInline()
     private var process: Process?
@@ -14645,21 +14742,53 @@ final class MobileDaemonBridgeInline {
     private(set) var daemonSocketPath: String?
     private(set) var wsSecret: String?
 
-    /// True when our spawned daemon is still running. The daemon's
-    /// lifecycle is tied to the mac app — no reuse across app restarts,
-    /// no "keep daemon" persistence feature.
+    // Supervisor state.
+    private let supervisorQueue = DispatchQueue(label: "dev.cmux.daemon.supervisor")
+    private var healthTimer: DispatchSourceTimer?
+    private var consecutivePingFailures: Int = 0
+    /// Timestamps (in seconds since epoch) of recent restart attempts. Used
+    /// to cap the restart rate: 3 within 60s ⇒ give up.
+    private var recentRestarts: [Date] = []
+    private var currentHealth: DaemonHealthState = .notStarted
+
+    /// Interval between health-check pings.
+    private let pingIntervalSeconds: Double = 5.0
+    /// Fail the daemon after this many consecutive ping timeouts/failures.
+    private let pingFailureThreshold: Int = 3
+    /// Give up if we've already restarted this many times inside the window.
+    private let maxRestartsPerWindow: Int = 3
+    private let restartWindowSeconds: TimeInterval = 60
+
+    /// True when the supervisor's Process handle is running. Kept for
+    /// back-compat with callers that read `isRunning` for a simple "is
+    /// there a daemon I can talk to now" answer. Prefer `healthState`
+    /// for UI decisions.
     var isRunning: Bool {
         process?.isRunning == true
+    }
+
+    var healthState: DaemonHealthState {
+        supervisorQueue.sync { currentHealth }
     }
 
     private init() {}
 
     func startIfNeeded() {
         guard process == nil else { return }
+        if spawnDaemon(isRestart: false) {
+            startHealthTimer()
+        }
+    }
+
+    /// Spawn the daemon process. Returns true if the process started and
+    /// the socket is reachable within the warmup deadline. Used by both
+    /// the initial start and by the supervisor's restart-on-crash path.
+    @discardableResult
+    private func spawnDaemon(isRestart: Bool) -> Bool {
         let env = ProcessInfo.processInfo.environment
         guard let binaryPath = resolveBinary(env) else {
             NSLog("📱 MobileBridge: cmuxd-remote not found, skipping")
-            return
+            return false
         }
 
         // Use the SAME daemon socket that `Workspace.ensureReachableConfiguration()`
@@ -14691,9 +14820,20 @@ final class MobileDaemonBridgeInline {
         // instance and dies with it.
         killDaemonOnSocket(socketPath: daemonSocket)
 
+        // Derive the DB path from the socket so multiple tagged builds get
+        // independent state. Matches the plan's SSOT direction: daemon owns
+        // workspace state in sqlite across restarts.
+        let dbPath = daemonSocket.replacingOccurrences(of: ".sock", with: ".db")
+
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binaryPath)
-        proc.arguments = ["serve", "--unix", "--socket", daemonSocket, "--ws-port", String(port), "--ws-secret", secret]
+        proc.arguments = [
+            "serve",
+            "--unix", "--socket", daemonSocket,
+            "--ws-port", String(port),
+            "--ws-secret", secret,
+            "--db-path", dbPath,
+        ]
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         proc.terminationHandler = { [weak self] _ in self?.cleanup() }
@@ -14709,15 +14849,212 @@ final class MobileDaemonBridgeInline {
             let wsportPath = debugSocketPath.replacingOccurrences(of: ".sock", with: ".wsport")
             try? String(port).write(toFile: wsportPath, atomically: true, encoding: .utf8)
             wsPortFilePath = wsportPath
-            NSLog("📱 MobileBridge: started ws://127.0.0.1:%d socket=%@ wsport=%@", port, daemonSocket, wsportPath)
+            let tag = isRestart ? "restarted" : "started"
+            NSLog("📱 MobileBridge: %@ ws://127.0.0.1:%d socket=%@ wsport=%@", tag, port, daemonSocket, wsportPath)
         } catch {
-            NSLog("📱 MobileBridge: failed: %@", error.localizedDescription)
+            NSLog("📱 MobileBridge: spawn failed: %@", error.localizedDescription)
+            updateHealth(.failed)
+            return false
+        }
+
+        // Block until the daemon is actually accepting Unix-socket
+        // connections. Without this, session-restore surfaces created
+        // immediately after AppDelegate returns can hit isRunning() when
+        // Process.run() has returned but the daemon hasn't bind/listen'd
+        // yet. Surfaces that miss the daemon window permanently fall
+        // back to Exec mode — no retrofit exists — so workspace.sync
+        // then ships session_id=null and iOS can't attach to the mac's
+        // actual shell. 3s is far longer than normal daemon boot (~100ms)
+        // and still bounded so a broken daemon can't hang launch.
+        // Wait for the daemon to bind() + listen() its Unix socket. This is
+        // event-driven via kqueue NOTE_WRITE/NOTE_EXTEND on the containing
+        // directory — the daemon creates the socket file as part of
+        // `socket(2); bind(2); listen(2)`, and the directory emits a write
+        // event when that happens. No sleep-based polling. 3s is a hard
+        // ceiling so a broken daemon can't hang launch forever.
+        let ready = waitForSocketReachable(daemonSocket, timeoutSeconds: 3.0)
+        if ready {
+            NSLog("📱 MobileBridge: socket reachable")
+            consecutivePingFailures = 0
+            updateHealth(.healthy)
+            return true
+        } else {
+            NSLog("📱 MobileBridge: socket not reachable within 3s at %@", daemonSocket)
+            updateHealth(.reconnecting)
+            return false
         }
     }
 
+    // MARK: - Supervisor
+
+    /// Start the periodic health-check timer. Safe to call multiple times;
+    /// subsequent calls are no-ops once a timer is armed. The timer runs on
+    /// its own serial queue so health checks don't block the main thread.
+    private func startHealthTimer() {
+        supervisorQueue.async { [weak self] in
+            guard let self, self.healthTimer == nil else { return }
+            let timer = DispatchSource.makeTimerSource(queue: self.supervisorQueue)
+            timer.schedule(deadline: .now() + self.pingIntervalSeconds, repeating: self.pingIntervalSeconds)
+            timer.setEventHandler { [weak self] in
+                self?.performHealthCheck()
+            }
+            timer.resume()
+            self.healthTimer = timer
+        }
+    }
+
+    /// Stop the health timer. Called from `stop()` on app termination.
+    private func stopHealthTimer() {
+        supervisorQueue.sync {
+            healthTimer?.cancel()
+            healthTimer = nil
+        }
+    }
+
+    /// Send a `ping` RPC over the Unix socket. Blocks for up to 1s. Any
+    /// failure (socket closed, timeout, malformed response) counts against
+    /// the consecutive-failure threshold.
+    private func performHealthCheck() {
+        // Runs on supervisorQueue.
+        guard let path = daemonSocketPath else { return }
+        let process = self.process
+
+        // If the process died (crash, kill -9), Process.isRunning is false
+        // even if the socket file still exists. Jump straight to restart.
+        if process?.isRunning != true {
+            NSLog("📱 MobileBridge: process not running, attempting restart")
+            attemptRestart()
+            return
+        }
+
+        let ok = pingDaemon(socketPath: path, timeoutSeconds: 1.0)
+        if ok {
+            if consecutivePingFailures > 0 || currentHealth != .healthy {
+                NSLog("📱 MobileBridge: health check OK (recovered)")
+            }
+            consecutivePingFailures = 0
+            if currentHealth != .healthy {
+                updateHealth(.healthy)
+            }
+        } else {
+            consecutivePingFailures += 1
+            NSLog("📱 MobileBridge: ping failed (%d/%d)", consecutivePingFailures, pingFailureThreshold)
+            if consecutivePingFailures >= pingFailureThreshold {
+                NSLog("📱 MobileBridge: threshold reached, restarting daemon")
+                attemptRestart()
+            } else if currentHealth == .healthy {
+                // Early warning: transitioning to reconnecting after first
+                // failure gives the UI time to show "daemon unresponsive".
+                updateHealth(.reconnecting)
+            }
+        }
+    }
+
+    /// Kill the current process (if any) and spawn a fresh one. Applies
+    /// the restart-budget rule: if we've already restarted maxRestartsPerWindow
+    /// times in the last restartWindowSeconds, mark as .failed and stop
+    /// auto-restarting. The user's mac app is expected to be recreated
+    /// (quit + relaunch) to reset the budget.
+    private func attemptRestart() {
+        // Prune restart history outside the window.
+        let cutoff = Date().addingTimeInterval(-restartWindowSeconds)
+        recentRestarts = recentRestarts.filter { $0 > cutoff }
+        if recentRestarts.count >= maxRestartsPerWindow {
+            NSLog(
+                "📱 MobileBridge: %d restarts in %.0fs — giving up, user intervention required",
+                recentRestarts.count,
+                restartWindowSeconds
+            )
+            updateHealth(.failed)
+            stopHealthTimer()
+            return
+        }
+        recentRestarts.append(Date())
+        updateHealth(.reconnecting)
+
+        // Kill the existing process if it's still alive. We don't care about
+        // graceful shutdown for the daemon — sqlite is in WAL mode and will
+        // recover its state on next open, and there's no user data being
+        // flushed. SIGKILL directly. No sleep-based wait for SIGTERM to
+        // "maybe" succeed; the supervisor's job is to get a fresh daemon up.
+        if let p = process, p.isRunning {
+            kill(p.processIdentifier, SIGKILL)
+        }
+        process = nil
+        consecutivePingFailures = 0
+
+        // Respawn.
+        if spawnDaemon(isRestart: true) {
+            NSLog("📱 MobileBridge: restart succeeded")
+        } else {
+            NSLog("📱 MobileBridge: restart failed; will retry on next health tick")
+        }
+    }
+
+    private func updateHealth(_ newState: DaemonHealthState) {
+        let previous = currentHealth
+        guard previous != newState else { return }
+        currentHealth = newState
+        NSLog("📱 MobileBridge: health %@ → %@", String(describing: previous), String(describing: newState))
+        // Post on the main queue so SwiftUI observers can update UI safely.
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(
+                name: .cmuxDaemonHealthChanged,
+                object: nil,
+                userInfo: ["state": newState]
+            )
+        }
+    }
+
+    /// Send a single `ping` JSON-RPC request over the Unix socket and wait
+    /// for a matching response. Returns false on any error within the timeout.
+    private func pingDaemon(socketPath: String, timeoutSeconds: Double) -> Bool {
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+
+        var addr = sockaddr_un()
+        addr.sun_family = sa_family_t(AF_UNIX)
+        let pathSize = MemoryLayout.size(ofValue: addr.sun_path)
+        socketPath.withCString { cstr in
+            _ = memcpy(&addr.sun_path, cstr, min(Int(strlen(cstr)), pathSize - 1))
+        }
+        let connected = withUnsafePointer(to: &addr) { addrPtr -> Bool in
+            addrPtr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sockaddrPtr in
+                Darwin.connect(fd, sockaddrPtr, socklen_t(MemoryLayout<sockaddr_un>.size)) == 0
+            }
+        }
+        guard connected else { return false }
+
+        // Set send/receive timeouts so a hung daemon can't stall the timer.
+        var tv = timeval(
+            tv_sec: Int(timeoutSeconds),
+            tv_usec: Int32((timeoutSeconds - Double(Int(timeoutSeconds))) * 1_000_000)
+        )
+        _ = setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":\"health\",\"method\":\"ping\"}\n"
+        guard let reqData = request.data(using: .utf8) else { return false }
+        let sent = reqData.withUnsafeBytes { buf -> ssize_t in
+            Darwin.send(fd, buf.baseAddress, buf.count, 0)
+        }
+        guard sent == reqData.count else { return false }
+
+        var buffer = [UInt8](repeating: 0, count: 512)
+        let n = Darwin.recv(fd, &buffer, buffer.count, 0)
+        guard n > 0 else { return false }
+        let response = String(bytes: buffer[0..<n], encoding: .utf8) ?? ""
+        // Minimal parse: ping response shape is {"ok":true,"result":{"pong":true}}.
+        return response.contains("\"pong\":true") || response.contains("\"ok\":true")
+    }
+
     /// Terminate the daemon. Always called on mac app quit; the daemon's
-    /// lifecycle is coupled to ours by design.
+    /// lifecycle is coupled to ours by design. Stops the supervisor before
+    /// terminating the process so the health timer doesn't observe the
+    /// shutdown as a crash and attempt to restart.
     func stop() {
+        stopHealthTimer()
         if let p = process, p.isRunning {
             p.terminate()
         }
@@ -14725,11 +15062,59 @@ final class MobileDaemonBridgeInline {
         wsPort = nil
         daemonSocketPath = nil
         wsSecret = nil
+        updateHealth(.notStarted)
         cleanup()
     }
 
     private func cleanup() {
         if let p = wsPortFilePath { try? FileManager.default.removeItem(atPath: p); wsPortFilePath = nil }
+    }
+
+    /// Wait until the Unix socket at `path` accepts connections, or the
+    /// timeout elapses. Event-driven: try once; if the file doesn't exist
+    /// yet or refuses connection, arm a kqueue watch on the containing
+    /// directory for NOTE_WRITE/NOTE_EXTEND events — the daemon's bind(2)
+    /// triggers those. Loops over directory events + connect attempts.
+    /// No sleep-based polling: the only block is `kevent(timeout=deadline)`
+    /// which is a real syscall wait, not a spin.
+    private func waitForSocketReachable(_ path: String, timeoutSeconds: Double) -> Bool {
+        if isReachableSocket(path) { return true }
+
+        let directory = (path as NSString).deletingLastPathComponent
+        let dirFd = open(directory, O_EVTONLY)
+        guard dirFd >= 0 else {
+            // Can't watch — fall back to one more attempt then give up.
+            return isReachableSocket(path)
+        }
+        defer { Darwin.close(dirFd) }
+
+        let kq = kqueue()
+        guard kq >= 0 else { return isReachableSocket(path) }
+        defer { Darwin.close(kq) }
+
+        var changes = kevent()
+        changes.ident = UInt(dirFd)
+        changes.filter = Int16(EVFILT_VNODE)
+        changes.flags = UInt16(EV_ADD | EV_CLEAR)
+        changes.fflags = UInt32(NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB)
+        changes.data = 0
+        changes.udata = nil
+
+        let deadline = Date().addingTimeInterval(timeoutSeconds)
+        while Date() < deadline {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else { break }
+            var ts = timespec(
+                tv_sec: Int(remaining),
+                tv_nsec: Int((remaining - Double(Int(remaining))) * 1_000_000_000)
+            )
+            var event = kevent()
+            let n = kevent(kq, &changes, 1, &event, 1, &ts)
+            if n < 0 { break }
+            // Whether or not a directory event fired, check the socket.
+            if isReachableSocket(path) { return true }
+        }
+        return false
     }
 
     /// Kill any cmuxd-remote process listening on the given socket path.

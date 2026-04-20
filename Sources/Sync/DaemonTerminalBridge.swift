@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import Bonsplit
+#endif
 
 /// Thin facade preserving the old per-surface bridge API while routing all
 /// socket I/O through the single shared `DaemonConnection`. Creates no socket
@@ -10,6 +13,12 @@ import Foundation
 /// subscription fires and buffered writes flush in order.
 final class DaemonTerminalBridge: @unchecked Sendable {
     private(set) var sessionID: String?
+    /// Stable UUID of the mac `TerminalSurface` that owns this bridge.
+    /// Passed to every daemon-side subscribe/resize/unsubscribe call so
+    /// the `TerminalSessionRegistry` can enforce one-surface-per-session
+    /// (and evict stale owners cleanly when a new surface claims the
+    /// same session id).
+    let surfaceID: UUID
     /// True once the bridge knows its daemon session id is never coming
     /// (openPane gave up after retries). The pane is stuck in Manual IO
     /// mode without a daemon session; treat buffered writes as dropped
@@ -19,6 +28,12 @@ final class DaemonTerminalBridge: @unchecked Sendable {
     private let shellCommand: String
     private var started = false
     private var subscribed = false
+    /// Set to true when the registry evicts this bridge's binding
+    /// (another surface claimed the same sessionID) or the underlying
+    /// session is closed. Writes after eviction are dropped at this
+    /// layer so a captured Ghostty write-callback pointer can't push
+    /// bytes to the wrong session. Structural guarantee, not a race.
+    private var evicted = false
     private let lock = NSLock()
     private var pendingStart: (cols: Int, rows: Int)?
     private var pendingWrites: [Data] = []
@@ -29,7 +44,8 @@ final class DaemonTerminalBridge: @unchecked Sendable {
     /// Authoritative `session.view_size` delivery from the daemon.
     var onViewSize: ((_ cols: Int, _ rows: Int) -> Void)?
 
-    init(sessionID: String?, shellCommand: String) {
+    init(surfaceID: UUID, sessionID: String?, shellCommand: String) {
+        self.surfaceID = surfaceID
         self.sessionID = sessionID
         self.shellCommand = shellCommand
     }
@@ -53,7 +69,14 @@ final class DaemonTerminalBridge: @unchecked Sendable {
     /// `start`/`writeToSession`/`resize` calls in order.
     func assignSessionID(_ sid: String) {
         lock.lock()
-        guard sessionID == nil else { lock.unlock(); return }
+        guard sessionID == nil else {
+            let existing = sessionID ?? "nil"
+            lock.unlock()
+            #if DEBUG
+            dlog("blank.bridge.assignSessionID.duplicate sid=\(sid) existing=\(existing)")
+            #endif
+            return
+        }
         sessionID = sid
         let shouldStart = started && !subscribed
         let pendingStart = self.pendingStart
@@ -63,12 +86,15 @@ final class DaemonTerminalBridge: @unchecked Sendable {
         self.pendingResize = nil
         self.pendingWrites = []
         lock.unlock()
+        #if DEBUG
+        dlog("blank.bridge.assignSessionID sid=\(sid) shouldStart=\(shouldStart) pendingStart=\(pendingStart.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingResize=\(pendingResize.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingWrites=\(pendingWrites.count)")
+        #endif
 
         if shouldStart, let ps = pendingStart {
             subscribe(cols: ps.cols, rows: ps.rows)
         }
         if let pr = pendingResize {
-            DaemonConnection.shared.resizeSession(sessionID: sid, cols: pr.cols, rows: pr.rows)
+            DaemonConnection.shared.resizeSession(sessionID: sid, surfaceID: surfaceID, cols: pr.cols, rows: pr.rows)
         }
         for data in pendingWrites {
             DaemonConnection.shared.writeToSession(sessionID: sid, data: data)
@@ -77,15 +103,27 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     func start(cols: Int, rows: Int) {
         lock.lock()
-        guard !started else { lock.unlock(); return }
+        guard !started else {
+            lock.unlock()
+            #if DEBUG
+            dlog("blank.bridge.start.duplicate cols=\(cols) rows=\(rows)")
+            #endif
+            return
+        }
         started = true
         guard let sid = sessionID else {
             pendingStart = (cols, rows)
             lock.unlock()
+            #if DEBUG
+            dlog("blank.bridge.start.pending cols=\(cols) rows=\(rows)")
+            #endif
             return
         }
         subscribed = true
         lock.unlock()
+        #if DEBUG
+        dlog("blank.bridge.start.immediate sid=\(sid) cols=\(cols) rows=\(rows)")
+        #endif
         subscribe(sessionID: sid, cols: cols, rows: rows)
     }
 
@@ -99,6 +137,7 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     private func subscribe(sessionID: String, cols: Int, rows: Int) {
         DaemonConnection.shared.subscribeTerminal(
+            surfaceID: surfaceID,
             sessionID: sessionID,
             shellCommand: shellCommand,
             cols: cols,
@@ -118,16 +157,24 @@ final class DaemonTerminalBridge: @unchecked Sendable {
         let sid = sessionID
         started = false
         subscribed = false
+        evicted = true
         pendingStart = nil
         pendingResize = nil
         pendingWrites.removeAll()
         lock.unlock()
         guard wasStarted, wasSubscribed, let sid else { return }
-        DaemonConnection.shared.unsubscribeTerminal(sessionID: sid)
+        DaemonConnection.shared.unsubscribeTerminal(sessionID: sid, surfaceID: surfaceID)
     }
 
     func writeToSession(_ data: Data) {
         lock.lock()
+        if evicted {
+            lock.unlock()
+            #if DEBUG
+            dlog("blank.bridge.write.dropped reason=stopped surface=\(surfaceID.uuidString.prefix(8)) sid=\(sessionID ?? "nil") bytes=\(data.count)")
+            #endif
+            return
+        }
         if let sid = sessionID {
             lock.unlock()
             DaemonConnection.shared.writeToSession(sessionID: sid, data: data)
@@ -143,9 +190,13 @@ final class DaemonTerminalBridge: @unchecked Sendable {
 
     func resize(cols: Int, rows: Int) {
         lock.lock()
+        if evicted {
+            lock.unlock()
+            return
+        }
         if let sid = sessionID {
             lock.unlock()
-            DaemonConnection.shared.resizeSession(sessionID: sid, cols: cols, rows: rows)
+            DaemonConnection.shared.resizeSession(sessionID: sid, surfaceID: surfaceID, cols: cols, rows: rows)
             return
         }
         if bootstrapFailed {

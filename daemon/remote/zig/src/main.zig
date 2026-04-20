@@ -11,6 +11,18 @@ const json_rpc = @import("json_rpc.zig");
 const proxy_streams = @import("proxy_streams.zig");
 const session_registry = @import("session_registry.zig");
 const terminal_session = @import("terminal_session.zig");
+const persistence = @import("persistence.zig");
+const workspace_persistence = @import("workspace_persistence.zig");
+
+test {
+    // Ensure persistence module tests are discovered when running
+    // `zig build test` against this root module.
+    std.testing.refAllDecls(persistence);
+    std.testing.refAllDecls(workspace_persistence);
+    std.testing.refAllDecls(session_registry);
+    std.testing.refAllDecls(@import("sync_map.zig"));
+    std.testing.refAllDecls(@import("service_command.zig"));
+}
 
 pub fn main() !void {
     _ = json_rpc;
@@ -18,6 +30,8 @@ pub fn main() !void {
     _ = session_registry;
     _ = ticket_auth;
     _ = terminal_session;
+    _ = persistence;
+    _ = workspace_persistence;
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -131,6 +145,8 @@ fn parseServeUnixArgs(args: []const []const u8) !serve_unix.Config {
             cfg.ws_port = try std.fmt.parseInt(u16, value, 10);
         } else if (std.mem.eql(u8, flag, "--ws-secret")) {
             cfg.ws_secret = value;
+        } else if (std.mem.eql(u8, flag, "--db-path")) {
+            cfg.db_path = value;
         } else {
             return error.InvalidServeUnixArgs;
         }

@@ -1,20 +1,33 @@
 const std = @import("std");
 const json_rpc = @import("json_rpc.zig");
 const outbound_queue = @import("outbound_queue.zig");
+const persistence = @import("persistence.zig");
 const proxy_streams = @import("proxy_streams.zig");
 const pty_host = @import("pty_host.zig");
 const pty_pump = @import("pty_pump.zig");
 const serialize = @import("serialize.zig");
+const service_command = @import("service_command.zig");
 const session_registry = @import("session_registry.zig");
+const sync_map = @import("sync_map.zig");
 const terminal_session = @import("terminal_session.zig");
 pub const workspace_registry = @import("workspace_registry.zig");
+const workspace_persistence = @import("workspace_persistence.zig");
+
+const RuntimeMap = sync_map.SyncStringHashMap(*RuntimeSession);
 
 /// One client subscription to a terminal session. Pump-driven push events
 /// get framed as WebSocket text frames and written to `stream` while
 /// `stream_lock` is held to serialize against any RPC response writer
 /// running on the connection's reader thread.
 pub const TerminalSubscription = struct {
-    session_id: []const u8, // borrowed: hashmap key for the runtime
+    session_id: []const u8, // slice into `owned_session_id`
+    /// Owned storage for `session_id`. Previously the subscription
+    /// borrowed the `runtimes` map's key slice, which required strict
+    /// ordering between runtime removal and subscription cleanup.
+    /// Now subscriptions own their id so the map's key can be freed
+    /// independently. `null` only in test fixtures that bypass the
+    /// normal subscribe path.
+    owned_session_id: ?[]u8 = null,
     stream: *std.net.Stream,
     stream_lock: *std.Thread.Mutex,
     /// If set, push frames are enqueued (line-framed) into a per-connection
@@ -97,6 +110,17 @@ const RuntimeSession = struct {
     last_remote_bell_count: u64 = 0,
     last_remote_command_seq: u64 = 0,
     last_remote_notification_seq: u64 = 0,
+    /// Last wall-clock time (ms since epoch) we fired `pty.resize` for
+    /// this runtime. Used to rate-limit SIGWINCH delivery during fast
+    /// window drags so the shell's prompt-redraw cycle doesn't get
+    /// interrupted mid-write (→ visually empty prompt until the next
+    /// key). Per-runtime atomics: no shared map, no concurrency hazard
+    /// class. Replaces the previous daemon-wide debouncer.
+    last_resize_ms: std.atomic.Value(i64) = .init(0),
+    /// Last cols/rows we actually fired. Packed into a single u32 so
+    /// both halves can be read/written atomically without a second
+    /// lock. Lets us skip identical back-to-back resizes cheaply.
+    last_resize_dims: std.atomic.Value(u32) = .init(0),
 
     fn init(alloc: std.mem.Allocator, command: []const u8, cols: u16, rows: u16) !RuntimeSession {
         return .{
@@ -212,14 +236,43 @@ const PushJob = struct {
     notif_body: ?[]u8,
 };
 
+/// Trailing-edge debounce: how long after the last resize RPC before we
+/// flush a pending ioctl. Catches burst coalescing (many RPCs in quick
+/// succession collapse to one).
+const DEBOUNCE_MS: i64 = 50;
+/// Minimum interval between ioctls for the same session, enforced even
+/// when resize RPCs arrive slower than the debounce window. A fast drag
+/// generates ~10-15 distinct grids per second (genuine cell-boundary
+/// crossings); without this floor, each crossing ioctls the PTY and
+/// SIGWINCHes the shell, producing a visible prompt-redraw flicker. At
+/// 150ms we cap ioctls at ~6.7/s — matches the subjective feel of local
+/// terminals during fast resize.
+const MIN_IOCTL_INTERVAL_MS: i64 = 150;
+
+const PendingResize = struct {
+    cols: u16,
+    rows: u16,
+    /// Wall-clock time (ms since epoch) at which this resize may be flushed.
+    /// On schedule: max(now + DEBOUNCE_MS, last_flush_ms + MIN_IOCTL_INTERVAL_MS).
+    /// Flushing a fresh resize resets last_flush_ms.
+    ready_at_ms: i64,
+};
+
 pub const Service = struct {
     alloc: std.mem.Allocator,
     proxies: proxy_streams.Manager,
     registry: session_registry.Registry,
-    runtimes: std.StringHashMap(*RuntimeSession),
+    runtimes: RuntimeMap,
     workspace_reg: workspace_registry.Registry,
     subscriptions: workspace_registry.SubscriptionManager = .{},
     pump: ?pty_pump.Pump = null,
+    /// Serializes `ensurePumpStarted`. Without it, two transports
+    /// calling the function concurrently can both observe `pump == null`
+    /// and both run init; the second init overwrites the field, leaking
+    /// the first pump and orphaning its kqueue thread. Same structural
+    /// bug as the debouncer's init race. Publication-safe: the flag is
+    /// the `pump != null` check itself, which is set under this mutex.
+    pump_init_mutex: std.Thread.Mutex = .{},
     sub_mutex: std.Thread.Mutex = .{},
     terminal_subs: std.ArrayListUnmanaged(*TerminalSubscription) = .empty,
     /// Optional hook invoked when an unread-state transition occurs so the
@@ -236,6 +289,67 @@ pub const Service = struct {
     push_cv_mutex: std.Thread.Mutex = .{},
     push_cv: std.Thread.Condition = .{},
     push_shutting_down: std.atomic.Value(bool) = .init(false),
+    /// Persistence layer. When non-null, every workspace-registry mutation is
+    /// mirrored to disk so daemon restarts rehydrate the same state. Owned
+    /// by the Service; closed in deinit.
+    db: ?persistence.Db = null,
+    // db_mutex: deleted. All four db-access methods (persistWorkspaces,
+    // appendHistory, historyQuery, historyClear) are routed through the
+    // writer thread via the command queue, so only one thread ever
+    // touches `db` at a time by construction. No mutex needed.
+    // `runtimes` is a SyncStringHashMap — the lock is encapsulated in
+    // the map itself. No separate `runtimes_mutex` field: that pattern
+    // was "forget to lock at site N" bait.
+
+    /// PTY-resize trailing-edge debouncer. session.resize RPCs update the
+    /// registry + broadcast the new effective grid to clients immediately
+    /// (so UI reflects the user's intent right away via the generation-
+    /// counted view_size event), but the actual kernel TIOCSWINSZ ioctl
+    /// is deferred through this debouncer so a fast sidebar/window drag
+    /// doesn't fire 30+ SIGWINCHes/second at the shell (→ prompt redraw
+    /// flood → visible blinking). Per-session rate-limit: at most one
+    /// ioctl per DEBOUNCE_MS (50ms), trailing-edge (the final size in
+    /// a burst always lands).
+    resize_debounce_mutex: std.Thread.Mutex = .{},
+    resize_debounce_cond: std.Thread.Condition = .{},
+    /// Pending resize-per-session. Constructed in `Service.init`, mutated
+    /// only while holding `resize_debounce_mutex`. Initialized eagerly
+    /// (previously `undefined` + lazy construction inside
+    /// `ensureResizeDebouncerStarted`, which had a publication-ordering
+    /// hazard: the `started` flag could flip true before the map was
+    /// live, so a concurrent `queueResizeIoctl` walked uninitialized
+    /// bucket memory into `HashMap.grow → unreachable`).
+    resize_debounce_pending: std.StringHashMap(PendingResize),
+    /// Per-session wall-clock time (ms since epoch) of the last ioctl fire.
+    /// Used to enforce MIN_IOCTL_INTERVAL_MS so drag sequences that exceed
+    /// the debounce window still get rate-limited.
+    resize_debounce_last_flush: std.StringHashMap(i64),
+    resize_debounce_thread: ?std.Thread = null,
+    resize_debounce_shutdown: std.atomic.Value(bool) = .init(false),
+    resize_debounce_started: std.atomic.Value(bool) = .init(false),
+    /// Serializes `ensureResizeDebouncerStarted`. See the comment on that
+    /// function for why init must be atomic with flag publication.
+    resize_debounce_init_mutex: std.Thread.Mutex = .{},
+
+    /// Single-writer command queue. Starting with openTerminal/closeSession
+    /// migrated through the queue; other Service methods still use the
+    /// legacy locked-by-convention pattern until subsequent cuts migrate
+    /// them. See `service_command.zig` for the end-state rationale.
+    command_queue: service_command.Queue,
+    /// Writer thread that drains `command_queue`. Spawned lazily via
+    /// `ensureWriterStarted` using the same idempotent pattern as the
+    /// other worker threads.
+    writer_thread: ?std.Thread = null,
+    writer_started: std.atomic.Value(bool) = .init(false),
+    writer_init_mutex: std.Thread.Mutex = .{},
+    /// OS-level ID of the writer thread. Used by submit-and-wait shims
+    /// to detect re-entrant calls: a command handler running on the
+    /// writer that calls another migrated method would deadlock if it
+    /// submitted + waited, because the writer is busy waiting for the
+    /// reply from its own next-iteration drain. `isOnWriterThread`
+    /// short-circuits that by invoking the impl directly when we're
+    /// already on the writer.
+    writer_thread_id: std.atomic.Value(u64) = .init(0),
 
     pub fn init(alloc: std.mem.Allocator) Service {
         // NOTE: we intentionally do NOT start the kqueue pump thread here.
@@ -249,9 +363,381 @@ pub const Service = struct {
             .alloc = alloc,
             .proxies = proxy_streams.Manager.init(alloc),
             .registry = session_registry.Registry.init(alloc),
-            .runtimes = std.StringHashMap(*RuntimeSession).init(alloc),
+            .runtimes = RuntimeMap.init(alloc),
             .workspace_reg = workspace_registry.Registry.init(alloc),
+            // Eagerly construct the debouncer maps so every reader can
+            // assume they exist. The worker thread is still started
+            // lazily (via `ensureResizeDebouncerStarted`) because zig's
+            // result-location semantics keep us from spawning threads
+            // that capture `&self` from inside `init`.
+            .resize_debounce_pending = std.StringHashMap(PendingResize).init(alloc),
+            .resize_debounce_last_flush = std.StringHashMap(i64).init(alloc),
+            .command_queue = service_command.Queue.init(alloc),
         };
+    }
+
+    /// Open the persistence DB at `path` and hydrate the workspace registry
+    /// from it. Must be called with `self` at its final memory location (it
+    /// stores the DB handle in the struct). Idempotent: re-opening an
+    /// already-attached DB is a no-op.
+    pub fn attachDb(self: *Service, path: []const u8) !void {
+        if (self.db != null) return;
+        self.db = try persistence.Db.open(self.alloc, path);
+        workspace_persistence.hydrateRegistry(&self.db.?, &self.workspace_reg, self.alloc) catch |err| {
+            std.log.warn("session_service: hydrate from db failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    /// Save the current workspace registry to the persistence DB. Called
+    /// after every mutation in server_core. No-op if no DB is attached.
+    /// Routed through the writer thread: the DB is single-writer-owned
+    /// now, so callers see a clean synchronous signature but internally
+    /// the write is serialized with all other DB touches.
+    pub fn persistWorkspaces(self: *Service) void {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            self.persistWorkspacesImpl();
+            return;
+        }
+        var reply: service_command.PendingReply(void) = .{};
+        self.command_queue.submit(.{ .persist_workspaces = .{ .reply = &reply } }) catch return;
+        reply.wait() catch {};
+    }
+
+    fn persistWorkspacesImpl(self: *Service) void {
+        const db_ref = &(self.db orelse return);
+        workspace_persistence.saveRegistry(db_ref, &self.workspace_reg, self.alloc) catch |err| {
+            std.log.warn("session_service: persist failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    /// Append a workspace lifecycle event to the history log. Called from
+    /// mutation handlers (created/renamed/closed/pane_split/…). Payload is
+    /// an arbitrary JSON fragment; caller is responsible for ensuring it
+    /// parses as valid JSON. No-op if no DB is attached.
+    pub fn appendHistory(self: *Service, workspace_id: []const u8, event_type: []const u8, payload_json: []const u8) void {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            self.appendHistoryImpl(workspace_id, event_type, payload_json);
+            return;
+        }
+        var reply: service_command.PendingReply(void) = .{};
+        self.command_queue.submit(.{ .append_history = .{
+            .workspace_id = workspace_id,
+            .event_type = event_type,
+            .payload_json = payload_json,
+            .reply = &reply,
+        } }) catch return;
+        reply.wait() catch {};
+    }
+
+    fn appendHistoryImpl(self: *Service, workspace_id: []const u8, event_type: []const u8, payload_json: []const u8) void {
+        const db_ref = &(self.db orelse return);
+        persistence.appendHistory(db_ref, .{
+            .workspace_id = workspace_id,
+            .event_type = event_type,
+            .payload_json = payload_json,
+            .at = std.time.milliTimestamp(),
+        }) catch |err| {
+            std.log.warn("session_service: appendHistory failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    /// Query the workspace history log. Routed through the writer
+    /// thread. Caller owns the returned `HistoryList` and must call
+    /// `deinit` when done.
+    pub fn historyQuery(self: *Service, workspace_id: ?[]const u8, limit: u32, before_seq: ?i64) !persistence.HistoryList {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.historyQueryImpl(workspace_id, limit, before_seq);
+        }
+        var reply: service_command.PendingReply(persistence.HistoryList) = .{};
+        try self.command_queue.submit(.{ .history_query = .{
+            .workspace_id = workspace_id,
+            .limit = limit,
+            .before_seq = before_seq,
+            .reply = &reply,
+        } });
+        return reply.wait();
+    }
+
+    fn historyQueryImpl(self: *Service, workspace_id: ?[]const u8, limit: u32, before_seq: ?i64) !persistence.HistoryList {
+        const db_ref = &(self.db orelse return error.PersistenceNotEnabled);
+        return persistence.queryHistory(db_ref, self.alloc, .{
+            .workspace_id = workspace_id,
+            .limit = limit,
+            .before_seq = before_seq,
+        });
+    }
+
+    /// Clear the workspace history log. Routed through the writer thread.
+    pub fn historyClear(self: *Service) !void {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.historyClearImpl();
+        }
+        var reply: service_command.PendingReply(void) = .{};
+        try self.command_queue.submit(.{ .history_clear = .{ .reply = &reply } });
+        return reply.wait();
+    }
+
+    fn historyClearImpl(self: *Service) !void {
+        const db_ref = &(self.db orelse return error.PersistenceNotEnabled);
+        return persistence.clearHistory(db_ref);
+    }
+
+    /// Start the PTY-resize debouncer worker thread. Safe to call multiple
+    /// times; subsequent calls are no-ops. MUST be called with `self` at
+    /// its final memory location — the worker captures `self` by pointer.
+    pub fn ensureResizeDebouncerStarted(self: *Service) void {
+        // Debouncer disabled: the worker thread is not started and the
+        // debounce maps stay empty. See `resizeSession` for context —
+        // three repro'd crashes localized to this subsystem's shared
+        // hashmap. Keeping the API intact so transports still call it;
+        // deinit still deinits the (empty) maps unconditionally.
+        _ = self;
+    }
+
+    /// Queue a PTY resize for `session_id`, trailing-edge debounced. Caller
+    /// must have already updated the registry's effective size for the
+    /// session before calling. No-op if the debouncer thread isn't up
+    /// (falls back to synchronous ioctl via `resizeRuntimeIfPresent`).
+    fn queueResizeIoctl(self: *Service, session_id: []const u8, cols: u16, rows: u16) void {
+        if (!self.resize_debounce_started.load(.seq_cst)) return;
+        self.resize_debounce_mutex.lock();
+        defer self.resize_debounce_mutex.unlock();
+        const now = std.time.milliTimestamp();
+
+        // Compute the ready-at time:
+        //   max(now + DEBOUNCE_MS, last_flush + MIN_IOCTL_INTERVAL_MS)
+        // If a pending entry already exists, keep the earliest scheduled
+        // time (the burst debounce) but still honor the min-interval floor.
+        const debounced = now + DEBOUNCE_MS;
+        const floor_from_last_flush: i64 = blk: {
+            if (self.resize_debounce_last_flush.get(session_id)) |last| {
+                break :blk last + MIN_IOCTL_INTERVAL_MS;
+            }
+            break :blk 0;
+        };
+        var ready_at = if (debounced > floor_from_last_flush) debounced else floor_from_last_flush;
+        if (self.resize_debounce_pending.getPtr(session_id)) |prev| {
+            if (prev.ready_at_ms < ready_at) ready_at = prev.ready_at_ms;
+        }
+
+        // Duplicate the key so the hashmap owns it (session_id may be a
+        // borrowed pointer from the RPC path that's freed on return).
+        const owned_key = self.alloc.dupe(u8, session_id) catch return;
+        const pending = PendingResize{ .cols = cols, .rows = rows, .ready_at_ms = ready_at };
+        if (self.resize_debounce_pending.fetchPut(owned_key, pending) catch null) |prev_entry| {
+            self.alloc.free(prev_entry.key); // replaced; free the old key
+        }
+        self.resize_debounce_cond.signal();
+    }
+
+    fn resizeDebouncerRun(self: *Service) void {
+        while (!self.resize_debounce_shutdown.load(.seq_cst)) {
+            self.resize_debounce_mutex.lock();
+
+            // Find the soonest scheduled flush time.
+            var soonest_ms: ?i64 = null;
+            var iter = self.resize_debounce_pending.iterator();
+            while (iter.next()) |entry| {
+                const t = entry.value_ptr.ready_at_ms;
+                if (soonest_ms == null or t < soonest_ms.?) soonest_ms = t;
+            }
+
+            const now = std.time.milliTimestamp();
+            if (soonest_ms) |target| {
+                if (target > now) {
+                    const wait_ns: u64 = @intCast((target - now) * std.time.ns_per_ms);
+                    _ = self.resize_debounce_cond.timedWait(&self.resize_debounce_mutex, wait_ns) catch {};
+                }
+            } else {
+                self.resize_debounce_cond.wait(&self.resize_debounce_mutex);
+            }
+
+            if (self.resize_debounce_shutdown.load(.seq_cst)) {
+                self.resize_debounce_mutex.unlock();
+                break;
+            }
+
+            // Collect everything ready to flush, under the lock.
+            const FlushEntry = struct { session_id: []const u8, cols: u16, rows: u16 };
+            var to_flush: std.ArrayListUnmanaged(FlushEntry) = .empty;
+            defer to_flush.deinit(self.alloc);
+
+            const current_ms = std.time.milliTimestamp();
+            var expired: std.ArrayListUnmanaged([]const u8) = .empty;
+            defer expired.deinit(self.alloc);
+            var iter2 = self.resize_debounce_pending.iterator();
+            while (iter2.next()) |entry| {
+                if (entry.value_ptr.ready_at_ms <= current_ms) {
+                    to_flush.append(self.alloc, .{
+                        .session_id = entry.key_ptr.*,
+                        .cols = entry.value_ptr.cols,
+                        .rows = entry.value_ptr.rows,
+                    }) catch {};
+                    expired.append(self.alloc, entry.key_ptr.*) catch {};
+                }
+            }
+            for (expired.items) |key| {
+                _ = self.resize_debounce_pending.remove(key);
+                // key is now owned by `to_flush` entries; they'll free.
+            }
+            // Record last-flush times under the lock so the next schedule
+            // call sees a monotonically-updated floor.
+            const flush_time = current_ms;
+            for (to_flush.items) |entry| {
+                // Duplicate the key so last_flush owns its own lifetime
+                // (to_flush keys are freed below).
+                const lf_key = self.alloc.dupe(u8, entry.session_id) catch continue;
+                if (self.resize_debounce_last_flush.fetchPut(lf_key, flush_time) catch null) |prev| {
+                    self.alloc.free(prev.key);
+                }
+            }
+            self.resize_debounce_mutex.unlock();
+
+            // Fire ioctls outside the lock.
+            for (to_flush.items) |entry| {
+                defer self.alloc.free(entry.session_id);
+                self.flushResizeIoctl(entry.session_id, entry.cols, entry.rows);
+            }
+        }
+    }
+
+    /// Perform the actual PTY ioctl + in-memory Ghostty terminal resize
+    /// on a RuntimeSession. Called from the debouncer worker thread.
+    fn flushResizeIoctl(self: *Service, session_id: []const u8, cols: u16, rows: u16) void {
+        if (cols == 0 or rows == 0) return;
+        const runtime = self.runtimes.get(session_id) orelse return;
+        runtime.resize(cols, rows) catch |err| {
+            std.log.warn("session_service: debounced PTY resize failed: {s}", .{@errorName(err)});
+        };
+    }
+
+    // ========================================================================
+    // Single-writer actor: scaffolding + first migrated methods.
+    // ========================================================================
+
+    /// Start the writer thread. Idempotent. Same pattern as
+    /// `ensureResizeDebouncerStarted` + `ensurePumpStarted` (called
+    /// once per transport at daemon startup).
+    pub fn ensureWriterStarted(self: *Service) void {
+        self.writer_init_mutex.lock();
+        defer self.writer_init_mutex.unlock();
+        if (self.writer_started.load(.seq_cst)) return;
+        self.writer_thread = std.Thread.spawn(.{}, serviceWriterRun, .{self}) catch |err| {
+            std.log.warn("session_service: writer thread start failed: {s}", .{@errorName(err)});
+            return;
+        };
+        self.writer_started.store(true, .seq_cst);
+    }
+
+    /// Writer-thread main loop. Drains the command queue until shutdown
+    /// is signaled and the queue is empty. Each command is processed
+    /// synchronously: no other thread concurrently mutates Service
+    /// state the command touches, by construction.
+    fn serviceWriterRun(self: *Service) void {
+        // Publish the writer's thread id so submit-and-wait shims can
+        // detect re-entrancy and bypass the queue instead of deadlocking.
+        self.writer_thread_id.store(std.Thread.getCurrentId(), .seq_cst);
+        defer self.writer_thread_id.store(0, .seq_cst);
+        while (self.command_queue.takeBlocking()) |cmd| {
+            self.dispatchCommand(cmd);
+        }
+    }
+
+    /// Are we currently executing on the writer thread? Used by
+    /// submit-and-wait shims: if true, call the `*Impl` directly
+    /// because the writer is us, and waiting for our own reply would
+    /// deadlock.
+    fn isOnWriterThread(self: *Service) bool {
+        const wid = self.writer_thread_id.load(.seq_cst);
+        if (wid == 0) return false;
+        return wid == std.Thread.getCurrentId();
+    }
+
+    fn dispatchCommand(self: *Service, cmd: service_command.Command) void {
+        switch (cmd) {
+            .open_terminal => |c| {
+                const res = self.openTerminalImpl(
+                    c.maybe_session_id,
+                    c.command,
+                    c.cols,
+                    c.rows,
+                    c.options,
+                ) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(.{
+                    .status = res.status,
+                    .attachment_id = res.attachment_id,
+                    .offset = res.offset,
+                });
+            },
+            .close_session => |c| {
+                self.closeSessionImpl(c.session_id) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk({});
+            },
+            .attach_session => |c| {
+                const res = self.attachSessionImpl(c.session_id, c.attachment_id, c.cols, c.rows) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .resize_session => |c| {
+                const res = self.resizeSessionImpl(c.session_id, c.attachment_id, c.cols, c.rows) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .detach_session => |c| {
+                const res = self.detachSessionImpl(c.session_id, c.attachment_id) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .persist_workspaces => |c| {
+                self.persistWorkspacesImpl();
+                c.reply.fulfillOk({});
+            },
+            .append_history => |c| {
+                self.appendHistoryImpl(c.workspace_id, c.event_type, c.payload_json);
+                c.reply.fulfillOk({});
+            },
+            .history_query => |c| {
+                const res = self.historyQueryImpl(c.workspace_id, c.limit, c.before_seq) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .history_clear => |c| {
+                self.historyClearImpl() catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk({});
+            },
+            .unsubscribe_terminal => |c| {
+                const stream: *std.net.Stream = @ptrCast(@alignCast(c.stream));
+                const res = self.unsubscribeTerminalImpl(stream, c.session_id);
+                c.reply.fulfillOk(res);
+            },
+            .unsubscribe_all_for_stream => |c| {
+                const stream: *std.net.Stream = @ptrCast(@alignCast(c.stream));
+                self.unsubscribeAllForStreamImpl(stream);
+                c.reply.fulfillOk({});
+            },
+            .shutdown => {
+                // Loop exit is handled by the queue returning null after
+                // shutdown + drain. This variant is just an explicit
+                // wake-up if a transport needs to force a check.
+            },
+        }
     }
 
     /// Start the kqueue PTY pump thread and wire up the notify trampoline.
@@ -260,6 +746,8 @@ pub const Service = struct {
     /// and notify callback capture `self` by pointer.
     pub fn ensurePumpStarted(self: *Service) void {
         if (!pty_pump.supported) return;
+        self.pump_init_mutex.lock();
+        defer self.pump_init_mutex.unlock();
         if (self.pump != null) return;
         if (pty_pump.Pump.init(self.alloc)) |pump| {
             self.pump = pump;
@@ -276,11 +764,41 @@ pub const Service = struct {
     }
 
     pub fn deinit(self: *Service) void {
+        // Stop accepting new commands first. The writer drains its queue
+        // and exits, after which no other thread can submit work that
+        // would mutate Service state during teardown.
+        if (self.writer_started.load(.seq_cst)) {
+            self.command_queue.signalShutdown();
+            if (self.writer_thread) |t| t.join();
+            self.writer_thread = null;
+            self.writer_started.store(false, .seq_cst);
+        }
+        self.command_queue.deinit();
+
         // Stop the pump first so it cannot touch sessions or subscriptions
         // while we tear them down. The pump is the only producer of new
         // remote-push jobs.
         if (self.pump) |*pump| pump.deinit();
         self.pump = null;
+
+        // Stop the resize debouncer worker so it doesn't ioctl a runtime
+        // we're about to tear down.
+        if (self.resize_debounce_started.load(.seq_cst)) {
+            self.resize_debounce_shutdown.store(true, .seq_cst);
+            self.resize_debounce_mutex.lock();
+            self.resize_debounce_cond.broadcast();
+            self.resize_debounce_mutex.unlock();
+            if (self.resize_debounce_thread) |t| t.join();
+            self.resize_debounce_thread = null;
+            self.resize_debounce_started.store(false, .seq_cst);
+        }
+        // Maps are eagerly-constructed, so deinit unconditionally.
+        var iter_pending = self.resize_debounce_pending.iterator();
+        while (iter_pending.next()) |entry| self.alloc.free(entry.key_ptr.*);
+        self.resize_debounce_pending.deinit();
+        var iter_last = self.resize_debounce_last_flush.iterator();
+        while (iter_last.next()) |entry| self.alloc.free(entry.key_ptr.*);
+        self.resize_debounce_last_flush.deinit();
 
         // Wait for any in-flight remote-push dispatcher threads to finish
         // so they never read the config/allocator after we free them.
@@ -294,11 +812,17 @@ pub const Service = struct {
         self.freeRemoteConfigLocked();
 
         self.sub_mutex.lock();
-        for (self.terminal_subs.items) |sub| self.alloc.destroy(sub);
+        for (self.terminal_subs.items) |sub| {
+            if (sub.owned_session_id) |k| self.alloc.free(k);
+            self.alloc.destroy(sub);
+        }
         self.terminal_subs.deinit(self.alloc);
         self.sub_mutex.unlock();
 
-        var iter = self.runtimes.iterator();
+        // All worker threads have been joined by this point; iterate
+        // through the unsafe inner ptr to free per-entry resources.
+        const inner = self.runtimes.unsafeInnerForTeardown();
+        var iter = inner.iterator();
         while (iter.next()) |runtime| {
             self.alloc.free(runtime.key_ptr.*);
             runtime.value_ptr.*.deinit();
@@ -309,6 +833,7 @@ pub const Service = struct {
         self.registry.deinit();
         self.workspace_reg.deinit();
         self.subscriptions.deinit(self.alloc);
+        if (self.db) |*db| db.close();
     }
 
     /// Frees the currently-stored remote notification config and resets it
@@ -395,35 +920,104 @@ pub const Service = struct {
         return self.registry.status(session_id);
     }
 
+    /// Close a session. Routed through the writer thread so it never
+    /// races with openTerminal or other mutators of runtimes/registry.
     pub fn closeSession(self: *Service, session_id: []const u8) !void {
+        // If the writer isn't up yet (smoke tests, etc.), fall back
+        // to direct execution. Path is cleanly removable once the
+        // writer is always-started from transport boot.
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.closeSessionImpl(session_id);
+        }
+        var reply: service_command.PendingReply(void) = .{};
+        try self.command_queue.submit(.{ .close_session = .{
+            .session_id = session_id,
+            .reply = &reply,
+        } });
+        return reply.wait();
+    }
+
+    fn closeSessionImpl(self: *Service, session_id: []const u8) !void {
         try self.registry.close(session_id);
         self.removeRuntime(session_id);
     }
 
+    /// Attach a client to an existing session. Routed through the
+    /// writer thread so it cannot race with openTerminal/closeSession
+    /// or other mutators.
     pub fn attachSession(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.attachSessionImpl(session_id, attachment_id, cols, rows);
+        }
+        var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
+        try self.command_queue.submit(.{ .attach_session = .{
+            .session_id = session_id,
+            .attachment_id = attachment_id,
+            .cols = cols,
+            .rows = rows,
+            .reply = &reply,
+        } });
+        return reply.wait();
+    }
+
+    fn attachSessionImpl(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
         try self.registry.attach(session_id, attachment_id, cols, rows);
         var status = try self.registry.status(session_id);
         errdefer status.deinit(self.alloc);
         try self.resizeRuntimeIfPresent(&status);
-        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows);
+        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows, status.grid_generation);
         return status;
     }
 
+    /// Resize an existing session. Routed through the writer thread.
     pub fn resizeSession(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.resizeSessionImpl(session_id, attachment_id, cols, rows);
+        }
+        var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
+        try self.command_queue.submit(.{ .resize_session = .{
+            .session_id = session_id,
+            .attachment_id = attachment_id,
+            .cols = cols,
+            .rows = rows,
+            .reply = &reply,
+        } });
+        return reply.wait();
+    }
+
+    fn resizeSessionImpl(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
         try self.registry.resize(session_id, attachment_id, cols, rows);
         var status = try self.registry.status(session_id);
         errdefer status.deinit(self.alloc);
+        // Per-runtime dedup/rate-limit for TIOCSWINSZ lives inside
+        // `resizeRuntimeIfPresent` (atomic last_resize_dims + timestamp
+        // on each `RuntimeSession`). No shared hashmap — replaces the
+        // removed daemon-wide debouncer that was the bug factory.
         try self.resizeRuntimeIfPresent(&status);
-        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows);
+        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows, status.grid_generation);
         return status;
     }
 
+    /// Detach a client from a session. Routed through the writer thread.
     pub fn detachSession(self: *Service, session_id: []const u8, attachment_id: []const u8) !session_registry.SessionStatus {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.detachSessionImpl(session_id, attachment_id);
+        }
+        var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
+        try self.command_queue.submit(.{ .detach_session = .{
+            .session_id = session_id,
+            .attachment_id = attachment_id,
+            .reply = &reply,
+        } });
+        return reply.wait();
+    }
+
+    fn detachSessionImpl(self: *Service, session_id: []const u8, attachment_id: []const u8) !session_registry.SessionStatus {
         try self.registry.detach(session_id, attachment_id);
         var status = try self.registry.status(session_id);
         errdefer status.deinit(self.alloc);
         try self.resizeRuntimeIfPresent(&status);
-        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows);
+        self.broadcastViewSize(status.session_id, status.effective_cols, status.effective_rows, status.grid_generation);
         return status;
     }
 
@@ -435,8 +1029,52 @@ pub const Service = struct {
         return self.registry.list();
     }
 
+    /// Open a new terminal. Routed through the writer thread so it
+    /// never races with closeSession or other mutators of
+    /// runtimes/registry. Caller gets back the same `OpenTerminalResult`
+    /// as before; ownership of `attachment_id` transfers through the
+    /// reply unchanged.
     pub fn openTerminal(self: *Service, maybe_session_id: ?[]const u8, command: []const u8, cols: u16, rows: u16) !OpenTerminalResult {
-        const opened = try self.registry.open(maybe_session_id, cols, rows);
+        return self.openTerminalWithOptions(maybe_session_id, command, cols, rows, .{});
+    }
+
+    pub fn openTerminalWithOptions(
+        self: *Service,
+        maybe_session_id: ?[]const u8,
+        command: []const u8,
+        cols: u16,
+        rows: u16,
+        open_options: session_registry.Registry.OpenOptions,
+    ) !OpenTerminalResult {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.openTerminalImpl(maybe_session_id, command, cols, rows, open_options);
+        }
+        var reply: service_command.PendingReply(service_command.OpenTerminalResult) = .{};
+        try self.command_queue.submit(.{ .open_terminal = .{
+            .maybe_session_id = maybe_session_id,
+            .command = command,
+            .cols = cols,
+            .rows = rows,
+            .options = open_options,
+            .reply = &reply,
+        } });
+        const actor_res = try reply.wait();
+        return .{
+            .status = actor_res.status,
+            .attachment_id = actor_res.attachment_id,
+            .offset = actor_res.offset,
+        };
+    }
+
+    fn openTerminalImpl(
+        self: *Service,
+        maybe_session_id: ?[]const u8,
+        command: []const u8,
+        cols: u16,
+        rows: u16,
+        open_options: session_registry.Registry.OpenOptions,
+    ) !OpenTerminalResult {
+        const opened = try self.registry.openWithOptions(maybe_session_id, cols, rows, open_options);
         errdefer {
             self.registry.close(opened.session_id) catch {};
             self.alloc.free(opened.session_id);
@@ -452,6 +1090,10 @@ pub const Service = struct {
         errdefer runtime.deinit();
 
         try self.runtimes.put(opened.session_id, runtime);
+        // After a successful put, the runtime must be findable by its id.
+        // Catches regressions where the map's locking or key-ownership
+        // contract silently breaks.
+        std.debug.assert(self.runtimes.contains(opened.session_id));
 
         // Register PTY master fd with the kqueue pump so output drains
         // proactively even when no client is calling terminal.read.
@@ -476,39 +1118,51 @@ pub const Service = struct {
     }
 
     pub fn readTerminal(self: *Service, session_id: []const u8, offset: u64, max_bytes: usize, timeout_ms: i32) !ReadTerminalResult {
-        const runtime = self.runtimes.getPtr(session_id) orelse return error.TerminalSessionNotFound;
-        return runtime.*.*.read(self.alloc, offset, max_bytes, timeout_ms);
+        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+        return runtime.read(self.alloc, offset, max_bytes, timeout_ms);
     }
 
     pub fn writeTerminal(self: *Service, session_id: []const u8, data: []const u8) !usize {
-        const runtime = self.runtimes.getPtr(session_id) orelse return error.TerminalSessionNotFound;
-        try runtime.*.*.writeDraining(data);
+        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+        try runtime.writeDraining(data);
         return data.len;
     }
 
     pub fn history(self: *Service, session_id: []const u8, format: serialize.HistoryFormat) ![]u8 {
-        const runtime = self.runtimes.getPtr(session_id) orelse return error.TerminalSessionNotFound;
-        return runtime.*.*.historyDump(self.alloc, format);
+        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+        return runtime.historyDump(self.alloc, format);
     }
 
     fn resizeRuntimeIfPresent(self: *Service, status: *const session_registry.SessionStatus) !void {
-        const runtime = self.runtimes.getPtr(status.session_id) orelse return;
         // Skip the PTY resize if we don't have a real size yet. This avoids
         // spurious ResizeFailed errors during the bootstrap/restore window
         // when an attachment exists but hasn't reported geometry.
         if (status.effective_cols == 0 or status.effective_rows == 0) return;
-        try runtime.*.*.resize(status.effective_cols, status.effective_rows);
+        const runtime = self.runtimes.get(status.session_id) orelse return;
+
+        // Dedupe: if cols+rows match the last ioctl we fired, do nothing.
+        // During a rapid drag the mac bounces through many intermediate
+        // sizes; the daemon frequently receives the same (cols, rows)
+        // twice in a row because the mac's pin can flip-flop between
+        // two neighboring values. Skipping identical resizes avoids
+        // needless SIGWINCHes without dropping any user-visible change.
+        const packed_dims: u32 = (@as(u32, status.effective_cols) << 16) | @as(u32, status.effective_rows);
+        if (runtime.last_resize_dims.load(.seq_cst) == packed_dims) return;
+
+        try runtime.resize(status.effective_cols, status.effective_rows);
+        runtime.last_resize_dims.store(packed_dims, .seq_cst);
+        runtime.last_resize_ms.store(std.time.milliTimestamp(), .seq_cst);
     }
 
     fn removeRuntime(self: *Service, session_id: []const u8) void {
-        const removed = self.runtimes.fetchRemove(session_id) orelse return;
-        if (self.pump) |*pump| pump.unregister(removed.value.pty.master_fd);
+        const entry = self.runtimes.fetchRemove(session_id) orelse return;
+        if (self.pump) |*pump| pump.unregister(entry.value.pty.master_fd);
         // Drop any subscriptions pointing at this session_id so their
         // borrowed `session_id` pointer doesn't outlive the hashmap key.
-        self.removeSubscriptionsBySessionId(removed.key);
-        self.alloc.free(removed.key);
-        removed.value.deinit();
-        self.alloc.destroy(removed.value);
+        self.removeSubscriptionsBySessionId(entry.key);
+        self.alloc.free(entry.key);
+        entry.value.deinit();
+        self.alloc.destroy(entry.value);
     }
 
     /// Atomically: snapshot bytes from `requested_offset` (default = current
@@ -534,9 +1188,11 @@ pub const Service = struct {
         session_id: []const u8,
         requested_offset: ?u64,
     ) !SubscribeSnapshot {
-        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
-        const key_entry = self.runtimes.getEntry(session_id) orelse return error.TerminalSessionNotFound;
-        const canonical_session_id = key_entry.key_ptr.*;
+        const entry = try self.runtimes.getEntryDupedKey(self.alloc, session_id) orelse
+            return error.TerminalSessionNotFound;
+        errdefer self.alloc.free(entry.key);
+        const runtime = entry.value;
+        const canonical_session_id = entry.key;
 
         runtime.lock.lock();
         defer runtime.lock.unlock();
@@ -555,8 +1211,14 @@ pub const Service = struct {
 
         const sub = try self.alloc.create(TerminalSubscription);
         errdefer self.alloc.destroy(sub);
+        // Invariant: subscription's `session_id` slice must be exactly
+        // the `owned_session_id` allocation it just adopted. Anything
+        // else means a future diff has broken the borrow→own transition
+        // and is about to produce dangling pointers or double-frees.
+        std.debug.assert(canonical_session_id.len > 0);
         sub.* = .{
             .session_id = canonical_session_id,
+            .owned_session_id = canonical_session_id,
             .stream = stream,
             .stream_lock = stream_lock,
             .queue = queue,
@@ -624,7 +1286,30 @@ pub const Service = struct {
         if (self.on_workspace_changed) |cb| cb(self);
     }
 
+    /// Remove one subscription. Routed through the writer thread so
+    /// mutations to `terminal_subs` serialize with other lifecycle
+    /// events (close_session's `removeSubscriptionsBySessionId`, the
+    /// other subscriber routines). `sub_mutex` still guards the list
+    /// against concurrent reads from the pump thread (which is not
+    /// migrated — hot path).
     pub fn unsubscribeTerminal(
+        self: *Service,
+        stream: *std.net.Stream,
+        session_id: []const u8,
+    ) bool {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            return self.unsubscribeTerminalImpl(stream, session_id);
+        }
+        var reply: service_command.PendingReply(bool) = .{};
+        self.command_queue.submit(.{ .unsubscribe_terminal = .{
+            .stream = @ptrCast(stream),
+            .session_id = session_id,
+            .reply = &reply,
+        } }) catch return false;
+        return reply.wait() catch false;
+    }
+
+    fn unsubscribeTerminalImpl(
         self: *Service,
         stream: *std.net.Stream,
         session_id: []const u8,
@@ -644,14 +1329,29 @@ pub const Service = struct {
         self.sub_mutex.unlock();
         if (target) |s| {
             waitUntilQuiescent(s);
+            if (s.owned_session_id) |k| self.alloc.free(k);
             self.alloc.destroy(s);
             return true;
         }
         return false;
     }
 
-    /// Called by the WS handler when a connection closes.
+    /// Called by the WS handler when a connection closes. Routed
+    /// through the writer thread.
     pub fn unsubscribeAllForStream(self: *Service, stream: *std.net.Stream) void {
+        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+            self.unsubscribeAllForStreamImpl(stream);
+            return;
+        }
+        var reply: service_command.PendingReply(void) = .{};
+        self.command_queue.submit(.{ .unsubscribe_all_for_stream = .{
+            .stream = @ptrCast(stream),
+            .reply = &reply,
+        } }) catch return;
+        reply.wait() catch {};
+    }
+
+    fn unsubscribeAllForStreamImpl(self: *Service, stream: *std.net.Stream) void {
         var collected: std.ArrayListUnmanaged(*TerminalSubscription) = .empty;
         defer collected.deinit(self.alloc);
 
@@ -669,6 +1369,7 @@ pub const Service = struct {
 
         for (collected.items) |s| {
             waitUntilQuiescent(s);
+            if (s.owned_session_id) |k| self.alloc.free(k);
             self.alloc.destroy(s);
         }
     }
@@ -691,6 +1392,7 @@ pub const Service = struct {
 
         for (collected.items) |s| {
             waitUntilQuiescent(s);
+            if (s.owned_session_id) |k| self.alloc.free(k);
             self.alloc.destroy(s);
         }
     }
@@ -767,12 +1469,13 @@ pub const Service = struct {
     /// unsubscribe racing with this broadcast cannot free a sub we're
     /// still writing to. Wire format:
     ///   {"event":"session.view_size","session_id":"...",
-    ///    "cols":N,"rows":M}
+    ///    "cols":N,"rows":M,"grid_generation":G}
     fn broadcastViewSize(
         self: *Service,
         session_id: []const u8,
         cols: u16,
         rows: u16,
+        grid_generation: u64,
     ) void {
         var matching: std.ArrayListUnmanaged(*TerminalSubscription) = .empty;
         defer matching.deinit(self.alloc);
@@ -794,6 +1497,7 @@ pub const Service = struct {
             .session_id = session_id,
             .cols = cols,
             .rows = rows,
+            .grid_generation = grid_generation,
         }) catch {
             for (matching.items) |sub| _ = sub.in_flight.fetchSub(1, .seq_cst);
             return;
@@ -840,7 +1544,6 @@ pub const Service = struct {
     /// advanced since the last remote push.
     fn maybePushRemoteNotification(self: *Service, entry: pty_pump.Entry) void {
         if (self.push_shutting_down.load(.seq_cst)) return;
-
         const runtime = self.runtimes.get(entry.session_id) orelse return;
 
         // Snapshot terminal state + advance per-session remote counters
@@ -2068,6 +2771,7 @@ test "daemon.configure_notifications disables remote push on empty endpoint" {
         .terminal = &runtime.terminal,
         .lock = &runtime.lock,
         .session_id = "disabled-smoke",
+        .in_flight = &runtime.pump_in_flight,
     };
     // Should return fast without spawning a push thread. We can't easily
     // observe "no push" other than the test completing and deinit not
@@ -2114,6 +2818,7 @@ test "https remote push spawns curl, fails fast on unreachable, releases push_in
         .terminal = &runtime.terminal,
         .lock = &runtime.lock,
         .session_id = "https-smoke",
+        .in_flight = &runtime.pump_in_flight,
     };
     service.deliverTerminalPushes(entry);
 
@@ -2128,3 +2833,4 @@ test "https remote push spawns curl, fails fast on unreachable, releases push_in
     try std.testing.expectEqual(@as(usize, 0), service.push_inflight.load(.seq_cst));
     return error.SanityTempFailure; // SANITY-temp
 }
+

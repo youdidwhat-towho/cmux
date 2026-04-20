@@ -893,6 +893,22 @@ extension Workspace {
         var createdPanelIds: [UUID] = []
         for oldPanelId in desiredOldPanelIds {
             guard let panelSnapshot = panelSnapshotsById[oldPanelId] else { continue }
+            // Option A invariant (first cut): a restored terminal panel must
+            // have a persisted daemon session id. If it doesn't, the only
+            // recovery is `workspace.open_pane` to mint a fresh one, which
+            // races the daemon's knowledge of this workspace during restore
+            // and fails — leaving a permanently-pending ghost pane. Drop the
+            // panel instead. Sessions the user actually cares about have a
+            // stored id; panels without one were save-path orphans.
+            if panelSnapshot.type == .terminal {
+                let sid = panelSnapshot.daemonSessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if sid == nil || sid?.isEmpty == true {
+                    #if DEBUG
+                    dlog("session.restore.drop reason=no_daemon_session_id panel=\(oldPanelId.uuidString.prefix(8)) workspace=\(id.uuidString.prefix(8))")
+                    #endif
+                    continue
+                }
+            }
             guard let createdPanelId = createPanel(from: panelSnapshot, inPane: paneId) else { continue }
             createdPanelIds.append(createdPanelId)
             oldToNewPanelIds[oldPanelId] = createdPanelId

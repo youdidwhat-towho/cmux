@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const json_rpc = @import("json_rpc.zig");
+const persistence = @import("persistence.zig");
 const session_registry = @import("session_registry.zig");
 const session_service = @import("session_service.zig");
 const workspace_registry = @import("workspace_registry.zig");
@@ -97,14 +98,35 @@ fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request
     if (std.mem.eql(u8, req.method, "workspace.open_pane")) return handleWorkspaceOpenPane(service, req);
     if (std.mem.eql(u8, req.method, "workspace.rename")) return handleWorkspaceRename(service, req);
     if (std.mem.eql(u8, req.method, "workspace.pin")) return handleWorkspacePin(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setPinned")) return handleWorkspacePin(service, req);
     if (std.mem.eql(u8, req.method, "workspace.set_color")) return handleWorkspaceSetColor(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setColor")) return handleWorkspaceSetColor(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.set_unread")) return handleWorkspaceSetUnread(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setUnread")) return handleWorkspaceSetUnread(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.set_directory")) return handleWorkspaceSetDirectory(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setDirectory")) return handleWorkspaceSetDirectory(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.set_preview")) return handleWorkspaceSetPreview(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setPreview")) return handleWorkspaceSetPreview(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.set_phase")) return handleWorkspaceSetPhase(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.setPhase")) return handleWorkspaceSetPhase(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.reorder")) return handleWorkspaceReorder(service, req);
     if (std.mem.eql(u8, req.method, "workspace.close")) return handleWorkspaceClose(service, req);
     if (std.mem.eql(u8, req.method, "workspace.select")) return handleWorkspaceSelect(service, req);
     if (std.mem.eql(u8, req.method, "pane.split")) return handlePaneSplit(service, req);
     if (std.mem.eql(u8, req.method, "pane.close")) return handlePaneClose(service, req);
     if (std.mem.eql(u8, req.method, "pane.focus")) return handlePaneFocus(service, req);
+    if (std.mem.eql(u8, req.method, "pane.setFocused")) return handlePaneFocus(service, req);
+    if (std.mem.eql(u8, req.method, "pane.set_title")) return handlePaneSetTitle(service, req);
+    if (std.mem.eql(u8, req.method, "pane.setTitle")) return handlePaneSetTitle(service, req);
+    if (std.mem.eql(u8, req.method, "pane.resize")) return handlePaneResize(service, req);
     if (std.mem.eql(u8, req.method, "workspace.sync")) return handleWorkspaceSync(service, req);
     if (std.mem.eql(u8, req.method, "workspace.subscribe")) return handleWorkspaceSubscribe(service, req);
+    if (std.mem.eql(u8, req.method, "workspace.history.list") or
+        std.mem.eql(u8, req.method, "workspace.history.query"))
+    {
+        return handleWorkspaceHistoryQuery(service, req);
+    }
+    if (std.mem.eql(u8, req.method, "workspace.history.clear")) return handleWorkspaceHistoryClear(service, req);
     if (std.mem.eql(u8, req.method, "terminal.open")) return handleTerminalOpen(service, req);
     if (std.mem.eql(u8, req.method, "terminal.read")) return handleTerminalRead(service, req);
     if (std.mem.eql(u8, req.method, "terminal.write")) return handleTerminalWrite(service, req);
@@ -481,6 +503,7 @@ fn encodeStatusResponse(
             .effective_rows = status.effective_rows,
             .last_known_cols = status.last_known_cols,
             .last_known_rows = status.last_known_rows,
+            .grid_generation = status.grid_generation,
             .attachment_id = attachment_id,
             .offset = offset,
         },
@@ -646,10 +669,13 @@ fn handleWorkspaceList(service: *session_service.Service, req: *const json_rpc.R
 
     // Pump all runtime sessions first so OSC-extracted title/directory
     // reflects the latest PTY output, even if no client is reading.
+    // Snapshot values under the map's read lock so we iterate without
+    // holding it (pumping is allowed to block on per-runtime locks).
     {
-        var rt_iter = service.runtimes.iterator();
-        while (rt_iter.next()) |entry| {
-            entry.value_ptr.*.*.pty.pump(&entry.value_ptr.*.*.terminal) catch {};
+        const runtimes_snapshot = try service.runtimes.valuesSnapshot(alloc);
+        defer alloc.free(runtimes_snapshot);
+        for (runtimes_snapshot) |rt| {
+            rt.pty.pump(&rt.terminal) catch {};
         }
     }
 
@@ -667,18 +693,18 @@ fn handleWorkspaceList(service: *session_service.Service, req: *const json_rpc.R
             var directory = leaf.directory;
             var pane_unread = false;
             if (leaf.session_id) |sid| {
-                if (service.runtimes.getPtr(sid)) |runtime| {
+                if (service.runtimes.get(sid)) |runtime| {
                     if (title.len == 0 or std.mem.eql(u8, title, "Terminal")) {
-                        if (runtime.*.*.terminal.last_title) |t| {
+                        if (runtime.terminal.last_title) |t| {
                             title = t;
                         }
                     }
                     if (directory.len == 0) {
-                        if (runtime.*.*.terminal.last_directory) |d| {
+                        if (runtime.terminal.last_directory) |d| {
                             directory = d;
                         }
                     }
-                    pane_unread = runtime.*.*.has_unread_output.load(.seq_cst);
+                    pane_unread = runtime.has_unread_output.load(.seq_cst);
                     if (pane_unread) ws_has_unread = true;
                 }
             }
@@ -733,6 +759,12 @@ fn handleWorkspaceCreate(service: *session_service.Service, req: *const json_rpc
     const id = service.workspace_reg.createWithId(explicit_id, title, directory) catch |err| {
         return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
     };
+
+    // Record in history log. Keep payload schema minimal so changes to
+    // title/color/pinned can be added via dedicated history events later.
+    service.appendHistory(id, "created", "{}");
+
+    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -812,8 +844,16 @@ fn handleWorkspaceOpenPane(service: *session_service.Service, req: *const json_r
         break :blk owned_pane_id.?;
     };
 
-    // Mint the session.
-    var opened = service.openTerminal(null, command, cols, rows) catch |err| switch (err) {
+    // Mint the session. `workspace.open_pane` does NOT create a bootstrap
+    // attachment: the PTY is sized via `last_known_cols/rows` seeded from
+    // the requested cols/rows, but no entry lands in `SessionState.attachments`.
+    // This prevents the "phantom attachment caps effective_cols forever"
+    // bug where `min(openPane_size, client_attach_size)` pinned the PTY
+    // to the open_pane dimensions. The first real client (mac's bridge or
+    // iOS) attaches via `session.attach` and becomes the sole attachment.
+    var opened = service.openTerminalWithOptions(null, command, cols, rows, .{
+        .create_bootstrap_attachment = false,
+    }) catch |err| switch (err) {
         else => return internalError(service.alloc, req.id, err),
     };
     defer opened.status.deinit(alloc);
@@ -827,6 +867,8 @@ fn handleWorkspaceOpenPane(service: *session_service.Service, req: *const json_r
         service.closeSession(session_id) catch {};
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
+
+    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -856,6 +898,8 @@ fn handleWorkspaceRename(service: *session_service.Service, req: *const json_rpc
     service.workspace_reg.rename(workspace_id, title) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
+
+    service.appendHistory(workspace_id, "renamed", "{}");
 
     if (service.on_workspace_changed) |cb| cb(service);
 
@@ -926,6 +970,10 @@ fn handleWorkspaceClose(service: *session_service.Service, req: *const json_rpc.
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
+    service.appendHistory(workspace_id, "closed", "{}");
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -943,6 +991,8 @@ fn handleWorkspaceSelect(service: *session_service.Service, req: *const json_rpc
     service.workspace_reg.select(workspace_id) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
+
+    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -968,6 +1018,10 @@ fn handlePaneSplit(service: *session_service.Service, req: *const json_rpc.Reque
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
+    service.appendHistory(workspace_id, "pane_split", "{}");
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -991,6 +1045,8 @@ fn handlePaneClose(service: *session_service.Service, req: *const json_rpc.Reque
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1011,11 +1067,247 @@ fn handlePaneFocus(service: *session_service.Service, req: *const json_rpc.Reque
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
+    if (service.on_workspace_changed) |cb| cb(service);
+
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
         .result = .{ .change_seq = service.workspace_reg.change_seq },
     });
+}
+
+fn handleWorkspaceSetUnread(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.set_unread requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "workspace.set_unread requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const unread_count: u32 = if (params.get("unread_count")) |v| switch (v) {
+        .integer => |i| if (i < 0) 0 else @intCast(i),
+        else => 0,
+    } else 0;
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    ws.unread_count = unread_count;
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handleWorkspaceSetPreview(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.set_preview requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "workspace.set_preview requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const preview = getOptionalStringParam(params, "preview") orelse "";
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    const new_preview = alloc.dupe(u8, preview) catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    alloc.free(ws.preview);
+    ws.preview = new_preview;
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handleWorkspaceSetPhase(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.set_phase requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "workspace.set_phase requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const phase = getOptionalStringParam(params, "phase") orelse "idle";
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    const new_phase = alloc.dupe(u8, phase) catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    alloc.free(ws.phase);
+    ws.phase = new_phase;
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handleWorkspaceSetDirectory(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.set_directory requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "workspace.set_directory requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const directory = getRequiredStringParam(params, "directory", "workspace.set_directory requires directory") catch |err|
+        return paramError(alloc, req.id, err);
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    const new_dir = alloc.dupe(u8, directory) catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    alloc.free(ws.directory);
+    ws.directory = new_dir;
+    ws.last_activity_at = std.time.milliTimestamp();
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handleWorkspaceReorder(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "workspace.reorder requires params");
+    const ordered_value = params.get("ordered_ids") orelse
+        return invalidParams(alloc, req.id, "workspace.reorder requires ordered_ids array");
+    if (ordered_value != .array) return invalidParams(alloc, req.id, "ordered_ids must be an array");
+
+    var new_ids: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (new_ids.items) |id| alloc.free(id);
+        new_ids.deinit(alloc);
+    }
+    for (ordered_value.array.items) |item| {
+        if (item != .string) continue;
+        try new_ids.append(alloc, try alloc.dupe(u8, item.string));
+    }
+
+    // Validate every id exists before mutating so a partial reorder doesn't
+    // leave the registry in an inconsistent state.
+    for (new_ids.items) |id| {
+        if (!service.workspace_reg.workspaces.contains(id)) {
+            return try errorResponse(alloc, req.id, "not_found", "unknown workspace id");
+        }
+    }
+
+    // Replace the order list. Take ownership of the new ids.
+    const reg = &service.workspace_reg;
+    for (reg.order.items) |old| reg.alloc.free(old);
+    reg.order.clearRetainingCapacity();
+    for (new_ids.items) |id| {
+        try reg.order.append(reg.alloc, try reg.alloc.dupe(u8, id));
+    }
+    reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = reg.change_seq },
+    });
+}
+
+fn handlePaneSetTitle(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "pane.set_title requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "pane.set_title requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const pane_id = getRequiredStringParam(params, "pane_id", "pane.set_title requires pane_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const title = getRequiredStringParam(params, "title", "pane.set_title requires title") catch |err|
+        return paramError(alloc, req.id, err);
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    const leaf = ws.root_pane.findLeaf(pane_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "pane not found");
+    const new_title = alloc.dupe(u8, title) catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    if (leaf.title.len > 0) alloc.free(leaf.title);
+    leaf.title = new_title;
+    ws.last_activity_at = std.time.milliTimestamp();
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn handlePaneResize(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req) orelse
+        return invalidParams(alloc, req.id, "pane.resize requires params");
+    const workspace_id = getRequiredStringParam(params, "workspace_id", "pane.resize requires workspace_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const pane_id = getRequiredStringParam(params, "pane_id", "pane.resize requires pane_id") catch |err|
+        return paramError(alloc, req.id, err);
+    const ratio: f32 = if (params.get("ratio")) |v| switch (v) {
+        .float => |f| @floatCast(f),
+        .integer => |i| @floatFromInt(i),
+        else => 0.5,
+    } else 0.5;
+
+    const ws = service.workspace_reg.get(workspace_id) orelse
+        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
+    // Find the split parent of this pane and adjust its ratio.
+    const updated = adjustSplitRatioForChild(ws.root_pane, pane_id, ratio);
+    if (!updated) {
+        return try errorResponse(alloc, req.id, "not_found", "pane has no parent split");
+    }
+    ws.last_activity_at = std.time.milliTimestamp();
+    service.workspace_reg.change_seq += 1;
+
+    if (service.on_workspace_changed) |cb| cb(service);
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .change_seq = service.workspace_reg.change_seq },
+    });
+}
+
+fn adjustSplitRatioForChild(node: *workspace_registry.PaneNode, pane_id: []const u8, ratio: f32) bool {
+    switch (node.*) {
+        .leaf => return false,
+        .split => |*s| {
+            if (s.first.* == .leaf and std.mem.eql(u8, s.first.leaf.id, pane_id)) {
+                s.ratio = std.math.clamp(ratio, 0.05, 0.95);
+                return true;
+            }
+            if (s.second.* == .leaf and std.mem.eql(u8, s.second.leaf.id, pane_id)) {
+                // Ratio is stored from the `first` side; flip if caller
+                // specified ratio for the second child.
+                s.ratio = std.math.clamp(1.0 - ratio, 0.05, 0.95);
+                return true;
+            }
+            return adjustSplitRatioForChild(s.first, pane_id, ratio) or
+                adjustSplitRatioForChild(s.second, pane_id, ratio);
+        },
+    }
 }
 
 fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
@@ -1121,6 +1413,80 @@ fn handleWorkspaceSubscribe(service: *session_service.Service, req: *const json_
     return handleWorkspaceList(service, req);
 }
 
+fn handleWorkspaceHistoryQuery(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    const params = getParamsObject(req);
+    const workspace_id = if (params) |p| getOptionalStringParam(p, "workspace_id") else null;
+    var limit: i64 = 100;
+    var before_seq: ?i64 = null;
+    if (params) |p| {
+        if (p.get("limit")) |v| {
+            switch (v) {
+                .integer => |i| {
+                    if (i < 0) limit = 100 else if (i > 1000) limit = 1000 else limit = i;
+                },
+                else => {},
+            }
+        }
+        if (p.get("before_seq")) |v| {
+            switch (v) {
+                .integer => |i| before_seq = i,
+                else => {},
+            }
+        }
+    }
+
+    if (service.db == null) {
+        return try errorResponse(alloc, req.id, "not_available", "persistence not enabled");
+    }
+
+    const limit_u32: u32 = @intCast(@max(@as(i64, 0), @min(limit, 1000)));
+    var result = service.historyQuery(workspace_id, limit_u32, before_seq) catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    defer result.deinit();
+
+    const RowOut = struct {
+        seq: i64,
+        workspace_id: []const u8,
+        event_type: []const u8,
+        payload_json: []const u8,
+        at: i64,
+    };
+    var rows: std.ArrayList(RowOut) = .empty;
+    defer rows.deinit(alloc);
+    for (result.rows) |row| {
+        try rows.append(alloc, .{
+            .seq = row.seq,
+            .workspace_id = row.workspace_id,
+            .event_type = row.event_type,
+            .payload_json = row.payload_json,
+            .at = row.at,
+        });
+    }
+
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .history = rows.items },
+    });
+}
+
+fn handleWorkspaceHistoryClear(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
+    const alloc = service.alloc;
+    if (service.db == null) {
+        return try errorResponse(alloc, req.id, "not_available", "persistence not enabled");
+    }
+    service.historyClear() catch |err| {
+        return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
+    };
+    return try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = true,
+        .result = .{ .cleared = true },
+    });
+}
+
 /// Notify all workspace subscribers that state has changed.
 /// Called after any workspace/pane mutation.
 /// Includes the full workspace list so clients don't need a round-trip re-fetch.
@@ -1174,14 +1540,14 @@ pub fn encodeWorkspaceChangedEvent(service: *session_service.Service, alloc: std
             var directory = leaf.directory;
             var pane_unread = false;
             if (leaf.session_id) |sid| {
-                if (service.runtimes.getPtr(sid)) |runtime| {
+                if (service.runtimes.get(sid)) |runtime| {
                     if (title.len == 0 or std.mem.eql(u8, title, "Terminal")) {
-                        if (runtime.*.*.terminal.last_title) |t| title = t;
+                        if (runtime.terminal.last_title) |t| title = t;
                     }
                     if (directory.len == 0) {
-                        if (runtime.*.*.terminal.last_directory) |d| directory = d;
+                        if (runtime.terminal.last_directory) |d| directory = d;
                     }
-                    pane_unread = runtime.*.*.has_unread_output.load(.seq_cst);
+                    pane_unread = runtime.has_unread_output.load(.seq_cst);
                     if (pane_unread) ws_has_unread = true;
                 }
             }
@@ -1230,6 +1596,9 @@ pub fn encodeWorkspaceChangedEvent(service: *session_service.Service, alloc: std
 
 pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
     const alloc = service.alloc;
+    // Persist first so a crash between mutation and broadcast still lands
+    // the state on disk. No-op if no DB is attached.
+    service.persistWorkspaces();
     const event = encodeWorkspaceChangedEvent(service, alloc) orelse return;
     defer alloc.free(event);
     service.subscriptions.notifyAllAlloc(alloc, event);

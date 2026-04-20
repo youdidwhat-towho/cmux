@@ -1,6 +1,9 @@
 import AppKit
 import Combine
 import Foundation
+#if DEBUG
+import Bonsplit
+#endif
 
 /// Single persistent bidirectional Unix-socket connection to cmuxd.
 ///
@@ -16,6 +19,22 @@ import Foundation
 ///   - Pending RPCs: `id -> continuation` map, fulfilled by reader.
 ///   - Terminal subscriptions: `session_id -> handlers` map, drained by reader.
 ///   - On reconnect: re-send hello, re-subscribe workspace + every active terminal.
+/// TEMP probe — monotonic sequence for wire-order vs apply-order logs
+/// during the prompt-disappears-on-resize investigation. Thread-safe so
+/// reader thread and main queue both see the same ordering. Remove once
+/// the ordering-race hypothesis is settled.
+#if DEBUG
+enum OrderProbe {
+    private static let lock = NSLock()
+    private static var counter: Int = 0
+    static func next() -> Int {
+        lock.lock(); defer { lock.unlock() }
+        counter &+= 1
+        return counter
+    }
+}
+#endif
+
 final class DaemonConnection: @unchecked Sendable {
     static let shared = DaemonConnection()
 
@@ -33,7 +52,10 @@ final class DaemonConnection: @unchecked Sendable {
     private var nextRpcID: Int = 0
     private let writeQueue = DispatchQueue(label: "cmux.daemon-connection.write", qos: .userInitiated)
     private var pending: [Int: (Result<[String: Any], Error>) -> Void] = [:]
-    private var terminalHandlers: [String: TerminalSubscription] = [:]
+    /// All per-session mac state (output handler, attachmentID, last offset,
+    /// grid generation) now lives in `TerminalSessionRegistry.shared`. That
+    /// registry enforces one-surface-per-sessionID, so cross-session
+    /// keystroke routing is impossible at the boundary.
     private var workspaceSubscribed = false
     private var workspaceSyncProvider: (() -> [String: Any]?)?
     private var workspaceChangedHandler: (([String: Any]) -> Void)?
@@ -121,25 +143,6 @@ final class DaemonConnection: @unchecked Sendable {
         let connected = fd >= 0
         stateLock.unlock()
         if connected { performWorkspaceSync() }
-    }
-
-    private struct TerminalSubscription {
-        let onOutput: (Data) -> Void
-        let onDisconnect: (String?) -> Void
-        /// Invoked on the daemon reader thread whenever the daemon
-        /// broadcasts a new `session.view_size` for this session (or
-        /// returns one inline in an RPC response). The daemon is the
-        /// single source of truth for the rendering grid — the client
-        /// applies it unconditionally without attempting to infer
-        /// whether the value represents a real sibling-shrink or an
-        /// echo of its own reported size. Idempotent callers can dedupe
-        /// on their side if needed.
-        let onViewSize: (_ cols: Int, _ rows: Int) -> Void
-        var attachmentID: String
-        var cols: Int
-        var rows: Int
-        var shellCommand: String
-        var lastOffset: UInt64
     }
 
     static var defaultSocketPath: String {
@@ -319,6 +322,155 @@ final class DaemonConnection: @unchecked Sendable {
         ], completion: nil)
     }
 
+    /// Incremental workspace RPCs added in PR 2 of the SSOT refactor. These
+    /// let the mac push one field at a time to the daemon instead of
+    /// re-sending the whole workspace list via `workspace.sync`, which is
+    /// lossy (any omitted workspace gets deleted).
+
+    func sendWorkspaceSetUnread(workspaceID: UUID, unreadCount: Int) {
+        sendRPCAsync(method: "workspace.set_unread", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "unread_count": max(0, unreadCount),
+        ], completion: nil)
+    }
+
+    func sendWorkspaceSetDirectory(workspaceID: UUID, directory: String) {
+        sendRPCAsync(method: "workspace.set_directory", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "directory": directory,
+        ], completion: nil)
+    }
+
+    func sendWorkspaceSetPreview(workspaceID: UUID, preview: String) {
+        sendRPCAsync(method: "workspace.set_preview", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "preview": preview,
+        ], completion: nil)
+    }
+
+    func sendWorkspaceSetPhase(workspaceID: UUID, phase: String) {
+        sendRPCAsync(method: "workspace.set_phase", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "phase": phase,
+        ], completion: nil)
+    }
+
+    func sendWorkspaceReorder(orderedIDs: [UUID]) {
+        sendRPCAsync(method: "workspace.reorder", params: [
+            "ordered_ids": orderedIDs.map { $0.uuidString.lowercased() },
+        ], completion: nil)
+    }
+
+    func sendWorkspaceSelect(workspaceID: UUID) {
+        sendRPCAsync(method: "workspace.select", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+        ], completion: nil)
+    }
+
+    func sendPaneSetTitle(workspaceID: UUID, paneID: String, title: String) {
+        sendRPCAsync(method: "pane.set_title", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "pane_id": paneID,
+            "title": title,
+        ], completion: nil)
+    }
+
+    func sendPaneResize(workspaceID: UUID, paneID: String, ratio: Double) {
+        sendRPCAsync(method: "pane.resize", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "pane_id": paneID,
+            "ratio": max(0.05, min(0.95, ratio)),
+        ], completion: nil)
+    }
+
+    func sendPaneFocus(workspaceID: UUID, paneID: String) {
+        sendRPCAsync(method: "pane.focus", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "pane_id": paneID,
+        ], completion: nil)
+    }
+
+    func sendPaneClose(workspaceID: UUID, paneID: String) {
+        sendRPCAsync(method: "pane.close", params: [
+            "workspace_id": workspaceID.uuidString.lowercased(),
+            "pane_id": paneID,
+        ], completion: nil)
+    }
+
+    // MARK: - Workspace history (PR 6 SSOT refactor)
+
+    /// One entry in the daemon-side workspace history log.
+    struct HistoryEntry {
+        let seq: Int
+        let workspaceID: String
+        let eventType: String
+        let payloadJSON: String
+        let at: Date
+    }
+
+    /// Query the daemon's workspace history log. Pass `workspaceID` to
+    /// filter to a single workspace's events; otherwise returns newest
+    /// events across all workspaces. `beforeSeq` lets the caller paginate
+    /// backwards.
+    func fetchWorkspaceHistory(
+        workspaceID: UUID? = nil,
+        limit: Int = 100,
+        beforeSeq: Int? = nil,
+        completion: @escaping (Result<[HistoryEntry], Error>) -> Void
+    ) {
+        var params: [String: Any] = ["limit": max(1, min(limit, 1000))]
+        if let workspaceID {
+            params["workspace_id"] = workspaceID.uuidString.lowercased()
+        }
+        if let beforeSeq {
+            params["before_seq"] = beforeSeq
+        }
+        sendRPCAsync(method: "workspace.history.list", params: params) { result in
+            switch result {
+            case .success(let resp):
+                guard let ok = resp["ok"] as? Bool, ok,
+                      let r = resp["result"] as? [String: Any],
+                      let rawHistory = r["history"] as? [[String: Any]] else {
+                    completion(.failure(NSError(domain: "cmux.daemon", code: -1)))
+                    return
+                }
+                let entries: [HistoryEntry] = rawHistory.compactMap { row in
+                    guard let seq = row["seq"] as? Int,
+                          let wid = row["workspace_id"] as? String,
+                          let etype = row["event_type"] as? String,
+                          let payload = row["payload_json"] as? String,
+                          let atMs = row["at"] as? Int64 else {
+                        return nil
+                    }
+                    return HistoryEntry(
+                        seq: seq,
+                        workspaceID: wid,
+                        eventType: etype,
+                        payloadJSON: payload,
+                        at: Date(timeIntervalSince1970: Double(atMs) / 1000)
+                    )
+                }
+                completion(.success(entries))
+            case .failure(let err):
+                completion(.failure(err))
+            }
+        }
+    }
+
+    /// Erase every entry in the daemon-side history log. Surface as a
+    /// Settings action "Clear workspace history".
+    func clearWorkspaceHistory(completion: ((Bool) -> Void)? = nil) {
+        sendRPCAsync(method: "workspace.history.clear", params: [:]) { result in
+            switch result {
+            case .success(let resp):
+                let ok = (resp["ok"] as? Bool) ?? false
+                completion?(ok)
+            case .failure:
+                completion?(false)
+            }
+        }
+    }
+
     /// Send `workspace.create` to the daemon for a workspace the macOS app just
     /// created locally. The caller is expected to have already inserted the id
     /// into `pendingCreates` (via `markPendingCreate`) so the daemon's echo via
@@ -359,9 +511,15 @@ final class DaemonConnection: @unchecked Sendable {
 
     // MARK: - Public API: terminal subscribe (replaces DaemonTerminalBridge.start)
 
-    /// Subscribe to a terminal session. Opens the session if it doesn't exist.
-    /// The output callback is invoked on the reader thread; resize/write are async.
+    /// Subscribe a mac surface to a terminal session. Multi-subscriber:
+    /// a single session id may be displayed in multiple surfaces (split
+    /// panes, workspaces referencing the same session, mac + iOS). Each
+    /// surface gets its own attachment (daemon-side size aggregation)
+    /// and its own output handler (mac-side fan-out). The first binding
+    /// for a session id opens the daemon-side `terminal.subscribe`;
+    /// subsequent bindings ride the same subscription.
     func subscribeTerminal(
+        surfaceID: UUID,
         sessionID: String,
         shellCommand: String,
         cols: Int,
@@ -371,45 +529,52 @@ final class DaemonConnection: @unchecked Sendable {
         onViewSize: @escaping (_ cols: Int, _ rows: Int) -> Void = { _, _ in }
     ) {
         let attachmentID = "bridge-\(UUID().uuidString.prefix(8).lowercased())"
-        let sub = TerminalSubscription(
+        let binding = TerminalSessionRegistry.Binding(
+            sessionID: sessionID,
+            surfaceID: surfaceID,
+            attachmentID: attachmentID,
             onOutput: onOutput,
             onDisconnect: onDisconnect,
             onViewSize: onViewSize,
-            attachmentID: attachmentID,
+            phase: .attaching,
             cols: max(1, cols),
             rows: max(1, rows),
             shellCommand: shellCommand,
-            lastOffset: 0
+            lastOffset: 0,
+            lastGridGeneration: 0
         )
 
-        stateLock.lock()
-        terminalHandlers[sessionID] = sub
-        let connected = fd >= 0
-        stateLock.unlock()
+        let result = TerminalSessionRegistry.shared.register(binding)
+        let connected = stateLock.withLock { fd >= 0 }
 
+        #if DEBUG
+        dlog("blank.conn.subscribeTerminal sid=\(sessionID) surface=\(surfaceID.uuidString.prefix(8)) cols=\(cols) rows=\(rows) connected=\(connected) attachmentID=\(attachmentID) first=\(result.isFirstForSession)")
+        #endif
         if connected {
-            issueTerminalSubscribe(sessionID: sessionID)
+            if result.isFirstForSession {
+                // First mac surface viewing this session — open the
+                // daemon-side subscription and attach.
+                issueTerminalSubscribe(sessionID: sessionID)
+            } else {
+                // Additional surface for a session that mac already
+                // subscribes to. Only attach (per-surface attachmentID
+                // for size aggregation); don't re-subscribe output.
+                issueSessionAttachOnly(sessionID: sessionID, surfaceID: surfaceID)
+            }
         }
     }
 
-    func unsubscribeTerminal(sessionID: String) {
-        stateLock.lock()
-        let removed = terminalHandlers.removeValue(forKey: sessionID)
-        let connected = fd >= 0
-        stateLock.unlock()
+    func unsubscribeTerminal(sessionID: String, surfaceID: UUID) {
+        guard let result = TerminalSessionRegistry.shared.unregister(sessionID: sessionID, surfaceID: surfaceID) else { return }
+        let connected = stateLock.withLock { fd >= 0 }
         if connected {
-            // Release our attachment first so the daemon's effective-size
-            // aggregation drops our natural contribution immediately. Without
-            // this the attachment lingers on the daemon side (terminal.unsubscribe
-            // only stops output delivery) and keeps pinning the session to the
-            // min of a ghost client's last-reported size.
-            if let attachmentID = removed?.attachmentID {
-                sendRPCAsync(method: "session.detach", params: [
-                    "session_id": sessionID,
-                    "attachment_id": attachmentID,
-                ], completion: nil)
+            sendRPCAsync(method: "session.detach", params: [
+                "session_id": sessionID,
+                "attachment_id": result.binding.attachmentID,
+            ], completion: nil)
+            if result.isLastForSession {
+                sendRPCAsync(method: "terminal.unsubscribe", params: ["session_id": sessionID], completion: nil)
             }
-            sendRPCAsync(method: "terminal.unsubscribe", params: ["session_id": sessionID], completion: nil)
         }
     }
 
@@ -420,43 +585,38 @@ final class DaemonConnection: @unchecked Sendable {
         ], completion: nil)
     }
 
-    func resizeSession(sessionID: String, cols: Int, rows: Int) {
-        stateLock.lock()
-        guard let sub = terminalHandlers[sessionID] else { stateLock.unlock(); return }
-        var updated = sub
-        updated.cols = max(1, cols)
-        updated.rows = max(1, rows)
-        terminalHandlers[sessionID] = updated
-        let attachmentID = updated.attachmentID
-        let connected = fd >= 0
-        stateLock.unlock()
-        if connected {
-            sendRPCAsync(method: "session.resize", params: [
-                "session_id": sessionID,
-                "attachment_id": attachmentID,
-                "cols": max(1, cols),
-                "rows": max(1, rows),
-            ]) { [weak self] result in
-                if case .success(let resp) = result,
-                   let ok = resp["ok"] as? Bool, ok,
-                   let r = resp["result"] as? [String: Any],
-                   let (ec, er) = DaemonConnection.effectiveSizeFromResult(r) {
-                    self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er)
-                }
+    func resizeSession(sessionID: String, surfaceID: UUID, cols: Int, rows: Int) {
+        guard let binding = TerminalSessionRegistry.shared.binding(sessionID: sessionID, surfaceID: surfaceID) else { return }
+        TerminalSessionRegistry.shared.updateSize(sessionID: sessionID, surfaceID: surfaceID, cols: max(1, cols), rows: max(1, rows))
+        let connected = stateLock.withLock { fd >= 0 }
+        guard connected else { return }
+        sendRPCAsync(method: "session.resize", params: [
+            "session_id": sessionID,
+            "attachment_id": binding.attachmentID,
+            "cols": max(1, cols),
+            "rows": max(1, rows),
+        ]) { [weak self] result in
+            if case .success(let resp) = result,
+               let ok = resp["ok"] as? Bool, ok,
+               let r = resp["result"] as? [String: Any],
+               let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(r) {
+                self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
             }
         }
     }
 
     private func issueTerminalSubscribe(sessionID: String) {
-        stateLock.lock()
-        guard let sub = terminalHandlers[sessionID] else { stateLock.unlock(); return }
-        let attachmentID = sub.attachmentID
-        let cols = sub.cols
-        let rows = sub.rows
-        let shellCommand = sub.shellCommand
-        let lastOffset = sub.lastOffset
-        stateLock.unlock()
+        guard let binding = TerminalSessionRegistry.shared.firstBinding(for: sessionID) else { return }
+        let attachmentID = binding.attachmentID
+        let cols = binding.cols
+        let rows = binding.rows
+        let shellCommand = binding.shellCommand
+        let lastOffset = binding.lastOffset
+        let owningSurfaceID = binding.surfaceID
 
+        #if DEBUG
+        dlog("blank.conn.issueSubscribe sid=\(sessionID) cols=\(cols) rows=\(rows)")
+        #endif
         // Ensure the session exists, then attach with our stable ID, then subscribe.
         sendRPCAsync(method: "terminal.open", params: [
             "session_id": sessionID,
@@ -465,11 +625,18 @@ final class DaemonConnection: @unchecked Sendable {
             "rows": rows,
         ]) { [weak self] result in
             guard let self else { return }
+            #if DEBUG
+            let openOK: Bool = {
+                if case .success(let resp) = result, let ok = resp["ok"] as? Bool { return ok }
+                return false
+            }()
+            dlog("blank.conn.terminal.open.result sid=\(sessionID) ok=\(openOK)")
+            #endif
             if case .success(let resp) = result,
                let ok = resp["ok"] as? Bool, ok,
                let r = resp["result"] as? [String: Any] {
-                if let (ec, er) = DaemonConnection.effectiveSizeFromResult(r) {
-                    self.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er)
+                if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(r) {
+                    self.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
                 }
                 if let bootstrap = r["attachment_id"] as? String {
                     self.sendRPCAsync(method: "session.detach", params: [
@@ -484,17 +651,41 @@ final class DaemonConnection: @unchecked Sendable {
                 "cols": cols,
                 "rows": rows,
             ]) { [weak self] attachResult in
+                #if DEBUG
+                let attachOK: Bool = {
+                    if case .success(let r) = attachResult, let ok = r["ok"] as? Bool { return ok }
+                    return false
+                }()
+                dlog("blank.conn.session.attach.result sid=\(sessionID) attachmentID=\(attachmentID) ok=\(attachOK)")
+                #endif
                 if case .success(let r) = attachResult,
                    let ok = r["ok"] as? Bool, ok,
-                   let result = r["result"] as? [String: Any],
-                   let (ec, er) = DaemonConnection.effectiveSizeFromResult(result) {
-                    self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er)
+                   let result = r["result"] as? [String: Any] {
+                    // Successful attach — mark binding live so the
+                    // bridge's `phase(for:)` check allows writes.
+                    TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: owningSurfaceID)
+                    if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(result) {
+                        self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
+                    }
                 }
             }
             self.sendRPCAsync(method: "terminal.subscribe", params: [
                 "session_id": sessionID,
                 "offset": lastOffset,
             ]) { [weak self] subResult in
+                #if DEBUG
+                var subDataLen = 0
+                var subOK = false
+                if case .success(let r) = subResult, let ok = r["ok"] as? Bool, ok {
+                    subOK = true
+                    if let result = r["result"] as? [String: Any],
+                       let base64 = result["data"] as? String,
+                       let data = Data(base64Encoded: base64) {
+                        subDataLen = data.count
+                    }
+                }
+                dlog("blank.conn.terminal.subscribe.result sid=\(sessionID) ok=\(subOK) dataBytes=\(subDataLen)")
+                #endif
                 if case .success(let r) = subResult,
                    let ok = r["ok"] as? Bool, ok,
                    let result = r["result"] as? [String: Any] {
@@ -503,78 +694,106 @@ final class DaemonConnection: @unchecked Sendable {
                         self?.deliverTerminalOutput(sessionID: sessionID, data: data)
                     }
                     if let off = result["offset"] as? UInt64 {
-                        self?.updateTerminalOffset(sessionID: sessionID, offset: off)
+                        TerminalSessionRegistry.shared.updateLastOffset(sessionID: sessionID, offset: off)
                     } else if let off = result["offset"] as? Int {
-                        self?.updateTerminalOffset(sessionID: sessionID, offset: UInt64(off))
+                        TerminalSessionRegistry.shared.updateLastOffset(sessionID: sessionID, offset: UInt64(off))
                     }
                 }
             }
         }
     }
 
-    private func updateTerminalOffset(sessionID: String, offset: UInt64) {
-        stateLock.lock()
-        if var sub = terminalHandlers[sessionID] {
-            sub.lastOffset = offset
-            terminalHandlers[sessionID] = sub
-        }
-        stateLock.unlock()
+    /// Forward a `session.view_size` delivery to this session's
+    /// subscriber, ordered by `grid_generation`. Stale updates (where
+    /// `grid_generation <= last_seen`) are dropped so an out-of-order
+    /// RPC response can't override a newer broadcast (or vice versa).
+    /// Generation/monotonicity enforcement now lives in the registry.
+    private func dispatchViewSize(sessionID: String, cols: Int, rows: Int, generation: UInt64) {
+        TerminalSessionRegistry.shared.deliverViewSize(sessionID: sessionID, cols: cols, rows: rows, generation: generation)
     }
 
-    /// Forward a `session.view_size` delivery to this session's
-    /// subscriber without any inference or dedup. The daemon is
-    /// authoritative; the client applies unconditionally and the
-    /// surface layer idempotently resizes.
-    private func dispatchViewSize(sessionID: String, cols: Int, rows: Int) {
-        guard cols > 0, rows > 0 else { return }
-        stateLock.lock()
-        let callback = terminalHandlers[sessionID]?.onViewSize
-        stateLock.unlock()
-        callback?(cols, rows)
+    /// Attach an additional surface to an already-subscribed session.
+    /// Called when a second (or later) mac surface is rendering a
+    /// session the mac already subscribes to. Only fires `session.attach`
+    /// with this surface's own attachmentID — the `terminal.subscribe`
+    /// is shared with the first binding.
+    private func issueSessionAttachOnly(sessionID: String, surfaceID: UUID) {
+        guard let binding = TerminalSessionRegistry.shared.binding(sessionID: sessionID, surfaceID: surfaceID) else { return }
+        let attachmentID = binding.attachmentID
+        let cols = binding.cols
+        let rows = binding.rows
+        sendRPCAsync(method: "session.attach", params: [
+            "session_id": sessionID,
+            "attachment_id": attachmentID,
+            "cols": cols,
+            "rows": rows,
+        ]) { [weak self] attachResult in
+            #if DEBUG
+            let attachOK: Bool = {
+                if case .success(let r) = attachResult, let ok = r["ok"] as? Bool { return ok }
+                return false
+            }()
+            dlog("blank.conn.session.attach.result sid=\(sessionID) attachmentID=\(attachmentID) ok=\(attachOK) mode=addl")
+            #endif
+            if case .success(let r) = attachResult,
+               let ok = r["ok"] as? Bool, ok,
+               let result = r["result"] as? [String: Any] {
+                TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: surfaceID)
+                if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(result) {
+                    self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
+                }
+            }
+        }
     }
 
     /// Read view-size fields out of a `session.view_size` event frame
-    /// where `cols` / `rows` live at the top level. Tolerates Int and
-    /// UInt64 decode shapes. Returns nil when either is missing or
-    /// non-positive.
-    private static func viewSizeFields(_ dict: [String: Any]) -> (cols: Int, rows: Int)? {
-        func readInt(_ value: Any?) -> Int? {
-            if let i = value as? Int { return i }
-            if let u = value as? UInt64 { return Int(u) }
-            if let n = value as? NSNumber { return n.intValue }
-            return nil
-        }
+    /// where `cols` / `rows` / `grid_generation` live at the top level.
+    /// Tolerates Int and UInt64 decode shapes. Returns nil when cols/rows
+    /// are missing; generation defaults to 0 ("not reported").
+    private static func viewSizeFields(_ dict: [String: Any]) -> (cols: Int, rows: Int, generation: UInt64)? {
         guard let cols = readInt(dict["cols"]), cols > 0,
               let rows = readInt(dict["rows"]), rows > 0 else {
             return nil
         }
-        return (cols, rows)
+        let gen = readUInt64(dict["grid_generation"]) ?? 0
+        return (cols, rows, gen)
     }
 
-    /// Read `effective_cols` / `effective_rows` from an RPC response's
-    /// `result` object. Used when the daemon inlines the current
-    /// authoritative size in a resize/attach response so the client
-    /// can converge on the first RPC without waiting for the
-    /// subsequent broadcast.
-    private static func effectiveSizeFromResult(_ dict: [String: Any]) -> (cols: Int, rows: Int)? {
-        func readInt(_ value: Any?) -> Int? {
-            if let i = value as? Int { return i }
-            if let u = value as? UInt64 { return Int(u) }
-            if let n = value as? NSNumber { return n.intValue }
-            return nil
-        }
+    /// Read `effective_cols` / `effective_rows` / `grid_generation` from
+    /// an RPC response's `result` object. Used when the daemon inlines
+    /// the current authoritative size in a resize/attach response so
+    /// the client can converge on the first RPC without waiting for
+    /// the subsequent broadcast.
+    private static func effectiveSizeFromResult(_ dict: [String: Any]) -> (cols: Int, rows: Int, generation: UInt64)? {
         guard let cols = readInt(dict["effective_cols"]), cols > 0,
               let rows = readInt(dict["effective_rows"]), rows > 0 else {
             return nil
         }
-        return (cols, rows)
+        let gen = readUInt64(dict["grid_generation"]) ?? 0
+        return (cols, rows, gen)
+    }
+
+    private static func readInt(_ value: Any?) -> Int? {
+        if let i = value as? Int { return i }
+        if let u = value as? UInt64 { return Int(u) }
+        if let n = value as? NSNumber { return n.intValue }
+        return nil
+    }
+
+    private static func readUInt64(_ value: Any?) -> UInt64? {
+        if let u = value as? UInt64 { return u }
+        if let i = value as? Int, i >= 0 { return UInt64(i) }
+        if let n = value as? NSNumber { return n.uint64Value }
+        return nil
     }
 
     private func deliverTerminalOutput(sessionID: String, data: Data) {
-        stateLock.lock()
-        let handler = terminalHandlers[sessionID]?.onOutput
-        stateLock.unlock()
-        handler?(data)
+        #if DEBUG
+        if TerminalSessionRegistry.shared.firstBinding(for: sessionID) == nil {
+            dlog("blank.conn.deliverOutput.NO_HANDLER sid=\(sessionID) bytes=\(data.count)")
+        }
+        #endif
+        TerminalSessionRegistry.shared.deliverOutput(sessionID: sessionID, data: data)
     }
 
     // MARK: - RPC core
@@ -663,10 +882,10 @@ final class DaemonConnection: @unchecked Sendable {
         stateLock.lock()
         fd = newFD
         connecting = false
-        let sessions = Array(terminalHandlers.keys)
         let needsWorkspaceSubscribe = !workspaceSubscribed
         let provider = workspaceSyncProvider
         stateLock.unlock()
+        let sessions = TerminalSessionRegistry.shared.allSessionIDs()
 
         // Start reader thread
         let reader = Thread { [weak self] in self?.readerLoop(fd: newFD) }
@@ -766,15 +985,23 @@ final class DaemonConnection: @unchecked Sendable {
         // Fail all pending RPCs
         let pendingCopy = pending
         pending.removeAll()
-        // Notify subscribers of disconnect
-        let disconnects = terminalHandlers.values.map { $0.onDisconnect }
         stateLock.unlock()
         for cb in pendingCopy.values {
             cb(.failure(NSError(domain: "DaemonConnection", code: -10)))
         }
-        for cb in disconnects {
-            cb("daemon disconnected")
-        }
+        // DO NOT drain the registry on transport disconnect. Bindings
+        // must survive so `connectBlocking`'s reconnect loop can
+        // iterate `allSessionIDs()` and re-issue subscribe for each.
+        // Draining fires each binding's onDisconnect → bridge.stop() →
+        // evicted=true, which was permanent (no un-evict path). Result:
+        // every daemon reload broke typing in every terminal until the
+        // user reopened the tab. Shell-EOF (per-sid) still uses
+        // `deliverDisconnect` below, which is the one legitimate path
+        // that should remove a binding.
+        #if DEBUG
+        let surviving = TerminalSessionRegistry.shared.allSessionIDs().count
+        dlog("blank.conn.handleSocketFailure survivingBindings=\(surviving) willReconnect=1")
+        #endif
         scheduleReconnect()
     }
 
@@ -830,28 +1057,31 @@ final class DaemonConnection: @unchecked Sendable {
             guard let sid = obj["session_id"] as? String else { return }
             if let base64 = obj["data"] as? String,
                let data = Data(base64Encoded: base64), !data.isEmpty {
+                #if DEBUG
+                let off = (obj["offset"] as? UInt64) ?? UInt64((obj["offset"] as? Int) ?? 0)
+                dlog("probe.order.output.wire seq=\(OrderProbe.next()) sid=\(sid.prefix(12)) offset=\(off) bytes=\(data.count)")
+                #endif
                 deliverTerminalOutput(sessionID: sid, data: data)
             }
             if let off = obj["offset"] as? UInt64 {
-                updateTerminalOffset(sessionID: sid, offset: off)
+                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sid, offset: off)
             } else if let off = obj["offset"] as? Int {
-                updateTerminalOffset(sessionID: sid, offset: UInt64(off))
+                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sid, offset: UInt64(off))
             }
             if let eof = obj["eof"] as? Bool, eof {
-                stateLock.lock()
-                let cb = terminalHandlers[sid]?.onDisconnect
-                terminalHandlers.removeValue(forKey: sid)
-                stateLock.unlock()
-                cb?(nil)
+                TerminalSessionRegistry.shared.deliverDisconnect(sessionID: sid, reason: nil)
             }
         case "session.view_size":
             // Top-level cols/rows. Daemon broadcasts unconditionally on
             // every attach/resize/detach so clients always converge on
             // the current authoritative render grid.
             guard let sid = obj["session_id"] as? String else { return }
-            if let (cols, rows) = DaemonConnection.viewSizeFields(obj) {
+            if let (cols, rows, gen) = DaemonConnection.viewSizeFields(obj) {
                 NSLog("📱 DaemonConnection.push session.view_size session=%@ cols=%d rows=%d", String(sid.prefix(12)), cols, rows)
-                dispatchViewSize(sessionID: sid, cols: cols, rows: rows)
+                #if DEBUG
+                dlog("probe.order.viewSize.wire seq=\(OrderProbe.next()) sid=\(sid.prefix(12)) cols=\(cols) rows=\(rows) gen=\(gen)")
+                #endif
+                dispatchViewSize(sessionID: sid, cols: cols, rows: rows, generation: gen)
             }
         case "workspace.changed":
             guard let result = obj["result"] as? [String: Any] else { return }

@@ -37,6 +37,11 @@ struct TerminalRemoteDaemonSessionStatus: Decodable, Equatable, Sendable {
     let effectiveRows: Int
     let lastKnownCols: Int
     let lastKnownRows: Int
+    /// Monotonic counter bumped by the daemon on every effective-size
+    /// change. Optional for back-compat with older daemons; clients that
+    /// need strict ordering should treat nil as "not reported / always
+    /// apply the first one seen".
+    let gridGeneration: UInt64?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
@@ -45,6 +50,7 @@ struct TerminalRemoteDaemonSessionStatus: Decodable, Equatable, Sendable {
         case effectiveRows = "effective_rows"
         case lastKnownCols = "last_known_cols"
         case lastKnownRows = "last_known_rows"
+        case gridGeneration = "grid_generation"
     }
 }
 
@@ -57,6 +63,8 @@ struct TerminalRemoteDaemonTerminalOpenResult: Decodable, Equatable, Sendable {
     let lastKnownCols: Int
     let lastKnownRows: Int
     let offset: UInt64
+    /// See TerminalRemoteDaemonSessionStatus.gridGeneration.
+    let gridGeneration: UInt64?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
@@ -67,6 +75,7 @@ struct TerminalRemoteDaemonTerminalOpenResult: Decodable, Equatable, Sendable {
         case lastKnownCols = "last_known_cols"
         case lastKnownRows = "last_known_rows"
         case offset
+        case gridGeneration = "grid_generation"
     }
 }
 
@@ -189,6 +198,8 @@ struct TerminalRemoteDaemonWorkspaceOpenPaneResult: Decodable, Equatable, Sendab
     let offset: UInt64
     let effectiveCols: Int
     let effectiveRows: Int
+    /// See TerminalRemoteDaemonSessionStatus.gridGeneration.
+    let gridGeneration: UInt64?
 
     private enum CodingKeys: String, CodingKey {
         case workspaceID = "workspace_id"
@@ -198,6 +209,7 @@ struct TerminalRemoteDaemonWorkspaceOpenPaneResult: Decodable, Equatable, Sendab
         case offset
         case effectiveCols = "effective_cols"
         case effectiveRows = "effective_rows"
+        case gridGeneration = "grid_generation"
     }
 }
 

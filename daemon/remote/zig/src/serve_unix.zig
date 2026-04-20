@@ -11,6 +11,10 @@ pub const Config = struct {
     socket_path: []const u8,
     ws_port: ?u16 = null,
     ws_secret: []const u8 = "",
+    /// Optional path to the sqlite persistence DB. When set, workspace state
+    /// survives daemon restarts. Caller is responsible for ensuring the
+    /// parent directory exists.
+    db_path: ?[]const u8 = null,
 };
 
 pub fn serve(cfg: Config) !void {
@@ -36,9 +40,19 @@ pub fn serve(cfg: Config) !void {
     };
     defer shared.service.deinit();
     shared.service.on_workspace_changed = &server_core.notifyWorkspaceSubscribers;
+    // Attach persistence before pump startup so hydration completes while the
+    // service is quiescent. A failed attach is logged but not fatal — daemon
+    // still runs, just without persistence.
+    if (cfg.db_path) |db_path| {
+        shared.service.attachDb(db_path) catch |err| {
+            std.log.warn("serve_unix: attachDb({s}) failed: {s}", .{ db_path, @errorName(err) });
+        };
+    }
     // Service is now at its final stable address inside `shared`; start the
     // kqueue pump thread so it captures the correct `&shared.service`.
     shared.service.ensurePumpStarted();
+    shared.service.ensureResizeDebouncerStarted();
+    shared.service.ensureWriterStarted();
 
     // Start WebSocket listener on a separate thread if configured
     if (cfg.ws_port) |ws_port| {

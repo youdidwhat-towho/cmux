@@ -841,7 +841,6 @@ final class TerminalSidebarStore {
                 var updated = existing
                 updated.title = title
                 updated.lastActivity = lastActivity
-                updated.phase = .connected
                 if !preview.isEmpty { updated.preview = preview }
                 updated.unread = unreadCount > 0
                 updated.pinned = pinned
@@ -849,17 +848,35 @@ final class TerminalSidebarStore {
                 if let sid = daemonSessionID {
                     ScannerLog.shared.log("  ws.update title=\(title) sessionName=\(sid) (was \(existing.tmuxSessionName))")
                     updated.tmuxSessionName = sid
+                    updated.phase = .connected
+                } else if updated.tmuxSessionName.hasPrefix("pending-") || updated.tmuxSessionName.isEmpty {
+                    // Still no daemon session; keep the placeholder and don't
+                    // promote to .connected yet.
+                    updated.phase = .connecting
+                } else {
+                    // Already had a real session id and mac temporarily stopped
+                    // reporting it (happens during a brief workspace.sync with
+                    // panes=[]). Keep the id we remember.
+                    updated.phase = .connected
                 }
                 updatedWorkspaces.append(updated)
             } else {
+                // PR 5 (SSOT refactor): never synthesize a `local-<id>` session
+                // name. With the mac daemon SSOT, a workspace without a daemon
+                // session_id is one the mac hasn't finished binding yet — show
+                // it in "connecting" state until the real session_id lands via
+                // workspace.changed. Tapping a connecting workspace shows a
+                // reconnecting spinner instead of silently spawning a phantom
+                // shell on a fake session name.
+                let placeholderSession = "pending-\(remoteId)"
                 var workspace = TerminalWorkspace(
                     hostID: hostID,
                     title: title,
-                    tmuxSessionName: daemonSessionID ?? "local-\(remoteId)",
+                    tmuxSessionName: daemonSessionID ?? placeholderSession,
                     remoteWorkspaceID: remoteId
                 )
                 workspace.lastActivity = lastActivity
-                workspace.phase = .connected
+                workspace.phase = (daemonSessionID != nil) ? .connected : .connecting
                 if !preview.isEmpty { workspace.preview = preview }
                 workspace.unread = unreadCount > 0
                 workspace.pinned = pinned
@@ -1454,6 +1471,17 @@ final class TerminalSessionController {
             : surfaceGrid
 
         let effectiveSessionName = sessionOverride ?? workspace.tmuxSessionName
+        // PR 5 SSOT guard: a "pending-<remoteId>" session name means the mac
+        // hasn't finished binding a shell to this workspace yet. Attaching
+        // would silently spawn a fresh PTY on the daemon (the phantom-shell
+        // bug) so we stay in .connecting and re-check on the next
+        // workspace.changed update. The onUpdate path will invoke
+        // connectIfNeeded again once the real session id arrives.
+        if effectiveSessionName.hasPrefix("pending-") {
+            self.transport = nil
+            setPhase(.connecting, error: TerminalStoreStrings.configureWaitingForDaemonMessage)
+            return
+        }
         let transport = transportFactory.makeTransport(
             host: host,
             credentials: credentials,
@@ -2453,5 +2481,9 @@ private enum TerminalStoreStrings {
     static let secureConnectionError = String(
         localized: "terminal.workspace.secure_connection_required",
         defaultValue: "Secure connection required. Check the server URL and try again."
+    )
+    static let configureWaitingForDaemonMessage = String(
+        localized: "terminal.workspace.waiting_for_daemon",
+        defaultValue: "Waiting for Mac to finish starting this workspace…"
     )
 }

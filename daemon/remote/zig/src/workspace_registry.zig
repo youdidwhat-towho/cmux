@@ -433,31 +433,77 @@ pub const Registry = struct {
         return try std.fmt.allocPrint(self.alloc, "{s}-{s}", .{ prefix, hex[0..12] });
     }
 
-    fn generatePaneId(self: *Registry) ![]const u8 {
+    pub fn generatePaneId(self: *Registry) ![]const u8 {
         const num = self.next_pane_num;
         self.next_pane_num += 1;
         return try std.fmt.allocPrint(self.alloc, "pane-{d}", .{num});
     }
 
-    /// Atomic full replace of all workspaces. Used by the desktop Swift bridge.
+    /// Upsert workspaces from a mac-side sync payload. Historical behavior
+    /// was destructive (full replace), which caused iOS session bindings
+    /// to disappear every time mac's surfaces lacked `savedDaemonSessionID`
+    /// (Exec mode or daemon not yet ready). Now:
+    ///
+    ///   * If a workspace already exists, we update its metadata in place
+    ///     (title, color, pinned, directory, phase, preview, unread).
+    ///     When the payload carries per-pane session_ids we rebuild the
+    ///     pane tree; when it doesn't, we preserve the existing tree so
+    ///     daemon-owned session bindings survive.
+    ///   * Workspaces in the payload that aren't in the registry are
+    ///     created.
+    ///   * Workspaces missing from the payload are left alone. The mac
+    ///     must issue an explicit `workspace.close` RPC to remove them;
+    ///     silently omitting them from sync no longer deletes them.
+    ///
+    /// This aligns `workspace.sync` with the SSOT direction where the
+    /// daemon owns pane/session state and mac just pushes metadata.
     pub fn syncAll(self: *Registry, workspaces_data: []const SyncWorkspace, selected_id: ?[]const u8) !void {
-        // Clear existing
-        var iter = self.workspaces.iterator();
-        while (iter.next()) |entry| {
-            freeWorkspace(self.alloc, entry.value_ptr);
-        }
-        self.workspaces.clearRetainingCapacity();
-        for (self.order.items) |id| self.alloc.free(id);
-        self.order.clearRetainingCapacity();
+        // Preserve existing entries; we only update/create.
 
         // Insert new workspaces in order
         for (workspaces_data) |ws_data| {
-            const id = try self.alloc.dupe(u8, ws_data.id);
-            errdefer self.alloc.free(id);
-
             // Build pane tree from per-pane metadata (preferred) or session_ids.
             const sync_panes = ws_data.panes;
             const all_sids = ws_data.session_ids;
+
+            // UPSERT PATH: if this workspace already exists, update its
+            // metadata in place. Only rebuild the pane tree when the
+            // payload carries session ids; otherwise preserve daemon-owned
+            // panes so iOS-bound shells don't vanish when mac's surfaces
+            // happen to lack savedDaemonSessionID (Exec mode, daemon-not-ready).
+            if (self.workspaces.getPtr(ws_data.id)) |existing| {
+                // Replace string-valued fields in place.
+                self.alloc.free(existing.title);
+                existing.title = try self.alloc.dupe(u8, ws_data.title);
+                self.alloc.free(existing.directory);
+                existing.directory = try self.alloc.dupe(u8, ws_data.directory);
+                self.alloc.free(existing.preview);
+                existing.preview = try self.alloc.dupe(u8, ws_data.preview);
+                self.alloc.free(existing.phase);
+                existing.phase = try self.alloc.dupe(u8, ws_data.phase);
+                if (existing.color) |old| self.alloc.free(old);
+                existing.color = if (ws_data.color.len > 0) try self.alloc.dupe(u8, ws_data.color) else null;
+                existing.unread_count = ws_data.unread_count;
+                existing.pinned = ws_data.pinned;
+                if (ws_data.session_id) |s| {
+                    if (existing.session_id) |old| self.alloc.free(old);
+                    existing.session_id = try self.alloc.dupe(u8, s);
+                }
+                existing.last_activity_at = std.time.milliTimestamp();
+
+                // Pane-tree policy: rebuild only when payload has real data.
+                if (sync_panes.len > 0 or all_sids.len > 0) {
+                    existing.root_pane.deinit(self.alloc);
+                    self.alloc.destroy(existing.root_pane);
+                    existing.root_pane = try self.buildPaneTreeFromSync(ws_data);
+                }
+                continue;
+            }
+
+            // NEW WORKSPACE PATH: original full build.
+            const id = try self.alloc.dupe(u8, ws_data.id);
+            errdefer self.alloc.free(id);
+
             const root: *PaneNode = root: {
                 if (sync_panes.len > 0) {
                     // Rich pane data from macOS sync (has title + directory per pane).
@@ -561,6 +607,89 @@ pub const Registry = struct {
         self.selected_id = if (selected_id) |s| try self.alloc.dupe(u8, s) else null;
 
         self.change_seq += 1;
+    }
+
+    /// Build a pane tree from sync data. Prefers per-pane metadata; falls
+    /// back to bare session_ids; else single leaf with (maybe) a session.
+    fn buildPaneTreeFromSync(self: *Registry, ws_data: SyncWorkspace) !*PaneNode {
+        const sync_panes = ws_data.panes;
+        const all_sids = ws_data.session_ids;
+        if (sync_panes.len > 0) {
+            if (sync_panes.len == 1) {
+                const pane_id = try self.generatePaneId();
+                const node = try self.alloc.create(PaneNode);
+                node.* = .{ .leaf = .{
+                    .id = pane_id,
+                    .pane_type = .terminal,
+                    .session_id = try self.alloc.dupe(u8, sync_panes[0].session_id),
+                    .title = try self.alloc.dupe(u8, sync_panes[0].title),
+                    .directory = try self.alloc.dupe(u8, sync_panes[0].directory),
+                } };
+                return node;
+            }
+            var current: *PaneNode = try self.alloc.create(PaneNode);
+            const first_id = try self.generatePaneId();
+            current.* = .{ .leaf = .{
+                .id = first_id,
+                .pane_type = .terminal,
+                .session_id = try self.alloc.dupe(u8, sync_panes[0].session_id),
+                .title = try self.alloc.dupe(u8, sync_panes[0].title),
+                .directory = try self.alloc.dupe(u8, sync_panes[0].directory),
+            } };
+            for (sync_panes[1..]) |pane| {
+                const right_id = try self.generatePaneId();
+                const right = try self.alloc.create(PaneNode);
+                right.* = .{ .leaf = .{
+                    .id = right_id,
+                    .pane_type = .terminal,
+                    .session_id = try self.alloc.dupe(u8, pane.session_id),
+                    .title = try self.alloc.dupe(u8, pane.title),
+                    .directory = try self.alloc.dupe(u8, pane.directory),
+                } };
+                const split = try self.alloc.create(PaneNode);
+                split.* = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .first = current, .second = right } };
+                current = split;
+            }
+            return current;
+        } else if (all_sids.len > 1) {
+            var current: *PaneNode = try self.alloc.create(PaneNode);
+            const first_id = try self.generatePaneId();
+            current.* = .{ .leaf = .{
+                .id = first_id,
+                .pane_type = .terminal,
+                .session_id = try self.alloc.dupe(u8, all_sids[0]),
+                .title = try self.alloc.dupe(u8, ""),
+                .directory = try self.alloc.dupe(u8, ws_data.directory),
+            } };
+            for (all_sids[1..]) |sid| {
+                const right_id = try self.generatePaneId();
+                const right = try self.alloc.create(PaneNode);
+                right.* = .{ .leaf = .{
+                    .id = right_id,
+                    .pane_type = .terminal,
+                    .session_id = try self.alloc.dupe(u8, sid),
+                    .title = try self.alloc.dupe(u8, ""),
+                    .directory = try self.alloc.dupe(u8, ws_data.directory),
+                } };
+                const split = try self.alloc.create(PaneNode);
+                split.* = .{ .split = .{ .direction = .horizontal, .ratio = 0.5, .first = current, .second = right } };
+                current = split;
+            }
+            return current;
+        } else {
+            const pane_id = try self.generatePaneId();
+            const node = try self.alloc.create(PaneNode);
+            const sid = ws_data.session_id orelse
+                (if (all_sids.len == 1) all_sids[0] else null);
+            node.* = .{ .leaf = .{
+                .id = pane_id,
+                .pane_type = .terminal,
+                .session_id = if (sid) |s| try self.alloc.dupe(u8, s) else null,
+                .title = try self.alloc.dupe(u8, ""),
+                .directory = try self.alloc.dupe(u8, ws_data.directory),
+            } };
+            return node;
+        }
     }
 
     pub const SyncPane = struct {
@@ -767,4 +896,116 @@ test "change_seq increments on mutations" {
     try std.testing.expectEqual(@as(u64, 0), reg.change_seq);
     _ = try reg.create("test", null);
     try std.testing.expectEqual(@as(u64, 1), reg.change_seq);
+}
+
+test "syncAll preserves existing pane session_ids when payload has none" {
+    // Regression: workspace.sync used to atomically replace every workspace,
+    // so when mac's surface lacked savedDaemonSessionID (Exec mode, daemon
+    // not ready at session restore) the sync would ship panes=[] and blow
+    // away the daemon's session bindings created earlier via workspace.open_pane.
+    // After the upsert rewrite, panes=[] preserves existing bindings.
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    // Seed: one workspace with a pane that has a session_id (simulating the
+    // state after a prior workspace.open_pane from iOS or mac daemon mode).
+    const workspaces_with_session = [_]Registry.SyncWorkspace{
+        .{
+            .id = "ws-a",
+            .title = "seeded",
+            .directory = "/tmp",
+            .panes = &[_]Registry.SyncPane{
+                .{ .session_id = "sess-established", .title = "t", .directory = "/tmp" },
+            },
+        },
+    };
+    try reg.syncAll(&workspaces_with_session, null);
+    const seeded = reg.get("ws-a").?;
+    try std.testing.expect(seeded.root_pane.* == .leaf);
+    try std.testing.expectEqualStrings("sess-established", seeded.root_pane.leaf.session_id.?);
+
+    // Mac pushes a sync without pane data (panes=[], no session_ids). The
+    // pane tree must be preserved.
+    const workspaces_metadata_only = [_]Registry.SyncWorkspace{
+        .{
+            .id = "ws-a",
+            .title = "renamed",
+            .directory = "/Users/me",
+            .pinned = true,
+        },
+    };
+    try reg.syncAll(&workspaces_metadata_only, null);
+    const after = reg.get("ws-a").?;
+    try std.testing.expectEqualStrings("renamed", after.title);
+    try std.testing.expectEqualStrings("/Users/me", after.directory);
+    try std.testing.expect(after.pinned);
+    try std.testing.expect(after.root_pane.* == .leaf);
+    try std.testing.expectEqualStrings(
+        "sess-established",
+        after.root_pane.leaf.session_id.?,
+    );
+}
+
+test "syncAll upsert-in-place: metadata-only update keeps existing pane tree" {
+    // Exercises the realistic mac scenario: surfaces open_pane'd at boot
+    // establish session bindings, then mac does a rename. The rename's
+    // workspace.sync payload carries new title but no pane details (mac
+    // hasn't attached surface session_ids to this particular push) —
+    // daemon must keep the bound pane tree intact.
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    const initial = [_]Registry.SyncWorkspace{
+        .{
+            .id = "ws-ren",
+            .title = "original",
+            .directory = "/tmp",
+            .panes = &[_]Registry.SyncPane{
+                .{ .session_id = "sess-stable", .title = "t", .directory = "/tmp" },
+            },
+        },
+    };
+    try reg.syncAll(&initial, null);
+    const before = reg.get("ws-ren").?;
+    try std.testing.expect(before.root_pane.* == .leaf);
+    try std.testing.expectEqualStrings("sess-stable", before.root_pane.leaf.session_id.?);
+
+    // Mac pushes rename with no pane data.
+    const rename = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-ren", .title = "renamed", .directory = "/tmp" },
+    };
+    try reg.syncAll(&rename, null);
+    const after = reg.get("ws-ren").?;
+    try std.testing.expectEqualStrings("renamed", after.title);
+    try std.testing.expect(after.root_pane.* == .leaf);
+    try std.testing.expectEqualStrings("sess-stable", after.root_pane.leaf.session_id.?);
+}
+
+test "syncAll does not delete workspaces missing from the payload" {
+    // Regression: workspace.sync used to delete every workspace not in the
+    // payload. iOS-created workspaces that hadn't yet round-tripped to mac's
+    // TabManager could therefore vanish on the next mac sync. Post-upsert,
+    // mac must issue an explicit workspace.close to remove.
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    // Two workspaces seeded.
+    const initial = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-keep", .title = "keep", .directory = "" },
+        .{ .id = "ws-only-on-phone", .title = "phone", .directory = "" },
+    };
+    try reg.syncAll(&initial, null);
+    try std.testing.expect(reg.get("ws-keep") != null);
+    try std.testing.expect(reg.get("ws-only-on-phone") != null);
+
+    // Mac sync only mentions ws-keep. ws-only-on-phone must survive.
+    const partial = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-keep", .title = "keep", .directory = "" },
+    };
+    try reg.syncAll(&partial, null);
+    try std.testing.expect(reg.get("ws-keep") != null);
+    try std.testing.expect(reg.get("ws-only-on-phone") != null);
 }

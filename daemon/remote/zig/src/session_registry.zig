@@ -13,6 +13,12 @@ pub const SessionStatus = struct {
     effective_rows: u16,
     last_known_cols: u16,
     last_known_rows: u16,
+    /// Monotonic counter incremented whenever `effective_cols` or
+    /// `effective_rows` changes. Lets clients order resize events
+    /// received out of sequence (RPC response vs. broadcast, multi-
+    /// attach races). Scoped per connection: daemon bumps it on every
+    /// effective-size change; clients reset on new connection.
+    grid_generation: u64,
 
     pub fn deinit(self: *SessionStatus, alloc: std.mem.Allocator) void {
         alloc.free(self.session_id);
@@ -47,11 +53,13 @@ const SessionState = struct {
     effective_rows: u16 = 0,
     last_known_cols: u16 = 0,
     last_known_rows: u16 = 0,
+    /// See SessionStatus.grid_generation. Bumped in `recomputeEffective`
+    /// whenever the computed (cols, rows) change.
+    grid_generation: u64 = 0,
 };
 
 pub const Registry = struct {
     alloc: std.mem.Allocator,
-    next_session_id: u64 = 1,
     next_attachment_id: u64 = 1,
     sessions: std.StringHashMap(SessionState),
 
@@ -65,36 +73,104 @@ pub const Registry = struct {
     pub fn deinit(self: *Registry) void {
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
+            // Free attachment keys owned by this session. Without this,
+            // the bootstrap attachment created in `openWithOptions` (and
+            // any explicit `attach` entries) leak their duped key strings
+            // on teardown. ReleaseSafe + GPA caught this as a per-test
+            // leak; ReleaseFast was hiding it.
+            var attach_iter = entry.value_ptr.attachments.iterator();
+            while (attach_iter.next()) |a| {
+                self.alloc.free(a.key_ptr.*);
+            }
             entry.value_ptr.attachments.deinit();
             self.alloc.free(entry.key_ptr.*);
         }
         self.sessions.deinit();
     }
 
-    pub fn open(self: *Registry, maybe_session_id: ?[]const u8, cols: u16, rows: u16) !struct { session_id: []const u8, attachment_id: []const u8 } {
+    pub const OpenOptions = struct {
+        /// When true (legacy default, matches `terminal.open` callers),
+        /// `open` registers a bootstrap attachment at the requested
+        /// cols/rows. Callers that intend to have a real client attach
+        /// separately (like `workspace.open_pane` followed by a
+        /// client-minted `session.attach`) should pass false: the session
+        /// and PTY are sized via `last_known_cols/rows` from the requested
+        /// size, but no `attachments` entry is created. Without this,
+        /// `effective = min(bootstrap, client_attach)` permanently caps
+        /// the PTY at the `open_pane` size — the exact bug this option
+        /// is here to kill.
+        create_bootstrap_attachment: bool = true,
+    };
+
+    pub const OpenResult = struct {
+        session_id: []const u8,
+        attachment_id: []const u8,
+    };
+
+    pub fn open(
+        self: *Registry,
+        maybe_session_id: ?[]const u8,
+        cols: u16,
+        rows: u16,
+    ) !OpenResult {
+        return self.openWithOptions(maybe_session_id, cols, rows, .{});
+    }
+
+    pub fn openWithOptions(
+        self: *Registry,
+        maybe_session_id: ?[]const u8,
+        cols: u16,
+        rows: u16,
+        options: OpenOptions,
+    ) !OpenResult {
         const size = normalizeSize(cols, rows);
         const session_id = if (maybe_session_id) |requested| blk: {
             if (self.sessions.contains(requested)) return error.SessionAlreadyExists;
             break :blk try self.alloc.dupe(u8, requested);
         } else blk: {
-            const generated = try std.fmt.allocPrint(self.alloc, "sess-{d}", .{self.next_session_id});
-            self.next_session_id += 1;
-            break :blk generated;
+            // Session ids are opaque UUIDs. The previous `sess-{counter}`
+            // scheme was a split-ownership bug waiting to happen: the
+            // counter resets on daemon restart, whereas explicit-id
+            // sessions (created by `terminal.open` on behalf of a mac
+            // surface that restored a saved id) never touch the counter.
+            // Result: after a restart, auto-generating `sess-1` collided
+            // with a restored `sess-1` and silently overwrote it, merging
+            // two user-visible terminals into one (cmd+N bug). UUIDs
+            // remove the collision class by construction; no counter,
+            // no cross-run state to reconcile, and the id carries no
+            // implicit ordering semantics for any reader to rely on.
+            break :blk try generateUuidSessionId(self.alloc);
         };
         errdefer self.alloc.free(session_id);
+        // Invariants enforced by both allocation paths; assert so that a
+        // future regression surfaces as a named panic under ReleaseSafe
+        // rather than silent downstream corruption.
+        std.debug.assert(session_id.len > 0);
+        std.debug.assert(!self.sessions.contains(session_id));
 
         var session = SessionState{
             .attachments = std.StringHashMap(AttachmentState).init(self.alloc),
+            // Seed last_known so `effective` is non-zero until the first
+            // real client attaches. Matters for the zero-bootstrap path:
+            // openTerminal reads effective_cols/rows to size the PTY, and
+            // a 0×0 PTY fails `posix_openpt + ioctl(TIOCSWINSZ)`.
+            .last_known_cols = size.cols,
+            .last_known_rows = size.rows,
         };
-        const attachment_id = try std.fmt.allocPrint(self.alloc, "att-{d}", .{self.next_attachment_id});
-        self.next_attachment_id += 1;
-        try session.attachments.put(attachment_id, .{ .cols = size.cols, .rows = size.rows });
+
+        var bootstrap_attachment_id: ?[]const u8 = null;
+        if (options.create_bootstrap_attachment) {
+            const attachment_id = try std.fmt.allocPrint(self.alloc, "att-{d}", .{self.next_attachment_id});
+            self.next_attachment_id += 1;
+            try session.attachments.put(attachment_id, .{ .cols = size.cols, .rows = size.rows });
+            bootstrap_attachment_id = attachment_id;
+        }
         recompute(&session);
         try self.sessions.put(session_id, session);
 
         return .{
             .session_id = try self.alloc.dupe(u8, session_id),
-            .attachment_id = try self.alloc.dupe(u8, attachment_id),
+            .attachment_id = try self.alloc.dupe(u8, bootstrap_attachment_id orelse ""),
         };
     }
 
@@ -185,6 +261,7 @@ pub const Registry = struct {
             .effective_rows = session.effective_rows,
             .last_known_cols = session.last_known_cols,
             .last_known_rows = session.last_known_rows,
+            .grid_generation = session.grid_generation,
         };
     }
 
@@ -225,9 +302,15 @@ pub const Registry = struct {
 };
 
 fn recompute(session: *SessionState) void {
+    const prev_cols = session.effective_cols;
+    const prev_rows = session.effective_rows;
+
     if (session.attachments.count() == 0) {
         session.effective_cols = session.last_known_cols;
         session.effective_rows = session.last_known_rows;
+        if (session.effective_cols != prev_cols or session.effective_rows != prev_rows) {
+            session.grid_generation += 1;
+        }
         return;
     }
 
@@ -253,6 +336,12 @@ fn recompute(session: *SessionState) void {
     session.effective_rows = min_rows;
     if (min_cols > 0) session.last_known_cols = min_cols;
     if (min_rows > 0) session.last_known_rows = min_rows;
+
+    // Bump grid_generation only on an actual change so clients can ignore
+    // stale out-of-order deliveries by strict monotonicity.
+    if (session.effective_cols != prev_cols or session.effective_rows != prev_rows) {
+        session.grid_generation += 1;
+    }
 }
 
 fn normalizeSize(cols: u16, rows: u16) AttachmentState {
@@ -260,6 +349,17 @@ fn normalizeSize(cols: u16, rows: u16) AttachmentState {
         .cols = if (cols == 0) 0 else @max(@as(u16, 2), cols),
         .rows = if (rows == 0) 0 else @max(@as(u16, 1), rows),
     };
+}
+
+/// Generate an opaque, globally-unique session id. Uses 16 random bytes
+/// (128 bits) rendered as lowercase hex, prefixed with `sess-` so logs
+/// and RPC traces still filter cleanly. No counter, no per-run state,
+/// no cross-run collisions.
+fn generateUuidSessionId(alloc: std.mem.Allocator) ![]u8 {
+    var buf: [16]u8 = undefined;
+    std.crypto.random.bytes(&buf);
+    const hex = std.fmt.bytesToHex(buf, .lower);
+    return try std.fmt.allocPrint(alloc, "sess-{s}", .{&hex});
 }
 
 test "open allocates session and attachment ids" {
@@ -270,7 +370,10 @@ test "open allocates session and attachment ids" {
     defer std.testing.allocator.free(opened.session_id);
     defer std.testing.allocator.free(opened.attachment_id);
 
-    try std.testing.expectEqualStrings("sess-1", opened.session_id);
+    // Session ids are opaque UUID-prefixed strings; assert only the
+    // stable prefix + length shape, not a counter-based value.
+    try std.testing.expect(std.mem.startsWith(u8, opened.session_id, "sess-"));
+    try std.testing.expectEqual(@as(usize, "sess-".len + 32), opened.session_id.len);
     try std.testing.expectEqualStrings("att-1", opened.attachment_id);
 }
 
@@ -375,6 +478,59 @@ test "ensure without id leaves session attachable" {
     try std.testing.expectEqualStrings("att-fixture", status.attachments[0].attachment_id);
 }
 
+test "open with create_bootstrap_attachment=false skips phantom attachment cap" {
+    // Regression: previously `workspace.open_pane` created a session-scoped
+    // bootstrap attachment at the requested cols/rows. When a real client
+    // later attached via `session.attach` with its own id, the session had
+    // TWO attachments and `effective = min(all)` capped the PTY at the
+    // smaller of the two. Users saw terminals letterboxed forever because
+    // the open_pane dimensions were frozen. The fix: allow open to skip
+    // creating the bootstrap; size the PTY via `last_known_cols/rows` so
+    // the first real client's attach drives `effective` cleanly.
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    // Open at 100x30 with no bootstrap attachment.
+    const opened = try registry.openWithOptions("test-session", 100, 30, .{
+        .create_bootstrap_attachment = false,
+    });
+    defer std.testing.allocator.free(opened.session_id);
+    defer std.testing.allocator.free(opened.attachment_id);
+
+    // No attachment created; effective = last_known = 100x30.
+    var initial = try registry.status(opened.session_id);
+    defer initial.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), initial.attachments.len);
+    try std.testing.expectEqual(@as(u16, 100), initial.effective_cols);
+    try std.testing.expectEqual(@as(u16, 30), initial.effective_rows);
+
+    // Client attaches at 150x50. With no phantom attachment, effective = 150x50.
+    // (Before this fix, effective would have stayed at min(100, 150) = 100.)
+    try registry.attach(opened.session_id, "bridge-xyz", 150, 50);
+    var after_attach = try registry.status(opened.session_id);
+    defer after_attach.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(u16, 150), after_attach.effective_cols);
+    try std.testing.expectEqual(@as(u16, 50), after_attach.effective_rows);
+    // Generation incremented (100x30 -> 150x50 is a real change).
+    try std.testing.expect(after_attach.grid_generation > initial.grid_generation);
+}
+
+test "open with create_bootstrap_attachment=true keeps legacy behavior" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    const opened = try registry.open("legacy", 80, 24);
+    defer std.testing.allocator.free(opened.session_id);
+    defer std.testing.allocator.free(opened.attachment_id);
+
+    var status = try registry.status(opened.session_id);
+    defer status.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 1), status.attachments.len);
+    try std.testing.expectEqualStrings(opened.attachment_id, status.attachments[0].attachment_id);
+    try std.testing.expectEqual(@as(u16, 80), status.effective_cols);
+    try std.testing.expectEqual(@as(u16, 24), status.effective_rows);
+}
+
 test "list returns sessions sorted by id" {
     var registry = Registry.init(std.testing.allocator);
     defer registry.deinit();
@@ -396,4 +552,56 @@ test "list returns sessions sorted by id" {
     try std.testing.expectEqual(@as(usize, 2), sessions.len);
     try std.testing.expectEqualStrings("alpha", sessions[0].session_id);
     try std.testing.expectEqualStrings("zebra", sessions[1].session_id);
+}
+
+test "auto-generated session ids are uuid-shaped and unique at scale" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    // Generate many sessions through the null-id path and assert each
+    // one is a fresh "sess-<32hex>" string. Catches regression to the
+    // old `sess-{counter}` scheme where restart resets collided with
+    // explicit-id sessions. Closes each session as it goes so the
+    // bootstrap attachment allocations don't accumulate across the loop.
+    const n: usize = 512;
+    var seen = std.StringHashMap(void).init(std.testing.allocator);
+    defer {
+        var it = seen.keyIterator();
+        while (it.next()) |key| std.testing.allocator.free(key.*);
+        seen.deinit();
+    }
+    var i: usize = 0;
+    while (i < n) : (i += 1) {
+        const opened = try registry.open(null, 80, 24);
+        try std.testing.expect(std.mem.startsWith(u8, opened.session_id, "sess-"));
+        try std.testing.expectEqual(@as(usize, "sess-".len + 32), opened.session_id.len);
+        const owned_id = try std.testing.allocator.dupe(u8, opened.session_id);
+        const put = try seen.getOrPut(owned_id);
+        if (put.found_existing) {
+            std.testing.allocator.free(owned_id);
+            try std.testing.expect(false);
+        }
+        try registry.close(opened.session_id);
+        std.testing.allocator.free(opened.session_id);
+        std.testing.allocator.free(opened.attachment_id);
+    }
+    try std.testing.expectEqual(n, seen.count());
+}
+
+test "auto-generated id does not collide with pre-existing explicit id" {
+    var registry = Registry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    // Pre-seed an explicit sess-1 as the old mac-restore path did.
+    // The UUID generator must not produce this string, so no
+    // SessionAlreadyExists and no silent overwrite.
+    const seeded = try registry.open("sess-1", 80, 24);
+    defer std.testing.allocator.free(seeded.session_id);
+    defer std.testing.allocator.free(seeded.attachment_id);
+
+    const auto = try registry.open(null, 80, 24);
+    defer std.testing.allocator.free(auto.session_id);
+    defer std.testing.allocator.free(auto.attachment_id);
+
+    try std.testing.expect(!std.mem.eql(u8, auto.session_id, "sess-1"));
 }

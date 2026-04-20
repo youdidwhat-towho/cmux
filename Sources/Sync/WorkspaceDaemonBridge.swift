@@ -305,10 +305,34 @@ final class WorkspaceDaemonBridge {
                 let sids = panes.compactMap { $0["session_id"] as? String }
                 return "\(id)[\(title)]=\(sids)"
             }.joined(separator: " ")
-            dlog("sync.send count=\(workspaces.count) \(summary)")
+            dlog("sync.send.incremental count=\(workspaces.count) \(summary)")
         }
         #endif
-        connection.sendWorkspaceSync(params)
+
+        // PR 7 SSOT refactor: mac no longer ships `workspace.sync`. Every
+        // field it previously pushed has an incremental RPC equivalent;
+        // emit them directly per workspace. The daemon also broadcasts
+        // workspace.changed on every mutation, so other clients (iOS,
+        // additional mac windows) still see changes propagate.
+        if let workspaces = params["workspaces"] as? [[String: Any]] {
+            for ws in workspaces {
+                guard let idStr = ws["id"] as? String,
+                      let uuid = UUID(uuidString: idStr) else { continue }
+                if let preview = ws["preview"] as? String, !preview.isEmpty {
+                    connection.sendWorkspaceSetPreview(workspaceID: uuid, preview: preview)
+                }
+                if let phase = ws["phase"] as? String, !phase.isEmpty {
+                    connection.sendWorkspaceSetPhase(workspaceID: uuid, phase: phase)
+                }
+                if let directory = ws["directory"] as? String, !directory.isEmpty {
+                    connection.sendWorkspaceSetDirectory(workspaceID: uuid, directory: directory)
+                }
+                if let unread = ws["unread_count"] as? Int {
+                    connection.sendWorkspaceSetUnread(workspaceID: uuid, unreadCount: unread)
+                }
+            }
+        }
+
         lastSyncTime = Date()
         syncCount += 1
     }

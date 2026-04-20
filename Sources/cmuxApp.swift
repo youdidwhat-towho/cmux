@@ -409,6 +409,15 @@ struct cmuxApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
+        // A new mac window without `.defaultSize` uses SwiftUI's intrinsic
+        // content size (which was landing around 985×719 in logs for
+        // cmux because the content's min-width hints are tiny). At that
+        // size, ~180pt of sidebar + ~62pt of chrome leaves only ~805×657
+        // for the terminal — cramped and proportionally worse the smaller
+        // the window. Open at a size that gives the terminal a comfortable
+        // 100+ column working area by default. Users can still resize down
+        // to `minimumWindowWidth × minimumWindowHeight`.
+        .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 splitCommandButton(title: String(localized: "menu.app.settings", defaultValue: "Settings…"), shortcut: menuShortcut(for: .openSettings)) {

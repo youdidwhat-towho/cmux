@@ -19,6 +19,8 @@ pub fn serve(cfg: Config) !void {
     defer service.deinit();
     service.on_workspace_changed = &server_core.notifyWorkspaceSubscribers;
     service.ensurePumpStarted();
+    service.ensureResizeDebouncerStarted();
+    service.ensureWriterStarted();
 
     serveShared(&service, try std.fmt.parseInt(u16, blk: {
         const colon = std.mem.lastIndexOfScalar(u8, cfg.listen_addr, ':') orelse break :blk cfg.listen_addr;
