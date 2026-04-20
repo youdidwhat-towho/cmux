@@ -1901,7 +1901,7 @@ final class BrowserPanel: Panel, ObservableObject {
     /// Used to keep omnibar text-field focus from being immediately stolen by panel focus.
     private var suppressWebViewFocusUntil: Date?
     private var suppressWebViewFocusForAddressBar: Bool = false
-    private var addressBarFocusRestoreGeneration: UInt64 = 0
+    private var webContentFocusRestoreGeneration: UInt64 = 0
     private let blankURLString = "about:blank"
     private static let addressBarFocusCaptureScript = """
     (() => {
@@ -2169,21 +2169,72 @@ final class BrowserPanel: Panel, ObservableObject {
     /// Increment to request a UI-only flash highlight (e.g. from a keyboard shortcut).
     @Published private(set) var focusFlashToken: Int = 0
 
-    /// Sticky omnibar-focus intent. This survives view mount timing races and is
-    /// cleared only after BrowserPanelView acknowledges handling it.
-    @Published private(set) var pendingAddressBarFocusRequestId: UUID?
+    private enum BrowserAddressBarSubfocusState: Equatable {
+        case pending(UUID)
+        case active
 
-    /// Semantic in-panel focus target used by split switching and transient overlays.
-    private(set) var preferredFocusIntent: BrowserPanelFocusIntent = .webView
+        var pendingRequestId: UUID? {
+            guard case .pending(let requestId) = self else { return nil }
+            return requestId
+        }
+    }
 
-    /// Incremented whenever async browser find focus ownership changes.
-    @Published private(set) var searchFocusRequestGeneration: UInt64 = 0
+    private enum BrowserFindFieldSubfocusState: Equatable {
+        case pending(UUID)
+        case active
+
+        var pendingRequestId: UUID? {
+            guard case .pending(let requestId) = self else { return nil }
+            return requestId
+        }
+    }
+
+    private enum BrowserSubfocusState: Equatable {
+        case webView
+        case addressBar(BrowserAddressBarSubfocusState)
+        case findField(BrowserFindFieldSubfocusState)
+
+        var intent: BrowserPanelFocusIntent {
+            switch self {
+            case .webView:
+                return .webView
+            case .addressBar:
+                return .addressBar
+            case .findField:
+                return .findField
+            }
+        }
+
+        var pendingAddressBarFocusRequestId: UUID? {
+            guard case .addressBar(let state) = self else { return nil }
+            return state.pendingRequestId
+        }
+
+        var pendingFindFieldFocusRequestId: UUID? {
+            guard case .findField(let state) = self else { return nil }
+            return state.pendingRequestId
+        }
+    }
+
+    /// Semantic in-panel focus target owned by BrowserPanel, not by overlay-local state.
+    @Published private var subfocusState: BrowserSubfocusState = .webView
+
+    var pendingAddressBarFocusRequestId: UUID? {
+        subfocusState.pendingAddressBarFocusRequestId
+    }
+
+    var pendingFindFieldFocusRequestId: UUID? {
+        subfocusState.pendingFindFieldFocusRequestId
+    }
+
+    var preferredFocusIntent: BrowserPanelFocusIntent {
+        subfocusState.intent
+    }
 
     /// Find-in-page state. Non-nil when the find bar is visible.
     @Published var searchState: BrowserSearchState? = nil {
         didSet {
             if let searchState {
-                preferredFocusIntent = .findField
                 NSLog("Find: browser search state created panel=%@", id.uuidString)
                 searchNeedleCancellable = searchState.$needle
                     .removeDuplicates()
@@ -2204,9 +2255,8 @@ final class BrowserPanel: Panel, ObservableObject {
             } else if oldValue != nil {
                 searchNeedleCancellable = nil
                 if preferredFocusIntent == .findField {
-                    preferredFocusIntent = .webView
+                    updateSubfocusState(.webView)
                 }
-                invalidateSearchFocusRequests(reason: "searchStateCleared")
                 NSLog("Find: browser search state cleared panel=%@", id.uuidString)
                 executeFindClear()
             }
@@ -2904,7 +2954,7 @@ final class BrowserPanel: Panel, ObservableObject {
         let desiredZoom = max(minPageZoom, min(maxPageZoom, previousWebView.pageZoom))
         let restoreDeveloperTools = preferredDeveloperToolsVisible || isDeveloperToolsVisible()
 
-        invalidateSearchFocusRequests(reason: "profileSwitch")
+        updateSubfocusState(.webView)
         searchState = nil
 
         _ = hideDeveloperTools()
@@ -3388,7 +3438,6 @@ final class BrowserPanel: Panel, ObservableObject {
     }
 
     func unfocus() {
-        invalidateSearchFocusRequests(reason: "panelUnfocus")
         guard let window = webView.window else { return }
         if Self.responderChainContains(window.firstResponder, target: webView) {
             window.makeFirstResponder(nil)
@@ -4115,13 +4164,11 @@ extension BrowserPanel {
         navigationDelegate?.lastAttemptedURL = nil
         abandonRestoredSessionHistoryIfNeeded()
 
-        pendingAddressBarFocusRequestId = nil
-        preferredFocusIntent = .addressBar
+        updateSubfocusState(.addressBar(.active))
         suppressOmnibarAutofocusUntil = nil
         suppressWebViewFocusUntil = nil
         endSuppressWebViewFocusForAddressBar()
-        invalidateAddressBarPageFocusRestoreAttempts()
-        invalidateSearchFocusRequests(reason: "contextReset")
+        invalidateWebContentFocusRestoreAttempts()
         searchState = nil
 
         pageTitle = ""
@@ -4943,20 +4990,19 @@ extension BrowserPanel {
     // MARK: - Find in Page
 
     func startFind() {
-        preferredFocusIntent = .findField
         let created = searchState == nil
         if created {
             searchState = BrowserSearchState()
         }
-        pendingAddressBarFocusRequestId = nil
+        clearAddressBarSubfocus()
         NotificationCenter.default.post(name: .browserDidBlurAddressBar, object: id)
-        let generation = beginSearchFocusRequest(reason: "startFind")
+        let requestId = requestFindFieldFocus(reason: "startFind")
 #if DEBUG
         let window = webView.window
         dlog(
             "browser.find.start panel=\(id.uuidString.prefix(5)) " +
             "created=\(created ? 1 : 0) render=\(shouldRenderWebView ? 1 : 0) " +
-            "generation=\(generation) " +
+            "request=\(requestId.uuidString.prefix(8)) " +
             "window=\(window?.windowNumber ?? -1) key=\(NSApp.keyWindow === window ? 1 : 0) " +
             "firstResponder=\(String(describing: window?.firstResponder))"
         )
@@ -4979,9 +5025,15 @@ extension BrowserPanel {
         }
     }
 
-    func hideFind() {
-        invalidateSearchFocusRequests(reason: "hideFind")
-        searchState = nil
+    func hideFind(reason: String = "api") {
+        let shouldRestorePageFocus = searchState != nil && preferredFocusIntent == .findField
+        guard shouldRestorePageFocus else {
+            searchState = nil
+            return
+        }
+        transitionToWebContentFocus(reason: "findDismiss.\(reason)") { [weak self] in
+            self?.searchState = nil
+        }
     }
 
     private func restoreFindStateAfterNavigation(replaySearch: Bool) {
@@ -5101,11 +5153,11 @@ extension BrowserPanel {
 #if DEBUG
             dlog("browser.focus.addressBarSuppress.begin panel=\(id.uuidString.prefix(5))")
 #endif
-            invalidateAddressBarPageFocusRestoreAttempts()
+            invalidateWebContentFocusRestoreAttempts()
         }
         suppressWebViewFocusForAddressBar = true
         if enteringAddressBar {
-            captureAddressBarPageFocusIfNeeded()
+            captureWebContentFocusSnapshotIfNeeded()
         }
     }
 
@@ -5120,8 +5172,7 @@ extension BrowserPanel {
 
     @discardableResult
     func requestAddressBarFocus() -> UUID {
-        preferredFocusIntent = .addressBar
-        invalidateSearchFocusRequests(reason: "requestAddressBarFocus")
+        clearFindFieldSubfocus()
         beginSuppressWebViewFocusForAddressBar()
         if let pendingAddressBarFocusRequestId {
 #if DEBUG
@@ -5133,7 +5184,7 @@ extension BrowserPanel {
             return pendingAddressBarFocusRequestId
         }
         let requestId = UUID()
-        pendingAddressBarFocusRequestId = requestId
+        updateSubfocusState(.addressBar(.pending(requestId)))
 #if DEBUG
         dlog(
             "browser.focus.addressBar.request panel=\(id.uuidString.prefix(5)) " +
@@ -5144,26 +5195,30 @@ extension BrowserPanel {
     }
 
     func noteWebViewFocused() {
-        guard searchState == nil else { return }
-        guard preferredFocusIntent != .webView else { return }
-        preferredFocusIntent = .webView
-        invalidateSearchFocusRequests(reason: "webViewFocused")
+        updateSubfocusState(.webView)
     }
 
     func noteAddressBarFocused() {
-        guard preferredFocusIntent != .addressBar else { return }
-        preferredFocusIntent = .addressBar
-        invalidateSearchFocusRequests(reason: "addressBarFocused")
+        updateSubfocusState(.addressBar(.active))
     }
 
-    func noteFindFieldFocused() {
-        guard preferredFocusIntent != .findField else { return }
-        preferredFocusIntent = .findField
+    func noteFindFieldFocused(requestId: UUID? = nil) {
+        if let requestId,
+           pendingFindFieldFocusRequestId != requestId {
+#if DEBUG
+            dlog(
+                "browser.find.focus.requestAck panel=\(id.uuidString.prefix(5)) " +
+                "request=\(requestId.uuidString.prefix(8)) result=ignored " +
+                "pending=\(pendingFindFieldFocusRequestId?.uuidString.prefix(8) ?? "nil")"
+            )
+#endif
+            return
+        }
+        updateSubfocusState(.findField(.active))
     }
 
-    func canApplySearchFocusRequest(_ generation: UInt64) -> Bool {
-        generation != 0 &&
-            generation == searchFocusRequestGeneration &&
+    func canApplyFindFieldFocusRequest(_ requestId: UUID) -> Bool {
+        pendingFindFieldFocusRequestId == requestId &&
             searchState != nil &&
             preferredFocusIntent == .findField
     }
@@ -5200,15 +5255,21 @@ extension BrowserPanel {
 
         switch target {
         case .webView:
-            preferredFocusIntent = .webView
-            invalidateSearchFocusRequests(reason: "prepareWebView")
+            updateSubfocusState(.webView)
             endSuppressWebViewFocusForAddressBar()
         case .addressBar:
-            preferredFocusIntent = .addressBar
-            invalidateSearchFocusRequests(reason: "prepareAddressBar")
+            if let requestId = pendingAddressBarFocusRequestId {
+                updateSubfocusState(.addressBar(.pending(requestId)))
+            } else {
+                updateSubfocusState(.addressBar(.active))
+            }
             beginSuppressWebViewFocusForAddressBar()
         case .findField:
-            preferredFocusIntent = .findField
+            if let requestId = pendingFindFieldFocusRequestId {
+                updateSubfocusState(.findField(.pending(requestId)))
+            } else {
+                updateSubfocusState(.findField(.active))
+            }
         }
 #if DEBUG
         dlog(
@@ -5248,6 +5309,10 @@ extension BrowserPanel {
             return .browser(.addressBar)
         }
 
+        if browserSearchOverlayPanelId(for: responder) == id {
+            return .browser(.findField)
+        }
+
         if BrowserWindowPortalRegistry.searchOverlayPanelId(for: responder, in: window) == id {
             return .browser(.findField)
         }
@@ -5265,7 +5330,15 @@ extension BrowserPanel {
 
         switch target {
         case .findField:
-            invalidateSearchFocusRequests(reason: "yieldFindField")
+            if browserSearchOverlayPanelId(for: window.firstResponder) == id {
+                let yielded = window.makeFirstResponder(nil)
+#if DEBUG
+                if yielded {
+                    dlog("focus.handoff.yield panel=\(id.uuidString.prefix(5)) target=browserFind")
+                }
+#endif
+                return yielded
+            }
             let yielded = BrowserWindowPortalRegistry.yieldSearchOverlayFocusIfOwned(by: id, in: window)
 #if DEBUG
             if yielded {
@@ -5288,28 +5361,6 @@ extension BrowserPanel {
         }
     }
 
-    @discardableResult
-    private func beginSearchFocusRequest(reason: String) -> UInt64 {
-        searchFocusRequestGeneration &+= 1
-#if DEBUG
-        dlog(
-            "browser.find.focusLease.begin panel=\(id.uuidString.prefix(5)) " +
-            "generation=\(searchFocusRequestGeneration) reason=\(reason)"
-        )
-#endif
-        return searchFocusRequestGeneration
-    }
-
-    private func invalidateSearchFocusRequests(reason: String) {
-        searchFocusRequestGeneration &+= 1
-#if DEBUG
-        dlog(
-            "browser.find.focusLease.invalidate panel=\(id.uuidString.prefix(5)) " +
-            "generation=\(searchFocusRequestGeneration) reason=\(reason)"
-        )
-#endif
-    }
-
     func acknowledgeAddressBarFocusRequest(_ requestId: UUID) {
         guard pendingAddressBarFocusRequestId == requestId else {
 #if DEBUG
@@ -5321,7 +5372,7 @@ extension BrowserPanel {
 #endif
             return
         }
-        pendingAddressBarFocusRequestId = nil
+        updateSubfocusState(.addressBar(.active))
 #if DEBUG
         dlog(
             "browser.focus.addressBar.requestAck panel=\(id.uuidString.prefix(5)) " +
@@ -5330,20 +5381,101 @@ extension BrowserPanel {
 #endif
     }
 
-    private func captureAddressBarPageFocusIfNeeded() {
+    private func updateSubfocusState(_ next: BrowserSubfocusState) {
+        guard subfocusState != next else { return }
+        subfocusState = next
+    }
+
+    private func clearAddressBarSubfocus() {
+        if case .addressBar = subfocusState {
+            updateSubfocusState(.webView)
+        }
+    }
+
+    private func clearFindFieldSubfocus() {
+        if case .findField = subfocusState {
+            updateSubfocusState(.webView)
+        }
+    }
+
+    @discardableResult
+    func transitionToWebContentFocus(
+        reason: String,
+        beforeRestore: (() -> Void)? = nil,
+        completion: ((Bool) -> Void)? = nil
+    ) -> Bool {
+        let complete: (Bool) -> Void = completion ?? { _ in }
+
+        guard let window = webView.window, !webView.isHiddenOrHasHiddenAncestor else {
+            beforeRestore?()
+            complete(false)
+            return false
+        }
+
+        let focusedWebView = window.makeFirstResponder(webView)
+        if focusedWebView {
+            noteWebViewFocused()
+        }
+
+        beforeRestore?()
+        restoreStoredWebContentFocusIfNeeded { [weak self] restored in
+            guard let self else {
+                complete(restored)
+                return
+            }
+            guard let window = self.webView.window,
+                  !self.webView.isHiddenOrHasHiddenAncestor else {
+                complete(restored)
+                return
+            }
+            var hasWebViewResponder =
+                Self.responderChainContains(window.firstResponder, target: self.webView)
+            if !hasWebViewResponder {
+                hasWebViewResponder = window.makeFirstResponder(self.webView)
+            }
+            if hasWebViewResponder {
+                self.noteWebViewFocused()
+            }
+#if DEBUG
+            dlog(
+                "browser.focus.webContent.return panel=\(self.id.uuidString.prefix(5)) " +
+                "reason=\(reason) restored=\(restored ? 1 : 0) " +
+                "webViewResponder=\(hasWebViewResponder ? 1 : 0)"
+            )
+#endif
+            complete(restored)
+        }
+
+        return focusedWebView
+    }
+
+    @discardableResult
+    private func requestFindFieldFocus(reason: String) -> UUID {
+        let requestId = UUID()
+        updateSubfocusState(.findField(.pending(requestId)))
+#if DEBUG
+        dlog(
+            "browser.find.focusRequest panel=\(id.uuidString.prefix(5)) " +
+            "request=\(requestId.uuidString.prefix(8)) reason=\(reason)"
+        )
+#endif
+        return requestId
+    }
+
+    private func captureWebContentFocusSnapshotIfNeeded() {
         webView.evaluateJavaScript(Self.addressBarFocusCaptureScript) { [weak self] result, error in
 #if DEBUG
             guard let self else { return }
             if let error {
                 dlog(
-                    "browser.focus.addressBar.capture panel=\(self.id.uuidString.prefix(5)) " +
+                    "browser.focus.webContent.capture panel=\(self.id.uuidString.prefix(5)) " +
                     "result=error message=\(error.localizedDescription)"
                 )
                 return
             }
             let resultValue = (result as? String) ?? "unknown"
             dlog(
-                "browser.focus.addressBar.capture panel=\(self.id.uuidString.prefix(5)) " +
+                "browser.focus.webContent.capture panel=\(self.id.uuidString.prefix(5)) " +
                 "result=\(resultValue)"
             )
 #else
@@ -5354,7 +5486,7 @@ extension BrowserPanel {
         }
     }
 
-    private enum AddressBarPageFocusRestoreStatus: String {
+    private enum WebContentFocusRestoreStatus: String {
         case restored
         case noState = "no_state"
         case missingTarget = "missing_target"
@@ -5362,30 +5494,30 @@ extension BrowserPanel {
         case error
     }
 
-    private static func addressBarPageFocusRestoreStatus(
+    private static func webContentFocusRestoreStatus(
         from result: Any?,
         error: Error?
-    ) -> AddressBarPageFocusRestoreStatus {
+    ) -> WebContentFocusRestoreStatus {
         if error != nil { return .error }
         guard let raw = result as? String else { return .error }
-        return AddressBarPageFocusRestoreStatus(rawValue: raw) ?? .error
+        return WebContentFocusRestoreStatus(rawValue: raw) ?? .error
     }
 
-    func invalidateAddressBarPageFocusRestoreAttempts() {
-        addressBarFocusRestoreGeneration &+= 1
+    func invalidateWebContentFocusRestoreAttempts() {
+        webContentFocusRestoreGeneration &+= 1
 #if DEBUG
         dlog(
-            "browser.focus.addressBar.restore.invalidate panel=\(id.uuidString.prefix(5)) " +
-            "generation=\(addressBarFocusRestoreGeneration)"
+            "browser.focus.webContent.restore.invalidate panel=\(id.uuidString.prefix(5)) " +
+            "generation=\(webContentFocusRestoreGeneration)"
         )
 #endif
     }
 
-    func restoreAddressBarPageFocusIfNeeded(completion: @escaping (Bool) -> Void) {
-        addressBarFocusRestoreGeneration &+= 1
-        let generation = addressBarFocusRestoreGeneration
+    func restoreStoredWebContentFocusIfNeeded(completion: @escaping (Bool) -> Void) {
+        webContentFocusRestoreGeneration &+= 1
+        let generation = webContentFocusRestoreGeneration
         let delays: [TimeInterval] = [0.0, 0.03, 0.09, 0.2]
-        restoreAddressBarPageFocusAttemptIfNeeded(
+        restoreStoredWebContentFocusAttemptIfNeeded(
             attempt: 0,
             delays: delays,
             generation: generation,
@@ -5393,13 +5525,13 @@ extension BrowserPanel {
         )
     }
 
-    private func restoreAddressBarPageFocusAttemptIfNeeded(
+    private func restoreStoredWebContentFocusAttemptIfNeeded(
         attempt: Int,
         delays: [TimeInterval],
         generation: UInt64,
         completion: @escaping (Bool) -> Void
     ) {
-        guard generation == addressBarFocusRestoreGeneration else {
+        guard generation == webContentFocusRestoreGeneration else {
             completion(false)
             return
         }
@@ -5408,25 +5540,25 @@ extension BrowserPanel {
                 completion(false)
                 return
             }
-            guard generation == self.addressBarFocusRestoreGeneration else {
+            guard generation == self.webContentFocusRestoreGeneration else {
                 completion(false)
                 return
             }
 
-            let status = Self.addressBarPageFocusRestoreStatus(from: result, error: error)
+            let status = Self.webContentFocusRestoreStatus(from: result, error: error)
             let canRetry = (status == .notFocused || status == .error)
             let hasNextAttempt = attempt + 1 < delays.count
 
 #if DEBUG
             if let error {
                 dlog(
-                    "browser.focus.addressBar.restore panel=\(self.id.uuidString.prefix(5)) " +
+                    "browser.focus.webContent.restore panel=\(self.id.uuidString.prefix(5)) " +
                     "attempt=\(attempt) status=\(status.rawValue) " +
                     "message=\(error.localizedDescription)"
                 )
             } else {
                 dlog(
-                    "browser.focus.addressBar.restore panel=\(self.id.uuidString.prefix(5)) " +
+                    "browser.focus.webContent.restore panel=\(self.id.uuidString.prefix(5)) " +
                     "attempt=\(attempt) status=\(status.rawValue)"
                 )
             }
@@ -5444,11 +5576,11 @@ extension BrowserPanel {
                         completion(false)
                         return
                     }
-                    guard generation == self.addressBarFocusRestoreGeneration else {
+                    guard generation == self.webContentFocusRestoreGeneration else {
                         completion(false)
                         return
                     }
-                    self.restoreAddressBarPageFocusAttemptIfNeeded(
+                    self.restoreStoredWebContentFocusAttemptIfNeeded(
                         attempt: attempt + 1,
                         delays: delays,
                         generation: generation,

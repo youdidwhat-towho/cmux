@@ -12947,8 +12947,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             queue: .main
         ) { [weak self] notification in
             guard let self else { return }
-            guard let webView = notification.object as? CmuxWebView,
-                  let panel = self.browserPanelOwning(webView) else { return }
+            guard let webView = notification.object as? CmuxWebView else { return }
+            guard let panel = self.browserPanelOwning(webView) else { return }
+
+            let ownership = self.workspaceContainingPanel(
+                panelId: panel.id,
+                preferredWorkspaceId: panel.workspaceId
+            )
+
+            if let ownership,
+               ownership.tabManager.selectedTabId == ownership.workspace.id,
+               ownership.workspace.focusedPanelId != panel.id {
+                ownership.workspace.focusPanel(panel.id)
+            }
 
             if let trackedPanelId = self.browserAddressBarFocusedPanelId,
                trackedPanelId != panel.id,

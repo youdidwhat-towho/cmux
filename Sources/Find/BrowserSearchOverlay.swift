@@ -1,19 +1,50 @@
 import AppKit
+import ObjectiveC
 import SwiftUI
+
+private var cmuxBrowserSearchOverlayPanelIdKey: UInt8 = 0
+
+func setBrowserSearchOverlayPanelId(_ panelId: UUID, on view: NSView) {
+    objc_setAssociatedObject(
+        view,
+        &cmuxBrowserSearchOverlayPanelIdKey,
+        panelId,
+        .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+    )
+}
+
+private func browserSearchOverlayPanelId(from view: NSView?) -> UUID? {
+    var current = view
+    while let view = current {
+        if let panelId = objc_getAssociatedObject(view, &cmuxBrowserSearchOverlayPanelIdKey) as? UUID {
+            return panelId
+        }
+        current = view.superview
+    }
+    return nil
+}
+
+func browserSearchOverlayPanelId(for responder: NSResponder?) -> UUID? {
+    guard let responder else { return nil }
+    if let editor = responder as? NSTextView,
+       editor.isFieldEditor {
+        return browserSearchOverlayPanelId(from: editor.delegate as? NSView)
+    }
+    return browserSearchOverlayPanelId(from: responder as? NSView)
+}
 
 struct BrowserSearchOverlay: View {
     let panelId: UUID
     @ObservedObject var searchState: BrowserSearchState
-    let focusRequestGeneration: UInt64
-    let canApplyFocusRequest: (UInt64) -> Bool
+    let focusRequestId: UUID?
+    let canApplyFocusRequest: (UUID) -> Bool
     let onNext: () -> Void
     let onPrevious: () -> Void
     let onClose: () -> Void
-    let onFieldDidFocus: () -> Void
+    let onFieldDidFocus: (UUID?) -> Void
     @State private var corner: Corner = .topRight
     @State private var dragOffset: CGSize = .zero
     @State private var barSize: CGSize = .zero
-    @State private var isSearchFieldFocused: Bool = true
 
     private let padding: CGFloat = 8
 
@@ -22,9 +53,8 @@ struct BrowserSearchOverlay: View {
             HStack(spacing: 4) {
                 BrowserSearchTextFieldRepresentable(
                     text: $searchState.needle,
-                    isFocused: $isSearchFieldFocused,
                     panelId: panelId,
-                    focusRequestGeneration: focusRequestGeneration,
+                    focusRequestId: focusRequestId,
                     canApplyFocusRequest: canApplyFocusRequest,
                     onFieldDidFocus: onFieldDidFocus,
                     onEscape: onClose,
@@ -99,7 +129,6 @@ struct BrowserSearchOverlay: View {
 #if DEBUG
                 dlog("browser.findbar.appear panel=\(panelId.uuidString.prefix(5))")
 #endif
-                isSearchFieldFocused = true
             }
             .background(
                 GeometryReader { barGeo in
@@ -180,6 +209,8 @@ struct BrowserSearchOverlay: View {
 }
 
 private final class BrowserSearchNativeTextField: NSTextField {
+    var onWindowAttachment: ((BrowserSearchNativeTextField) -> Void)?
+
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         isBordered = false
@@ -192,15 +223,20 @@ private final class BrowserSearchNativeTextField: NSTextField {
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        guard window != nil else { return }
+        onWindowAttachment?(self)
+    }
 }
 
 private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
     @Binding var text: String
-    @Binding var isFocused: Bool
     let panelId: UUID
-    let focusRequestGeneration: UInt64
-    let canApplyFocusRequest: (UInt64) -> Bool
-    let onFieldDidFocus: () -> Void
+    let focusRequestId: UUID?
+    let canApplyFocusRequest: (UUID) -> Bool
+    let onFieldDidFocus: (UUID?) -> Void
     let onEscape: () -> Void
     let onReturn: (_ isShift: Bool) -> Void
 
@@ -224,6 +260,36 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
             }
         }
 
+        func requestFocusIfNeeded(for field: BrowserSearchNativeTextField) {
+            guard let requestId = parent.focusRequestId,
+                  parent.canApplyFocusRequest(requestId),
+                  let window = field.window else { return }
+
+            let fr = window.firstResponder
+            let isFirstResponder =
+                fr === field ||
+                field.currentEditor() != nil ||
+                ((fr as? NSTextView)?.delegate as? NSTextField) === field
+            guard !isFirstResponder, pendingFocusRequest != true else { return }
+
+            pendingFocusRequest = true
+            DispatchQueue.main.async { [weak field, weak self] in
+                guard let self else { return }
+                self.pendingFocusRequest = nil
+                guard let requestId = self.parent.focusRequestId,
+                      self.parent.canApplyFocusRequest(requestId),
+                      let field,
+                      let window = field.window else { return }
+                let fr = window.firstResponder
+                let alreadyFocused =
+                    fr === field ||
+                    field.currentEditor() != nil ||
+                    ((fr as? NSTextView)?.delegate as? NSTextField) === field
+                guard !alreadyFocused else { return }
+                self.focusField(field, in: window)
+            }
+        }
+
         func controlTextDidChange(_ obj: Notification) {
             guard !isProgrammaticMutation else { return }
             guard let field = obj.object as? NSTextField else { return }
@@ -231,20 +297,7 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
-            parent.onFieldDidFocus()
-            if !parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = true
-                }
-            }
-        }
-
-        func controlTextDidEndEditing(_ obj: Notification) {
-            if parent.isFocused {
-                DispatchQueue.main.async {
-                    self.parent.isFocused = false
-                }
-            }
+            parent.onFieldDidFocus(parent.focusRequestId)
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
@@ -280,6 +333,10 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
         field.isSelectable = true
         field.isEnabled = true
         field.stringValue = text
+        field.onWindowAttachment = { [weak coordinator = context.coordinator] attachedField in
+            coordinator?.requestFocusIfNeeded(for: attachedField)
+        }
+        setBrowserSearchOverlayPanelId(panelId, on: field)
         context.coordinator.parentField = field
         return field
     }
@@ -287,6 +344,7 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
     func updateNSView(_ nsView: BrowserSearchNativeTextField, context: Context) {
         context.coordinator.parent = self
         context.coordinator.parentField = nsView
+        setBrowserSearchOverlayPanelId(panelId, on: nsView)
 
         if let editor = nsView.currentEditor() as? NSTextView {
             if editor.string != text, !editor.hasMarkedText() {
@@ -299,37 +357,12 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
             nsView.stringValue = text
         }
 
-        if let window = nsView.window {
-            let fr = window.firstResponder
-            let isFirstResponder =
-                fr === nsView ||
-                nsView.currentEditor() != nil ||
-                ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-
-            if isFocused,
-               canApplyFocusRequest(focusRequestGeneration),
-               !isFirstResponder,
-               context.coordinator.pendingFocusRequest != true {
-                context.coordinator.pendingFocusRequest = true
-                DispatchQueue.main.async { [weak nsView, weak coordinator = context.coordinator] in
-                    coordinator?.pendingFocusRequest = nil
-                    guard let coordinator,
-                          coordinator.parent.isFocused,
-                          coordinator.parent.canApplyFocusRequest(coordinator.parent.focusRequestGeneration) else { return }
-                    guard let nsView, let window = nsView.window else { return }
-                    let fr = window.firstResponder
-                    let alreadyFocused = fr === nsView ||
-                        nsView.currentEditor() != nil ||
-                        ((fr as? NSTextView)?.delegate as? NSTextField) === nsView
-                    guard !alreadyFocused else { return }
-                    coordinator.focusField(nsView, in: window)
-                }
-            }
-        }
+        context.coordinator.requestFocusIfNeeded(for: nsView)
     }
 
     static func dismantleNSView(_ nsView: BrowserSearchNativeTextField, coordinator: Coordinator) {
         nsView.delegate = nil
+        nsView.onWindowAttachment = nil
         coordinator.parentField = nil
     }
 }

@@ -1845,30 +1845,15 @@ class TabManager: ObservableObject {
 
     func startSearch() {
         if let panel = selectedTerminalPanel {
-            if panel.searchState == nil {
-                panel.searchState = TerminalSurface.SearchState()
-            }
+            _ = startOrFocusTerminalSearch(panel.surface)
             NSLog("Find: startSearch workspace=%@ panel=%@", panel.workspaceId.uuidString, panel.id.uuidString)
-            NotificationCenter.default.post(name: .ghosttySearchFocus, object: panel.surface)
-            _ = panel.performBindingAction("start_search")
-            return
-        }
-        if let panel = selectedTerminalPanel {
-            let hadExistingSearch = panel.searchState != nil
-            let handled = startOrFocusTerminalSearch(panel.surface)
-            NSLog("Find: startSearch workspace=%@ panel=%@", panel.workspaceId.uuidString, panel.id.uuidString)
-#if DEBUG
-            dlog(
-                "find.startSearch workspace=\(panel.workspaceId.uuidString.prefix(5)) " +
-                "panel=\(panel.id.uuidString.prefix(5)) existing=\(hadExistingSearch ? "yes" : "no") " +
-                "handled=\(handled ? 1 : 0) " +
-                "firstResponder=\(String(describing: panel.surface.hostedView.window?.firstResponder))"
-            )
-#endif
             return
         }
 
-        focusedBrowserPanel?.startFind()
+        if let panel = focusedBrowserPanel {
+            panel.startFind()
+            return
+        }
     }
 
     func searchSelection() {
@@ -1887,7 +1872,10 @@ class TabManager: ObservableObject {
             return
         }
 
-        focusedBrowserPanel?.findNext()
+        if let panel = focusedBrowserPanel {
+            panel.findNext()
+            return
+        }
     }
 
     func findPrevious() {
@@ -1896,7 +1884,10 @@ class TabManager: ObservableObject {
             return
         }
 
-        focusedBrowserPanel?.findPrevious()
+        if let panel = focusedBrowserPanel {
+            panel.findPrevious()
+            return
+        }
     }
 
     @discardableResult
@@ -1911,7 +1902,10 @@ class TabManager: ObservableObject {
             return
         }
 
-        focusedBrowserPanel?.hideFind()
+        if let panel = focusedBrowserPanel {
+            panel.hideFind()
+            return
+        }
     }
 
     func makeWorkspaceForCreation(

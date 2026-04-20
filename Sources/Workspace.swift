@@ -7575,6 +7575,7 @@ final class Workspace: Identifiable, ObservableObject {
             initialEnvironmentOverrides: initialTerminalEnvironment
         )
         configureTerminalPanel(terminalPanel)
+        installTerminalPanelSubscription(terminalPanel)
         panels[terminalPanel.id] = terminalPanel
         seedInitialTerminalPanelTitle(terminalPanel, fallbackDirectory: resolvedWorkingDirectory)
         seedTerminalInheritanceFontPoints(panelId: terminalPanel.id, configTemplate: configTemplate)
@@ -7743,6 +7744,16 @@ final class Workspace: Identifiable, ObservableObject {
             guard let self, let terminalPanel else { return }
             self.triggerWorkspacePaneFlash(panelId: terminalPanel.id, reason: reason)
         }
+    }
+
+    private func installTerminalPanelSubscription(_ terminalPanel: TerminalPanel) {
+        let subscription = terminalPanel.$searchState
+            .receive(on: DispatchQueue.main)
+            .sink { [weak terminalPanel] searchState in
+                guard let terminalPanel else { return }
+                terminalPanel.hostedView.setSearchOverlay(searchState: searchState)
+            }
+        panelSubscriptions[terminalPanel.id] = subscription
     }
 
     private func triggerWorkspacePaneFlash(panelId: UUID, reason: WorkspaceAttentionFlashReason) {
@@ -10119,6 +10130,7 @@ final class Workspace: Identifiable, ObservableObject {
             initialCommand: remoteTerminalStartupCommand
         )
         configureTerminalPanel(newPanel)
+        installTerminalPanelSubscription(newPanel)
         panels[newPanel.id] = newPanel
         seedInitialTerminalPanelTitle(newPanel, fallbackDirectory: splitWorkingDirectory)
         if remoteTerminalStartupCommand != nil {
@@ -10192,6 +10204,7 @@ final class Workspace: Identifiable, ObservableObject {
             additionalEnvironment: startupEnvironment
         )
         configureTerminalPanel(newPanel)
+        installTerminalPanelSubscription(newPanel)
         panels[newPanel.id] = newPanel
         seedInitialTerminalPanelTitle(newPanel, fallbackDirectory: workingDirectory)
         if remoteTerminalStartupCommand != nil {
@@ -11678,6 +11691,7 @@ final class Workspace: Identifiable, ObservableObject {
             portOrdinal: portOrdinal
         )
         configureTerminalPanel(newPanel)
+        installTerminalPanelSubscription(newPanel)
         panels[newPanel.id] = newPanel
         seedInitialTerminalPanelTitle(newPanel)
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)
@@ -12883,6 +12897,7 @@ extension Workspace: WorkspaceLayoutDelegate {
             portOrdinal: portOrdinal
         )
         configureTerminalPanel(newPanel)
+        installTerminalPanelSubscription(newPanel)
         panels[newPanel.id] = newPanel
         seedInitialTerminalPanelTitle(newPanel)
         seedTerminalInheritanceFontPoints(panelId: newPanel.id, configTemplate: inheritedConfig)

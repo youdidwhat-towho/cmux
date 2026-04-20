@@ -1234,12 +1234,12 @@ private final class BrowserDropZoneOverlayView: NSView {
 struct BrowserPortalSearchOverlayConfiguration {
     let panelId: UUID
     let searchState: BrowserSearchState
-    let focusRequestGeneration: UInt64
-    let canApplyFocusRequest: (UInt64) -> Bool
+    let focusRequestId: UUID?
+    let canApplyFocusRequest: (UUID) -> Bool
     let onNext: () -> Void
     let onPrevious: () -> Void
     let onClose: () -> Void
-    let onFieldDidFocus: () -> Void
+    let onFieldDidFocus: (UUID?) -> Void
 }
 
 struct BrowserPaneDropContext: Equatable {
@@ -1761,7 +1761,7 @@ final class WindowBrowserSlotView: NSView {
         let rootView = BrowserSearchOverlay(
             panelId: configuration.panelId,
             searchState: configuration.searchState,
-            focusRequestGeneration: configuration.focusRequestGeneration,
+            focusRequestId: configuration.focusRequestId,
             canApplyFocusRequest: configuration.canApplyFocusRequest,
             onNext: configuration.onNext,
             onPrevious: configuration.onPrevious,
@@ -2442,7 +2442,7 @@ final class WindowBrowserPortal: NSObject {
         case let (lhs?, rhs?):
             return lhs.panelId == rhs.panelId &&
                 lhs.searchState === rhs.searchState &&
-                lhs.focusRequestGeneration == rhs.focusRequestGeneration
+                lhs.focusRequestId == rhs.focusRequestId
         default:
             return false
         }

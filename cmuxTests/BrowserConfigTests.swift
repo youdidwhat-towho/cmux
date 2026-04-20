@@ -3473,3 +3473,74 @@ final class BrowserOmnibarFocusPolicyTests: XCTestCase {
         )
     }
 }
+
+final class BrowserFindOverlayPresentationTests: XCTestCase {
+    func testLocalInlineBrowserUsesSwiftUIFindOverlay() {
+        XCTAssertEqual(
+            resolveBrowserFindOverlayPresentationMode(
+                hasSearchState: true,
+                shouldRenderWebView: true,
+                usesLocalInlineHosting: true
+            ),
+            .swiftUI
+        )
+    }
+
+    func testPortalBrowserUsesPortalFindOverlay() {
+        XCTAssertEqual(
+            resolveBrowserFindOverlayPresentationMode(
+                hasSearchState: true,
+                shouldRenderWebView: true,
+                usesLocalInlineHosting: false
+            ),
+            .appKitPortal
+        )
+    }
+
+    func testPlaceholderBrowserUsesSwiftUIFindOverlay() {
+        XCTAssertEqual(
+            resolveBrowserFindOverlayPresentationMode(
+                hasSearchState: true,
+                shouldRenderWebView: false,
+                usesLocalInlineHosting: false
+            ),
+            .swiftUI
+        )
+    }
+
+    func testNoSearchStateUsesNoOverlay() {
+        XCTAssertEqual(
+            resolveBrowserFindOverlayPresentationMode(
+                hasSearchState: false,
+                shouldRenderWebView: true,
+                usesLocalInlineHosting: true
+            ),
+            .none
+        )
+    }
+
+    func testBrowserSearchOverlayPanelIdResolvesFieldEditorDelegate() throws {
+        _ = NSApplication.shared
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 320, height: 120),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        let field = NSTextField(frame: NSRect(x: 20, y: 40, width: 200, height: 24))
+        let panelId = UUID()
+        setBrowserSearchOverlayPanelId(panelId, on: field)
+        window.contentView?.addSubview(field)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+
+        XCTAssertTrue(window.makeFirstResponder(field))
+
+        let firstResponder = try XCTUnwrap(window.firstResponder)
+        XCTAssertEqual(browserSearchOverlayPanelId(for: firstResponder), panelId)
+        XCTAssertEqual(browserSearchOverlayPanelId(for: field), panelId)
+    }
+}

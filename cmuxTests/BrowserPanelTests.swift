@@ -196,6 +196,71 @@ final class BrowserPanelAddressBarFocusRequestTests: XCTestCase {
     }
 }
 
+@MainActor
+final class BrowserPanelFindFocusRequestTests: XCTestCase {
+    func testStartFindIssuesDurableRequestUntilAcknowledged() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        XCTAssertNil(panel.pendingFindFieldFocusRequestId)
+
+        panel.startFind()
+
+        let requestId = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
+        XCTAssertNotNil(panel.searchState)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.findField))
+        XCTAssertTrue(panel.canApplyFindFieldFocusRequest(requestId))
+
+        panel.noteFindFieldFocused(requestId: requestId)
+
+        XCTAssertNil(panel.pendingFindFieldFocusRequestId)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.findField))
+    }
+
+    func testRestoreFindFocusReissuesRequestWithoutRecreatingSearchState() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        panel.startFind()
+        let initialSearchState = try XCTUnwrap(panel.searchState)
+        let firstRequest = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
+        panel.noteFindFieldFocused(requestId: firstRequest)
+
+        XCTAssertTrue(panel.restoreFocusIntent(.browser(.findField)))
+        XCTAssertTrue(panel.searchState === initialSearchState)
+
+        let secondRequest = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
+        XCTAssertNotEqual(firstRequest, secondRequest)
+        XCTAssertTrue(panel.canApplyFindFieldFocusRequest(secondRequest))
+    }
+
+    func testWebViewFocusCanOverrideFindIntentWhileFindBarStaysVisible() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        panel.startFind()
+        let requestId = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
+        panel.noteFindFieldFocused(requestId: requestId)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.findField))
+
+        panel.noteWebViewFocused()
+
+        XCTAssertNotNil(panel.searchState)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.webView))
+    }
+
+    func testHideFindReturnsPreferredIntentToWebView() throws {
+        let panel = BrowserPanel(workspaceId: UUID())
+
+        panel.startFind()
+        let requestId = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
+        panel.noteFindFieldFocused(requestId: requestId)
+
+        panel.hideFind(reason: "test")
+
+        XCTAssertNil(panel.searchState)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.webView))
+        XCTAssertNil(panel.pendingFindFieldFocusRequestId)
+    }
+}
+
 
 @MainActor
 final class BrowserPanelReactGrabBridgeTests: XCTestCase {

@@ -486,6 +486,24 @@ private struct BrowserChromeStyle {
     }
 }
 
+enum BrowserFindOverlayPresentationMode: Equatable {
+    case none
+    case swiftUI
+    case appKitPortal
+}
+
+func resolveBrowserFindOverlayPresentationMode(
+    hasSearchState: Bool,
+    shouldRenderWebView: Bool,
+    usesLocalInlineHosting: Bool
+) -> BrowserFindOverlayPresentationMode {
+    guard hasSearchState else { return .none }
+    if !shouldRenderWebView || usesLocalInlineHosting {
+        return .swiftUI
+    }
+    return .appKitPortal
+}
+
 /// View for rendering a browser panel with address bar
 struct BrowserPanelView: View {
     @ObservedObject var panel: BrowserPanel
@@ -657,6 +675,38 @@ struct BrowserPanelView: View {
         return currentPaneId.id == paneId.id
     }
 
+    private var usesLocalInlineHostingForFindOverlay: Bool {
+        isCurrentPaneOwner &&
+            (prefersLocalInlineHosting || panel.shouldUseLocalInlineDeveloperToolsHosting())
+    }
+
+    private var searchOverlayConfiguration: BrowserPortalSearchOverlayConfiguration? {
+        panel.searchState.map { searchState in
+            BrowserPortalSearchOverlayConfiguration(
+                panelId: panel.id,
+                searchState: searchState,
+                focusRequestId: panel.pendingFindFieldFocusRequestId,
+                canApplyFocusRequest: { requestId in
+                    canApplyBrowserFindFieldFocusRequest(requestId)
+                },
+                onNext: { panel.findNext() },
+                onPrevious: { panel.findPrevious() },
+                onClose: { panel.hideFind(reason: "overlay") },
+                onFieldDidFocus: { requestId in
+                    panel.noteFindFieldFocused(requestId: requestId)
+                }
+            )
+        }
+    }
+
+    private var searchOverlayPresentationMode: BrowserFindOverlayPresentationMode {
+        resolveBrowserFindOverlayPresentationMode(
+            hasSearchState: panel.searchState != nil,
+            shouldRenderWebView: panel.shouldRenderWebView,
+            usesLocalInlineHosting: usesLocalInlineHostingForFindOverlay
+        )
+    }
+
     var body: some View {
         layeredPanelContent
             .coordinateSpace(name: "BrowserPanelViewSpace")
@@ -687,8 +737,9 @@ struct BrowserPanelView: View {
     }
 
     private var layeredPanelContent: some View {
-        // Layering contract: browser Cmd+F UI is mounted in the portal-hosted AppKit
-        // container. Rendering it here can hide it behind the portal-hosted WKWebView.
+        // Portal-hosted browsers need the find UI inside their AppKit container.
+        // Direct-pane local-inline browsers own their visible surface here, so the
+        // SwiftUI layer is the correct owner for the find overlay on that path.
         VStack(spacing: 0) {
             addressBar
                 .fixedSize(horizontal: false, vertical: true)
@@ -696,21 +747,17 @@ struct BrowserPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .overlay {
-            // Keep Cmd+F usable when the browser is still in the empty new-tab
-            // state (no WKWebView mounted yet). WebView-backed cases are hosted
-            // in AppKit by WindowBrowserPortal to avoid layering/clipping issues.
-            if !panel.shouldRenderWebView, let searchState = panel.searchState {
+            if searchOverlayPresentationMode == .swiftUI,
+               let configuration = searchOverlayConfiguration {
                 BrowserSearchOverlay(
-                    panelId: panel.id,
-                    searchState: searchState,
-                    focusRequestGeneration: panel.searchFocusRequestGeneration,
-                    canApplyFocusRequest: { generation in
-                        canApplyBrowserFindFieldFocusRequest(generation)
-                    },
-                    onNext: { panel.findNext() },
-                    onPrevious: { panel.findPrevious() },
-                    onClose: { panel.hideFind() },
-                    onFieldDidFocus: { panel.noteFindFieldFocused() }
+                    panelId: configuration.panelId,
+                    searchState: configuration.searchState,
+                    focusRequestId: configuration.focusRequestId,
+                    canApplyFocusRequest: configuration.canApplyFocusRequest,
+                    onNext: configuration.onNext,
+                    onPrevious: configuration.onPrevious,
+                    onClose: configuration.onClose,
+                    onFieldDidFocus: configuration.onFieldDidFocus
                 )
             }
         }
@@ -904,7 +951,7 @@ struct BrowserPanelView: View {
             applyPendingAddressBarFocusRequestIfNeeded()
             autoFocusOmnibarIfBlank()
         } else {
-            panel.invalidateAddressBarPageFocusRestoreAttempts()
+            panel.invalidateWebContentFocusRestoreAttempts()
             hideSuggestions()
             setAddressBarFocused(false, reason: "panelFocus.onChange.unfocused")
             // Surface switches in split layouts can keep the browser visible, so
@@ -1415,33 +1462,23 @@ struct BrowserPanelView: View {
         let useLocalInlineDeveloperToolsHosting =
             panel.shouldUseLocalInlineDeveloperToolsHosting() &&
             isCurrentPaneOwner
+        let usesLocalInlineHosting = useLocalInlineHosting || useLocalInlineDeveloperToolsHosting
 
         return Group {
             if panel.shouldRenderWebView {
                 WebViewRepresentable(
                     panel: panel,
                     paneId: paneId,
-                    shouldAttachWebView: isVisibleInUI && isCurrentPaneOwner && !(useLocalInlineHosting || useLocalInlineDeveloperToolsHosting),
-                    useLocalInlineHosting: useLocalInlineHosting || useLocalInlineDeveloperToolsHosting,
+                    shouldAttachWebView: isVisibleInUI && isCurrentPaneOwner && !usesLocalInlineHosting,
+                    useLocalInlineHosting: usesLocalInlineHosting,
                     retainedHostView: retainedWebViewHost,
                     shouldFocusWebView: isFocused && !addressBarFocused,
                     isPanelFocused: isFocused,
                     portalZPriority: portalPriority,
                     paneDropZone: paneDropZone,
-                    searchOverlay: panel.searchState.map { searchState in
-                        BrowserPortalSearchOverlayConfiguration(
-                            panelId: panel.id,
-                            searchState: searchState,
-                            focusRequestGeneration: panel.searchFocusRequestGeneration,
-                            canApplyFocusRequest: { generation in
-                                canApplyBrowserFindFieldFocusRequest(generation)
-                            },
-                            onNext: { panel.findNext() },
-                            onPrevious: { panel.findPrevious() },
-                            onClose: { panel.hideFind() },
-                            onFieldDidFocus: { panel.noteFindFieldFocused() }
-                        )
-                    },
+                    searchOverlay: searchOverlayPresentationMode == .appKitPortal
+                        ? searchOverlayConfiguration
+                        : nil,
                     paneTopChromeHeight: addressBarHeight
                 )
                 .accessibilityIdentifier("BrowserWebViewSurface")
@@ -1586,8 +1623,8 @@ struct BrowserPanelView: View {
         return workspace.focusedPanelId == panel.id
     }
 
-    private func canApplyBrowserFindFieldFocusRequest(_ generation: UInt64) -> Bool {
-        isPanelFocusedInModel() && panel.canApplySearchFocusRequest(generation)
+    private func canApplyBrowserFindFieldFocusRequest(_ requestId: UUID) -> Bool {
+        isPanelFocusedInModel() && panel.canApplyFindFieldFocusRequest(requestId)
     }
 
     private func shouldApplyAddressBarExitFallback(in window: NSWindow) -> Bool {
@@ -2414,17 +2451,7 @@ struct BrowserPanelView: View {
                 }
                 syncWebViewResponderPolicyWithViewState(reason: "effects.blurToWebView.handoff")
                 panel.clearWebViewFocusSuppression()
-                let focusedWebView = window.makeFirstResponder(panel.webView)
-                if focusedWebView {
-                    panel.noteWebViewFocused()
-                }
-#if DEBUG
-                dlog(
-                    "browser.focus.addressBar.exit.handoff panel=\(panel.id.uuidString.prefix(5)) " +
-                    "focusedWebView=\(focusedWebView ? 1 : 0)"
-                )
-#endif
-                panel.restoreAddressBarPageFocusIfNeeded { restored in
+                panel.transitionToWebContentFocus(reason: "addressBarExit") { restored in
                     guard shouldApplyAddressBarExitFallback(in: window) else {
 #if DEBUG
                         dlog(
@@ -2434,22 +2461,6 @@ struct BrowserPanelView: View {
 #endif
                         NotificationCenter.default.post(name: .browserDidExitAddressBar, object: panel.id)
                         return
-                    }
-                    var hasWebViewResponder =
-                        browserFocusResponderChainContains(window.firstResponder, target: panel.webView)
-                    if !hasWebViewResponder {
-                        let fallbackFocusedWebView = window.makeFirstResponder(panel.webView)
-                        hasWebViewResponder = fallbackFocusedWebView
-#if DEBUG
-                        dlog(
-                            "browser.focus.addressBar.exit.handoff panel=\(panel.id.uuidString.prefix(5)) " +
-                            "fallbackFocusedWebView=\(fallbackFocusedWebView ? 1 : 0) " +
-                            "restored=\(restored ? 1 : 0)"
-                        )
-#endif
-                    }
-                    if hasWebViewResponder {
-                        panel.noteWebViewFocused()
                     }
                     NotificationCenter.default.post(name: .browserDidExitAddressBar, object: panel.id)
                 }
