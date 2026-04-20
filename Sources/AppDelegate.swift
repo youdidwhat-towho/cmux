@@ -6781,17 +6781,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func focusAppAfterAuthCallback() {
-        // When the sign-in deeplink returns through the browser only the
-        // Settings window gets re-fronted by default, leaving any regular
-        // cmux workspace windows buried behind other apps. Activate the
-        // app, re-front every visible cmux window in back-to-front order
-        // to preserve relative z-order, then raise Settings on top.
-        NSApplication.shared.activate(ignoringOtherApps: true)
+        // The default URL-open activation only brings the Settings window
+        // forward, leaving workspace windows buried behind other apps.
+        // .activateAllWindows is the macOS 14+ idiom for "this app is
+        // foreground again, bring every one of its windows along." The
+        // deprecated NSApp.activate(ignoringOtherApps:) falls back to
+        // cooperative activation on recent macOS and drops non-key windows.
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
 
         let settingsWindow = SettingsWindowController.shared.window
+        // orderedWindows is front-to-back. Iterate reversed so each
+        // orderFrontRegardless moves a back window forward without
+        // shuffling relative z-order.
         let visible = NSApp.orderedWindows.filter { $0.isVisible }
         for window in visible.reversed() where window !== settingsWindow {
-            window.orderFront(nil)
+            window.orderFrontRegardless()
         }
         if let settingsWindow, settingsWindow.isVisible {
             settingsWindow.makeKeyAndOrderFront(nil)
