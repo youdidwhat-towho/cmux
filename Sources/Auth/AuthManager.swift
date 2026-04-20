@@ -1,9 +1,35 @@
 import AppKit
+import AuthenticationServices
+import CMUXAuthCore
 import Foundation
 import StackAuth
 #if canImport(Security)
 import Security
 #endif
+
+private final class AuthPresentationContext: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = AuthPresentationContext()
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        // ASWebAuthenticationSession invokes this on whichever thread called
+        // session.start(). When beginSignIn() fires from the socket command
+        // dispatch thread (cmux auth login), this callback lands off-main,
+        // and any NSApp access must hop to main before returning.
+        if Thread.isMainThread {
+            return Self.currentAnchor()
+        }
+        var result: ASPresentationAnchor = NSWindow()
+        DispatchQueue.main.sync {
+            result = Self.currentAnchor()
+        }
+        return result
+    }
+
+    @MainActor
+    private static func currentAnchor() -> ASPresentationAnchor {
+        NSApp.keyWindow ?? NSApp.mainWindow ?? (NSApp.windows.first ?? NSWindow())
+    }
+}
 
 enum AuthManagerError: LocalizedError {
     case invalidCallback
@@ -75,7 +101,20 @@ enum AuthKeychainServiceName {
 
 @MainActor
 final class AuthManager: ObservableObject {
-    static let shared = AuthManager()
+    static let shared = AuthManager(tokenStore: AuthManager.defaultTokenStore())
+
+    private static func defaultTokenStore() -> any StackAuthTokenStoreProtocol {
+        // Release builds include a keychain-access-groups entitlement (via
+        // Resources/cmux.entitlements) and go through the data-protection
+        // keychain. Debug ad-hoc builds can't carry that entitlement
+        // without a provisioning profile, so Keychain writes fail with
+        // errSecMissingEntitlement and the file store takes over. The
+        // wrapper picks per-run based on the first keychain write result.
+        return FallbackTokenStore(
+            primary: KeychainStackTokenStore(),
+            fallback: FileStackTokenStore()
+        )
+    }
 
     @Published private(set) var isAuthenticated = false
     @Published private(set) var currentUser: CMUXAuthUser?
@@ -120,27 +159,123 @@ final class AuthManager: ObservableObject {
     }
 
     private var loginPollTask: Task<Void, Never>?
+    private var webAuthSession: ASWebAuthenticationSession?
 
     func beginSignIn() {
         loginPollTask?.cancel()
+        webAuthSession?.cancel()
+        webAuthSession = nil
         isLoading = true
 
-        loginPollTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                let refreshToken = try await Self.runCLIAuthFlow(urlOpener: self.urlOpener)
-                NSLog("auth.login: got refresh token (%d chars)", refreshToken.count)
-                await self.tokenStore.setTokens(accessToken: nil, refreshToken: refreshToken)
-                NSLog("auth.login: tokens stored, refreshing session...")
-                try await self.refreshSession()
-                NSLog("auth.login: session refreshed, isAuthenticated=%d user=%@", self.isAuthenticated ? 1 : 0, self.currentUser?.primaryEmail ?? "nil")
-                self.didCompleteBrowserSignIn = true
-            } catch is CancellationError {
-                // cancelled
-            } catch {
-                NSLog("auth.login failed: %@", "\(error)")
+        let signInURL = AuthEnvironment.signInURL()
+        let callbackScheme = AuthEnvironment.callbackScheme
+
+        let session = ASWebAuthenticationSession(
+            url: signInURL,
+            callbackURLScheme: callbackScheme
+        ) { [weak self] callbackURL, error in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer {
+                    self.isLoading = false
+                    self.webAuthSession = nil
+                }
+                if let error {
+                    NSLog("auth.webauth failed: %@", "\(error)")
+                    return
+                }
+                guard let callbackURL else { return }
+                do {
+                    try await self.handleCallbackURL(callbackURL)
+                } catch {
+                    NSLog("auth.webauth callback failed: %@", "\(error)")
+                }
             }
-            self.isLoading = false
+        }
+        session.presentationContextProvider = AuthPresentationContext.shared
+        session.prefersEphemeralWebBrowserSession = false
+
+        if session.start() {
+            webAuthSession = session
+        } else {
+            NSLog("auth.webauth: session.start() returned false")
+            isLoading = false
+        }
+    }
+
+    /// Starts the ASWebAuthenticationSession popup and awaits the user's
+    /// completion by observing isAuthenticated AND isLoading. Resolves when
+    /// authenticated, when the sign-in attempt settles unsuccessfully (popup
+    /// dismissed/cancelled/error), or when the deadline elapses. No polling
+    /// — the $isAuthenticated / $isLoading AsyncPublishers drive the wait.
+    func beginSignInAndAwait(timeout: TimeInterval) async -> Bool {
+        if isAuthenticated { return true }
+        beginSignIn()
+        return await waitForSignInSettled(timeout: timeout)
+    }
+
+    /// Signs out and awaits the state to flip. signOut() is already async and
+    /// clears state before returning, so this is mostly a thin wrapper; the
+    /// deadline exists purely to cap the worst-case hang time.
+    func signOutAndAwait(timeout: TimeInterval) async -> Bool {
+        await signOut()
+        if !isAuthenticated { return true }
+        return await waitForAuthState(target: false, timeout: timeout)
+    }
+
+    private func waitForSignInSettled(timeout: TimeInterval) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { @MainActor [weak self] in
+                guard let self else { return false }
+                for await value in self.$isAuthenticated.values {
+                    if value { return true }
+                }
+                return false
+            }
+            group.addTask { @MainActor [weak self] in
+                guard let self else { return false }
+                // Wait for isLoading to flip false after we started the
+                // popup. If authentication hasn't succeeded by then the
+                // user cancelled/errored and we can resolve early.
+                for await loading in self.$isLoading.values {
+                    if !loading && !self.isAuthenticated { return false }
+                    if self.isAuthenticated { return true }
+                }
+                return false
+            }
+            group.addTask {
+                let maxSeconds: Double = 24 * 60 * 60
+                let clamped = max(0, min(timeout, maxSeconds))
+                try? await Task.sleep(nanoseconds: UInt64(clamped * 1_000_000_000))
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
+        }
+    }
+
+    private func waitForAuthState(target: Bool, timeout: TimeInterval) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask { @MainActor [weak self] in
+                guard let self else { return false }
+                for await value in self.$isAuthenticated.values {
+                    if value == target { return true }
+                }
+                return false
+            }
+            group.addTask {
+                // Clamp to a safe upper bound before converting to nanoseconds.
+                // UInt64 overflow on an oversized Double would trap at runtime.
+                let maxSeconds: Double = 24 * 60 * 60
+                let clamped = max(0, min(timeout, maxSeconds))
+                let ns = UInt64(clamped * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: ns)
+                return false
+            }
+            let first = await group.next() ?? false
+            group.cancelAll()
+            return first
         }
     }
 
@@ -456,8 +591,14 @@ final class AuthManager: ObservableObject {
         }
     }
 
+    /// DEBUG-only append to /tmp/cmux-auth-debug.log. In Release builds this
+    /// is a no-op so token-derived material and user emails never land in a
+    /// world-traversable file. Call sites still pass PII-bearing strings
+    /// because redacting at the call site is a lot of churn; keeping the
+    /// #if DEBUG guard here is the single bottleneck that makes that safe.
     nonisolated static func authLog(_ message: String) {
-        let line = "[\(ISO8601DateFormatter().string(from: Date()))] auth: \(message)\n"
+        #if DEBUG
+        let line = "[\(Self.logTimestampFormatter.string(from: Date()))] auth: \(message)\n"
         let path = "/tmp/cmux-auth-debug.log"
         if let handle = FileHandle(forWritingAtPath: path) {
             handle.seekToEndOfFile()
@@ -466,7 +607,16 @@ final class AuthManager: ObservableObject {
         } else {
             FileManager.default.createFile(atPath: path, contents: line.data(using: .utf8))
         }
+        #endif
     }
+
+    // ISO8601DateFormatter is expensive to construct (calendar + locale +
+    // time zone). Reuse one instance across the high-frequency authLog path.
+    private static let logTimestampFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 
     private func authLog(_ message: String) {
         Self.authLog(message)
@@ -529,14 +679,27 @@ final class AuthManager: ObservableObject {
             )
             return
         }
-        // Open in the system's default web browser, not cmux's built-in browser.
-        // NSWorkspace.shared.open(url) would open in cmux if it registered as HTTP handler.
+        // Open in the user's actual default browser. urlsForApplications(toOpen:)
+        // returns candidates in LaunchServices priority order (user's chosen
+        // default first). Skip cmux itself, since Info.plist advertises http/https
+        // at LSHandlerRank=Default and otherwise the app could re-open the URL in
+        // its own embedded WebView.
+        let ownBundleIDs: Set<String> = {
+            var ids: Set<String> = []
+            if let id = Bundle.main.bundleIdentifier { ids.insert(id) }
+            return ids
+        }()
+        let candidates = NSWorkspace.shared.urlsForApplications(toOpen: url)
+        let browserURL = candidates.first { appURL in
+            guard let id = Bundle(url: appURL)?.bundleIdentifier else { return true }
+            if ownBundleIDs.contains(id) { return false }
+            let lower = id.lowercased()
+            return !lower.hasPrefix("dev.cmux.") && !lower.hasPrefix("com.cmuxterm.")
+        }
         let config = NSWorkspace.OpenConfiguration()
         config.createsNewApplicationInstance = false
-        if let safariURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") {
-            NSWorkspace.shared.open([url], withApplicationAt: safariURL, configuration: config)
-        } else if let chromeURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.google.Chrome") {
-            NSWorkspace.shared.open([url], withApplicationAt: chromeURL, configuration: config)
+        if let browserURL {
+            NSWorkspace.shared.open([url], withApplicationAt: browserURL, configuration: config)
         } else {
             NSWorkspace.shared.open(url)
         }
@@ -555,45 +718,54 @@ final class AuthManager: ObservableObject {
 }
 
 
-private actor KeychainStackTokenStore: StackAuthTokenStoreProtocol {
-    private static let accessTokenAccount = "cmux-auth-access-token"
-    private static let refreshTokenAccount = "cmux-auth-refresh-token"
-    // Each tagged build uses its own keychain service (per bundle ID) to avoid cross-build keychain prompts.
-    private let service = AuthKeychainServiceName.make()
+/// Composite store that routes to Keychain first and transparently falls
+/// back to the file store if Keychain signals a real failure (empirically:
+/// errSecMissingEntitlement -34018 on ad-hoc Debug builds without a matching
+/// keychain-access-groups entry in the signed entitlements). Keeps writes
+/// split-brain-free by clearing the file store whenever Keychain succeeds.
+private actor FallbackTokenStore: StackAuthTokenStoreProtocol {
+    private let keychain: KeychainStackTokenStore
+    private let file: FileStackTokenStore
+    private var keychainWorks: Bool = true
 
-    // In-memory cache to avoid keychain prompts in environments where
-    // the login keychain is locked (SSH, background processes).
-    private var cachedAccessToken: String?
-    private var cachedRefreshToken: String?
+    init(primary keychain: KeychainStackTokenStore, fallback file: FileStackTokenStore) {
+        self.keychain = keychain
+        self.file = file
+    }
 
     func getStoredAccessToken() async -> String? {
-        cachedAccessToken ?? keychainValueSafe(account: Self.accessTokenAccount)
+        if keychainWorks, let value = await keychain.getStoredAccessToken() {
+            return value
+        }
+        return await file.getStoredAccessToken()
     }
 
     func getStoredRefreshToken() async -> String? {
-        cachedRefreshToken ?? keychainValueSafe(account: Self.refreshTokenAccount)
+        if keychainWorks, let value = await keychain.getStoredRefreshToken() {
+            return value
+        }
+        return await file.getStoredRefreshToken()
     }
 
     func setTokens(accessToken: String?, refreshToken: String?) async {
-        AuthManager.authLog("setTokens: access=\(accessToken != nil ? "\(accessToken!.prefix(10))..." : "nil") refresh=\(refreshToken != nil ? "\(refreshToken!.prefix(10))..." : "nil")")
-        // Always update in-memory cache (instant, no prompt)
-        cachedAccessToken = (accessToken?.isEmpty == false) ? accessToken : nil
-        cachedRefreshToken = (refreshToken?.isEmpty == false) ? refreshToken : nil
-        // Best-effort keychain persistence (may block if keychain is locked)
-        if let accessToken, !accessToken.isEmpty {
-            setKeychainValueSafe(accessToken, account: Self.accessTokenAccount)
+        if keychainWorks {
+            let ok = await keychain.trySetTokens(
+                accessToken: accessToken,
+                refreshToken: refreshToken
+            )
+            if ok {
+                await file.clearTokens()
+                return
+            }
+            keychainWorks = false
+            AuthManager.authLog("keychain write failed; switching to file fallback for this session")
         }
-        if let refreshToken, !refreshToken.isEmpty {
-            setKeychainValueSafe(refreshToken, account: Self.refreshTokenAccount)
-        }
+        await file.setTokens(accessToken: accessToken, refreshToken: refreshToken)
     }
 
     func clearTokens() async {
-        AuthManager.authLog("clearTokens called")
-        cachedAccessToken = nil
-        cachedRefreshToken = nil
-        deleteKeychainValue(account: Self.accessTokenAccount)
-        deleteKeychainValue(account: Self.refreshTokenAccount)
+        await keychain.clearTokens()
+        await file.clearTokens()
     }
 
     func compareAndSet(
@@ -601,115 +773,250 @@ private actor KeychainStackTokenStore: StackAuthTokenStoreProtocol {
         newRefreshToken: String?,
         newAccessToken: String?
     ) async {
-        let current = keychainValue(account: Self.refreshTokenAccount)
+        if keychainWorks {
+            await keychain.compareAndSet(
+                compareRefreshToken: compareRefreshToken,
+                newRefreshToken: newRefreshToken,
+                newAccessToken: newAccessToken
+            )
+            return
+        }
+        await file.compareAndSet(
+            compareRefreshToken: compareRefreshToken,
+            newRefreshToken: newRefreshToken,
+            newAccessToken: newAccessToken
+        )
+    }
+}
+
+/// File-backed token store: writes to a JSON document with 0600 mode in
+/// Application Support, namespaced by bundle id. Chosen over both the login
+/// keychain (prompts on every ad-hoc Debug rebuild) and the data-protection
+/// keychain (fails with errSecMissingEntitlement without a keychain-access-
+/// groups entitlement we don't have on Debug). `fsync` on write so a
+/// pkill-during-reload can't drop the refresh token.
+private actor FileStackTokenStore: StackAuthTokenStoreProtocol {
+    private struct Snapshot: Codable {
+        var accessToken: String?
+        var refreshToken: String?
+    }
+
+    private let fileURL: URL = {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
+        let bundleID = Bundle.main.bundleIdentifier ?? "cmux"
+        return support
+            .appendingPathComponent("cmux", isDirectory: true)
+            .appendingPathComponent(bundleID, isDirectory: true)
+            .appendingPathComponent("credentials.json", isDirectory: false)
+    }()
+
+    private var cache: Snapshot?
+
+    func getStoredAccessToken() async -> String? {
+        loadIfNeeded().accessToken
+    }
+
+    func getStoredRefreshToken() async -> String? {
+        loadIfNeeded().refreshToken
+    }
+
+    func setTokens(accessToken: String?, refreshToken: String?) async {
+        AuthManager.authLog("file.setTokens: hasAccess=\(accessToken?.isEmpty == false) hasRefresh=\(refreshToken?.isEmpty == false)")
+        var snapshot = loadIfNeeded()
+        snapshot.accessToken = (accessToken?.isEmpty == false) ? accessToken : nil
+        snapshot.refreshToken = (refreshToken?.isEmpty == false) ? refreshToken : nil
+        write(snapshot)
+    }
+
+    func clearTokens() async {
+        AuthManager.authLog("clearTokens called")
+        write(Snapshot(accessToken: nil, refreshToken: nil))
+    }
+
+    func compareAndSet(
+        compareRefreshToken: String,
+        newRefreshToken: String?,
+        newAccessToken: String?
+    ) async {
+        let current = loadIfNeeded().refreshToken
         let matches = current == compareRefreshToken
-        AuthManager.authLog("compareAndSet: matches=\(matches) newRefresh=\(newRefreshToken != nil ? "\(newRefreshToken!.prefix(10))..." : "nil") newAccess=\(newAccessToken != nil ? "\(newAccessToken!.prefix(10))..." : "nil")")
+        AuthManager.authLog("file.compareAndSet: matches=\(matches) hasNewRefresh=\(newRefreshToken?.isEmpty == false) hasNewAccess=\(newAccessToken?.isEmpty == false)")
         guard matches else { return }
-        // Don't let the StackClientApp's error cleanup path delete both tokens.
-        // If both new values are nil, it means the refresh failed and the SDK wants
-        // to clear the session. Preserve the refresh token so the user stays signed in.
         if newRefreshToken == nil && newAccessToken == nil {
-            AuthManager.authLog("compareAndSet: blocked double-nil clear (preserving session)")
+            AuthManager.authLog("file.compareAndSet: blocked double-nil clear (preserving session)")
             return
         }
         await setTokens(accessToken: newAccessToken, refreshToken: newRefreshToken)
     }
 
-    /// Read from keychain without blocking on a password prompt.
-    /// Uses kSecUseAuthenticationUI = kSecUseAuthenticationUISkip to avoid UI prompts.
-    private func keychainValueSafe(account: String) -> String? {
+    private func loadIfNeeded() -> Snapshot {
+        if let cache { return cache }
+        let snapshot = readFromDisk()
+        cache = snapshot
+        return snapshot
+    }
+
+    private func readFromDisk() -> Snapshot {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: fileURL.path) else { return Snapshot() }
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let snapshot = try JSONDecoder().decode(Snapshot.self, from: data)
+            return snapshot
+        } catch {
+            AuthManager.authLog("credentials read failed: \(error)")
+            return Snapshot()
+        }
+    }
+
+    private func write(_ snapshot: Snapshot) {
+        cache = snapshot
+        let fm = FileManager.default
+        let dir = fileURL.deletingLastPathComponent()
+        do {
+            try fm.createDirectory(
+                at: dir,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            let data = try JSONEncoder().encode(snapshot)
+            try data.write(to: fileURL, options: [.atomic])
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        } catch {
+            AuthManager.authLog("credentials write failed: \(error)")
+        }
+    }
+}
+
+private actor KeychainStackTokenStore: StackAuthTokenStoreProtocol {
+    private static let accessTokenAccount = "cmux-auth-access-token"
+    private static let refreshTokenAccount = "cmux-auth-refresh-token"
+    private let service = AuthKeychainServiceName.make()
+
+    private var cachedAccessToken: String?
+    private var cachedRefreshToken: String?
+
+    func getStoredAccessToken() async -> String? {
+        if let cachedAccessToken { return cachedAccessToken }
+        return keychainRead(account: Self.accessTokenAccount)
+    }
+
+    func getStoredRefreshToken() async -> String? {
+        if let cachedRefreshToken { return cachedRefreshToken }
+        return keychainRead(account: Self.refreshTokenAccount)
+    }
+
+    func setTokens(accessToken: String?, refreshToken: String?) async {
+        _ = await trySetTokens(accessToken: accessToken, refreshToken: refreshToken)
+    }
+
+    /// Same as setTokens but returns whether every keychain operation
+    /// actually succeeded. Used by FallbackTokenStore to decide when to
+    /// give up on Keychain and route to the file store.
+    func trySetTokens(accessToken: String?, refreshToken: String?) async -> Bool {
+        AuthManager.authLog("keychain.setTokens: hasAccess=\(accessToken?.isEmpty == false) hasRefresh=\(refreshToken?.isEmpty == false)")
+        cachedAccessToken = (accessToken?.isEmpty == false) ? accessToken : nil
+        cachedRefreshToken = (refreshToken?.isEmpty == false) ? refreshToken : nil
+
+        var allOK = true
+        if let accessToken, !accessToken.isEmpty {
+            allOK = keychainWrite(accessToken, account: Self.accessTokenAccount) && allOK
+        } else {
+            keychainDelete(account: Self.accessTokenAccount)
+        }
+        if let refreshToken, !refreshToken.isEmpty {
+            allOK = keychainWrite(refreshToken, account: Self.refreshTokenAccount) && allOK
+        } else {
+            keychainDelete(account: Self.refreshTokenAccount)
+        }
+        return allOK
+    }
+
+    func clearTokens() async {
+        AuthManager.authLog("clearTokens called")
+        cachedAccessToken = nil
+        cachedRefreshToken = nil
+        keychainDelete(account: Self.accessTokenAccount)
+        keychainDelete(account: Self.refreshTokenAccount)
+    }
+
+    func compareAndSet(
+        compareRefreshToken: String,
+        newRefreshToken: String?,
+        newAccessToken: String?
+    ) async {
+        let current = keychainRead(account: Self.refreshTokenAccount)
+        let matches = current == compareRefreshToken
+        AuthManager.authLog("keychain.compareAndSet: matches=\(matches) hasNewRefresh=\(newRefreshToken?.isEmpty == false) hasNewAccess=\(newAccessToken?.isEmpty == false)")
+        guard matches else { return }
+        // Don't let the StackClientApp's error cleanup path delete both tokens.
+        // If both new values are nil, it means the refresh failed and the SDK wants
+        // to clear the session. Preserve the refresh token so the user stays signed in.
+        if newRefreshToken == nil && newAccessToken == nil {
+            AuthManager.authLog("keychain.compareAndSet: blocked double-nil clear (preserving session)")
+            return
+        }
+        await setTokens(accessToken: newAccessToken, refreshToken: newRefreshToken)
+    }
+
 #if canImport(Security)
-        let query: [String: Any] = [
+    private func baseQuery(account: String) -> [String: Any] {
+        [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-            kSecUseAuthenticationUI as String: kSecUseAuthenticationUISkip,
+            kSecUseDataProtectionKeychain as String: true,
         ]
+    }
+
+    private func keychainRead(account: String) -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess, let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
-#else
-        return nil
-#endif
-    }
-
-    /// Write to keychain without blocking. If the keychain is locked, silently fails.
-    private func setKeychainValueSafe(_ value: String, account: String) {
-#if canImport(Security)
-        guard let data = value.data(using: .utf8) else { return }
-        // Try update first
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let status = SecItemUpdate(lookup as CFDictionary, [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var insert = lookup
-            insert[kSecValueData as String] = data
-            SecItemAdd(insert as CFDictionary, nil)
-        }
-#endif
-    }
-
-    private func keychainValue(account: String) -> String? {
-#if canImport(Security)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else {
+        guard status == errSecSuccess, let data = result as? Data else {
+            if status != errSecItemNotFound {
+                AuthManager.authLog("keychain READ status=\(status) account=\(account)")
+            }
             return nil
         }
         return String(data: data, encoding: .utf8)
-#else
-        return nil
-#endif
     }
 
-    private func setKeychainValue(_ value: String, account: String) {
-#if canImport(Security)
-        guard let data = value.data(using: .utf8) else { return }
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        let attributes: [String: Any] = [
-            kSecValueData as String: data,
-        ]
-        let status = SecItemUpdate(lookup as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var insert = lookup
-            insert[kSecValueData as String] = data
-            let addStatus = SecItemAdd(insert as CFDictionary, nil)
-            if addStatus != errSecSuccess {
-                AuthManager.authLog("keychain ADD failed: \(addStatus) account=\(account)")
-            }
-        } else if status != errSecSuccess {
-            AuthManager.authLog("keychain UPDATE failed: \(status) account=\(account)")
+    private func keychainWrite(_ value: String, account: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        let lookup = baseQuery(account: account)
+        let updateStatus = SecItemUpdate(
+            lookup as CFDictionary,
+            [kSecValueData as String: data] as CFDictionary
+        )
+        if updateStatus == errSecSuccess { return true }
+        if updateStatus != errSecItemNotFound {
+            AuthManager.authLog("keychain UPDATE status=\(updateStatus) account=\(account)")
         }
-#endif
+        var insert = lookup
+        insert[kSecValueData as String] = data
+        insert[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        let addStatus = SecItemAdd(insert as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            AuthManager.authLog("keychain ADD status=\(addStatus) account=\(account)")
+            return false
+        }
+        return true
     }
 
-    private func deleteKeychainValue(account: String) {
-#if canImport(Security)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
-#endif
+    private func keychainDelete(account: String) {
+        _ = SecItemDelete(baseQuery(account: account) as CFDictionary)
     }
+#else
+    private func keychainRead(account: String) -> String? { nil }
+    private func keychainWrite(_ value: String, account: String) -> Bool { false }
+    private func keychainDelete(account: String) {}
+#endif
 }
 
 actor LiveAuthClient: AuthClientProtocol {

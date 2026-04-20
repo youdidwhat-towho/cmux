@@ -1,3 +1,4 @@
+import CMUXAuthCore
 import Foundation
 
 struct AuthTeamSummary: Codable, Equatable, Identifiable, Sendable {
@@ -9,18 +10,6 @@ struct AuthTeamSummary: Codable, Equatable, Identifiable, Sendable {
         self.id = id
         self.displayName = displayName
         self.slug = slug
-    }
-}
-
-struct CMUXAuthUser: Codable, Equatable, Sendable {
-    let id: String
-    let primaryEmail: String?
-    let displayName: String?
-
-    init(id: String, primaryEmail: String?, displayName: String?) {
-        self.id = id
-        self.primaryEmail = primaryEmail
-        self.displayName = displayName
     }
 }
 

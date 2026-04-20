@@ -96,6 +96,23 @@ enum PaneFirstClickFocusSettings {
     }
 }
 
+enum TerminalScrollBarSettings {
+    static let showScrollBarKey = "terminal.showScrollBar"
+    static let defaultShowScrollBar = true
+    static let didChangeNotification = Notification.Name("cmux.terminalScrollBarSettingsDidChange")
+
+    static func isVisible(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: showScrollBarKey) == nil {
+            return defaultShowScrollBar
+        }
+        return defaults.bool(forKey: showScrollBarKey)
+    }
+
+    static func notifyDidChange(notificationCenter: NotificationCenter = .default) {
+        notificationCenter.post(name: didChangeNotification, object: nil)
+    }
+}
+
 enum UITestLaunchManifest {
     static let argumentName = "-cmuxUITestLaunchManifest"
 
@@ -139,6 +156,7 @@ struct cmuxApp: App {
     @StateObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var sidebarState = SidebarState()
     @StateObject private var sidebarSelectionState = SidebarSelectionState()
+    @StateObject private var fileExplorerState = FileExplorerState()
     @StateObject private var cmuxConfigStore = CmuxConfigStore()
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     private let primaryWindowId = UUID()
@@ -207,124 +225,65 @@ struct cmuxApp: App {
     }
 
     private static func configureGhosttyEnvironment() {
-        let bundle = Bundle.main
-        let bundleVersion = (bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let processEnvironment = cmuxCurrentProcessEnvironment()
+        let fileManager = FileManager.default
+        let ghosttyAppResources = "/Applications/Ghostty.app/Contents/Resources/ghostty"
+        let bundledGhosttyURL = Bundle.main.resourceURL?.appendingPathComponent("ghostty")
+        var resolvedResourcesDir: String?
 
-        for (key, value) in ghosttyEnvironmentOverrides(
-            processEnvironment: processEnvironment,
-            resourceURL: cmuxCurrentResourceURL(fileManager: .default) ?? bundle.resourceURL,
-            executableURL: cmuxCurrentExecutableURL() ?? bundle.executableURL,
-            bundleIdentifier: cmuxCurrentBundleIdentifier(environment: processEnvironment) ?? bundle.bundleIdentifier,
-            bundleVersion: bundleVersion,
-            fileManager: .default
-        ) {
-            setenv(key, value, 1)
+        if getenv("GHOSTTY_RESOURCES_DIR") == nil {
+            if let bundledGhosttyURL,
+               fileManager.fileExists(atPath: bundledGhosttyURL.path),
+               fileManager.fileExists(atPath: bundledGhosttyURL.appendingPathComponent("themes").path) {
+                resolvedResourcesDir = bundledGhosttyURL.path
+            } else if fileManager.fileExists(atPath: ghosttyAppResources) {
+                resolvedResourcesDir = ghosttyAppResources
+            } else if let bundledGhosttyURL, fileManager.fileExists(atPath: bundledGhosttyURL.path) {
+                resolvedResourcesDir = bundledGhosttyURL.path
+            }
+
+            if let resolvedResourcesDir {
+                setenv("GHOSTTY_RESOURCES_DIR", resolvedResourcesDir, 1)
+            }
+        }
+
+        if getenv("TERM") == nil {
+            setenv("TERM", TerminalSurface.managedTerminalType, 1)
+        }
+
+        if getenv("COLORTERM") == nil {
+            setenv("COLORTERM", TerminalSurface.managedColorTerm, 1)
+        }
+
+        if getenv("TERM_PROGRAM") == nil {
+            setenv("TERM_PROGRAM", TerminalSurface.managedTerminalProgram, 1)
+        }
+
+        if let resourcesDir = getenv("GHOSTTY_RESOURCES_DIR").flatMap({ String(cString: $0) }) {
+            let resourcesURL = URL(fileURLWithPath: resourcesDir)
+            let resourcesParent = resourcesURL.deletingLastPathComponent()
+            let dataDir = resourcesParent.path
+            let manDir = resourcesParent.appendingPathComponent("man").path
+
+            appendEnvPathIfMissing(
+                "XDG_DATA_DIRS",
+                path: dataDir,
+                defaultValue: "/usr/local/share:/usr/share"
+            )
+            appendEnvPathIfMissing("MANPATH", path: manDir)
         }
     }
 
-    static func ghosttyEnvironmentOverrides(
-        processEnvironment: [String: String],
-        resourceURL: URL?,
-        executableURL: URL?,
-        bundleIdentifier: String?,
-        bundleVersion: String?,
-        fileManager: FileManager = .default
-    ) -> [String: String] {
-        let fallbackGhosttyResources = "/Applications/Ghostty.app/Contents/Resources/ghostty"
-        let bundledGhosttyURL = resourceURL?.appendingPathComponent("ghostty")
-        let bundledShellIntegrationURL = resourceURL?.appendingPathComponent("shell-integration")
-        let bundledMacOSDir = executableURL?.deletingLastPathComponent().path
-        let bundledGhosttyResourcesWithThemes: String?
-        if let bundledGhosttyURL,
-           fileManager.fileExists(atPath: bundledGhosttyURL.path),
-           fileManager.fileExists(atPath: bundledGhosttyURL.appendingPathComponent("themes").path) {
-            bundledGhosttyResourcesWithThemes = bundledGhosttyURL.path
-        } else {
-            bundledGhosttyResourcesWithThemes = nil
+    private static func appendEnvPathIfMissing(_ key: String, path: String, defaultValue: String? = nil) {
+        if path.isEmpty { return }
+        var current = getenv(key).flatMap { String(cString: $0) } ?? ""
+        if current.isEmpty, let defaultValue {
+            current = defaultValue
         }
-
-        func normalized(_ value: String?) -> String? {
-            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return trimmed.isEmpty ? nil : trimmed
+        if current.split(separator: ":").contains(Substring(path)) {
+            return
         }
-
-        func firstExistingDirectory(_ candidates: [String?]) -> String? {
-            for candidate in candidates {
-                guard let candidate = normalized(candidate),
-                      fileManager.fileExists(atPath: candidate) else { continue }
-                return candidate
-            }
-            return nil
-        }
-
-        func prependedPath(_ path: String, current: String?, defaultValue: String? = nil) -> String {
-            let existing = normalized(current) ?? defaultValue ?? ""
-            let filteredExisting = existing
-                .split(separator: ":")
-                .map(String.init)
-                .filter { !$0.isEmpty && $0 != path }
-            if filteredExisting.isEmpty {
-                return path
-            }
-            return ([path] + filteredExisting).joined(separator: ":")
-        }
-
-        var overrides: [String: String] = [:]
-
-        let ghosttyResourcesDir = firstExistingDirectory([
-            bundledGhosttyResourcesWithThemes,
-            fileManager.fileExists(atPath: fallbackGhosttyResources) ? fallbackGhosttyResources : nil,
-            bundledGhosttyURL?.path,
-            processEnvironment["GHOSTTY_RESOURCES_DIR"],
-        ])
-
-        if let ghosttyResourcesDir {
-            overrides["GHOSTTY_RESOURCES_DIR"] = ghosttyResourcesDir
-
-            let resourcesParent = URL(fileURLWithPath: ghosttyResourcesDir).deletingLastPathComponent()
-            let terminfoDir = resourcesParent.appendingPathComponent("terminfo").path
-            if fileManager.fileExists(atPath: terminfoDir) {
-                overrides["TERMINFO"] = terminfoDir
-                overrides["TERM"] = "xterm-ghostty"
-            } else {
-                let preferredTerm = normalized(processEnvironment["TERM"]).flatMap { $0.lowercased() == "dumb" ? nil : $0 }
-                overrides["TERM"] = preferredTerm ?? "xterm-256color"
-            }
-
-            overrides["XDG_DATA_DIRS"] = prependedPath(
-                resourcesParent.path,
-                current: processEnvironment["XDG_DATA_DIRS"],
-                defaultValue: "/usr/local/share:/usr/share"
-            )
-            overrides["MANPATH"] = prependedPath(
-                resourcesParent.appendingPathComponent("man").path,
-                current: processEnvironment["MANPATH"]
-            )
-        } else {
-            let preferredTerm = normalized(processEnvironment["TERM"]).flatMap { $0.lowercased() == "dumb" ? nil : $0 }
-            overrides["TERM"] = preferredTerm ?? "xterm-256color"
-        }
-
-        if let bundledMacOSDir = firstExistingDirectory([bundledMacOSDir]) {
-            overrides["GHOSTTY_BIN_DIR"] = bundledMacOSDir
-        }
-        if let bundleIdentifier = normalized(bundleIdentifier) {
-            overrides["CMUX_BUNDLE_ID"] = bundleIdentifier
-        }
-        if let shellIntegrationDir = firstExistingDirectory([bundledShellIntegrationURL?.path]) {
-            overrides["CMUX_SHELL_INTEGRATION_DIR"] = shellIntegrationDir
-        }
-
-        overrides["COLORTERM"] = normalized(processEnvironment["COLORTERM"]) ?? "truecolor"
-        overrides["TERM_PROGRAM"] = "ghostty"
-
-        if let bundleVersion = normalized(bundleVersion) ?? normalized(processEnvironment["TERM_PROGRAM_VERSION"]) {
-            overrides["TERM_PROGRAM_VERSION"] = bundleVersion
-        }
-
-        return overrides
+        let updated = current.isEmpty ? path : "\(current):\(path)"
+        setenv(key, updated, 1)
     }
 
     private func migrateSidebarAppearanceDefaultsIfNeeded(defaults: UserDefaults) {
@@ -382,6 +341,7 @@ struct cmuxApp: App {
                 .environmentObject(notificationStore)
                 .environmentObject(sidebarState)
                 .environmentObject(sidebarSelectionState)
+                .environmentObject(fileExplorerState)
                 .environmentObject(cmuxConfigStore)
                 .onAppear {
 #if DEBUG
@@ -392,6 +352,7 @@ struct cmuxApp: App {
                     // Start the Unix socket controller for programmatic access
                     updateSocketController()
                     appDelegate.configure(tabManager: tabManager, notificationStore: notificationStore, sidebarState: sidebarState)
+                    appDelegate.fileExplorerState = fileExplorerState
                     cmuxConfigStore.wireDirectoryTracking(tabManager: tabManager)
                     cmuxConfigStore.loadAll()
                     applyAppearance()
@@ -409,15 +370,6 @@ struct cmuxApp: App {
                 }
         }
         .windowStyle(.hiddenTitleBar)
-        // A new mac window without `.defaultSize` uses SwiftUI's intrinsic
-        // content size (which was landing around 985×719 in logs for
-        // cmux because the content's min-width hints are tiny). At that
-        // size, ~180pt of sidebar + ~62pt of chrome leaves only ~805×657
-        // for the terminal — cramped and proportionally worse the smaller
-        // the window. Open at a size that gives the terminal a comfortable
-        // 100+ column working area by default. Users can still resize down
-        // to `minimumWindowWidth × minimumWindowHeight`.
-        .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(replacing: .appSettings) {
                 splitCommandButton(title: String(localized: "menu.app.settings", defaultValue: "Settings…"), shortcut: menuShortcut(for: .openSettings)) {
@@ -561,6 +513,9 @@ struct cmuxApp: App {
                     }
                     Button("Split Button Layout Debug…") {
                         SplitButtonLayoutDebugWindowController.shared.show()
+                    }
+                    Button("File Explorer Style Debug…") {
+                        FileExplorerStyleDebugWindowController.shared.show()
                     }
                     Button("Open All Debug Windows") {
                         openAllDebugWindows()
@@ -882,6 +837,10 @@ struct cmuxApp: App {
                     showNotificationsPopover()
                 }
             }
+        }
+
+        Window(String(localized: "settings.config.windowTitle", defaultValue: "Config"), id: ConfigSettingsView.windowID) {
+            ConfigSettingsView()
         }
     }
 
@@ -1705,6 +1664,7 @@ private enum DebugWindowConfigSnapshot {
         shortcutHintPaneTabYOffset=\(String(format: "%.1f", doubleValue(defaults, key: ShortcutHintDebugSettings.paneHintYKey, fallback: ShortcutHintDebugSettings.defaultPaneHintY)))
         shortcutHintAlwaysShow=\(boolValue(defaults, key: ShortcutHintDebugSettings.alwaysShowHintsKey, fallback: ShortcutHintDebugSettings.defaultAlwaysShowHints))
         shortcutHintShowOnCommandHold=\(boolValue(defaults, key: ShortcutHintDebugSettings.showHintsOnCommandHoldKey, fallback: ShortcutHintDebugSettings.defaultShowHintsOnCommandHold))
+        shortcutHintShowOnControlHold=\(boolValue(defaults, key: ShortcutHintDebugSettings.showHintsOnControlHoldKey, fallback: ShortcutHintDebugSettings.defaultShowHintsOnControlHold))
         """
 
         let backgroundPayload = """
@@ -2700,6 +2660,117 @@ enum SettingsNavigationRequest {
     static func target(from notification: Notification) -> SettingsNavigationTarget? {
         guard let rawValue = notification.userInfo?[targetKey] as? String else { return nil }
         return SettingsNavigationTarget(rawValue: rawValue)
+    }
+}
+
+// MARK: - File Explorer Style Debug
+
+private struct FileExplorerStyleDebugView: View {
+    @AppStorage("fileExplorer.style") private var styleRawValue: Int = 0
+
+    private var currentStyle: FileExplorerStyle {
+        FileExplorerStyle(rawValue: styleRawValue) ?? .liquidGlass
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("File Explorer Style")
+                .font(.headline)
+
+            ForEach(FileExplorerStyle.allCases, id: \.rawValue) { style in
+                HStack(spacing: 8) {
+                    Button(action: {
+                        styleRawValue = style.rawValue
+                        // Post notification so outline view reloads with new style
+                        NotificationCenter.default.post(name: .fileExplorerStyleDidChange, object: nil)
+                    }) {
+                        HStack(spacing: 8) {
+                            Image(systemName: styleRawValue == style.rawValue ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(styleRawValue == style.rawValue ? .accentColor : .secondary)
+                                .frame(width: 16)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(style.label)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text(styleDescription(style))
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 6)
+                        .padding(.horizontal, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(styleRawValue == style.rawValue
+                                    ? Color.accentColor.opacity(0.1)
+                                    : Color.clear)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Current: \(currentStyle.label)")
+                    .font(.system(size: 11, weight: .medium))
+                Text("Row: \(Int(currentStyle.rowHeight))pt, Indent: \(Int(currentStyle.indentation))pt, Icon: \(Int(currentStyle.iconSize))pt")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(16)
+        .frame(width: 320)
+    }
+
+    private func styleDescription(_ style: FileExplorerStyle) -> String {
+        switch style {
+        case .liquidGlass: return "Modern macOS, vibrancy, rounded selections"
+        case .highDensity: return "VS Code, compact rows, edge-to-edge"
+        case .terminalStealth: return "Monospace, border selection, desaturated"
+        case .proStudio: return "Logic Pro, chunky rows, pill selection"
+        case .finder: return "Finder sidebar, filled icons, hover tint"
+        }
+    }
+}
+
+extension Notification.Name {
+    static let fileExplorerStyleDidChange = Notification.Name("fileExplorerStyleDidChange")
+    static let titlebarShortcutHintsVisibilityChanged = Notification.Name("titlebarShortcutHintsVisibilityChanged")
+}
+
+private final class FileExplorerStyleDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = FileExplorerStyleDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 380),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "File Explorer Style"
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.fileExplorerStyleDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: FileExplorerStyleDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
     }
 }
 
@@ -3730,12 +3801,43 @@ enum AppIconMode: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppIconLaunchState {
+    private static let lock = NSLock()
+    private static var didFinishLaunching = false
+
+    static func markDidFinishLaunching() {
+        lock.lock()
+        defer { lock.unlock() }
+        didFinishLaunching = true
+    }
+
+    static func isApplicationFinishedLaunching() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let hasFinishedLaunching = didFinishLaunching
+        return hasFinishedLaunching
+    }
+}
+
 enum AppIconSettings {
     static let modeKey = "appIconMode"
     static let defaultMode: AppIconMode = .automatic
     private static let dockTileIconDidChangeNotification = Notification.Name("com.cmuxterm.appIconDidChange")
+    private static var liveEnvironmentProvider: () -> Environment = { .live() }
+
+    private static func isRunningUnderXCTest(_ env: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        if env["XCTestConfigurationFilePath"] != nil { return true }
+        if env["XCTestBundlePath"] != nil { return true }
+        if env["XCTestSessionIdentifier"] != nil { return true }
+        if env["XCInjectBundle"] != nil { return true }
+        if env["XCInjectBundleInto"] != nil { return true }
+        if env["DYLD_INSERT_LIBRARIES"]?.contains("libXCTest") == true { return true }
+        if env.keys.contains(where: { $0.hasPrefix("CMUX_UI_TEST_") }) { return true }
+        return false
+    }
 
     struct Environment {
+        let isApplicationFinishedLaunching: () -> Bool
         let imageForMode: (AppIconMode) -> NSImage?
         let setApplicationIconImage: (NSImage) -> Void
         let startAppearanceObservation: () -> Void
@@ -3744,6 +3846,9 @@ enum AppIconSettings {
 
         static func live() -> Self {
             Self(
+                isApplicationFinishedLaunching: {
+                    AppIconLaunchState.isApplicationFinishedLaunching()
+                },
                 imageForMode: { mode in
                     guard let imageName = mode.imageName else { return nil }
                     return NSImage(named: imageName)
@@ -3758,6 +3863,7 @@ enum AppIconSettings {
                     AppIconAppearanceObserver.shared.stopObserving()
                 },
                 notifyDockTilePlugin: {
+                    guard !AppIconSettings.isRunningUnderXCTest() else { return }
                     DistributedNotificationCenter.default().postNotificationName(
                         AppIconSettings.dockTileIconDidChangeNotification,
                         object: nil,
@@ -3777,7 +3883,13 @@ enum AppIconSettings {
         return mode
     }
 
-    static func applyIcon(_ mode: AppIconMode, environment: Environment = .live()) {
+    static func applyIcon(_ mode: AppIconMode, environment: Environment? = nil) {
+        let environment = environment ?? liveEnvironmentProvider()
+        // Tahoe can crash or wedge when app icon work runs during App.init(),
+        // so leave settings replay to update defaults only and let AppDelegate
+        // apply the resolved icon once didFinishLaunching begins.
+        guard environment.isApplicationFinishedLaunching() else { return }
+
         switch mode {
         case .automatic:
             environment.startAppearanceObservation()
@@ -3793,35 +3905,128 @@ enum AppIconSettings {
 
         environment.notifyDockTilePlugin()
     }
+
+    static func setLiveEnvironmentProviderForTesting(_ provider: @escaping () -> Environment) {
+        liveEnvironmentProvider = provider
+    }
+
+    static func resetLiveEnvironmentProviderForTesting() {
+        liveEnvironmentProvider = { .live() }
+    }
 }
 
-final class AppIconAppearanceObserver: NSObject {
-    static let shared = AppIconAppearanceObserver()
-    private var observation: NSKeyValueObservation?
+protocol AppIconAppearanceObservation: AnyObject {
+    func invalidate()
+}
 
-    private override init() { super.init() }
+extension NSKeyValueObservation: AppIconAppearanceObservation {}
+
+final class AppIconAppearanceObserver: NSObject {
+    struct Environment {
+        let isApplicationFinishedLaunching: () -> Bool
+        let startEffectiveAppearanceObservation: (@escaping () -> Void) -> AppIconAppearanceObservation?
+        let addDidFinishLaunchingObserver: (@escaping () -> Void) -> NSObjectProtocol
+        let removeObserver: (NSObjectProtocol) -> Void
+        let currentAppearanceIsDark: () -> Bool?
+        let imageForName: (String) -> NSImage?
+        let setApplicationIconImage: (NSImage) -> Void
+
+        static func live() -> Self {
+            Self(
+                isApplicationFinishedLaunching: {
+                    AppIconLaunchState.isApplicationFinishedLaunching()
+                },
+                startEffectiveAppearanceObservation: { handler in
+                    guard let app = NSApp else { return nil }
+                    return app.observe(\.effectiveAppearance, options: []) { _, _ in
+                        DispatchQueue.main.async {
+                            handler()
+                        }
+                    }
+                },
+                addDidFinishLaunchingObserver: { handler in
+                    NotificationCenter.default.addObserver(
+                        forName: NSApplication.didFinishLaunchingNotification,
+                        object: nil,
+                        queue: .main
+                    ) { _ in
+                        handler()
+                    }
+                },
+                removeObserver: { observer in
+                    NotificationCenter.default.removeObserver(observer)
+                },
+                currentAppearanceIsDark: {
+                    guard let app = NSApp else { return nil }
+                    return app.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                },
+                imageForName: { imageName in
+                    NSImage(named: imageName)
+                },
+                setApplicationIconImage: { icon in
+                    NSApplication.shared.applicationIconImage = icon
+                }
+            )
+        }
+    }
+
+    static let shared = AppIconAppearanceObserver()
+    private let environment: Environment
+    private var observation: AppIconAppearanceObservation?
+    private var launchObserver: NSObjectProtocol?
+    private var hasDeferredStartPending = false
+
+    init(environment: Environment = .live()) {
+        self.environment = environment
+        super.init()
+    }
 
     func startObserving() {
+        // Tahoe crashes if effectiveAppearance is touched during App.init(),
+        // so defer the first automatic-icon apply until launch completes.
+        if !environment.isApplicationFinishedLaunching() {
+            deferStartUntilLaunchIfNeeded()
+            return
+        }
+
+        cancelDeferredStart()
         applyIconForCurrentAppearance()
         guard observation == nil else { return }
-        observation = NSApp.observe(\.effectiveAppearance, options: []) { [weak self] _, _ in
-            DispatchQueue.main.async {
-                guard let self, self.observation != nil else { return }
-                self.applyIconForCurrentAppearance()
-            }
+        observation = environment.startEffectiveAppearanceObservation { [weak self] in
+            guard let self, self.observation != nil else { return }
+            self.applyIconForCurrentAppearance()
         }
     }
 
     func stopObserving() {
         observation?.invalidate()
         observation = nil
+        cancelDeferredStart()
+    }
+
+    private func deferStartUntilLaunchIfNeeded() {
+        hasDeferredStartPending = true
+        guard launchObserver == nil else { return }
+        launchObserver = environment.addDidFinishLaunchingObserver { [weak self] in
+            guard let self, self.hasDeferredStartPending else { return }
+            self.cancelDeferredStart()
+            self.startObserving()
+        }
+    }
+
+    private func cancelDeferredStart() {
+        hasDeferredStartPending = false
+        guard let launchObserver else { return }
+        environment.removeObserver(launchObserver)
+        self.launchObserver = nil
     }
 
     private func applyIconForCurrentAppearance() {
-        let isDark = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        guard environment.isApplicationFinishedLaunching() else { return }
+        guard let isDark = environment.currentAppearanceIsDark() else { return }
         let imageName = isDark ? "AppIconDark" : "AppIconLight"
-        if let icon = NSImage(named: imageName) {
-            NSApplication.shared.applicationIconImage = icon
+        if let icon = environment.imageForName(imageName) {
+            environment.setApplicationIconImage(icon)
         }
     }
 }
@@ -3885,6 +4090,30 @@ enum ClaudeCodeIntegrationSettings {
     }
 }
 
+enum CursorIntegrationSettings {
+    static let hooksEnabledKey = "cursorHooksEnabled"
+    static let defaultHooksEnabled = true
+
+    static func hooksEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: hooksEnabledKey) == nil {
+            return defaultHooksEnabled
+        }
+        return defaults.bool(forKey: hooksEnabledKey)
+    }
+}
+
+enum GeminiIntegrationSettings {
+    static let hooksEnabledKey = "geminiHooksEnabled"
+    static let defaultHooksEnabled = true
+
+    static func hooksEnabled(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: hooksEnabledKey) == nil {
+            return defaultHooksEnabled
+        }
+        return defaults.bool(forKey: hooksEnabledKey)
+    }
+}
+
 enum WelcomeSettings {
     static let shownKey = "cmuxWelcomeShown"
 }
@@ -3902,6 +4131,37 @@ enum TelemetrySettings {
 
     // Freeze telemetry enablement once per launch. Settings changes apply on next restart.
     static let enabledForCurrentLaunch = isEnabled()
+}
+
+enum CmdClickMarkdownRouteSettings {
+    static let key = "openMarkdownInCmuxViewer"
+    static let defaultValue = false
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: key) == nil ? defaultValue : defaults.bool(forKey: key)
+    }
+
+    /// Cheap extension check. Safe to call off the main thread before any
+    /// filesystem probe so remote/non-markdown paths can be filtered early.
+    static func isMarkdownPath(_ path: String) -> Bool {
+        let ext = (path as NSString).pathExtension.lowercased()
+        return ext == "md" || ext == "markdown" || ext == "mkd" || ext == "mdx"
+    }
+
+    static func shouldRoute(path: String) -> Bool {
+        guard isEnabled(), isMarkdownPath(path) else { return false }
+        // Match the `markdown.open` socket path: only route real, readable
+        // files. Rejects FIFOs, device nodes, sockets, symlinks to non-regular
+        // targets, and permission-denied paths so the viewer never opens into
+        // an unavailable state.
+        let resolved = (path as NSString).resolvingSymlinksInPath
+        guard FileManager.default.isReadableFile(atPath: resolved),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: resolved),
+              (attrs[.type] as? FileAttributeType) == .typeRegular else {
+            return false
+        }
+        return true
+    }
 }
 
 enum PreferredEditorSettings {
@@ -4120,6 +4380,7 @@ struct SettingsView: View {
     private let pickerColumnWidth: CGFloat = 196
     private let notificationSoundControlWidth: CGFloat = 280
     private let shortcutChordsDocsURL = URL(string: "https://cmux.com/docs/keyboard-shortcuts#shortcut-chords")!
+    @Environment(\.openWindow) private var openWindow
 
     @AppStorage(LanguageSettings.languageKey) private var appLanguage = LanguageSettings.defaultLanguage.rawValue
     @AppStorage(AppearanceSettings.appearanceModeKey) private var appearanceMode = AppearanceSettings.defaultMode.rawValue
@@ -4131,9 +4392,14 @@ struct SettingsView: View {
     private var claudeCodeHooksEnabled = ClaudeCodeIntegrationSettings.defaultHooksEnabled
     @AppStorage(ClaudeCodeIntegrationSettings.customClaudePathKey)
     private var customClaudePath = ""
+    @AppStorage(CursorIntegrationSettings.hooksEnabledKey)
+    private var cursorHooksEnabled = CursorIntegrationSettings.defaultHooksEnabled
+    @AppStorage(GeminiIntegrationSettings.hooksEnabledKey)
+    private var geminiHooksEnabled = GeminiIntegrationSettings.defaultHooksEnabled
     @AppStorage(TelemetrySettings.sendAnonymousTelemetryKey)
     private var sendAnonymousTelemetry = TelemetrySettings.defaultSendAnonymousTelemetry
     @AppStorage(PreferredEditorSettings.key) private var preferredEditorCommand = ""
+    @AppStorage(CmdClickMarkdownRouteSettings.key) private var openMarkdownInCmuxViewer = CmdClickMarkdownRouteSettings.defaultValue
     @AppStorage("cmuxPortBase") private var cmuxPortBase = 9100
     @AppStorage("cmuxPortRange") private var cmuxPortRange = 10
     @AppStorage(BrowserSearchSettings.searchEngineKey) private var browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
@@ -4170,6 +4436,8 @@ struct SettingsView: View {
     private var closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
     @AppStorage(PaneFirstClickFocusSettings.enabledKey)
     private var paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
+    @AppStorage(TerminalScrollBarSettings.showScrollBarKey)
+    private var showTerminalScrollBar = TerminalScrollBarSettings.defaultShowScrollBar
     @AppStorage(WorkspaceAutoReorderSettings.key) private var workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
     @AppStorage(SidebarWorkspaceDetailSettings.hideAllDetailsKey)
     private var sidebarHideAllDetails = SidebarWorkspaceDetailSettings.defaultHideAllDetails
@@ -4188,6 +4456,8 @@ struct SettingsView: View {
     private var openSidebarPortLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPortLinksInCmuxBrowser
     @AppStorage(ShortcutHintDebugSettings.showHintsOnCommandHoldKey)
     private var showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
+    @AppStorage(ShortcutHintDebugSettings.showHintsOnControlHoldKey)
+    private var showShortcutHintsOnControlHold = ShortcutHintDebugSettings.defaultShowHintsOnControlHold
     @AppStorage("sidebarShowSSH") private var sidebarShowSSH = true
     @AppStorage("sidebarShowPorts") private var sidebarShowPorts = true
     @AppStorage("sidebarShowLog") private var sidebarShowLog = true
@@ -4197,12 +4467,10 @@ struct SettingsView: View {
     @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
     @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
-    @AppStorage(SettingsPIIDisplayMode.key)
-    private var settingsPIIDisplayMode = SettingsPIIDisplayMode.defaultValue
     @AppStorage("sidebarMatchTerminalBackground") private var sidebarMatchTerminalBackground = false
 
-    @StateObject private var authManager = AuthManager.shared
     @ObservedObject private var notificationStore = TerminalNotificationStore.shared
+    @ObservedObject private var authManager = AuthManager.shared
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @State private var shortcutResetToken = UUID()
     @State private var topBlurOpacity: Double = 0
@@ -4282,6 +4550,17 @@ struct SettingsView: View {
         return String(
             localized: "settings.app.paneFirstClickFocus.subtitleOff",
             defaultValue: "When cmux is inactive, the first click only activates the window. Click again to focus the pane."
+        )
+    }
+
+    private var showTerminalScrollBarBinding: Binding<Bool> {
+        Binding(
+            get: { showTerminalScrollBar },
+            set: { newValue in
+                guard showTerminalScrollBar != newValue else { return }
+                showTerminalScrollBar = newValue
+                TerminalScrollBarSettings.notifyDidChange()
+            }
         )
     }
 
@@ -4696,97 +4975,6 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - Account helpers
-
-    private var selectedSettingsPIIDisplayMode: SettingsPIIDisplayMode {
-        SettingsPIIDisplayMode(rawValue: settingsPIIDisplayMode) ?? .visible
-    }
-
-    private var settingsPIIDisplayModeSelection: Binding<String> {
-        Binding(
-            get: { selectedSettingsPIIDisplayMode.rawValue },
-            set: { settingsPIIDisplayMode = $0 }
-        )
-    }
-
-    private var hidesSensitiveSettingsDetails: Bool {
-        selectedSettingsPIIDisplayMode == .hidden
-    }
-
-    private var accountEmailText: String {
-        if let email = authManager.currentUser?.primaryEmail?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !email.isEmpty {
-            return email
-        }
-        if let displayName = authManager.currentUser?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !displayName.isEmpty {
-            return displayName
-        }
-        return String(
-            localized: "settings.account.state.signedIn",
-            defaultValue: "Signed in"
-        )
-    }
-
-    private var accountPrimaryEmailText: String? {
-        guard let email = authManager.currentUser?.primaryEmail?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !email.isEmpty else {
-            return nil
-        }
-        return email
-    }
-
-    private var hiddenSettingsValueText: String {
-        String(
-            localized: "settings.account.hiddenValue",
-            defaultValue: "Hidden"
-        )
-    }
-
-    private var hiddenSettingsSubtitleText: String {
-        String(
-            localized: "settings.account.hiddenSubtitle",
-            defaultValue: "Personal info is hidden in Settings."
-        )
-    }
-
-    private var accountStatusSubtitle: String {
-        if authManager.isAuthenticated {
-            return String(
-                localized: "settings.account.subtitle.signedIn",
-                defaultValue: "This Mac can appear in your mobile terminal list."
-            )
-        }
-        return String(
-            localized: "settings.account.subtitle.signedOut",
-            defaultValue: "Optional. Sign in so this Mac appears in your mobile terminal list."
-        )
-    }
-
-    private var selectedAccountTeamName: String {
-        if let selectedTeamID = authManager.resolvedTeamID,
-           let team = authManager.availableTeams.first(where: { $0.id == selectedTeamID }) {
-            return team.displayName
-        }
-        return authManager.availableTeams.first?.displayName ?? String(
-            localized: "settings.account.team.none",
-            defaultValue: "No team"
-        )
-    }
-
-    private var displayedAccountTeamName: String {
-        hidesSensitiveSettingsDetails ? hiddenSettingsValueText : selectedAccountTeamName
-    }
-
-    private var accountTeamSelection: Binding<String> {
-        Binding(
-            get: { authManager.resolvedTeamID ?? "" },
-            set: { newValue in
-                authManager.selectedTeamID = newValue.isEmpty ? nil : newValue
-            }
-        )
-    }
-
     var body: some View {
         let _ = keyboardShortcutSettingsObserver.revision
         let _ = Self.validateBypassedSettingsConfigurationReviews()
@@ -4796,118 +4984,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     SettingsSectionHeader(title: String(localized: "settings.section.account", defaultValue: "Account"))
                     SettingsCard {
-                        let authWidth: CGFloat? = authManager.isAuthenticated ? nil : pickerColumnWidth
-                        SettingsCardRow(
-                            String(localized: "settings.account.title", defaultValue: "cmux Account"),
-                            subtitle: accountStatusSubtitle,
-                            controlWidth: authWidth
-                        ) {
-                            if authManager.isLoading || authManager.isRestoringSession {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else if authManager.isAuthenticated {
-                                HStack(spacing: 10) {
-                                    if authManager.didCompleteBrowserSignIn {
-                                        HStack(spacing: 6) {
-                                            Image(systemName: "checkmark.circle.fill")
-                                                .foregroundStyle(.green)
-                                            Text(
-                                                String(
-                                                    localized: "settings.account.state.signedIn",
-                                                    defaultValue: "Signed in"
-                                                )
-                                            )
-                                            .font(.system(size: 12, weight: .medium))
-                                            .foregroundStyle(.secondary)
-                                        }
-                                        .accessibilityIdentifier("settings.account.signedInBanner")
-                                    }
-
-                                    Button(
-                                        String(localized: "settings.account.signOut", defaultValue: "Sign Out")
-                                    ) {
-                                        Task {
-                                            await authManager.signOut()
-                                        }
-                                    }
-                                    .controlSize(.small)
-                                }
-                            } else {
-                                Button(
-                                    String(localized: "settings.account.signIn", defaultValue: "Sign In")
-                                ) {
-                                    authManager.beginSignIn()
-                                }
-                                .controlSize(.small)
-                                .accessibilityIdentifier("settings.account.signIn")
-                            }
-                        }
-
-                        if authManager.isAuthenticated {
-                            SettingsCardDivider()
-
-                            SettingsPickerRow(
-                                String(localized: "settings.account.displayMode", defaultValue: "Display Mode"),
-                                subtitle: String(
-                                    localized: "settings.account.displayMode.subtitle",
-                                    defaultValue: "Hide personal info while presenting Settings."
-                                ),
-                                controlWidth: pickerColumnWidth,
-                                selection: settingsPIIDisplayModeSelection
-                            ) {
-                                ForEach(SettingsPIIDisplayMode.allCases) { mode in
-                                    Text(mode.displayName).tag(mode.rawValue)
-                                }
-                            }
-
-                            SettingsCardDivider()
-
-                            SettingsCardRow(
-                                String(localized: "settings.account.email", defaultValue: "Email"),
-                                subtitle: hidesSensitiveSettingsDetails ? hiddenSettingsSubtitleText : nil,
-                                controlWidth: pickerColumnWidth
-                            ) {
-                                Text(hidesSensitiveSettingsDetails ? hiddenSettingsValueText : accountEmailText)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(.secondary)
-                                    .frame(width: pickerColumnWidth, alignment: .trailing)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                        }
-
-                        if authManager.isAuthenticated, !authManager.availableTeams.isEmpty {
-                            SettingsCardDivider()
-
-                            SettingsCardRow(
-                                String(localized: "settings.account.team", defaultValue: "Team"),
-                                subtitle: String(
-                                    localized: "settings.account.team.subtitle",
-                                    defaultValue: "The first team is selected automatically for mobile sync."
-                                ),
-                                controlWidth: pickerColumnWidth
-                            ) {
-                                if hidesSensitiveSettingsDetails {
-                                    Text(displayedAccountTeamName)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: pickerColumnWidth, alignment: .trailing)
-                                } else if authManager.availableTeams.count > 1 {
-                                    Picker("", selection: accountTeamSelection) {
-                                        ForEach(authManager.availableTeams) { team in
-                                            Text(team.displayName).tag(team.id)
-                                        }
-                                    }
-                                    .labelsHidden()
-                                    .frame(width: pickerColumnWidth)
-                                } else {
-                                    Text(displayedAccountTeamName)
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(.secondary)
-                                        .frame(width: pickerColumnWidth, alignment: .trailing)
-                                }
-                            }
-                        }
+                        AuthSettingsRow(authManager: authManager)
                     }
 
                     SettingsSectionHeader(title: String(localized: "settings.section.app", defaultValue: "App"))
@@ -5033,6 +5110,38 @@ struct SettingsView: View {
                             )
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            configurationReview: .action,
+                            String(localized: "settings.app.configWindow", defaultValue: "Terminal Config"),
+                            subtitle: String(
+                                localized: "settings.app.configWindow.subtitle",
+                                defaultValue: "Open the cmux config, standalone Ghostty config, and merged preview in one utility window."
+                            )
+                        ) {
+                            Button(String(localized: "settings.app.configWindow.openButton", defaultValue: "Open Config Window")) {
+                                openWindow(id: ConfigSettingsView.windowID)
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            configurationReview: .json("app.openMarkdownInCmuxViewer"),
+                            String(localized: "settings.app.openMarkdownInCmuxViewer", defaultValue: "Open Markdown in cmux Viewer"),
+                            subtitle: String(localized: "settings.app.openMarkdownInCmuxViewer.subtitle", defaultValue: "Cmd-clicking .md/.markdown/.mkd/.mdx files opens the cmux markdown viewer panel instead of the preferred editor.")
+                        ) {
+                            Toggle("", isOn: $openMarkdownInCmuxViewer)
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .accessibilityLabel(
+                                    String(localized: "settings.app.openMarkdownInCmuxViewer", defaultValue: "Open Markdown in cmux Viewer")
+                                )
                         }
 
                         SettingsCardDivider()
@@ -5434,6 +5543,25 @@ struct SettingsView: View {
                         .disabled(sidebarHideAllDetails)
                     }
 
+                    SettingsSectionHeader(title: String(localized: "settings.section.terminal", defaultValue: "Terminal"))
+                    SettingsCard {
+                        SettingsCardRow(
+                            configurationReview: .json("terminal.showScrollBar"),
+                            String(localized: "settings.terminal.scrollBar", defaultValue: "Show Terminal Scroll Bar"),
+                            subtitle: showTerminalScrollBar
+                                ? String(localized: "settings.terminal.scrollBar.subtitleOn", defaultValue: "Shows the right-edge terminal scroll bar in shell scrollback. cmux hides it automatically for alternate-screen style TUI surfaces and you can also disable it per workspace.")
+                                : String(localized: "settings.terminal.scrollBar.subtitleOff", defaultValue: "Hides the right-edge terminal scroll bar everywhere. Changes apply immediately and persist across relaunches.")
+                        ) {
+                            Toggle("", isOn: showTerminalScrollBarBinding)
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .accessibilityIdentifier("SettingsTerminalScrollBarToggle")
+                                .accessibilityLabel(
+                                    String(localized: "settings.terminal.scrollBar", defaultValue: "Show Terminal Scroll Bar")
+                                )
+                        }
+                    }
+
                     SettingsSectionHeader(title: String(localized: "settings.section.workspaceColors", defaultValue: "Workspace Colors"))
                     SettingsCard {
                         SettingsPickerRow(
@@ -5775,6 +5903,44 @@ struct SettingsView: View {
                             .textFieldStyle(.roundedBorder)
                             .frame(width: 200)
                         }
+                    }
+
+                    SettingsCard {
+                        SettingsCardRow(
+                            configurationReview: .json("automation.cursorIntegration"),
+                            String(localized: "settings.automation.cursor", defaultValue: "Cursor Integration"),
+                            subtitle: cursorHooksEnabled
+                                ? String(localized: "settings.automation.cursor.subtitleOn", defaultValue: "Sidebar shows Cursor agent status and notifications.")
+                                : String(localized: "settings.automation.cursor.subtitleOff", defaultValue: "Cursor runs without cmux integration.")
+                        ) {
+                            Toggle("", isOn: $cursorHooksEnabled)
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .accessibilityIdentifier("SettingsCursorHooksToggle")
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardNote(String(localized: "settings.automation.cursor.note", defaultValue: "Hooks must be installed with `cmux cursor install-hooks`. They no-op outside cmux terminals."))
+                    }
+
+                    SettingsCard {
+                        SettingsCardRow(
+                            configurationReview: .json("automation.geminiIntegration"),
+                            String(localized: "settings.automation.gemini", defaultValue: "Gemini CLI Integration"),
+                            subtitle: geminiHooksEnabled
+                                ? String(localized: "settings.automation.gemini.subtitleOn", defaultValue: "Sidebar shows Gemini session status and notifications.")
+                                : String(localized: "settings.automation.gemini.subtitleOff", defaultValue: "Gemini runs without cmux integration.")
+                        ) {
+                            Toggle("", isOn: $geminiHooksEnabled)
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .accessibilityIdentifier("SettingsGeminiHooksToggle")
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardNote(String(localized: "settings.automation.gemini.note", defaultValue: "Hooks must be installed with `cmux gemini install-hooks`. They no-op outside cmux terminals."))
                     }
 
                     SettingsCard {
@@ -6137,11 +6303,20 @@ struct SettingsView: View {
                         SettingsCardRow(
                             configurationReview: .json("shortcuts.showModifierHoldHints"),
                             String(localized: "settings.shortcuts.showHints", defaultValue: "Show Cmd/Ctrl-Hold Shortcut Hints"),
-                            subtitle: showShortcutHintsOnCommandHold
+                            subtitle: (showShortcutHintsOnCommandHold || showShortcutHintsOnControlHold)
                                 ? String(localized: "settings.shortcuts.showHints.subtitleOn", defaultValue: "Holding Cmd (sidebar/titlebar) or Ctrl/Cmd (pane tabs) shows shortcut hint pills.")
                                 : String(localized: "settings.shortcuts.showHints.subtitleOff", defaultValue: "Holding Cmd or Ctrl keeps shortcut hint pills hidden.")
                         ) {
-                            Toggle("", isOn: $showShortcutHintsOnCommandHold)
+                            Toggle(
+                                "",
+                                isOn: Binding(
+                                    get: { showShortcutHintsOnCommandHold || showShortcutHintsOnControlHold },
+                                    set: { newValue in
+                                        showShortcutHintsOnCommandHold = newValue
+                                        showShortcutHintsOnControlHold = newValue
+                                    }
+                                )
+                            )
                                 .labelsHidden()
                                 .controlSize(.small)
                         }
@@ -6387,8 +6562,11 @@ struct SettingsView: View {
         socketControlMode = SocketControlSettings.defaultMode.rawValue
         claudeCodeHooksEnabled = ClaudeCodeIntegrationSettings.defaultHooksEnabled
         customClaudePath = ""
+        cursorHooksEnabled = CursorIntegrationSettings.defaultHooksEnabled
+        geminiHooksEnabled = GeminiIntegrationSettings.defaultHooksEnabled
         sendAnonymousTelemetry = TelemetrySettings.defaultSendAnonymousTelemetry
         preferredEditorCommand = ""
+        openMarkdownInCmuxViewer = CmdClickMarkdownRouteSettings.defaultValue
         browserSearchEngine = BrowserSearchSettings.defaultSearchEngine.rawValue
         browserSearchSuggestionsEnabled = BrowserSearchSettings.defaultSearchSuggestionsEnabled
         browserThemeMode = BrowserThemeSettings.defaultMode.rawValue
@@ -6426,6 +6604,11 @@ struct SettingsView: View {
         defaults.removeObject(forKey: WorkspaceButtonFadeSettings.legacyPaneTabBarControlsVisibilityModeKey)
         closeWorkspaceOnLastSurfaceShortcut = LastSurfaceCloseShortcutSettings.defaultValue
         paneFirstClickFocusEnabled = PaneFirstClickFocusSettings.defaultEnabled
+        let previousShowTerminalScrollBar = showTerminalScrollBar
+        showTerminalScrollBar = TerminalScrollBarSettings.defaultShowScrollBar
+        if previousShowTerminalScrollBar != showTerminalScrollBar {
+            TerminalScrollBarSettings.notifyDidChange()
+        }
         workspaceAutoReorder = WorkspaceAutoReorderSettings.defaultValue
         sidebarHideAllDetails = SidebarWorkspaceDetailSettings.defaultHideAllDetails
         sidebarShowNotificationMessage = SidebarWorkspaceDetailSettings.defaultShowNotificationMessage
@@ -6438,6 +6621,7 @@ struct SettingsView: View {
         openSidebarPullRequestLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser
         openSidebarPortLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPortLinksInCmuxBrowser
         showShortcutHintsOnCommandHold = ShortcutHintDebugSettings.defaultShowHintsOnCommandHold
+        showShortcutHintsOnControlHold = ShortcutHintDebugSettings.defaultShowHintsOnControlHold
         sidebarShowSSH = true
         sidebarShowPorts = true
         sidebarShowLog = true
@@ -6548,6 +6732,84 @@ private struct SettingsSectionHeader: View {
     }
 }
 
+private struct AuthSettingsRow: View {
+    @ObservedObject var authManager: AuthManager
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(titleText)
+                    .font(.system(size: 13, weight: .medium))
+                if let subtitle = subtitleText {
+                    Text(subtitle)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer(minLength: 12)
+            if authManager.isLoading || authManager.isRestoringSession {
+                ProgressView().controlSize(.small)
+            }
+            Button(action: buttonAction) {
+                Text(buttonTitle)
+            }
+            .controlSize(.small)
+            .disabled(authManager.isLoading || authManager.isRestoringSession)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private var titleText: String {
+        if authManager.isAuthenticated {
+            if let email = authManager.currentUser?.primaryEmail, !email.isEmpty {
+                return email
+            }
+            return String(
+                localized: "settings.account.signedIn.title",
+                defaultValue: "Signed in"
+            )
+        }
+        return String(
+            localized: "settings.account.signedOut.title",
+            defaultValue: "Not signed in"
+        )
+    }
+
+    private var subtitleText: String? {
+        if authManager.isAuthenticated {
+            return authManager.currentUser?.displayName
+        }
+        return String(
+            localized: "settings.account.signedOut.subtitle",
+            defaultValue: "Sign in with your cmux account to enable sync across devices."
+        )
+    }
+
+    private var buttonTitle: String {
+        if authManager.isAuthenticated {
+            return String(
+                localized: "settings.account.signOut",
+                defaultValue: "Sign Out"
+            )
+        }
+        return String(
+            localized: "settings.account.signIn",
+            defaultValue: "Sign In…"
+        )
+    }
+
+    private func buttonAction() {
+        if authManager.isAuthenticated {
+            Task { @MainActor in
+                await authManager.signOut()
+            }
+        } else {
+            authManager.beginSignIn()
+        }
+    }
+}
+
 private struct SettingsCard<Content: View>: View {
     @ViewBuilder let content: Content
 
@@ -6615,19 +6877,6 @@ private struct SettingsCardRow<Trailing: View>: View {
     ) {
         configurationReview.validate()
         self.configurationReview = configurationReview
-        self.title = title
-        self.subtitle = subtitle
-        self.controlWidth = controlWidth
-        self.trailing = trailing()
-    }
-
-    init(
-        _ title: String,
-        subtitle: String? = nil,
-        controlWidth: CGFloat? = nil,
-        @ViewBuilder trailing: () -> Trailing
-    ) {
-        self.configurationReview = .action
         self.title = title
         self.subtitle = subtitle
         self.controlWidth = controlWidth
@@ -6721,19 +6970,6 @@ extension SettingsPickerRow where ExtraTrailing == EmptyView {
         @ViewBuilder content: () -> PickerContent
     ) {
         self.init(configurationReview: configurationReview, title, subtitle: subtitle, controlWidth: controlWidth, selection: selection, accessibilityId: accessibilityId, content: content) {
-            EmptyView()
-        }
-    }
-
-    init(
-        _ title: String,
-        subtitle: String? = nil,
-        controlWidth: CGFloat,
-        selection: Binding<SelectionValue>,
-        accessibilityId: String? = nil,
-        @ViewBuilder content: () -> PickerContent
-    ) {
-        self.init(configurationReview: .action, title, subtitle: subtitle, controlWidth: controlWidth, selection: selection, accessibilityId: accessibilityId, content: content) {
             EmptyView()
         }
     }

@@ -5,7 +5,7 @@ let package = Package(
     name: "CMUXAuthCore",
     platforms: [
         .iOS(.v18),
-        .macOS(.v15),
+        .macOS(.v14),
     ],
     products: [
         .library(

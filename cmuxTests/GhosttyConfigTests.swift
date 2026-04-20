@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import CoreText
 import WebKit
 import Darwin
 
@@ -90,6 +91,44 @@ final class GhosttyConfigTests: XCTestCase {
 
         XCTAssertTrue(paths.contains("\(pathA)/ghostty/themes/Solarized Light"))
         XCTAssertTrue(paths.contains("\(pathB)/ghostty/themes/Solarized Light"))
+    }
+
+    func testLoadReadsSymlinkedGhosttyConfigFile() throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-ghostty-config-symlink-\(UUID().uuidString)")
+        try fileManager.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: root) }
+
+        let originalFixedHome = getenv("CFFIXED_USER_HOME").map { String(cString: $0) }
+        setenv("CFFIXED_USER_HOME", root.path, 1)
+        defer {
+            if let originalFixedHome {
+                setenv("CFFIXED_USER_HOME", originalFixedHome, 1)
+            } else {
+                unsetenv("CFFIXED_USER_HOME")
+            }
+            GhosttyConfig.invalidateLoadCache()
+        }
+
+        let ghosttyConfigDir = root.appendingPathComponent(".config/ghostty", isDirectory: true)
+        try fileManager.createDirectory(at: ghosttyConfigDir, withIntermediateDirectories: true)
+
+        let dotfilesDir = root.appendingPathComponent("dotfiles/ghostty", isDirectory: true)
+        try fileManager.createDirectory(at: dotfilesDir, withIntermediateDirectories: true)
+
+        let targetConfig = dotfilesDir.appendingPathComponent("config", isDirectory: false)
+        try "font-size = 15\n".write(to: targetConfig, atomically: true, encoding: .utf8)
+
+        let symlinkedConfig = ghosttyConfigDir.appendingPathComponent("config", isDirectory: false)
+        try fileManager.createSymbolicLink(
+            atPath: symlinkedConfig.path,
+            withDestinationPath: targetConfig.path
+        )
+
+        let loaded = GhosttyConfig.load(preferredColorScheme: .dark, useCache: false)
+
+        XCTAssertEqual(loaded.fontSize, CGFloat(15), accuracy: 0.0001)
     }
 
     func testLoadThemeResolvesPairedThemeValueByColorScheme() throws {
@@ -1295,6 +1334,41 @@ final class BrowserPanelPopupContextTests: XCTestCase {
             popupWebView.configuration.websiteDataStore === panel.webView.configuration.websiteDataStore
         )
         XCTAssertFalse(popupWebView.configuration.websiteDataStore === WKWebsiteDataStore.default())
+    }
+}
+
+final class BrowserNewTabNavigationSeedTests: XCTestCase {
+    func testPreservesOriginalRequestHeadersMethodBodyAndBypassHost() throws {
+        let url = try XCTUnwrap(URL(string: "https://www.linkedin.com/redir/redirect?url=https%3A%2F%2Fexample.com"))
+        let body = Data("payload=1".utf8)
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("https://www.linkedin.com/feed/", forHTTPHeaderField: "Referer")
+        request.setValue("keep-me", forHTTPHeaderField: "X-Cmux-Test")
+
+        let seed = try XCTUnwrap(
+            browserNewTabNavigationSeed(
+                from: request,
+                bypassInsecureHTTPHostOnce: "www.linkedin.com"
+            )
+        )
+
+        // This covers the pure seeding helper only. WebKit may still rewrite
+        // programmatic loads when the request is replayed in the destination tab.
+        XCTAssertEqual(seed.url, url)
+        XCTAssertEqual(seed.bypassInsecureHTTPHostOnce, "www.linkedin.com")
+        XCTAssertEqual(seed.initialRequest.httpMethod, "POST")
+        XCTAssertEqual(seed.initialRequest.httpBody, body)
+        XCTAssertEqual(
+            seed.initialRequest.value(forHTTPHeaderField: "Referer"),
+            "https://www.linkedin.com/feed/"
+        )
+        XCTAssertEqual(
+            seed.initialRequest.value(forHTTPHeaderField: "X-Cmux-Test"),
+            "keep-me"
+        )
+        XCTAssertEqual(seed.initialRequest.cachePolicy, .reloadIgnoringLocalCacheData)
     }
 }
 
@@ -2685,6 +2759,38 @@ final class GhosttyMouseFocusTests: XCTestCase {
         XCTAssertFalse(hiraginoRanges.contains("U+AC00-U+D7AF"), "Hangul NOT in Hiragino")
     }
 
+    func testResolvedInjectedCJKFontNamePinsRegularWeightForHiraginoSans() throws {
+        guard let plain = GhosttyApp.discoveredCTFont(named: "Hiragino Sans"),
+              let pinned = GhosttyApp.discoveredCTFont(
+                  named: GhosttyApp.resolvedInjectedCJKFontName(named: "Hiragino Sans")
+              ) else {
+            throw XCTSkip("Hiragino Sans is unavailable on this runner")
+        }
+
+        let plainFullName = CTFontCopyFullName(plain) as String
+        let pinnedFullName = CTFontCopyFullName(pinned) as String
+
+        XCTAssertEqual(CTFontCopyFamilyName(pinned) as String, "Hiragino Sans")
+        XCTAssertFalse(pinnedFullName.contains(" W0"))
+        if plainFullName.contains(" W0") {
+            XCTAssertNotEqual(
+                CTFontCopyPostScriptName(plain) as String,
+                CTFontCopyPostScriptName(pinned) as String
+            )
+        }
+    }
+
+    func testResolvedInjectedCJKFontNameLeavesPingFangSCStable() throws {
+        guard GhosttyApp.discoveredCTFont(named: "PingFang SC") != nil else {
+            throw XCTSkip("PingFang SC is unavailable on this runner")
+        }
+
+        XCTAssertEqual(
+            GhosttyApp.resolvedInjectedCJKFontName(named: "PingFang SC"),
+            "PingFang SC"
+        )
+    }
+
     // MARK: autoInjectedCJKFontMappings
 
     func testAutoInjectedCJKFontMappingsSkipsRangesCoveredByConfiguredPrimaryFont() throws {
@@ -3253,8 +3359,10 @@ final class ZshShellIntegrationHandoffTests: XCTestCase {
             fi
 
             cmux_test_ready() {
+              [[ -e "$CMUX_TEST_READY" ]] && return 0
               print -r -- "PRE=$CMUX_STARTUP_THEME_TERM|$CMUX_STARTUP_THEME_BRANCH|$TERM|${CMUX_ZSH_RESTORE_TERM-unset}" > "$CMUX_TEST_OUTPUT"
               : > "$CMUX_TEST_READY"
+              precmd_functions=(${precmd_functions:#cmux_test_ready})
             }
             precmd_functions+=(cmux_test_ready)
             """
