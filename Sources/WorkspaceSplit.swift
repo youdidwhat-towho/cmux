@@ -3263,6 +3263,25 @@ struct WorkspaceLayoutLocalDragSnapshot: Equatable {
     let sourcePaneId: PaneID
 }
 
+func workspaceLayoutEffectiveTabDropTargetIndex(
+    rawTargetIndex: Int,
+    tabIds: [TabID],
+    paneId: PaneID,
+    localTabDrag: WorkspaceLayoutLocalDragSnapshot?
+) -> Int? {
+    guard let localTabDrag,
+          localTabDrag.sourcePaneId == paneId,
+          let sourceIndex = tabIds.firstIndex(of: localTabDrag.tabId) else {
+        return rawTargetIndex
+    }
+
+    if rawTargetIndex == sourceIndex || rawTargetIndex == sourceIndex + 1 {
+        return nil
+    }
+
+    return rawTargetIndex
+}
+
 enum WorkspacePaneDropOverlayPhase: Equatable {
     case hidden
     case visible

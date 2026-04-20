@@ -3011,6 +3011,52 @@ final class WorkspaceLayoutSimplificationTests: XCTestCase {
         XCTAssertNil(workspace.makeLayoutRenderSnapshot(context: renderContext).presentation.localTabDrag)
     }
 
+    func testEffectiveTabDropTargetIndexRejectsSamePaneNoOpReorderTargets() {
+        let paneId = PaneID(id: UUID())
+        let firstTabId = TabID(id: UUID())
+        let secondTabId = TabID(id: UUID())
+        let thirdTabId = TabID(id: UUID())
+        let localDrag = WorkspaceLayoutLocalDragSnapshot(
+            tabId: secondTabId,
+            sourcePaneId: paneId
+        )
+
+        XCTAssertNil(
+            workspaceLayoutEffectiveTabDropTargetIndex(
+                rawTargetIndex: 1,
+                tabIds: [firstTabId, secondTabId, thirdTabId],
+                paneId: paneId,
+                localTabDrag: localDrag
+            )
+        )
+        XCTAssertNil(
+            workspaceLayoutEffectiveTabDropTargetIndex(
+                rawTargetIndex: 2,
+                tabIds: [firstTabId, secondTabId, thirdTabId],
+                paneId: paneId,
+                localTabDrag: localDrag
+            )
+        )
+        XCTAssertEqual(
+            workspaceLayoutEffectiveTabDropTargetIndex(
+                rawTargetIndex: 0,
+                tabIds: [firstTabId, secondTabId, thirdTabId],
+                paneId: paneId,
+                localTabDrag: localDrag
+            ),
+            0
+        )
+        XCTAssertEqual(
+            workspaceLayoutEffectiveTabDropTargetIndex(
+                rawTargetIndex: 3,
+                tabIds: [firstTabId, secondTabId, thirdTabId],
+                paneId: paneId,
+                localTabDrag: localDrag
+            ),
+            3
+        )
+    }
+
     func testPaneDropOverlayCoordinatorTransitionsVisibleToHidingOnlyOnceOnClear() {
         let paneId = PaneID(id: UUID())
         var coordinator = WorkspacePaneDropOverlayCoordinator()

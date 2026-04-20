@@ -1977,6 +1977,17 @@ private final class WorkspaceLayoutTabDocumentView: NSView {
         return tabButtons.count
     }
 
+    private func effectiveTargetIndex(for point: NSPoint) -> Int? {
+        guard let snapshot else { return nil }
+        let rawTargetIndex = targetIndex(for: point)
+        return workspaceLayoutEffectiveTabDropTargetIndex(
+            rawTargetIndex: rawTargetIndex,
+            tabIds: snapshot.tabs.map(\.tab.id),
+            paneId: snapshot.paneId,
+            localTabDrag: localTabDrag
+        )
+    }
+
     private func updateDropIndicator(targetIndex: Int?) {
         guard let targetIndex else {
             dropIndicatorView.isHidden = true
@@ -2015,14 +2026,16 @@ private final class WorkspaceLayoutTabDocumentView: NSView {
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard validateSplitTabDrop(sender) else { return [] }
-        updateDropIndicator(targetIndex: targetIndex(for: convert(sender.draggingLocation, from: nil)))
-        return .move
+        let targetIndex = effectiveTargetIndex(for: convert(sender.draggingLocation, from: nil))
+        updateDropIndicator(targetIndex: targetIndex)
+        return targetIndex == nil ? [] : .move
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
         guard validateSplitTabDrop(sender) else { return [] }
-        updateDropIndicator(targetIndex: targetIndex(for: convert(sender.draggingLocation, from: nil)))
-        return .move
+        let targetIndex = effectiveTargetIndex(for: convert(sender.draggingLocation, from: nil))
+        updateDropIndicator(targetIndex: targetIndex)
+        return targetIndex == nil ? [] : .move
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
@@ -2030,24 +2043,20 @@ private final class WorkspaceLayoutTabDocumentView: NSView {
     }
 
     override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        validateSplitTabDrop(sender)
+        guard validateSplitTabDrop(sender) else { return false }
+        return effectiveTargetIndex(for: convert(sender.draggingLocation, from: nil)) != nil
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
         guard let snapshot, let hostBridge else { return false }
-        let destinationIndex = targetIndex(for: convert(sender.draggingLocation, from: nil))
+        guard let destinationIndex = effectiveTargetIndex(for: convert(sender.draggingLocation, from: nil)) else {
+            updateDropIndicator(targetIndex: nil)
+            return false
+        }
 
         if let localDrag = localTabDrag {
             let draggedTabId = localDrag.tabId
             let sourcePaneId = localDrag.sourcePaneId
-            if sourcePaneId == snapshot.paneId,
-               let sourceIndex = snapshot.tabs.firstIndex(where: { $0.tab.id == draggedTabId }),
-               (destinationIndex == sourceIndex || destinationIndex == sourceIndex + 1) {
-                hostBridge.clearDragState()
-                updateDropIndicator(targetIndex: nil)
-                return true
-            }
-
             if sourcePaneId == snapshot.paneId {
                 _ = hostBridge.moveTab(
                     draggedTabId,
