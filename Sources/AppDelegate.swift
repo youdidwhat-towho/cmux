@@ -2522,6 +2522,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: NSApplication, open urls: [URL]) {
         let authCallbacks = urls.filter(AuthCallbackRouter.isAuthCallbackURL)
+        if !authCallbacks.isEmpty {
+            // macOS 14+ only grants activate() in response to a user event
+            // when the call fires synchronously inside the event handler.
+            // Once we hop to a Task {} the "user event context" is gone
+            // and cooperative activation refuses. Activate here first,
+            // then re-order windows after handleCallbackURL finishes.
+            focusAppForAuthCallback()
+        }
         for url in authCallbacks {
             Task { @MainActor in
                 do {
@@ -2529,7 +2537,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 } catch {
                     NSLog("auth.callback failed: %@", "\(error)")
                 }
-                self.focusAppAfterAuthCallback()
+                self.raiseWindowsAfterAuthCallback()
             }
         }
 
@@ -6780,22 +6788,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func focusAppAfterAuthCallback() {
-        // The default URL-open activation only brings the Settings window
-        // forward, leaving workspace windows buried behind other apps.
-        // .activateAllWindows is the macOS 14+ idiom for "this app is
-        // foreground again, bring every one of its windows along." The
-        // deprecated NSApp.activate(ignoringOtherApps:) falls back to
-        // cooperative activation on recent macOS and drops non-key windows.
+    /// Synchronous, runs inside `application(_:open:)` so macOS 14+
+    /// cooperative activation still sees the user-event context.
+    private func focusAppForAuthCallback() {
+        NSApp.activate()
+        NSRunningApplication.current.activate(options: [.activateAllWindows])
+    }
+
+    /// Runs after `handleCallbackURL` completes. Re-orders windows so the
+    /// user's workspace windows keep their relative z-order and the
+    /// Settings window lands on top.
+    private func raiseWindowsAfterAuthCallback() {
+        // Second activate to catch the case where the activation request
+        // was queued during the synchronous handler but hadn't landed yet.
+        NSApp.activate()
         NSRunningApplication.current.activate(options: [.activateAllWindows])
 
         let settingsWindow = SettingsWindowController.shared.window
-        // orderedWindows is front-to-back. Iterate reversed so each
-        // orderFrontRegardless moves a back window forward without
-        // shuffling relative z-order.
         let visible = NSApp.orderedWindows.filter { $0.isVisible }
-        for window in visible.reversed() where window !== settingsWindow {
-            window.orderFrontRegardless()
+        // Iterate back-to-front so `makeKeyAndOrderFront` on the first
+        // workspace window forces activation (where `orderFrontRegardless`
+        // alone does not), and subsequent windows layer above it in their
+        // original relative order.
+        let workspaceWindows = visible.reversed().filter { $0 !== settingsWindow }
+        for (idx, window) in workspaceWindows.enumerated() {
+            if idx == 0 {
+                window.makeKeyAndOrderFront(nil)
+            } else {
+                window.orderFrontRegardless()
+            }
         }
         if let settingsWindow, settingsWindow.isVisible {
             settingsWindow.makeKeyAndOrderFront(nil)
