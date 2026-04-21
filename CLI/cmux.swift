@@ -2048,6 +2048,15 @@ struct CMUXCLI {
                         message: "vm new: unexpected argument '\(extra)'. vm new takes no positional args; use --image / --provider / --detach."
                     )
                 }
+                // Fail fast before provisioning when the combination can't succeed. E2B
+                // sandboxes don't expose raw TCP, so the shell-attach step will always 500
+                // from the driver — without this guard the user pays for a VM that gets
+                // stranded (no --detach rollback path yet).
+                if providerOpt?.lowercased() == "e2b" && !detach {
+                    throw CLIError(
+                        message: "vm new --provider e2b requires --detach (E2B sandboxes don't support interactive SSH). Use `cmux vm exec <id> -- <cmd>` after create."
+                    )
+                }
                 var params: [String: Any] = [:]
                 if let imageOpt { params["image"] = imageOpt }
                 if let providerOpt { params["provider"] = providerOpt }
