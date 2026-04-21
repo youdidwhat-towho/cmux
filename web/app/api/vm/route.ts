@@ -2,43 +2,15 @@
 // route exists so curl + tests can exercise the service without speaking the full RivetKit
 // protocol. Swift clients talk to /api/rivet/* directly and skip this file.
 
-import { createClient } from "rivetkit/client";
-import type { Registry } from "../../../services/vms/registry";
 import { unauthorized, verifyRequest } from "../../../services/vms/auth";
 import { defaultProviderId, type ProviderId } from "../../../services/vms/drivers";
+import {
+  jsonResponse,
+  parseBearer,
+  rivetClient,
+} from "../../../services/vms/routeHelpers";
 
 export const dynamic = "force-dynamic";
-
-function requireBearer(request: Request): { accessToken: string; refreshToken: string } | null {
-  const auth = request.headers.get("authorization");
-  const refresh = request.headers.get("x-stack-refresh-token");
-  if (!auth?.toLowerCase().startsWith("bearer ") || !refresh) return null;
-  const accessToken = auth.slice("bearer ".length).trim();
-  const refreshToken = refresh.trim();
-  if (!accessToken || !refreshToken) return null;
-  return { accessToken, refreshToken };
-}
-
-function clientFor(request: Request, bearer: { accessToken: string; refreshToken: string }) {
-  const origin = new URL(request.url).origin;
-  return createClient<Registry>({
-    endpoint: `${origin}/api/rivet`,
-    headers: {
-      authorization: `Bearer ${bearer.accessToken}`,
-      "x-stack-refresh-token": bearer.refreshToken,
-    },
-  });
-}
-
-// `Response.json(...)` misbehaves under Next.js 16's turbopack dev build (the handler's
-// promise settles but turbopack reports "No response is returned from route handler").
-// Use `new Response(JSON.stringify(...), { ... })` explicitly instead.
-function jsonResponse(data: unknown, status = 200): Response {
-  return new Response(JSON.stringify(data), {
-    status,
-    headers: { "content-type": "application/json" },
-  });
-}
 
 function errorResponse(message: string, status = 500): Response {
   return jsonResponse({ error: message }, status);
@@ -48,9 +20,9 @@ export async function GET(request: Request): Promise<Response> {
   try {
     const user = await verifyRequest(request);
     if (!user) return unauthorized();
-    const bearer = requireBearer(request);
+    const bearer = parseBearer(request);
     if (!bearer) return unauthorized();
-    const client = clientFor(request, bearer);
+    const client = rivetClient(bearer);
     const entries = await client.userVmsActor.getOrCreate([user.id]).list();
     // REST adapter: expose `id` at the top level so existing CLI + curl users don't need to
     // learn the new `providerVmId` field name. Swift CLI reads `vm["id"]`.
@@ -73,7 +45,7 @@ export async function POST(request: Request): Promise<Response> {
   try {
     const user = await verifyRequest(request);
     if (!user) return unauthorized();
-    const bearer = requireBearer(request);
+    const bearer = parseBearer(request);
     if (!bearer) return unauthorized();
 
     const body = (await request.json().catch(() => ({}))) as {
@@ -83,7 +55,7 @@ export async function POST(request: Request): Promise<Response> {
     const image = body.image ?? defaultImageFor(body.provider ?? defaultProviderId());
     const provider = body.provider ?? defaultProviderId();
 
-    const client = clientFor(request, bearer);
+    const client = rivetClient(bearer);
     const created = await client.userVmsActor.getOrCreate([user.id]).create({ image, provider });
     return jsonResponse({
       id: created.providerVmId,
