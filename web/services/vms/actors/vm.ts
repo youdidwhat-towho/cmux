@@ -9,6 +9,16 @@ export type VMState = {
   status: VMStatus;
   createdAt: number;
   pausedAt: number | null;
+  /**
+   * Monotonic counter of disconnects. Every `onDisconnect` increments this and schedules an
+   * autoPause keyed on the new value. `autoPause` then checks that its captured epoch still
+   * matches — otherwise a later reconnect/disconnect cycle has opened a fresh idle window
+   * and the old timer should not fire. Fixes the race CodeRabbit flagged: without this,
+   * a disconnect at t=0 schedules a pause at t=10min, a reconnect at t=5min, and a later
+   * disconnect at t=6min all coexisted, and the t=0 timer could pause the VM ~4 minutes
+   * into the new 10-minute window.
+   */
+  idleEpoch: number;
   snapshots: Array<{ id: string; name?: string; createdAt: number }>;
 };
 
@@ -35,6 +45,7 @@ export const vmActor = actor({
     status: "running",
     createdAt: Date.now(),
     pausedAt: null,
+    idleEpoch: 0,
     snapshots: [],
   }),
 
@@ -55,12 +66,16 @@ export const vmActor = actor({
 
   onDisconnect: (c, _conn) => {
     if (c.conns.size === 0) {
-      void c.schedule.after(IDLE_PAUSE_MS, "autoPause");
+      c.state.idleEpoch += 1;
+      void c.schedule.after(IDLE_PAUSE_MS, "autoPause", c.state.idleEpoch);
     }
   },
 
   actions: {
-    autoPause: async (c) => {
+    autoPause: async (c, epoch: number) => {
+      // Skip if a later reconnect/disconnect cycle has bumped the epoch — otherwise the
+      // old timer could pause the VM mid-way through the newest idle window.
+      if (epoch !== c.state.idleEpoch) return;
       if (c.conns.size !== 0) return; // raced with a reconnect
       if (c.state.status !== "running") return;
       await getProvider(c.state.provider).pause(c.state.providerVmId);
