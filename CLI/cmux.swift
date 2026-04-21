@@ -4410,13 +4410,22 @@ struct CMUXCLI {
             remoteRelayPort: sshOptions.remoteRelayPort
         )
         let initialSSHCommand = buildSSHCommandText(sshOptions)
-        let remoteTerminalBootstrapScript = sshOptions.extraArguments.isEmpty
-            ? buildInteractiveRemoteShellScript(
-                remoteRelayPort: sshOptions.remoteRelayPort,
-                shellFeatures: shellFeaturesValue,
-                terminfoSource: terminfoSource
-            )
-            : nil
+        // For VM workspaces (Freestyle), skip the interactive bootstrap script: the russh
+        // gateway forwards shell-request PTYs but stalls on exec-channel I/O, and the bootstrap
+        // script is only meaningful if cmuxd-remote is participating. Let ssh open a plain
+        // interactive shell instead.
+        let remoteTerminalBootstrapScript: String?
+        if sshOptions.skipDaemonBootstrap {
+            remoteTerminalBootstrapScript = nil
+        } else {
+            remoteTerminalBootstrapScript = sshOptions.extraArguments.isEmpty
+                ? buildInteractiveRemoteShellScript(
+                    remoteRelayPort: sshOptions.remoteRelayPort,
+                    shellFeatures: shellFeaturesValue,
+                    terminfoSource: terminfoSource
+                )
+                : nil
+        }
         let remoteTerminalSSHCommand = buildSSHCommandText(
             sshOptions,
             remoteBootstrapScript: remoteTerminalBootstrapScript

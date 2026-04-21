@@ -4424,6 +4424,12 @@ final class WorkspaceRemoteSessionController {
 
     private func removeRemoteRelayMetadataLocked() {
         guard let relayPort = configuration.relayPort, relayPort > 0 else { return }
+        // VM workspaces never installed relay metadata (the reverse-relay path is gated off),
+        // and the ssh-exec the cleanup would issue hangs on Freestyle's russh gateway.
+        if configuration.skipDaemonBootstrap {
+            debugLog("remote.relay.cleanup.skipped reason=vm-baked relayPort=\(relayPort)")
+            return
+        }
         let script = Self.remoteRelayMetadataCleanupScript(relayPort: relayPort)
         let command = "sh -c \(Self.shellSingleQuoted(script))"
         do {
