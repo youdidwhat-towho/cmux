@@ -15,7 +15,8 @@ services/vms/
     vm.ts          One per VM. Tracks connection count for idle-pause.
     userVms.ts     Coordinator per Stack Auth user. Lists/creates/forgets VMs.
   registry.ts      RivetKit setup({ use: { vmActor, userVmsActor } })
-  client.ts        Helper: in-app fetch client with bearer forwarded
+  routeHelpers.ts  Shared REST helpers: bearer parsing, server-controlled Rivet
+                   base URL, ownership check, internal-secret gate header.
   auth.ts          verifyRequest / unauthorized — Stack Auth bearer verification
 ```
 
