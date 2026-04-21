@@ -3588,9 +3588,13 @@ final class WorkspaceRemoteSessionController {
                 // Without the proxy broker, nothing later transitions the workspace to
                 // `.connected`. Publish it here so the workspace card / sidebar reflect
                 // the actual state (the shell session is up, proxy features aren't).
+                let connectedDetailFormat = String(
+                    localized: "remote.state.connected.vmNoProxy",
+                    defaultValue: "Connected to %@ (VM, proxy disabled)"
+                )
                 publishState(
                     .connected,
-                    detail: "Connected to \(configuration.displayTarget) (VM, proxy disabled)"
+                    detail: String(format: connectedDetailFormat, configuration.displayTarget)
                 )
             } else {
                 startReverseRelayLocked(remotePath: hello.remotePath)

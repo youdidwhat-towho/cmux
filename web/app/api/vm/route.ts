@@ -55,7 +55,12 @@ export async function POST(request: Request): Promise<Response> {
     let body: { image?: string; provider?: ProviderId };
     try {
       const raw = await request.json();
-      if (raw !== null && typeof raw !== "object") throw new TypeError("body must be a JSON object");
+      // Reject non-objects AND arrays — `typeof [] === "object"` so the previous guard
+      // silently accepted `[]` and treated it as `{}`, letting malformed clients still
+      // provision a billable VM with defaults.
+      if (raw !== null && (typeof raw !== "object" || Array.isArray(raw))) {
+        throw new TypeError("body must be a JSON object");
+      }
       const candidate = (raw ?? {}) as Record<string, unknown>;
       if (candidate.image !== undefined && typeof candidate.image !== "string") {
         return jsonResponse({ error: "`image` must be a string when provided" }, 400);
