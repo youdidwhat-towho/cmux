@@ -1,5 +1,6 @@
 import { unauthorized, verifyRequest } from "../../../../../services/vms/auth";
 import {
+  isActorMissingError,
   jsonResponse,
   notFoundVm,
   parseBearer,
@@ -35,8 +36,13 @@ export async function POST(
     const client = rivetClient(bearer);
     if (!(await userOwnsVm(client, user.id, id))) return notFoundVm(id);
     // `get` not `getOrCreate` — see the exec route for the rationale.
-    const endpoint = await client.vmActor.get([id]).openSSH();
-    return jsonResponse(endpoint);
+    try {
+      const endpoint = await client.vmActor.get([id]).openSSH();
+      return jsonResponse(endpoint);
+    } catch (err) {
+      if (isActorMissingError(err)) return notFoundVm(id);
+      throw err;
+    }
   } catch (err) {
     console.error("/api/vm/[id]/ssh-endpoint failed", err);
     return jsonResponse({ error: err instanceof Error ? err.message : "internal error" }, 500);

@@ -1,5 +1,6 @@
 import { unauthorized, verifyRequest } from "../../../../services/vms/auth";
 import {
+  isActorMissingError,
   jsonResponse,
   notFoundVm,
   parseBearer,
@@ -32,12 +33,7 @@ export async function DELETE(
       // If the actor is genuinely missing, drop the coordinator reference so the user
       // isn't permanently stuck with an un-removable entry. Providers' not-found is
       // already treated as success inside vmActor.remove (see web/services/vms/actors/vm.ts).
-      const message = err instanceof Error ? err.message.toLowerCase() : "";
-      const actorMissing =
-        message.includes("actor not found") ||
-        message.includes("actor does not exist") ||
-        message.includes("no actor");
-      if (!actorMissing) throw err;
+      if (!isActorMissingError(err)) throw err;
     }
     await client.userVmsActor.getOrCreate([user.id]).forget(id);
     return jsonResponse({ ok: true });

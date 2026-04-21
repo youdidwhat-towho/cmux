@@ -138,3 +138,20 @@ export function jsonResponse(data: unknown, status = 200): Response {
 export function notFoundVm(vmId: string): Response {
   return jsonResponse({ error: `vm not found: ${vmId}` }, 404);
 }
+
+/**
+ * True when an error thrown by a `vmActor.get([id]).<action>()` call looks like the actor
+ * key doesn't resolve to a live actor — i.e. the coordinator still lists the id but its
+ * vmActor state is gone (partial cleanup, etc.). Routes use this to map stale entries to
+ * a 404 instead of bubbling as an opaque 500.
+ */
+export function isActorMissingError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message.toLowerCase() : "";
+  if (!message) return false;
+  return (
+    message.includes("actor not found") ||
+    message.includes("actor does not exist") ||
+    message.includes("no actor") ||
+    message.includes("actor is not available")
+  );
+}

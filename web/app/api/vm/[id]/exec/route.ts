@@ -1,5 +1,6 @@
 import { unauthorized, verifyRequest } from "../../../../../services/vms/auth";
 import {
+  isActorMissingError,
   jsonResponse,
   notFoundVm,
   parseBearer,
@@ -48,10 +49,13 @@ export async function POST(
     // a partial cleanup failure where userVmsActor kept the id but vmActor.state is gone —
     // 404s instead of implicit-creating an uninitialised actor that 500s on every action
     // (Codex P2).
-    const result = await client.vmActor
-      .get([id])
-      .exec(body.command, timeoutMs);
-    return jsonResponse(result);
+    try {
+      const result = await client.vmActor.get([id]).exec(body.command, timeoutMs);
+      return jsonResponse(result);
+    } catch (err) {
+      if (isActorMissingError(err)) return notFoundVm(id);
+      throw err;
+    }
   } catch (err) {
     console.error("/api/vm/[id]/exec POST failed", err);
     return jsonResponse({ error: err instanceof Error ? err.message : "internal error" }, 500);
