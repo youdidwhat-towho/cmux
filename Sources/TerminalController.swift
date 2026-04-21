@@ -2058,6 +2058,15 @@ class TerminalController {
                 ]
             )
         case "auth.status":
+            // Await the AuthManager bootstrap so the socket never reports a transient
+            // signed_in=false during on-launch session restoration (tokens exist on
+            // disk but refreshSession() hasn't populated Published state yet).
+            let semaphore = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                await AuthManager.shared.awaitBootstrapped()
+                semaphore.signal()
+            }
+            semaphore.wait()
             return v2Ok(id: id, result: v2AuthStatusPayload(timedOut: false))
         case "auth.begin_sign_in":
             // Fire the popup on main, then block the socket worker thread

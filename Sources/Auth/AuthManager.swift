@@ -140,6 +140,13 @@ final class AuthManager: ObservableObject {
     private let settingsStore: AuthSettingsStore
     private let urlOpener: (URL) -> Void
 
+    /// Resolves when the on-launch session restoration finishes (success or failure).
+    /// Any probe that needs a definitive `isAuthenticated` value must `await` this
+    /// first, otherwise it can race the restore and see a transient `false`.
+    /// `var` rather than `let` so the init body can reference `self` before it's
+    /// assigned; the value is written exactly once, before init returns.
+    private var bootstrapTask: Task<Void, Never>!
+
     init(
         client: (any AuthClientProtocol)? = nil,
         tokenStore: any StackAuthTokenStoreProtocol = KeychainStackTokenStore(),
@@ -150,12 +157,23 @@ final class AuthManager: ObservableObject {
         self.settingsStore = settingsStore
         self.client = client ?? Self.makeDefaultClient(tokenStore: tokenStore)
         self.urlOpener = urlOpener ?? Self.defaultURLOpener
-        self.currentUser = settingsStore.cachedUser()
+        let cachedUser = settingsStore.cachedUser()
+        self.currentUser = cachedUser
         self.selectedTeamID = settingsStore.selectedTeamID
-        self.isAuthenticated = self.currentUser != nil
-        Task { [weak self] in
+        self.isAuthenticated = cachedUser != nil
+        self.bootstrapTask = Task { [weak self] in
             await self?.restoreStoredSessionIfNeeded()
         }
+    }
+
+    /// Await the on-launch restoration. Returns immediately if already complete.
+    /// Socket probes (`auth.status`) and any CLI-facing synchronous "am I signed in?"
+    /// check must call this first so they can't observe the half-initialized state
+    /// where tokens have been loaded but `refreshSession()` hasn't populated
+    /// `isAuthenticated`. Making this an explicit phase boundary is what prevents
+    /// the "Not signed in → Already signed in" race from recurring.
+    func awaitBootstrapped() async {
+        await bootstrapTask.value
     }
 
     private var loginPollTask: Task<Void, Never>?
