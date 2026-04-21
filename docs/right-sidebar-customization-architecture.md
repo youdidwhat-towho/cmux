@@ -14,12 +14,12 @@ The right sidebar is implemented in `Sources/RightSidebarPanelView.swift`.
 
 Current behavior:
 
-1. `RightSidebarMode` is a hardcoded enum with `files` and `sessions`.
-2. `RightSidebarPanelView` renders a mode bar and switches directly between `FileExplorerPanelView` and `SessionIndexView`.
-3. `FileExplorerState.mode` persists the selected mode with `UserDefaults` key `rightSidebar.mode`.
+1. `RightSidebarMode` identifies the built-in `files` and `sessions` panels.
+2. `RightSidebarPanelView` renders a descriptor-backed mode bar and can show built-in, markdown, web, and command-output panels.
+3. `FileExplorerState.selectedPanelId` persists the selected panel with `UserDefaults` key `rightSidebar.selectedPanelId`, while migrating the legacy `rightSidebar.mode` value.
 4. `ContentView.terminalContentWithSidebarDropOverlay` mounts the sidebar on the trailing side, controls visibility by width, and keeps the view tree stable to avoid transition churn.
 
-This shape is fine for two built-in panels. It does not scale to user-defined panels because panel identity, ordering, lifecycle, permissions, and reload behavior are all embedded in Swift control flow.
+This shape now supports host-owned customization from `settings.json`. ExtensionKit remains the next step for native third-party UI because panel lifecycle, permissions, and XPC contracts need a stricter process boundary than config panels.
 
 ## Framework Roles
 
@@ -243,19 +243,19 @@ Every action needs an explicit allowlist and trust behavior.
 
 ### M1: Native registry, no new user-facing extension system
 
-1. Introduce `RightSidebarPanelRegistry`.
-2. Convert Files and Sessions into built-in descriptors.
-3. Keep the existing mode bar UI and render descriptors.
-4. Preserve `rightSidebar.mode` migration.
-5. Add unit tests for ordering, selection fallback, and persistence migration.
+1. Introduced `RightSidebarPanelRegistry`.
+2. Converted Files and Sessions into built-in descriptors.
+3. Kept the existing mode bar UI and render descriptors.
+4. Preserved `rightSidebar.mode` migration.
+5. Added unit tests for settings parsing and invalid-panel filtering.
 
 ### M2: Config-defined panels
 
-1. Add settings schema for right sidebar panel order and enablement.
-2. Add markdown, web, and command-output panel sources.
-3. Watch config files and reload panels dynamically.
+1. Added settings schema for right sidebar panel order and enablement.
+2. Added markdown, web, and command-output panel sources.
+3. Reload panels dynamically from the existing settings-file watcher.
 4. Add trust prompts for command panels.
-5. Add docs for `settings.json`.
+5. Added docs for `settings.json`.
 
 ### M3: ExtensionKit prototype
 

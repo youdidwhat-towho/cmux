@@ -38,6 +38,7 @@ const sectionOrder = [
   "terminal",
   "notifications",
   "sidebar",
+  "rightSidebar",
   "workspaceColors",
   "sidebarAppearance",
   "automation",
@@ -62,6 +63,22 @@ const settingsFileExample = `{
   // "browser": {
   //   "openTerminalLinksInCmuxBrowser": true,
   //   "hostsToOpenInEmbeddedBrowser": ["localhost", "*.internal.example"]
+  // },
+
+  // "rightSidebar": {
+  //   "selectedPanel": "project.tasks",
+  //   "panels": [
+  //     { "id": "builtin.files", "kind": "builtin", "enabled": true },
+  //     { "id": "builtin.sessions", "kind": "builtin", "enabled": true },
+  //     {
+  //       "id": "project.tasks",
+  //       "kind": "command",
+  //       "title": "Tasks",
+  //       "icon": "checklist",
+  //       "command": "task list",
+  //       "refresh": "manual"
+  //     }
+  //   ]
   // },
 
   // "workspaceColors": {
@@ -221,9 +238,6 @@ export default function ConfigurationPage() {
     schemaVersion: schemaProperties.schemaVersion,
   } satisfies Record<string, SchemaProperty | undefined>;
 
-  const shortcutsSection = schemaProperties.shortcuts;
-  const shortcutProperties = shortcutsSection?.properties ?? {};
-
   return (
     <>
       <h1>{t("title")}</h1>
@@ -333,7 +347,39 @@ working-directory = ~/code`}</CodeBlock>
       "Red": "#C0392B",
       "Blue": "#1565C0",
       "Neon Mint": "#00F5D4"
-    }
+                }
+              }
+}`}</CodeBlock>
+              </>
+            )}
+            {sectionName === "rightSidebar" && (
+              <>
+                <p>
+                  <code>rightSidebar.panels</code> controls the right sidebar switcher. Built-in
+                  panels can be reordered or hidden, and custom panels can render markdown files,
+                  web URLs, or command output.
+                </p>
+                <CodeBlock lang="json">{`{
+  "rightSidebar": {
+    "selectedPanel": "project.tasks",
+    "panels": [
+      { "id": "builtin.files", "kind": "builtin", "enabled": true },
+      { "id": "builtin.sessions", "kind": "builtin", "enabled": true },
+      {
+        "id": "project.tasks",
+        "kind": "command",
+        "title": "Tasks",
+        "icon": "checklist",
+        "command": "task list",
+        "refresh": "manual"
+      },
+      {
+        "id": "project.notes",
+        "kind": "markdown",
+        "title": "Notes",
+        "path": "~/notes.md"
+      }
+    ]
   }
 }`}</CodeBlock>
               </>

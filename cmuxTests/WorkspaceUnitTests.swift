@@ -1200,6 +1200,102 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
         )
     }
 
+    func testSettingsFileStoreParsesRightSidebarPanels() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try writeSettingsFile(
+            """
+            {
+              "rightSidebar": {
+                "selectedPanel": "project.tasks",
+                "panels": [
+                  { "id": "sessions", "kind": "builtin" },
+                  {
+                    "id": "project.notes",
+                    "kind": "markdown",
+                    "title": "Notes",
+                    "icon": "doc.text",
+                    "path": "~/notes.md"
+                  },
+                  {
+                    "id": "project.dashboard",
+                    "kind": "web",
+                    "title": "Dashboard",
+                    "url": "http://localhost:3000"
+                  },
+                  {
+                    "id": "project.tasks",
+                    "kind": "command",
+                    "title": "Tasks",
+                    "command": "task list",
+                    "cwd": "~/code/project",
+                    "refresh": "onAppear"
+                  }
+                ]
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        let store = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        let settings = store.rightSidebarSettings()
+        XCTAssertEqual(settings.selectedPanelId, "project.tasks")
+        XCTAssertEqual(settings.panels?.count, 4)
+
+        let panels = try XCTUnwrap(settings.panels)
+        XCTAssertEqual(panels[0].id, RightSidebarMode.sessions.panelId)
+        XCTAssertEqual(panels[0].source, .builtIn(.sessions))
+        XCTAssertEqual(panels[1].source, .markdown(path: "~/notes.md"))
+        XCTAssertEqual(panels[1].title, "Notes")
+        XCTAssertEqual(panels[1].symbolName, "doc.text")
+        XCTAssertEqual(panels[2].source, .web(url: "http://localhost:3000"))
+        XCTAssertEqual(
+            panels[3].source,
+            .command(command: "task list", cwd: "~/code/project", refresh: .onAppear)
+        )
+    }
+
+    func testSettingsFileStoreDropsInvalidAndDuplicateRightSidebarPanels() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try writeSettingsFile(
+            """
+            {
+              "rightSidebar": {
+                "panels": [
+                  { "id": "builtin.files", "kind": "builtin" },
+                  { "id": "builtin.files", "kind": "builtin", "title": "Duplicate" },
+                  { "id": "bad", "kind": "markdown" },
+                  { "id": "project.tasks", "kind": "command", "command": "pwd" }
+                ]
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        let store = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        let panels = try XCTUnwrap(store.rightSidebarSettings().panels)
+        XCTAssertEqual(panels.count, 2)
+        XCTAssertEqual(panels[0].id, RightSidebarMode.files.panelId)
+        XCTAssertEqual(panels[1].id, "project.tasks")
+    }
+
     func testFutureSchemaVersionStillParsesKnownFields() throws {
         let directoryURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directoryURL) }

@@ -440,9 +440,10 @@ final class FileExplorerState: ObservableObject {
         didSet { UserDefaults.standard.set(showHiddenFiles, forKey: "fileExplorer.showHidden") }
     }
 
-    /// Active mode for the right sidebar (file tree or session index).
-    @Published var mode: RightSidebarMode {
-        didSet { UserDefaults.standard.set(mode.rawValue, forKey: "rightSidebar.mode") }
+    /// Active panel in the right sidebar. The legacy `rightSidebar.mode` value
+    /// is still accepted during initialization for existing users.
+    @Published var selectedPanelId: String {
+        didSet { UserDefaults.standard.set(selectedPanelId, forKey: "rightSidebar.selectedPanelId") }
     }
 
     init() {
@@ -454,8 +455,13 @@ final class FileExplorerState: ObservableObject {
         self.dividerPosition = storedPosition > 0 ? CGFloat(storedPosition) : 0.6
         let storedShowHidden = defaults.object(forKey: "fileExplorer.showHidden")
         self.showHiddenFiles = storedShowHidden == nil ? true : defaults.bool(forKey: "fileExplorer.showHidden")
-        let storedMode = defaults.string(forKey: "rightSidebar.mode") ?? RightSidebarMode.files.rawValue
-        self.mode = RightSidebarMode(rawValue: storedMode) ?? .files
+        if let storedPanelId = defaults.string(forKey: "rightSidebar.selectedPanelId"),
+           !storedPanelId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.selectedPanelId = storedPanelId
+        } else {
+            let storedMode = defaults.string(forKey: "rightSidebar.mode") ?? RightSidebarMode.files.rawValue
+            self.selectedPanelId = RightSidebarMode(panelId: storedMode)?.panelId ?? RightSidebarMode.files.panelId
+        }
     }
 
     func toggle() {

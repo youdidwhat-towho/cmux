@@ -264,6 +264,43 @@
         }
       }
     },
+    "rightSidebar": {
+      "title": "rightSidebar",
+      "description": "Right sidebar panel order and custom panels.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "selectedPanel": {
+          "type": "string",
+          "default": "builtin.files",
+          "description": "Panel id to select when the settings file is loaded."
+        },
+        "panels": {
+          "type": "array",
+          "description": "Ordered list of right sidebar panels. Omit this key to use the built-in Files and Sessions panels.",
+          "items": {
+            "oneOf": [
+              { "$ref": "#/$defs/rightSidebarBuiltinPanel" },
+              { "$ref": "#/$defs/rightSidebarMarkdownPanel" },
+              { "$ref": "#/$defs/rightSidebarWebPanel" },
+              { "$ref": "#/$defs/rightSidebarCommandPanel" }
+            ]
+          },
+          "default": [
+            {
+              "id": "builtin.files",
+              "kind": "builtin",
+              "enabled": true
+            },
+            {
+              "id": "builtin.sessions",
+              "kind": "builtin",
+              "enabled": true
+            }
+          ]
+        }
+      }
+    },
     "workspaceColors": {
       "title": "workspaceColors",
       "description": "Workspace tab and badge colors from Settings > Workspace Colors.",
@@ -601,6 +638,174 @@
         },
         {
           "type": "null"
+        }
+      ]
+    },
+    "rightSidebarPanelBase": {
+      "type": "object",
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable panel id. Built-in ids are builtin.files and builtin.sessions."
+        },
+        "kind": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string",
+          "description": "Label shown in the right sidebar panel switcher."
+        },
+        "icon": {
+          "type": "string",
+          "description": "SF Symbol name shown in the right sidebar panel switcher."
+        },
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether the panel appears in the switcher."
+        }
+      }
+    },
+    "rightSidebarBuiltinPanel": {
+      "allOf": [
+        { "$ref": "#/$defs/rightSidebarPanelBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "enum": ["builtin.files", "builtin.sessions", "files", "sessions"]
+            },
+            "kind": {
+              "const": "builtin"
+            },
+            "title": {
+              "type": "string"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            }
+          }
+        }
+      ]
+    },
+    "rightSidebarMarkdownPanel": {
+      "allOf": [
+        { "$ref": "#/$defs/rightSidebarPanelBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "path"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "const": "markdown"
+            },
+            "title": {
+              "type": "string"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Markdown file path. Tilde expansion is supported."
+            }
+          }
+        }
+      ]
+    },
+    "rightSidebarWebPanel": {
+      "allOf": [
+        { "$ref": "#/$defs/rightSidebarPanelBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "url"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "const": "web"
+            },
+            "title": {
+              "type": "string"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "description": "URL loaded in the right sidebar web panel."
+            }
+          }
+        }
+      ]
+    },
+    "rightSidebarCommandPanel": {
+      "allOf": [
+        { "$ref": "#/$defs/rightSidebarPanelBase" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "kind", "command"],
+          "properties": {
+            "id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "kind": {
+              "const": "command"
+            },
+            "title": {
+              "type": "string"
+            },
+            "icon": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "command": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Shell command run with /bin/sh -lc."
+            },
+            "cwd": {
+              "type": "string",
+              "description": "Optional working directory. Tilde expansion is supported."
+            },
+            "refresh": {
+              "type": "string",
+              "enum": ["manual", "onAppear"],
+              "default": "manual",
+              "description": "When onAppear, the command runs once when the panel appears. Manual panels run only from the play button."
+            }
+          }
         }
       ]
     },

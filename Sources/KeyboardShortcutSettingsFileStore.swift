@@ -59,6 +59,8 @@ final class CmuxSettingsFileStore {
         "sidebar.showLog",
         "sidebar.showProgress",
         "sidebar.showCustomMetadata",
+        "rightSidebar.selectedPanel",
+        "rightSidebar.panels",
         "workspaceColors.indicatorStyle",
         "workspaceColors.selectionColor",
         "workspaceColors.notificationBadgeColor",
@@ -131,6 +133,7 @@ final class CmuxSettingsFileStore {
     private var shortcutsByAction: [KeyboardShortcutSettings.Action: StoredShortcut] = [:]
     private var activeManagedUserDefaults: [String: ManagedSettingsValue] = [:]
     private var activeManagedCustomSettings = ManagedCustomSettings()
+    private var activeRightSidebarSettings = RightSidebarSettings.defaultValue
     private var isApplyingManagedSettings = false
     private(set) var activeSourcePath: String?
 
@@ -198,16 +201,20 @@ final class CmuxSettingsFileStore {
     func reload() {
         let previousShortcuts = synchronized { shortcutsByAction }
         let previousActiveSourcePath = synchronized { activeSourcePath }
+        let previousRightSidebarSettings = synchronized { activeRightSidebarSettings }
         let resolved = resolveSettings()
         applyManagedSettings(snapshot: resolved)
         synchronized {
             shortcutsByAction = resolved.shortcuts
             activeManagedUserDefaults = resolved.managedUserDefaults
             activeManagedCustomSettings = resolved.managedCustomSettings
+            activeRightSidebarSettings = resolved.rightSidebarSettings
             activeSourcePath = resolved.path
         }
 
-        if previousShortcuts != resolved.shortcuts || previousActiveSourcePath != resolved.path {
+        if previousShortcuts != resolved.shortcuts ||
+            previousActiveSourcePath != resolved.path ||
+            previousRightSidebarSettings != resolved.rightSidebarSettings {
             KeyboardShortcutSettings.notifySettingsFileDidChange()
         }
     }
@@ -218,6 +225,10 @@ final class CmuxSettingsFileStore {
 
     func isManagedByFile(_ action: KeyboardShortcutSettings.Action) -> Bool {
         synchronized { shortcutsByAction[action] != nil }
+    }
+
+    func rightSidebarSettings() -> RightSidebarSettings {
+        synchronized { activeRightSidebarSettings }
     }
 
     func settingsFileURLForEditing() -> URL {
@@ -273,7 +284,8 @@ final class CmuxSettingsFileStore {
                 path: activeSourcePath,
                 shortcuts: shortcutsByAction,
                 managedUserDefaults: activeManagedUserDefaults,
-                managedCustomSettings: activeManagedCustomSettings
+                managedCustomSettings: activeManagedCustomSettings,
+                rightSidebarSettings: activeRightSidebarSettings
             )
         }
         guard let snapshot else { return }
@@ -360,6 +372,9 @@ final class CmuxSettingsFileStore {
         }
         if let sidebarSection = root["sidebar"] as? [String: Any] {
             parseSidebarSection(sidebarSection, sourcePath: sourcePath, snapshot: &snapshot)
+        }
+        if let rightSidebarSection = root["rightSidebar"] as? [String: Any] {
+            parseRightSidebarSection(rightSidebarSection, sourcePath: sourcePath, snapshot: &snapshot)
         }
         if let workspaceColorsSection = root["workspaceColors"] as? [String: Any] {
             parseWorkspaceColorsSection(workspaceColorsSection, sourcePath: sourcePath, snapshot: &snapshot)
@@ -544,6 +559,120 @@ final class CmuxSettingsFileStore {
         if let value = jsonBool(section["showCustomMetadata"]) {
             snapshot.managedUserDefaults["sidebarShowStatusPills"] = .bool(value)
         }
+    }
+
+    private func parseRightSidebarSection(
+        _ section: [String: Any],
+        sourcePath: String,
+        snapshot: inout ResolvedSettingsSnapshot
+    ) {
+        var settings = RightSidebarSettings.defaultValue
+
+        if section.keys.contains("selectedPanel") {
+            guard let selectedPanel = jsonString(section["selectedPanel"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !selectedPanel.isEmpty else {
+                logInvalid("rightSidebar.selectedPanel", sourcePath: sourcePath)
+                return
+            }
+            settings.selectedPanelId = normalizedRightSidebarPanelId(selectedPanel)
+        }
+
+        if section.keys.contains("panels") {
+            guard let rawPanels = section["panels"] as? [Any] else {
+                logInvalid("rightSidebar.panels", sourcePath: sourcePath)
+                return
+            }
+
+            var panels: [RightSidebarConfiguredPanel] = []
+            var seenIds: Set<String> = []
+            for rawPanel in rawPanels {
+                guard let panel = parseRightSidebarPanel(rawPanel, sourcePath: sourcePath) else { continue }
+                guard seenIds.insert(panel.id).inserted else {
+                    NSLog("[CmuxSettingsFileStore] ignoring duplicate right sidebar panel '%@' in %@", panel.id, sourcePath)
+                    continue
+                }
+                panels.append(panel)
+            }
+            settings.panels = panels
+        }
+
+        snapshot.rightSidebarSettings = settings
+    }
+
+    private func parseRightSidebarPanel(
+        _ rawPanel: Any,
+        sourcePath: String
+    ) -> RightSidebarConfiguredPanel? {
+        guard let panel = rawPanel as? [String: Any] else {
+            logInvalid("rightSidebar.panels", sourcePath: sourcePath)
+            return nil
+        }
+
+        guard let rawId = jsonString(panel["id"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawId.isEmpty else {
+            logInvalid("rightSidebar.panels.id", sourcePath: sourcePath)
+            return nil
+        }
+
+        let id = normalizedRightSidebarPanelId(rawId)
+        let title = jsonString(panel["title"])?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let symbolName = jsonString(panel["icon"])?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        let isEnabled = jsonBool(panel["enabled"]) ?? true
+        let rawKind = jsonString(panel["kind"])?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let source: RightSidebarConfiguredPanelSource?
+        switch rawKind {
+        case nil, "builtin":
+            guard let mode = RightSidebarMode(panelId: id) else {
+                logInvalid("rightSidebar.panels.kind", sourcePath: sourcePath)
+                return nil
+            }
+            source = .builtIn(mode)
+        case "markdown":
+            guard let path = jsonString(panel["path"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !path.isEmpty else {
+                logInvalid("rightSidebar.panels.path", sourcePath: sourcePath)
+                return nil
+            }
+            source = .markdown(path: path)
+        case "web":
+            guard let url = jsonString(panel["url"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty else {
+                logInvalid("rightSidebar.panels.url", sourcePath: sourcePath)
+                return nil
+            }
+            source = .web(url: url)
+        case "command":
+            guard let command = jsonString(panel["command"])?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !command.isEmpty else {
+                logInvalid("rightSidebar.panels.command", sourcePath: sourcePath)
+                return nil
+            }
+            let cwd = jsonString(panel["cwd"])?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            let refresh = jsonString(panel["refresh"])
+                .flatMap { RightSidebarCommandRefresh(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                ?? .manual
+            source = .command(command: command, cwd: cwd, refresh: refresh)
+        default:
+            logInvalid("rightSidebar.panels.kind", sourcePath: sourcePath)
+            return nil
+        }
+
+        guard let source else { return nil }
+        return RightSidebarConfiguredPanel(
+            id: id,
+            title: title,
+            symbolName: symbolName,
+            isEnabled: isEnabled,
+            source: source
+        )
+    }
+
+    private func normalizedRightSidebarPanelId(_ rawId: String) -> String {
+        if let mode = RightSidebarMode(panelId: rawId) {
+            return mode.panelId
+        }
+        return rawId
     }
 
     private func parseWorkspaceColorsSection(
@@ -1403,6 +1532,31 @@ final class CmuxSettingsFileStore {
                 ],
             ],
             [
+                "rightSidebar": [
+                    "selectedPanel": RightSidebarMode.files.panelId,
+                    "panels": [
+                        [
+                            "id": RightSidebarMode.files.panelId,
+                            "kind": "builtin",
+                            "enabled": true,
+                        ],
+                        [
+                            "id": RightSidebarMode.sessions.panelId,
+                            "kind": "builtin",
+                            "enabled": true,
+                        ],
+                        [
+                            "id": "custom.notes",
+                            "kind": "markdown",
+                            "title": "Notes",
+                            "icon": "doc.text",
+                            "path": "~/notes.md",
+                            "enabled": false,
+                        ],
+                    ],
+                ],
+            ],
+            [
                 "workspaceColors": [
                     "indicatorStyle": SidebarActiveTabIndicatorSettings.defaultStyle.rawValue,
                     "selectionColor": NSNull(),
@@ -1510,6 +1664,13 @@ private struct ResolvedSettingsSnapshot {
     var shortcuts: [KeyboardShortcutSettings.Action: StoredShortcut] = [:]
     var managedUserDefaults: [String: ManagedSettingsValue] = [:]
     var managedCustomSettings = ManagedCustomSettings()
+    var rightSidebarSettings = RightSidebarSettings.defaultValue
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
+    }
 }
 
 private enum ManagedStringOverride: Equatable {
