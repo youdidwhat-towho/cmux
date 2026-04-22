@@ -4052,18 +4052,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     for windowSnapshot in additionalWindows {
                         _ = self.createMainWindow(sessionWindowSnapshot: windowSnapshot)
                     }
-                    self.completeSessionRestoreOperation()
+                    self.completeSessionRestoreOperation(isManualReopen: false)
                 }
             } else {
-                completeSessionRestoreOperation()
+                completeSessionRestoreOperation(isManualReopen: false)
             }
         }
     }
 
-    private func completeSessionRestoreOperation() {
+    private func completeSessionRestoreOperation(isManualReopen: Bool) {
         startupSessionSnapshot = nil
         isApplyingSessionRestore = false
-        _ = saveSessionSnapshot(includeScrollback: false)
+        if Self.shouldSaveSessionSnapshotOnRestoreCompletion(isManualReopen: isManualReopen) {
+            _ = saveSessionSnapshot(includeScrollback: false)
+        }
+    }
+
+    nonisolated static func shouldSaveSessionSnapshotOnRestoreCompletion(
+        isManualReopen: Bool
+    ) -> Bool {
+        !isManualReopen
     }
 
     @discardableResult
@@ -4114,7 +4122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
-        completeSessionRestoreOperation()
+        completeSessionRestoreOperation(isManualReopen: true)
 
         if shouldActivate,
            let primaryWindow = sortedMainWindowContextsForSessionSnapshot()

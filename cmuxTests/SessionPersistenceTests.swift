@@ -490,6 +490,19 @@ final class SessionPersistenceTests: XCTestCase {
         )
     }
 
+    func testRestoreCompletionSavePolicySkipsManualReopen() {
+        XCTAssertTrue(
+            AppDelegate.shouldSaveSessionSnapshotOnRestoreCompletion(
+                isManualReopen: false
+            )
+        )
+        XCTAssertFalse(
+            AppDelegate.shouldSaveSessionSnapshotOnRestoreCompletion(
+                isManualReopen: true
+            )
+        )
+    }
+
     func testUnchangedAutosaveFingerprintSkipsWithinStalenessWindow() {
         let now = Date()
         XCTAssertTrue(
