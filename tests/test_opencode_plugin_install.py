@@ -43,6 +43,8 @@ def main() -> int:
                     "plugin": [
                         "oh-my-opencode",
                         ["existing-plugin", {"enabled": True}],
+                        "cmux-session",
+                        "./plugins/cmux-session.js",
                     ]
                 }
             ),
@@ -80,17 +82,50 @@ def main() -> int:
         if not isinstance(plugins, list):
             print(f"FAIL: expected plugin list in opencode.json, got {plugins!r}")
             return 1
-        if "cmux-session" not in plugins:
-            print(f"FAIL: expected cmux-session registration in opencode.json, got {plugins!r}")
+        stale = [
+            entry
+            for entry in plugins
+            if (entry if isinstance(entry, str) else entry[0] if isinstance(entry, list) and entry else "")
+            in {"cmux-session", "./plugins/cmux-session.js"}
+        ]
+        if stale:
+            print(f"FAIL: expected stale cmux plugin registrations removed, got {plugins!r}")
             return 1
         if "oh-my-opencode" not in plugins or ["existing-plugin", {"enabled": True}] not in plugins:
             print(f"FAIL: installer did not preserve existing plugin entries: {plugins!r}")
             return 1
 
+        opencode = shutil.which("opencode")
+        if opencode is not None:
+            debug = subprocess.run(
+                [opencode, "--print-logs", "--log-level", "DEBUG", "debug", "config"],
+                capture_output=True,
+                text=True,
+                check=False,
+                env=env,
+                timeout=30,
+            )
+            debug_output = debug.stdout + "\n" + debug.stderr
+            if debug.returncode != 0:
+                print("FAIL: opencode debug config failed")
+                print(f"exit={debug.returncode}")
+                print(debug_output[-4000:])
+                return 1
+            if "path=cmux-session loading plugin" in debug_output:
+                print("FAIL: opencode tried to resolve cmux-session as a package")
+                print(debug_output[-4000:])
+                return 1
+            if f"file://{plugin_path}" not in debug_output:
+                print("FAIL: opencode did not auto-load cmux session plugin file")
+                print(debug_output[-4000:])
+                return 1
+
         fake_cmux = root / "fake-cmux"
         fake_args_log = root / "fake-cmux-args.log"
         fake_stdin_log = root / "fake-cmux-stdin.log"
         fake_env_log = root / "fake-cmux-env.log"
+        plugin_copy_path = config_dir / "plugins" / "cmux-session-copy.js"
+        shutil.copyfile(plugin_path, plugin_copy_path)
         make_executable(
             fake_cmux,
             """#!/usr/bin/env bash
@@ -108,36 +143,43 @@ printf '\\n---\\n' >> "$FAKE_CMUX_STDIN_LOG"
 
         check_env = env.copy()
         check_env["CMUX_TEST_OPENCODE_PLUGIN_PATH"] = str(plugin_path)
+        check_env["CMUX_TEST_OPENCODE_PLUGIN_COPY_PATH"] = str(plugin_copy_path)
         check_env["CMUX_SURFACE_ID"] = "surface-opencode-test"
         check_env["CMUX_OPENCODE_CMUX_BIN"] = str(fake_cmux)
         check_env["FAKE_CMUX_ARGS_LOG"] = str(fake_args_log)
         check_env["FAKE_CMUX_STDIN_LOG"] = str(fake_stdin_log)
         check_env["FAKE_CMUX_ENV_LOG"] = str(fake_env_log)
         check_source = """
-	const pluginPath = process.env.CMUX_TEST_OPENCODE_PLUGIN_PATH;
-	const mod = await import(pluginPath);
-	if (typeof mod.CMUXSessionRestore !== "function") {
-	  throw new Error("missing CMUXSessionRestore export");
-	}
-	if (typeof mod.default !== "function") {
-	  throw new Error("missing default export");
-	}
-	const hooks = await mod.default({ directory: "/tmp/opencode-project" });
-	if (!hooks || typeof hooks.event !== "function") {
-	  throw new Error("missing event hook");
-	}
-	await hooks.event({
-	  event: {
-	    type: "session.created",
-	    properties: {
-	      info: {
-	        id: "opencode-session-test",
-	        directory: "/tmp/opencode-project"
-	      }
-	    }
-	  }
-	});
-	"""
+const pluginPath = process.env.CMUX_TEST_OPENCODE_PLUGIN_PATH;
+const pluginCopyPath = process.env.CMUX_TEST_OPENCODE_PLUGIN_COPY_PATH;
+const mod = await import(pluginPath);
+const duplicateMod = await import(pluginCopyPath);
+if (typeof mod.CMUXSessionRestore !== "function") {
+  throw new Error("missing CMUXSessionRestore export");
+}
+if (typeof mod.default !== "function") {
+  throw new Error("missing default export");
+}
+const hooks = await mod.default({ directory: "/tmp/opencode-project" });
+const duplicateHooks = await duplicateMod.default({ directory: "/tmp/opencode-project" });
+if (!hooks || typeof hooks.event !== "function") {
+  throw new Error("missing event hook");
+}
+if (duplicateHooks && typeof duplicateHooks.event === "function") {
+  throw new Error("duplicate plugin returned event hook");
+}
+await hooks.event({
+  event: {
+    type: "session.created",
+    properties: {
+      info: {
+        id: "opencode-session-test",
+        directory: "/tmp/opencode-project"
+      }
+    }
+  }
+});
+"""
         check = subprocess.run(
             [bun, "--eval", check_source],
             cwd=root,
@@ -159,6 +201,9 @@ printf '\\n---\\n' >> "$FAKE_CMUX_STDIN_LOG"
         env_log = fake_env_log.read_text(encoding="utf-8") if fake_env_log.exists() else ""
         if "opencode-hook session-start" not in args_log:
             print(f"FAIL: plugin did not invoke opencode-hook session-start, got {args_log!r}")
+            return 1
+        if args_log.count("opencode-hook session-start") != 1:
+            print(f"FAIL: plugin invoked duplicate session-start hooks, got {args_log!r}")
             return 1
         if '"session_id":"opencode-session-test"' not in stdin_log or '"/tmp/opencode-project"' not in stdin_log:
             print(f"FAIL: plugin did not pass expected session payload, got {stdin_log!r}")
