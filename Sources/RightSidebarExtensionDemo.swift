@@ -1,0 +1,550 @@
+import AppKit
+import ExtensionFoundation
+import ExtensionKit
+import Observation
+import SwiftUI
+
+enum RightSidebarExtensionPoint {
+    static let identifier = "com.cmuxterm.app.debug.extkit.right-sidebar-panel"
+    static let legacyIdentifier = "com.cmuxterm.right-sidebar-panel"
+    static let discoveryIdentifiers: [StaticString] = [
+        "com.cmuxterm.app.debug.extkit.right-sidebar-panel",
+        "com.cmuxterm.right-sidebar-panel",
+    ]
+    static let legacyDiscoveryIdentifiers = [
+        identifier,
+        legacyIdentifier,
+    ]
+    static let sceneID = "cmux-right-sidebar-demo"
+}
+
+@MainActor
+final class RightSidebarExtensionDemoStore: ObservableObject {
+    @Published var identities: [AppExtensionIdentity] = []
+    @Published var selectedIdentityID: AppExtensionIdentity.ID?
+    @Published var statusMessage: String = String(
+        localized: "rightSidebar.extensionDemo.ready",
+        defaultValue: "Ready"
+    )
+    @Published var isLoading: Bool = false
+
+    private var monitor: Any?
+    private var reloadGeneration = 0
+
+    var selectedIdentity: AppExtensionIdentity? {
+        guard let selectedIdentityID else {
+            return identities.first
+        }
+
+        return identities.first { $0.id == selectedIdentityID } ?? identities.first
+    }
+
+    func reload() {
+        guard !isLoading else { return }
+
+        reloadGeneration += 1
+        let generation = reloadGeneration
+        isLoading = true
+        statusMessage = String(
+            localized: "rightSidebar.extensionDemo.loading",
+            defaultValue: "Looking for demo extensions..."
+        )
+
+        Task {
+            await loadIdentities(generation: generation)
+        }
+    }
+
+    private func loadIdentities(generation: Int) async {
+        do {
+            await registerBundledDemoExtensionIfNeeded()
+
+            if #available(macOS 26.0, *) {
+                let monitor = AppExtensionPoint.Monitor()
+                for identifier in RightSidebarExtensionPoint.discoveryIdentifiers {
+                    let point = try AppExtensionPoint(identifier: identifier)
+                    try await monitor.addAppExtensionPoint(point)
+                }
+                self.monitor = monitor
+                observeMonitor(monitor)
+                guard generation == reloadGeneration else { return }
+                applyMonitorState(monitor.state)
+            } else {
+                self.monitor = nil
+                let discoveredIdentities = try await loadLegacyIdentities()
+                guard generation == reloadGeneration else { return }
+                applyDiscoveredIdentities(discoveredIdentities)
+            }
+        } catch {
+            guard generation == reloadGeneration else { return }
+            monitor = nil
+            identities = []
+            selectedIdentityID = nil
+            statusMessage = String(
+                localized: "rightSidebar.extensionDemo.errorStatus",
+                defaultValue: "Extension discovery failed."
+            ) + " \(error.localizedDescription)"
+        }
+
+        isLoading = false
+    }
+
+    @available(macOS 26.0, *)
+    private func applyMonitorState(_ state: AppExtensionPoint.Monitor.State) {
+        applyDiscoveredIdentities(
+            state.identities,
+            disabledCount: state.disabledCount,
+            unapprovedCount: state.unapprovedCount
+        )
+    }
+
+    private func applyDiscoveredIdentities(
+        _ discoveredIdentities: [AppExtensionIdentity],
+        disabledCount: Int = 0,
+        unapprovedCount: Int = 0
+    ) {
+        let sortedIdentities = uniqueIdentities(discoveredIdentities).sorted {
+            $0.localizedName.localizedCaseInsensitiveCompare($1.localizedName) == .orderedAscending
+        }
+        if sortedIdentities.isEmpty, !identities.isEmpty {
+            statusMessage = String(
+                localized: "rightSidebar.extensionDemo.settlingStatus",
+                defaultValue: "Extension discovery is settling. Keeping the last extension."
+            )
+            return
+        }
+
+        identities = sortedIdentities
+        if selectedIdentity == nil {
+            selectedIdentityID = sortedIdentities.first?.id
+        }
+
+        if sortedIdentities.isEmpty {
+            if disabledCount > 0 || unapprovedCount > 0 {
+                statusMessage = String(
+                    localized: "rightSidebar.extensionDemo.unavailableStatus",
+                    defaultValue: "Extension is registered but not available yet."
+                )
+            } else {
+                statusMessage = String(
+                    localized: "rightSidebar.extensionDemo.emptyStatus",
+                    defaultValue: "No demo extension found."
+                )
+            }
+        } else {
+            statusMessage = String(
+                localized: "rightSidebar.extensionDemo.foundStatus",
+                defaultValue: "Demo extension discovered."
+            )
+        }
+    }
+
+    private func uniqueIdentities(_ discoveredIdentities: [AppExtensionIdentity]) -> [AppExtensionIdentity] {
+        var seen = Set<AppExtensionIdentity.ID>()
+        return discoveredIdentities.filter { identity in
+            seen.insert(identity.id).inserted
+        }
+    }
+
+    @available(macOS 26.0, *)
+    private func observeMonitor(_ monitor: AppExtensionPoint.Monitor) {
+        _ = withObservationTracking {
+            monitor.state
+        } onChange: { [weak self, weak monitor] in
+            Task { @MainActor in
+                guard let self, let monitor else { return }
+                guard (self.monitor as AnyObject?) === monitor else { return }
+                self.applyMonitorState(monitor.state)
+                self.observeMonitor(monitor)
+            }
+        }
+    }
+
+    @available(macOS, introduced: 13.0, deprecated: 26.0, message: "Use AppExtensionPoint.Monitor")
+    private func loadLegacyIdentities() async throws -> [AppExtensionIdentity] {
+        var discoveredIdentities: [AppExtensionIdentity] = []
+        for identifier in RightSidebarExtensionPoint.legacyDiscoveryIdentifiers {
+            let identities = try AppExtensionIdentity.matching(appExtensionPointIDs: identifier)
+            var iterator = identities.makeAsyncIterator()
+            discoveredIdentities.append(contentsOf: await iterator.next() ?? [])
+        }
+        return uniqueIdentities(discoveredIdentities)
+    }
+
+    private func registerBundledDemoExtensionIfNeeded() async {
+        #if DEBUG
+        // Tagged dev builds are copied under DerivedData, so make OS registration idempotent
+        // before asking ExtensionKit for the monitor snapshot.
+        let appURL = Bundle.main.bundleURL
+        let extensionURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Extensions", isDirectory: true)
+            .appendingPathComponent("RightSidebarDemoExtension.appex", isDirectory: true)
+
+        guard FileManager.default.fileExists(atPath: extensionURL.path) else {
+            return
+        }
+
+        await Task.detached(priority: .utility) {
+            _ = Self.runProcess(
+                executablePath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
+                arguments: ["-f", appURL.path]
+            )
+            _ = Self.runProcess(
+                executablePath: "/usr/bin/pluginkit",
+                arguments: ["-a", extensionURL.path]
+            )
+        }.value
+        #endif
+    }
+
+    nonisolated private static func runProcess(executablePath: String, arguments: [String]) -> Int32 {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: executablePath)
+        process.arguments = arguments
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus
+        } catch {
+            return -1
+        }
+    }
+}
+
+struct RightSidebarExtensionDemoPanelView: View {
+    @StateObject private var store = RightSidebarExtensionDemoStore()
+    @State private var isPromptInfoPresented = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .onAppear {
+            store.reload()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Label {
+                Text(String(localized: "rightSidebar.extensionDemo.title", defaultValue: "ExtensionKit Demo"))
+            } icon: {
+                Image(systemName: "puzzlepiece.extension")
+            }
+            .font(.system(size: 12, weight: .semibold))
+
+            Spacer(minLength: 0)
+
+            if store.isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.65)
+            }
+
+            Button {
+                store.reload()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .help(String(localized: "rightSidebar.extensionDemo.refresh", defaultValue: "Refresh extensions"))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if #available(macOS 26.0, *) {
+            extensionContent
+        } else {
+            VStack(spacing: 8) {
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+                Text(String(
+                    localized: "rightSidebar.extensionDemo.requiresMacOS26",
+                    defaultValue: "ExtensionKit sidebar demos require macOS 26."
+                ))
+                .font(.system(size: 12))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+            }
+            .padding(18)
+        }
+    }
+
+    private var extensionContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(store.statusMessage)
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .lineLimit(3)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if store.identities.isEmpty {
+                Spacer(minLength: 0)
+                VStack(spacing: 9) {
+                    Image(systemName: "exclamationmark.magnifyingglass")
+                        .font(.system(size: 21))
+                        .foregroundStyle(.secondary)
+                    Text(String(
+                        localized: "rightSidebar.extensionDemo.noExtensions",
+                        defaultValue: "No ExtensionKit demo extension is registered yet."
+                    ))
+                    .font(.system(size: 12))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    Text(String(
+                        localized: "rightSidebar.extensionDemo.copyPromptHint",
+                        defaultValue: "Copy a starter prompt and paste it into your AI agent to generate a sidebar extension."
+                    ))
+                    .font(.system(size: 11))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.tertiary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                    HStack(spacing: 8) {
+                        Button {
+                            copyStarterPrompt()
+                        } label: {
+                            Label(
+                                String(localized: "rightSidebar.extensionDemo.copyPrompt", defaultValue: "Copy extension prompt"),
+                                systemImage: "doc.on.clipboard"
+                            )
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+
+                        Button {
+                            isPromptInfoPresented.toggle()
+                        } label: {
+                            Image(systemName: "info.circle")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .buttonStyle(.plain)
+                        .controlSize(.small)
+                        .help(String(
+                            localized: "rightSidebar.extensionDemo.promptInfo",
+                            defaultValue: "About this prompt"
+                        ))
+                        .popover(isPresented: $isPromptInfoPresented, arrowEdge: .trailing) {
+                            ExtensionPromptInfoPopover(
+                                prompt: Self.starterPrompt,
+                                copyAction: copyStarterPrompt
+                            )
+                        }
+                    }
+                }
+                .padding(.horizontal, 6)
+                .frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
+            } else {
+                Picker(
+                    String(localized: "rightSidebar.extensionDemo.extensionPicker", defaultValue: "Extension"),
+                    selection: $store.selectedIdentityID
+                ) {
+                    ForEach(store.identities, id: \.id) { identity in
+                        Text(identity.localizedName)
+                            .tag(Optional(identity.id))
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+
+                if let identity = store.selectedIdentity {
+                    ExtensionKitSidebarHostView(identity: identity, statusMessage: $store.statusMessage)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                        )
+
+                    extensionIdentityFooter(identity)
+                }
+            }
+        }
+        .padding(10)
+    }
+
+    private func extensionIdentityFooter(_ identity: AppExtensionIdentity) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(identity.bundleIdentifier)
+                .lineLimit(1)
+            Text(identity.extensionPointIdentifier)
+                .lineLimit(1)
+        }
+        .font(.system(size: 10, design: .monospaced))
+        .foregroundStyle(.tertiary)
+        .help("\(identity.bundleIdentifier)\n\(identity.extensionPointIdentifier)")
+    }
+
+    private func copyStarterPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.starterPrompt, forType: .string)
+        store.statusMessage = String(
+            localized: "rightSidebar.extensionDemo.copyPromptCopied",
+            defaultValue: "Starter prompt copied."
+        )
+    }
+
+    private static var starterPrompt: String {
+        String(
+            localized: "rightSidebar.extensionDemo.copyPromptBody",
+            defaultValue: """
+            Build a cmux right sidebar ExtensionKit demo extension in Swift.
+
+            Requirements:
+            - Use ExtensionFoundation and ExtensionKit.
+            - Bind to app extension point com.cmuxterm.app.debug.extkit.right-sidebar-panel.
+            - Provide a PrimitiveAppExtensionScene with scene id cmux-right-sidebar-demo.
+            - Render a compact SwiftUI panel that fits a narrow right sidebar.
+            - Accept the scene XPC connection.
+            - Add the Info.plist and Xcode project settings needed for an ExtensionKit .appex, including EXAppExtensionAttributes.EXExtensionPointIdentifier = com.cmuxterm.app.debug.extkit.right-sidebar-panel.
+            - Keep all UI strings localized.
+            """
+        )
+    }
+}
+
+private struct ExtensionPromptInfoPopover: View {
+    let prompt: String
+    let copyAction: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label {
+                Text(String(localized: "rightSidebar.extensionDemo.promptInfoTitle", defaultValue: "Extension prompt"))
+            } icon: {
+                Image(systemName: "info.circle")
+            }
+            .font(.system(size: 12, weight: .semibold))
+
+            Text(String(
+                localized: "rightSidebar.extensionDemo.promptInfoBody",
+                defaultValue: "This prompt is copied only when you press Copy. It asks your AI agent to generate a Swift ExtensionKit sidebar extension that binds to cmux's right sidebar extension point."
+            ))
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+            Divider()
+
+            Text(String(localized: "rightSidebar.extensionDemo.promptAuditTitle", defaultValue: "Full prompt"))
+                .font(.system(size: 11, weight: .semibold))
+
+            ScrollView {
+                Text(prompt)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(8)
+            }
+            .frame(width: 340, height: 170)
+            .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+            )
+
+            Button {
+                copyAction()
+            } label: {
+                Label(
+                    String(localized: "rightSidebar.extensionDemo.copyPrompt", defaultValue: "Copy extension prompt"),
+                    systemImage: "doc.on.clipboard"
+                )
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .frame(width: 368)
+    }
+}
+
+struct ExtensionKitSidebarHostView: NSViewControllerRepresentable {
+    let identity: AppExtensionIdentity
+    @Binding var statusMessage: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(statusMessage: $statusMessage)
+    }
+
+    func makeNSViewController(context: Context) -> EXHostViewController {
+        let controller = EXHostViewController()
+        controller.delegate = context.coordinator
+        controller.placeholderView = NSHostingView(rootView: ExtensionKitHostPlaceholderView())
+        controller.configuration = configuration
+        return controller
+    }
+
+    func updateNSViewController(_ controller: EXHostViewController, context: Context) {
+        context.coordinator.statusMessage = $statusMessage
+
+        if controller.configuration?.appExtension != identity ||
+            controller.configuration?.sceneID != RightSidebarExtensionPoint.sceneID {
+            controller.configuration = configuration
+        }
+    }
+
+    private var configuration: EXHostViewController.Configuration {
+        EXHostViewController.Configuration(
+            appExtension: identity,
+            sceneID: RightSidebarExtensionPoint.sceneID
+        )
+    }
+
+    final class Coordinator: NSObject, EXHostViewControllerDelegate {
+        var statusMessage: Binding<String>
+
+        init(statusMessage: Binding<String>) {
+            self.statusMessage = statusMessage
+        }
+
+        func hostViewControllerDidActivate(_ viewController: EXHostViewController) {
+            statusMessage.wrappedValue = String(
+                localized: "rightSidebar.extensionDemo.xpcConnected",
+                defaultValue: "Extension scene activated."
+            )
+        }
+
+        func hostViewControllerWillDeactivate(_ viewController: EXHostViewController, error: Error?) {
+            if let error {
+                statusMessage.wrappedValue = String(
+                    localized: "rightSidebar.extensionDemo.deactivatedWithError",
+                    defaultValue: "Extension scene disconnected."
+                ) + " \(error.localizedDescription)"
+            } else {
+                statusMessage.wrappedValue = String(
+                    localized: "rightSidebar.extensionDemo.deactivated",
+                    defaultValue: "Extension scene disconnected."
+                )
+            }
+        }
+    }
+}
+
+private struct ExtensionKitHostPlaceholderView: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(String(
+                localized: "rightSidebar.extensionDemo.placeholder",
+                defaultValue: "Waiting for the extension scene..."
+            ))
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(14)
+    }
+}

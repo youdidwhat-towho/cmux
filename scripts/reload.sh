@@ -313,11 +313,13 @@ XCODEBUILD_ARGS=(
 if [[ -n "$DERIVED_DATA" ]]; then
   XCODEBUILD_ARGS+=(-derivedDataPath "$DERIVED_DATA")
 fi
+XCODEBUILD_ARGS+=(
+  CMUX_HOST_BUNDLE_IDENTIFIER="$BUNDLE_ID"
+)
 if [[ -z "$TAG" ]]; then
   XCODEBUILD_ARGS+=(
     INFOPLIST_KEY_CFBundleName="$APP_NAME"
     INFOPLIST_KEY_CFBundleDisplayName="$APP_NAME"
-    PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   )
 fi
 # Forward CMUX_SKIP_ZIG_BUILD to xcodebuild run script phases (e.g. macOS
@@ -523,6 +525,29 @@ if ! /usr/bin/codesign --force --sign - --timestamp=none --generate-entitlement-
     exit 1
   fi
 fi
+register_extensionkit_extensions() {
+  if [[ ! -d "$APP_PATH/Contents/Extensions" ]]; then
+    return
+  fi
+
+  if [[ -n "${TAG:-}" ]]; then
+    UNTAGGED_APP_PATH="$(dirname "$APP_PATH")/${BASE_APP_NAME}.app"
+    if [[ -d "$UNTAGGED_APP_PATH/Contents/Extensions" && "$UNTAGGED_APP_PATH" != "$APP_PATH" ]]; then
+      while IFS= read -r -d '' EXTENSION_BUNDLE; do
+        pluginkit -r "$EXTENSION_BUNDLE" >/dev/null 2>&1 || true
+      done < <(find "$UNTAGGED_APP_PATH/Contents/Extensions" -maxdepth 1 -name "*.appex" -print0)
+      /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+        -u -f "$UNTAGGED_APP_PATH" >/dev/null 2>&1 || true
+    fi
+  fi
+  /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+    -f "$APP_PATH" >/dev/null 2>&1 || true
+  while IFS= read -r -d '' EXTENSION_BUNDLE; do
+    if ! pluginkit -a "$EXTENSION_BUNDLE" >/dev/null 2>&1; then
+      echo "warning: failed to register ExtensionKit extension: $EXTENSION_BUNDLE" >&2
+    fi
+  done < <(find "$APP_PATH/Contents/Extensions" -maxdepth 1 -name "*.appex" -print0)
+}
 CLI_PATH="$APP_PATH/Contents/Resources/bin/cmux"
 if [[ -x "$CLI_PATH" ]]; then
   echo "$CLI_PATH" > /tmp/cmux-last-cli-path || true
@@ -538,6 +563,8 @@ if [[ -n "$TAG" ]]; then
   pkill -f "${APP_NAME}.app/Contents/MacOS/${BASE_APP_NAME}" || true
   sleep 0.3
 fi
+
+register_extensionkit_extensions
 
 if [[ "$LAUNCH" -eq 1 ]]; then
   if [[ -z "$TAG" ]]; then

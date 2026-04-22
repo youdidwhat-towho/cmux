@@ -151,6 +151,12 @@
 		FE003101 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003001 /* SessionIndexStore.swift */; };
 		FE003102 /* SessionIndexView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003002 /* SessionIndexView.swift */; };
 		FE003103 /* RightSidebarPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003003 /* RightSidebarPanelView.swift */; };
+		E7000001A1B2C3D4E5F60718 /* RightSidebarExtensionDemo.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7000000A1B2C3D4E5F60718 /* RightSidebarExtensionDemo.swift */; };
+		E7000006A1B2C3D4E5F60718 /* RightSidebarDemoExtension.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7000002A1B2C3D4E5F60718 /* RightSidebarDemoExtension.swift */; };
+		E7000007A1B2C3D4E5F60718 /* RightSidebarExtensionPoints.xcappextensionpoints in Resources */ = {isa = PBXBuildFile; fileRef = E7000004A1B2C3D4E5F60718 /* RightSidebarExtensionPoints.xcappextensionpoints */; };
+		E7000008A1B2C3D4E5F60718 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = DA7A10CA710E000000000001 /* Localizable.xcstrings */; };
+		E7000009A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex in Embed ExtensionKit Extensions */ = {isa = PBXBuildFile; fileRef = E7000005A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		E7000016A1B2C3D4E5F60718 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = E7000015A1B2C3D4E5F60718 /* InfoPlist.xcstrings */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -174,6 +180,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = D1320AA0D1320AA0D1320AA8;
 			remoteInfo = CmuxDockTilePlugin;
+		};
+		E700000AA1B2C3D4E5F60718 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A5001070 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E7000010A1B2C3D4E5F60718;
+			remoteInfo = RightSidebarDemoExtension;
 		};
 		F1000008A1B2C3D4E5F60718 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -217,6 +230,17 @@
 				D1320AA0D1320AA0D1320AA2 /* CmuxDockTilePlugin.plugin in Copy Dock Tile Plugin */,
 			);
 			name = "Copy Dock Tile Plugin";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E700000CA1B2C3D4E5F60718 /* Embed ExtensionKit Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(EXTENSIONS_FOLDER_PATH)";
+			dstSubfolderSpec = 16;
+			files = (
+				E7000009A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex in Embed ExtensionKit Extensions */,
+			);
+			name = "Embed ExtensionKit Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -363,6 +387,12 @@
 		FE003001 /* SessionIndexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionIndexStore.swift; sourceTree = "<group>"; };
 		FE003002 /* SessionIndexView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionIndexView.swift; sourceTree = "<group>"; };
 		FE003003 /* RightSidebarPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarPanelView.swift; sourceTree = "<group>"; };
+		E7000000A1B2C3D4E5F60718 /* RightSidebarExtensionDemo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarExtensionDemo.swift; sourceTree = "<group>"; };
+		E7000002A1B2C3D4E5F60718 /* RightSidebarDemoExtension.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RightSidebarDemoExtension.swift; sourceTree = "<group>"; };
+		E7000003A1B2C3D4E5F60718 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		E7000004A1B2C3D4E5F60718 /* RightSidebarExtensionPoints.xcappextensionpoints */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xcappextensionpoints; path = RightSidebarExtensionPoints.xcappextensionpoints; sourceTree = "<group>"; };
+		E7000005A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex */ = {isa = PBXFileReference; explicitFileType = wrapper.extensionkit-extension; includeInIndex = 0; path = RightSidebarDemoExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7000015A1B2C3D4E5F60718 /* InfoPlist.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = InfoPlist.xcstrings; sourceTree = "<group>"; };
 		IC000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AppIcon.icon; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -403,6 +433,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		E700000EA1B2C3D4E5F60718 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		F1000006A1B2C3D4E5F60718 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -421,6 +458,7 @@
 				C1ADE00001A1B2C3D4E5F719 /* claude */,
 				DA7A10CA710E000000000001 /* Localizable.xcstrings */,
 				DA7A10CA710E000000000002 /* InfoPlist.xcstrings */,
+				E7000004A1B2C3D4E5F60718 /* RightSidebarExtensionPoints.xcappextensionpoints */,
 				A5001622 /* cmux.sdef */,
 			);
 			path = Resources;
@@ -467,6 +505,7 @@
 			children = (
 				A5001041 /* Sources */,
 				B9000003A1B2C3D4E5F60719 /* CLI */,
+				E7000011A1B2C3D4E5F60718 /* RightSidebarDemoExtension */,
 				087C454FFF74443AB06942C3 /* Resources */,
 				A5001101 /* Assets.xcassets */,
 				IC000002 /* AppIcon.icon */,
@@ -552,6 +591,7 @@
 				FE003001 /* SessionIndexStore.swift */,
 				FE003002 /* SessionIndexView.swift */,
 				FE003003 /* RightSidebarPanelView.swift */,
+				E7000000A1B2C3D4E5F60718 /* RightSidebarExtensionDemo.swift */,
 				105D8421DF4E2E09D255D785 /* Auth */,
 			);
 			path = Sources;
@@ -563,10 +603,21 @@
 				A5001000 /* cmux.app */,
 				B9000004A1B2C3D4E5F60719 /* cmux */,
 				D1320AA0D1320AA0D1320AA5 /* CmuxDockTilePlugin.plugin */,
+				E7000005A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex */,
 				7E7E6EF344A568AC7FEE3715 /* cmuxUITests.xctest */,
 				F1000002A1B2C3D4E5F60718 /* cmuxTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		E7000011A1B2C3D4E5F60718 /* RightSidebarDemoExtension */ = {
+			isa = PBXGroup;
+			children = (
+				E7000002A1B2C3D4E5F60718 /* RightSidebarDemoExtension.swift */,
+				E7000003A1B2C3D4E5F60718 /* Info.plist */,
+				E7000015A1B2C3D4E5F60718 /* InfoPlist.xcstrings */,
+			);
+			path = RightSidebarDemoExtension;
 			sourceTree = "<group>";
 		};
 		B9000003A1B2C3D4E5F60719 /* CLI */ = {
@@ -628,6 +679,7 @@
 				A5001030 /* Frameworks */,
 				A5001102 /* Resources */,
 				D1320AA0D1320AA0D1320AA6 /* Copy Dock Tile Plugin */,
+				E700000CA1B2C3D4E5F60718 /* Embed ExtensionKit Extensions */,
 				A5001020 /* Embed Frameworks */,
 				B900000AA1B2C3D4E5F60719 /* Copy CLI */,
 				A5001300A1B2C3D4E5F60719 /* ShellScript */,
@@ -637,6 +689,7 @@
 			dependencies = (
 				B900000EA1B2C3D4E5F60719 /* PBXTargetDependency */,
 				D1320AA0D1320AA0D1320AB1 /* PBXTargetDependency */,
+				E700000BA1B2C3D4E5F60718 /* PBXTargetDependency */,
 			);
 			name = GhosttyTabs;
 			packageProductDependencies = (
@@ -705,6 +758,25 @@
 			productName = CmuxDockTilePlugin;
 			productReference = D1320AA0D1320AA0D1320AA5 /* CmuxDockTilePlugin.plugin */;
 			productType = "com.apple.product-type.bundle";
+		};
+		E7000010A1B2C3D4E5F60718 /* RightSidebarDemoExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E7000014A1B2C3D4E5F60718 /* Build configuration list for PBXNativeTarget "RightSidebarDemoExtension" */;
+			buildPhases = (
+				E700000DA1B2C3D4E5F60718 /* Sources */,
+				E700000EA1B2C3D4E5F60718 /* Frameworks */,
+				E700000FA1B2C3D4E5F60718 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = RightSidebarDemoExtension;
+			packageProductDependencies = (
+			);
+			productName = RightSidebarDemoExtension;
+			productReference = E7000005A1B2C3D4E5F60718 /* RightSidebarDemoExtension.appex */;
+			productType = "com.apple.product-type.extensionkit-extension";
 		};
 		F1000004A1B2C3D4E5F60718 /* cmuxTests */ = {
 			isa = PBXNativeTarget;
@@ -775,6 +847,7 @@
 			targets = (
 				A5001050 /* GhosttyTabs */,
 				D1320AA0D1320AA0D1320AA8 /* CmuxDockTilePlugin */,
+				E7000010A1B2C3D4E5F60718 /* RightSidebarDemoExtension */,
 				B9000005A1B2C3D4E5F60719 /* cmux-cli */,
 				CB450DF0F0B3839599082C4D /* cmuxUITests */,
 				F1000004A1B2C3D4E5F60718 /* cmuxTests */,
@@ -792,6 +865,7 @@
 				A5002000 /* THIRD_PARTY_LICENSES.md in Resources */,
 				DA7A10CA710E000000000003 /* Localizable.xcstrings in Resources */,
 				DA7A10CA710E000000000004 /* InfoPlist.xcstrings in Resources */,
+				E7000007A1B2C3D4E5F60718 /* RightSidebarExtensionPoints.xcappextensionpoints in Resources */,
 				A5001623 /* cmux.sdef in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -800,6 +874,15 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E700000FA1B2C3D4E5F60718 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7000008A1B2C3D4E5F60718 /* Localizable.xcstrings in Resources */,
+				E7000016A1B2C3D4E5F60718 /* InfoPlist.xcstrings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -913,6 +996,7 @@
 				FE003101 /* SessionIndexStore.swift in Sources */,
 				FE003102 /* SessionIndexView.swift in Sources */,
 				FE003103 /* RightSidebarPanelView.swift in Sources */,
+				E7000001A1B2C3D4E5F60718 /* RightSidebarExtensionDemo.swift in Sources */,
 				36CE99ED050785B5E96B72BB /* AuthCallbackRouter.swift in Sources */,
 				D9FEC58D5BACCF76459F1BBE /* AuthEnvironment.swift in Sources */,
 				350DAC5EBD38642A3E81471A /* AuthManager.swift in Sources */,
@@ -934,6 +1018,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				D1320AA0D1320AA0D1320AA1 /* AppIconDockTilePlugin.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E700000DA1B2C3D4E5F60718 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E7000006A1B2C3D4E5F60718 /* RightSidebarDemoExtension.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1018,6 +1110,11 @@
 			isa = PBXTargetDependency;
 			target = D1320AA0D1320AA0D1320AA8 /* CmuxDockTilePlugin */;
 			targetProxy = D1320AA0D1320AA0D1320AA3 /* PBXContainerItemProxy */;
+		};
+		E700000BA1B2C3D4E5F60718 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E7000010A1B2C3D4E5F60718 /* RightSidebarDemoExtension */;
+			targetProxy = E700000AA1B2C3D4E5F60718 /* PBXContainerItemProxy */;
 		};
 		F1000009A1B2C3D4E5F60718 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
@@ -1110,6 +1207,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon-Debug";
 				CMUX_AUTH_CALLBACK_SCHEME = "cmux-dev";
+				CMUX_HOST_BUNDLE_IDENTIFIER = com.cmuxterm.app.debug;
 				CODE_SIGN_ENTITLEMENTS = "";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1136,7 +1234,7 @@
 					"-framework",
 					Carbon,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.cmuxterm.app.debug;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CMUX_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = "cmux DEV";
 				SPARKLE_PUBLIC_KEY = "avjcgKibf1FTvhIjLBxhd+0HSpsXU4D0IGlVk8cgqRc=";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -1150,6 +1248,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CMUX_AUTH_CALLBACK_SCHEME = cmux;
+				CMUX_HOST_BUNDLE_IDENTIFIER = com.cmuxterm.app;
 				CODE_SIGN_ENTITLEMENTS = Resources/cmux.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
@@ -1177,12 +1276,70 @@
 					"-framework",
 					Carbon,
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.cmuxterm.app;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CMUX_HOST_BUNDLE_IDENTIFIER)";
 				PRODUCT_NAME = cmux;
 				SPARKLE_PUBLIC_KEY = "avjcgKibf1FTvhIjLBxhd+0HSpsXU4D0IGlVk8cgqRc=";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OBJC_BRIDGING_HEADER = "cmux-Bridging-Header.h";
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		E7000012A1B2C3D4E5F60718 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CMUX_HOST_BUNDLE_IDENTIFIER = com.cmuxterm.app.debug;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 79;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				EX_ENABLE_EXTENSION_POINT_GENERATION = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RightSidebarDemoExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.63.2;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CMUX_HOST_BUNDLE_IDENTIFIER).right-sidebar-demo";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Debug;
+		};
+		E7000013A1B2C3D4E5F60718 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CMUX_HOST_BUNDLE_IDENTIFIER = com.cmuxterm.app;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 79;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = YES;
+				EX_ENABLE_EXTENSION_POINT_GENERATION = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RightSidebarDemoExtension/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 0.63.2;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = "$(CMUX_HOST_BUNDLE_IDENTIFIER).right-sidebar-demo";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				WRAPPER_EXTENSION = appex;
 			};
 			name = Release;
 		};
@@ -1372,6 +1529,15 @@
 			buildConfigurations = (
 				D1320AA0D1320AA0D1320AB2 /* Debug */,
 				D1320AA0D1320AA0D1320AB3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E7000014A1B2C3D4E5F60718 /* Build configuration list for PBXNativeTarget "RightSidebarDemoExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E7000012A1B2C3D4E5F60718 /* Debug */,
+				E7000013A1B2C3D4E5F60718 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
