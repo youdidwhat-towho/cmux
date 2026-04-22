@@ -363,8 +363,9 @@ struct SocketControlSettings {
             defaults.integer(forKey: modeDefaultMigrationDefaultsKey) < modeDefaultMigrationVersion
 
         defer {
-            guard requiresDefaultModeMigration else { return }
-            defaults.set(modeDefaultMigrationVersion, forKey: modeDefaultMigrationDefaultsKey)
+            if requiresDefaultModeMigration {
+                defaults.set(modeDefaultMigrationVersion, forKey: modeDefaultMigrationDefaultsKey)
+            }
         }
 
         if let stored = defaults.string(forKey: appStorageKey) {
