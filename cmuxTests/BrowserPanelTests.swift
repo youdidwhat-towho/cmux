@@ -459,6 +459,22 @@ final class WindowBrowserHostViewTests: XCTestCase {
         return inspectorView.isDescendant(of: hit) && !(pageView === hit || pageView.isDescendant(of: hit))
     }
 
+    func testPaneTabPassThroughEventFilterIncludesHoverAndCursorUpdates() {
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.leftMouseDown))
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.rightMouseUp))
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.mouseMoved))
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.mouseEntered))
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.mouseExited))
+        XCTAssertTrue(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.cursorUpdate))
+    }
+
+    func testPaneTabPassThroughEventFilterRejectsNonTabPointerEvents() {
+        XCTAssertFalse(BonsplitTabBarPassThrough.isPassThroughPointerEvent(nil))
+        XCTAssertFalse(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.scrollWheel))
+        XCTAssertFalse(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.leftMouseDragged))
+        XCTAssertFalse(BonsplitTabBarPassThrough.isPassThroughPointerEvent(.keyDown))
+    }
+
     func testHostViewPassesThroughDividerWhenAdjacentPaneIsCollapsed() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 300, height: 180),

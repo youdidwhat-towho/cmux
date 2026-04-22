@@ -5,6 +5,123 @@ import ObjectiveC
 private var cmuxWindowTerminalPortalKey: UInt8 = 0
 private var cmuxWindowTerminalPortalCloseObserverKey: UInt8 = 0
 
+/// Shared helpers for portal hosts (browser/terminal) that need to defer to
+/// Bonsplit tab-bar regions so minimal-mode titlebar-band tab interactions are
+/// not swallowed by the portal host above them. See issue #2633.
+///
+/// Registry lookups are the fast path. The class-name fallback exists because
+/// the registry can be unpopulated during view churn; it stays a substring
+/// match because the concrete backing class lives in the `Bonsplit` vendor
+/// submodule and does not expose a public marker type. If Bonsplit ever ships
+/// a public protocol or type we can check against, replace the substring
+/// match — the test seam below is the single place that needs updating.
+enum BonsplitTabBarPassThrough {
+    /// Pointer events that should defer to an underlying pane-tab strip.
+    /// Hover/cursor updates must pass through so Bonsplit can update highlight
+    /// and cursor state, while drag sequences still follow AppKit's normal
+    /// mouse-down ownership once the tab bar wins the initial hit.
+    static func isPassThroughPointerEvent(_ eventType: NSEvent.EventType?) -> Bool {
+        switch eventType {
+        case .leftMouseDown, .leftMouseUp,
+             .rightMouseDown, .rightMouseUp,
+             .otherMouseDown, .otherMouseUp,
+             .mouseMoved, .mouseEntered,
+             .mouseExited, .cursorUpdate:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Returns the lower edge (in window coordinates) of the interaction band
+    /// where minimal mode renders tab chrome. Hits at or above this Y should
+    /// be routed away from portal hosts.
+    static func titlebarInteractionBandMinY(in window: NSWindow) -> CGFloat {
+        let nativeTitlebarHeight = window.frame.height - window.contentLayoutRect.height
+        let customTitlebarBandHeight = max(28, min(72, nativeTitlebarHeight))
+        return window.contentLayoutRect.maxY - customTitlebarBandHeight - 0.5
+    }
+
+    /// True if a Bonsplit tab-bar region (registry or underlying backing view)
+    /// exists at `windowPoint` underneath `portalHost`.
+    static func shouldPassThroughToPaneTabBar(
+        windowPoint: NSPoint,
+        below portalHost: NSView
+    ) -> (result: Bool, registryHit: Bool) {
+        let registryHit = portalHost.window.map {
+            BonsplitTabBarHitRegionRegistry.containsWindowPoint(windowPoint, in: $0)
+        } ?? false
+        if registryHit {
+            return (true, true)
+        }
+        let fallbackHit = hasUnderlyingBonsplitTabBarBackground(
+            at: windowPoint, below: portalHost
+        )
+        return (fallbackHit, false)
+    }
+
+    static func passThroughDecision(
+        at point: NSPoint,
+        in portalHost: NSView,
+        eventType: NSEvent.EventType?
+    ) -> (windowPoint: NSPoint, result: Bool, registryHit: Bool)? {
+        guard isPassThroughPointerEvent(eventType) else { return nil }
+        let windowPoint = portalHost.convert(point, to: nil)
+        let decision = shouldPassThroughToPaneTabBar(windowPoint: windowPoint, below: portalHost)
+        return (windowPoint, decision.result, decision.registryHit)
+    }
+
+    static func hasBonsplitTabBarBackground(at windowPoint: NSPoint, in view: NSView) -> Bool {
+        guard !view.isHidden, view.alphaValue > 0 else { return false }
+
+        // Note: no frame-based early-out. NSView subviews are not clipped to
+        // their parent by default, and minimal mode relies on pane tabs
+        // rendering outside their immediate container's bounds. See the
+        // "SiblingTreeTabBarOutsideImmediateContainerBounds" regression tests.
+
+        let className = NSStringFromClass(type(of: view))
+        if className.contains("TabBarBackgroundNSView") {
+            let pointInView = view.convert(windowPoint, from: nil)
+            if view.bounds.contains(pointInView) {
+                return true
+            }
+        }
+
+        for subview in view.subviews.reversed() {
+            if hasBonsplitTabBarBackground(at: windowPoint, in: subview) {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func hasUnderlyingBonsplitTabBarBackground(
+        at windowPoint: NSPoint,
+        below portalHost: NSView
+    ) -> Bool {
+        if let container = portalHost.superview,
+           let hostIndex = container.subviews.firstIndex(of: portalHost) {
+            for sibling in container.subviews[..<hostIndex].reversed() {
+                guard !sibling.isHidden, sibling.alphaValue > 0 else { continue }
+                // Minimal mode lets the pane tab strip render into the
+                // titlebar band, so the immediate sibling container may not
+                // contain the click even though a descendant tab-bar backing
+                // view does.
+                if hasBonsplitTabBarBackground(at: windowPoint, in: sibling) {
+                    return true
+                }
+            }
+            return false
+        }
+
+        guard let window = portalHost.window,
+              let rootView = window.contentView else {
+            return false
+        }
+        return hasBonsplitTabBarBackground(at: windowPoint, in: rootView)
+    }
+}
+
 #if DEBUG
 private func portalDebugToken(_ view: NSView?) -> String {
     guard let view else { return "nil" }
@@ -209,44 +326,31 @@ final class WindowTerminalHostView: NSView {
 
     private func shouldPassThroughToTitlebar(at point: NSPoint) -> Bool {
         guard let window else { return false }
-
         // Window-level terminal portals sit above SwiftUI. In minimal mode the
         // pane tab strip is intentionally rendered in the titlebar band, so
         // terminal hosts must never claim hits there.
         let windowPoint = convert(point, to: nil)
-        let nativeTitlebarHeight = window.frame.height - window.contentLayoutRect.height
-        let customTitlebarBandHeight = max(28, min(72, nativeTitlebarHeight))
-        let interactionBandMinY = window.contentLayoutRect.maxY - customTitlebarBandHeight - 0.5
-        return windowPoint.y >= interactionBandMinY
+        return windowPoint.y >= BonsplitTabBarPassThrough.titlebarInteractionBandMinY(in: window)
     }
 
     private func shouldPassThroughToPaneTabBar(
         at point: NSPoint,
         eventType: NSEvent.EventType?
     ) -> Bool {
-        switch eventType {
-        case .leftMouseDown, .leftMouseUp,
-             .rightMouseDown, .rightMouseUp,
-             .otherMouseDown, .otherMouseUp:
-            break
-        default:
-            return false
-        }
-
-        let windowPoint = convert(point, to: nil)
-        let registryHit = window.map {
-            BonsplitTabBarHitRegionRegistry.containsWindowPoint(windowPoint, in: $0)
-        } ?? false
-        let result = registryHit || Self.hasUnderlyingBonsplitTabBarBackground(at: windowPoint, below: self)
+        guard let decision = BonsplitTabBarPassThrough.passThroughDecision(
+            at: point,
+            in: self,
+            eventType: eventType
+        ) else { return false }
 #if DEBUG
         if eventType == .leftMouseDown {
             dlog(
-                "portal.term.passThroughTabBar wp=\(Int(windowPoint.x)),\(Int(windowPoint.y)) " +
-                "registry=\(registryHit ? 1 : 0) result=\(result ? 1 : 0)"
+                "portal.term.passThroughTabBar wp=\(Int(decision.windowPoint.x)),\(Int(decision.windowPoint.y)) " +
+                "registry=\(decision.registryHit ? 1 : 0) result=\(decision.result ? 1 : 0)"
             )
         }
 #endif
-        return result
+        return decision.result
     }
 
     private func shouldPassThroughToSidebarResizer(at point: NSPoint) -> Bool {
@@ -432,71 +536,16 @@ final class WindowTerminalHostView: NSView {
         }
     }
 
-    private static func hasBonsplitTabBarBackground(at windowPoint: NSPoint, in view: NSView) -> Bool {
-        guard !view.isHidden, view.alphaValue > 0 else { return false }
-
-        let className = NSStringFromClass(type(of: view))
-        if className.contains("TabBarBackgroundNSView") {
-            let pointInView = view.convert(windowPoint, from: nil)
-            let inside = view.bounds.contains(pointInView)
-#if DEBUG
-            let frameInWindow = view.convert(view.bounds, to: nil)
-            dlog(
-                "portal.term.bg.found cls=\(className) " +
-                "boundsInWin=\(Int(frameInWindow.minX)),\(Int(frameInWindow.minY)) " +
-                "\(Int(frameInWindow.width))x\(Int(frameInWindow.height)) " +
-                "wp=\(Int(windowPoint.x)),\(Int(windowPoint.y)) inside=\(inside ? 1 : 0)"
-            )
-#endif
-            if inside {
-                return true
-            }
-        }
-
-        for subview in view.subviews.reversed() {
-            if hasBonsplitTabBarBackground(at: windowPoint, in: subview) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private static func hasUnderlyingBonsplitTabBarBackground(
-        at windowPoint: NSPoint,
-        below portalHost: NSView
-    ) -> Bool {
-        if let container = portalHost.superview,
-           let hostIndex = container.subviews.firstIndex(of: portalHost) {
-            for sibling in container.subviews[..<hostIndex].reversed() {
-                guard !sibling.isHidden, sibling.alphaValue > 0 else { continue }
-                // Minimal mode lets the pane tab strip render into the titlebar band,
-                // so the immediate sibling container may not contain the click even
-                // though a descendant tab-bar backing view does.
-                if hasBonsplitTabBarBackground(at: windowPoint, in: sibling) {
-                    return true
-                }
-            }
-            return false
-        }
-
-        guard let window = portalHost.window,
-              let rootView = window.contentView else {
-            return false
-        }
-        return hasBonsplitTabBarBackground(at: windowPoint, in: rootView)
-    }
-
 #if DEBUG
     static func hasBonsplitTabBarBackgroundForTesting(at windowPoint: NSPoint, in view: NSView) -> Bool {
-        hasBonsplitTabBarBackground(at: windowPoint, in: view)
+        BonsplitTabBarPassThrough.hasBonsplitTabBarBackground(at: windowPoint, in: view)
     }
 
     static func hasUnderlyingBonsplitTabBarBackgroundForTesting(
         at windowPoint: NSPoint,
         below portalHost: NSView
     ) -> Bool {
-        hasUnderlyingBonsplitTabBarBackground(at: windowPoint, below: portalHost)
+        BonsplitTabBarPassThrough.hasUnderlyingBonsplitTabBarBackground(at: windowPoint, below: portalHost)
     }
 #endif
 
