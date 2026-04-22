@@ -59,7 +59,6 @@ struct CmuxSurfaceConfigTemplate {
 
 enum WorkspacePendingTerminalInputReason {
     case configurationCommand
-    case restoredAgentResume
 }
 
 enum WorkspacePendingTerminalInputPolicy {
@@ -67,8 +66,6 @@ enum WorkspacePendingTerminalInputPolicy {
         switch reason {
         case .configurationCommand:
             return 3.0
-        case .restoredAgentResume:
-            return nil
         }
     }
 }
@@ -564,6 +561,14 @@ extension Workspace {
         return SessionPersistencePolicy.truncatedScrollback(fallbackScrollback)
     }
 
+    nonisolated static func shouldReplaySessionScrollback(
+        restorableAgent: SessionRestorableAgentSnapshot?
+    ) -> Bool {
+        // Agent restores relaunch from the provider's session ID. Replaying the
+        // old TUI scrollback can print stale launch commands and race the resume input.
+        restorableAgent == nil
+    }
+
     private func terminalSnapshotScrollback(
         panelId: UUID,
         capturedScrollback: String?,
@@ -686,36 +691,37 @@ extension Workspace {
                 ?? snapshot.terminal?.agent?.workingDirectory
                 ?? snapshot.directory
                 ?? currentDirectory
+            let restorableAgent = snapshot.terminal?.agent
+            let shouldReplayScrollback = Self.shouldReplaySessionScrollback(
+                restorableAgent: restorableAgent
+            )
+            let restoredAgentResumeInput = restorableAgent?.resumeCommand.map { $0 + "\n" }
             let replayEnvironment = SessionScrollbackReplayStore.replayEnvironment(
-                for: snapshot.terminal?.scrollback
+                for: shouldReplayScrollback ? snapshot.terminal?.scrollback : nil
             )
             guard let terminalPanel = newTerminalSurface(
                 inPane: paneId,
                 focus: false,
                 workingDirectory: workingDirectory,
+                initialInput: restoredAgentResumeInput,
                 startupEnvironment: replayEnvironment
             ) else {
                 return nil
             }
-            let fallbackScrollback = SessionPersistencePolicy.truncatedScrollback(snapshot.terminal?.scrollback)
+            let fallbackScrollback = shouldReplayScrollback
+                ? SessionPersistencePolicy.truncatedScrollback(snapshot.terminal?.scrollback)
+                : nil
             if let fallbackScrollback {
                 restoredTerminalScrollbackByPanelId[terminalPanel.id] = fallbackScrollback
             } else {
                 restoredTerminalScrollbackByPanelId.removeValue(forKey: terminalPanel.id)
             }
-            if let restorableAgent = snapshot.terminal?.agent {
+            if let restorableAgent {
                 restoredAgentSnapshotsByPanelId[terminalPanel.id] = restorableAgent
             } else {
                 restoredAgentSnapshotsByPanelId.removeValue(forKey: terminalPanel.id)
             }
             applySessionPanelMetadata(snapshot, toPanelId: terminalPanel.id)
-            if let resumeCommand = snapshot.terminal?.agent?.resumeCommand {
-                sendInputWhenReady(
-                    resumeCommand + "\n",
-                    to: terminalPanel,
-                    reason: .restoredAgentResume
-                )
-            }
             return terminalPanel.id
         case .browser:
             guard let browserPanel = newBrowserSurface(

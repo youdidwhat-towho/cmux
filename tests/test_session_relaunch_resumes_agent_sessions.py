@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Regression: normal relaunch should resume saved Claude/Codex sessions.
+Regression: normal relaunch should resume saved Claude/Codex/OpenCode sessions.
 
 Repro for issue #2923:
-1) Launch cmux and seed workspaces with tracked Claude/Codex sessions.
+1) Launch cmux and seed workspaces with tracked Claude/Codex/OpenCode sessions.
 2) Quit the app normally so the session snapshot is saved.
 3) Relaunch cmux the next day.
 4) Verify the restored panels automatically run the saved resume commands.
@@ -145,7 +145,15 @@ def _write_fake_agent(fake_bin_dir: Path, binary_name: str, prefix: str) -> None
     fake_binary.chmod(0o755)
 
 
-def _write_hook_state(path: Path, session_id: str, workspace_id: str, surface_id: str, cwd: str) -> None:
+def _write_hook_state(
+    path: Path,
+    session_id: str,
+    workspace_id: str,
+    surface_id: str,
+    cwd: str,
+    launcher: str,
+    executable_path: Path,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": 1,
@@ -155,6 +163,15 @@ def _write_hook_state(path: Path, session_id: str, workspace_id: str, surface_id
                 "workspaceId": workspace_id,
                 "surfaceId": surface_id,
                 "cwd": cwd,
+                "launchCommand": {
+                    "launcher": launcher,
+                    "executablePath": str(executable_path),
+                    "arguments": [str(executable_path)],
+                    "workingDirectory": cwd,
+                    "environment": None,
+                    "capturedAt": time.time(),
+                    "source": "test",
+                },
                 "updatedAt": time.time(),
             }
         },
@@ -176,28 +193,36 @@ def main() -> int:
     socket_path = Path(f"/tmp/cmux-session-relaunch-agents-{bundle_id.replace('.', '-')}.sock")
     snapshot = _snapshot_path(bundle_id)
     previous_snapshot = _snapshot_path(bundle_id, suffix="-previous")
-    codex_hook_state = Path.home() / ".cmuxterm" / "codex-hook-sessions.json"
-    claude_hook_state = Path.home() / ".cmuxterm" / "claude-hook-sessions.json"
-
     codex_expected = "CMUX_FAKE_CODEX_RESUME:resume codex-session-relaunch-2923"
     claude_expected = "CMUX_FAKE_CLAUDE_RESUME:--resume claude-session-relaunch-2923"
+    opencode_expected = "CMUX_FAKE_OPENCODE_RESUME:--session opencode-session-relaunch-2923"
 
     failures: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="cmux-session-relaunch-agents-") as td:
         fake_bin_dir = Path(td) / "bin"
+        hook_state_dir = Path(td) / "hook-state"
+        claude_hook_state = hook_state_dir / "claude-hook-sessions.json"
+        codex_hook_state = hook_state_dir / "codex-hook-sessions.json"
+        opencode_hook_state = hook_state_dir / "opencode-hook-sessions.json"
         _write_fake_agent(fake_bin_dir, "codex", "CMUX_FAKE_CODEX_RESUME")
         _write_fake_agent(fake_bin_dir, "claude", "CMUX_FAKE_CLAUDE_RESUME")
+        _write_fake_agent(fake_bin_dir, "opencode", "CMUX_FAKE_OPENCODE_RESUME")
         launch_path = f"{fake_bin_dir}:{os.environ.get('PATH', '')}"
+        app_env = {
+            "PATH": launch_path,
+            "CMUX_AGENT_HOOK_STATE_DIR": str(hook_state_dir),
+        }
 
         _kill_existing(app_path)
         snapshot.unlink(missing_ok=True)
         previous_snapshot.unlink(missing_ok=True)
-        codex_hook_state.unlink(missing_ok=True)
         claude_hook_state.unlink(missing_ok=True)
+        codex_hook_state.unlink(missing_ok=True)
+        opencode_hook_state.unlink(missing_ok=True)
 
         try:
-            _launch(app_path, socket_path, env_overrides={"PATH": launch_path})
+            _launch(app_path, socket_path, env_overrides=app_env)
             client = _connect(socket_path)
             try:
                 codex_workspace_id = client.current_workspace()
@@ -211,6 +236,8 @@ def main() -> int:
                         workspace_id=codex_workspace_id,
                         surface_id=codex_surfaces[0][1],
                         cwd=os.getcwd(),
+                        launcher="codex",
+                        executable_path=fake_bin_dir / "codex",
                     )
 
                 claude_workspace_id = client.new_workspace()
@@ -227,6 +254,26 @@ def main() -> int:
                         workspace_id=claude_workspace_id,
                         surface_id=claude_surfaces[0][1],
                         cwd=os.getcwd(),
+                        launcher="claude",
+                        executable_path=fake_bin_dir / "claude",
+                    )
+
+                opencode_workspace_id = client.new_workspace()
+                time.sleep(0.4)
+                client.select_workspace(opencode_workspace_id)
+                time.sleep(0.4)
+                opencode_surfaces = client.list_surfaces()
+                if not opencode_surfaces:
+                    failures.append("expected an OpenCode workspace surface during setup")
+                else:
+                    _write_hook_state(
+                        opencode_hook_state,
+                        session_id="opencode-session-relaunch-2923",
+                        workspace_id=opencode_workspace_id,
+                        surface_id=opencode_surfaces[0][1],
+                        cwd=os.getcwd(),
+                        launcher="opencode",
+                        executable_path=fake_bin_dir / "opencode",
                     )
 
                 client.select_workspace(codex_workspace_id)
@@ -236,15 +283,16 @@ def main() -> int:
             _quit(bundle_id, socket_path)
 
             # Prove the relaunch uses the persisted cmux snapshot, not the live hook files.
-            codex_hook_state.unlink(missing_ok=True)
             claude_hook_state.unlink(missing_ok=True)
+            codex_hook_state.unlink(missing_ok=True)
+            opencode_hook_state.unlink(missing_ok=True)
 
-            _launch(app_path, socket_path, env_overrides={"PATH": launch_path})
+            _launch(app_path, socket_path, env_overrides=app_env)
             client = _connect(socket_path)
             try:
                 workspaces = client.list_workspaces()
-                if len(workspaces) < 2:
-                    failures.append(f"expected >=2 restored workspaces after relaunch, got {len(workspaces)}")
+                if len(workspaces) < 3:
+                    failures.append(f"expected >=3 restored workspaces after relaunch, got {len(workspaces)}")
 
                 def workspace_contains(index: int, expected: str) -> bool:
                     if len(client.list_workspaces()) <= index:
@@ -267,6 +315,14 @@ def main() -> int:
                         "normal relaunch did not resume the saved Claude session; "
                         f"tail:\n{scrollback_tail}"
                     )
+
+                if not _wait_for_condition(12.0, lambda: workspace_contains(2, opencode_expected)):
+                    client.select_workspace(2)
+                    scrollback_tail = "\n".join(_read_scrollback(client).splitlines()[-20:])
+                    failures.append(
+                        "normal relaunch did not resume the saved OpenCode session; "
+                        f"tail:\n{scrollback_tail}"
+                    )
             finally:
                 client.close()
             _quit(bundle_id, socket_path)
@@ -275,8 +331,9 @@ def main() -> int:
             socket_path.unlink(missing_ok=True)
             snapshot.unlink(missing_ok=True)
             previous_snapshot.unlink(missing_ok=True)
-            codex_hook_state.unlink(missing_ok=True)
             claude_hook_state.unlink(missing_ok=True)
+            codex_hook_state.unlink(missing_ok=True)
+            opencode_hook_state.unlink(missing_ok=True)
 
     if failures:
         print("FAIL:")
@@ -284,7 +341,7 @@ def main() -> int:
             print(f"- {failure}")
         return 1
 
-    print("PASS: normal relaunch resumes saved Claude and Codex sessions")
+    print("PASS: normal relaunch resumes saved Claude, Codex, and OpenCode sessions")
     return 0
 
 

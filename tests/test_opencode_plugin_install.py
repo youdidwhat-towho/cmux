@@ -5,6 +5,7 @@ Regression test: the generated OpenCode session plugin is valid ESM.
 
 from __future__ import annotations
 
+import base64
 import os
 import json
 import shutil
@@ -168,6 +169,14 @@ if (!hooks || typeof hooks.event !== "function") {
 if (duplicateHooks && typeof duplicateHooks.event === "function") {
   throw new Error("duplicate plugin returned event hook");
 }
+process.argv.splice(
+  0,
+  process.argv.length,
+  "/Users/example/.bun/bin/opencode",
+  "/$bunfs/root/src/cli/cmd/tui/worker.js",
+  "--model",
+  "anthropic/claude-sonnet-4-6"
+);
 await hooks.event({
   event: {
     type: "session.created",
@@ -210,6 +219,28 @@ await hooks.event({
             return 1
         if "kind=opencode" not in env_log or "cwd=/tmp/opencode-project" not in env_log or "argv=" not in env_log:
             print(f"FAIL: plugin did not pass launch metadata environment, got {env_log!r}")
+            return 1
+        argv_line = next((line for line in env_log.splitlines() if line.startswith("argv=")), "")
+        encoded_argv = argv_line.removeprefix("argv=")
+        try:
+            decoded_argv = [
+                value
+                for value in base64.b64decode(encoded_argv).decode("utf-8").split("\0")
+                if value
+            ]
+        except Exception as exc:
+            print(f"FAIL: plugin launch argv was not valid base64 NUL data: {exc}; env={env_log!r}")
+            return 1
+        expected_argv = [
+            "/Users/example/.bun/bin/opencode",
+            "--model",
+            "anthropic/claude-sonnet-4-6",
+        ]
+        if decoded_argv != expected_argv:
+            print(
+                "FAIL: plugin captured wrong OpenCode launch argv; "
+                f"expected {expected_argv!r}, got {decoded_argv!r}"
+            )
             return 1
 
     print("PASS: generated OpenCode plugin installs and imports as ESM")

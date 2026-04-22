@@ -14687,18 +14687,34 @@ function looksLikeOpenCodeScript(value) {
   return lower.includes("opencode") || lower.includes("open-code");
 }
 
+function isOpenCodeInternalWorkerArg(value) {
+  if (!value) return false;
+  const normalized = String(value).replaceAll("\\", "/");
+  return normalized.includes("/$bunfs/") && normalized.includes("/src/cli/cmd/tui/worker.js");
+}
+
+function withoutOpenCodeInternalWorkerArgs(argv) {
+  const result = [];
+  for (let i = 0; i < argv.length; i += 1) {
+    const value = argv[i];
+    if (i > 0 && isOpenCodeInternalWorkerArg(value)) continue;
+    result.push(value);
+  }
+  return result.length > 0 ? result : [resolveExecutable("opencode")];
+}
+
 function normalizedLaunchArgv() {
   const raw = Array.isArray(process.argv) ? process.argv.map((value) => String(value)) : [];
   if (raw.length === 0) return [resolveExecutable("opencode")];
 
   const firstBase = path.basename(raw[0]).toLowerCase();
-  if (looksLikeOpenCodeScript(firstBase)) return raw;
+  if (looksLikeOpenCodeScript(firstBase)) return withoutOpenCodeInternalWorkerArgs(raw);
 
   let tail = raw.slice(1);
   if (tail.length > 0 && looksLikeOpenCodeScript(tail[0])) {
     tail = tail.slice(1);
   }
-  return [resolveExecutable("opencode"), ...tail];
+  return withoutOpenCodeInternalWorkerArgs([resolveExecutable("opencode"), ...tail]);
 }
 
 function base64NulSeparated(values) {

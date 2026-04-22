@@ -972,6 +972,18 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertNil(resolved)
     }
 
+    func testRestorableAgentRestoreSuppressesSavedScrollbackReplay() {
+        let agent = SessionRestorableAgentSnapshot(
+            kind: .claude,
+            sessionId: "claude-session-123",
+            workingDirectory: "/tmp/repo",
+            launchCommand: nil
+        )
+
+        XCTAssertFalse(Workspace.shouldReplaySessionScrollback(restorableAgent: agent))
+        XCTAssertTrue(Workspace.shouldReplaySessionScrollback(restorableAgent: nil))
+    }
+
     private func makeRestorableAgentIndex(
         workspaceId: UUID,
         panelId: UUID,
@@ -1540,19 +1552,6 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
         )
         XCTAssertNil(omx.resumeCommand)
         XCTAssertNil(omc.resumeCommand)
-    }
-
-    func testRestoredAgentResumeInputDoesNotExpireForInactiveWorkspaceTerminals() {
-        XCTAssertNil(WorkspacePendingTerminalInputPolicy.timeout(for: .restoredAgentResume))
-        guard let configurationTimeout = WorkspacePendingTerminalInputPolicy.timeout(for: .configurationCommand) else {
-            XCTFail("Configuration command timeout should stay finite")
-            return
-        }
-        XCTAssertEqual(
-            configurationTimeout,
-            3.0,
-            accuracy: 0.001
-        )
     }
 
     func testNonInteractiveAgentLaunchesAreNotAutoRestored() {
