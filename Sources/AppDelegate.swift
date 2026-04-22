@@ -84,11 +84,13 @@ final class CmuxApplicationAccessibilityHierarchyCache {
 
     static let shared = CmuxApplicationAccessibilityHierarchyCache()
 
+    private let notificationCenter: NotificationCenter
     private var cachedStateToken: StateToken?
     private var cachedSnapshot: Snapshot?
     private var windowCloseObserver: NSObjectProtocol?
 
     init(notificationCenter: NotificationCenter = .default) {
+        self.notificationCenter = notificationCenter
         // Drop strong refs to any window the instant it closes so the cache
         // never keeps a closed NSWindow alive between AX polls.
         windowCloseObserver = notificationCenter.addObserver(
@@ -102,7 +104,7 @@ final class CmuxApplicationAccessibilityHierarchyCache {
 
     deinit {
         if let windowCloseObserver {
-            NotificationCenter.default.removeObserver(windowCloseObserver)
+            notificationCenter.removeObserver(windowCloseObserver)
         }
     }
 
