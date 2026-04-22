@@ -17,7 +17,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                 effectiveRows: 40,
                 lastKnownCols: 120,
                 lastKnownRows: 40,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: [
                 Result<TerminalRemoteDaemonTerminalReadResult, Error>.success(
@@ -75,7 +76,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                 effectiveRows: 24,
                 lastKnownCols: 80,
                 lastKnownRows: 24,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -119,7 +121,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                 effectiveRows: 20,
                 lastKnownCols: 90,
                 lastKnownRows: 20,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -177,7 +180,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                     effectiveCols: 100,
                     effectiveRows: 30,
                     lastKnownCols: 100,
-                    lastKnownRows: 30
+                    lastKnownRows: 30,
+                    gridGeneration: nil
                 )
             ),
             openResult: .init(
@@ -188,7 +192,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                 effectiveRows: 30,
                 lastKnownCols: 100,
                 lastKnownRows: 30,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: [
                 .success(
@@ -211,7 +216,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
 
         let connectedExpectation = expectation(description: "connected")
         let outputExpectation = expectation(description: "output")
-        transport.eventHandler = { event in
+        transport.eventHandler = { (event: TerminalTransportEvent) in
             switch event {
             case .connected:
                 connectedExpectation.fulfill()
@@ -233,7 +238,11 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         XCTAssertEqual(openedCommands, [])
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
-            .init(sessionID: "sess-existing", attachmentID: "att-existing", readOffset: 9)
+            TerminalRemoteDaemonResumeState(
+                sessionID: "sess-existing",
+                attachmentID: "att-existing",
+                readOffset: 9
+            )
         )
 
         await transport.disconnect()
@@ -258,7 +267,8 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
                 effectiveRows: 30,
                 lastKnownCols: 100,
                 lastKnownRows: 30,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -277,7 +287,11 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         XCTAssertEqual(openedCommands, ["tmux new-session -A -s demo"])
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
-            .init(sessionID: "sess-new", attachmentID: "att-new", readOffset: 0)
+            TerminalRemoteDaemonResumeState(
+                sessionID: "sess-new",
+                attachmentID: "att-new",
+                readOffset: 0
+            )
         )
 
         await transport.disconnect()
@@ -369,7 +383,8 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
             effectiveCols: cols,
             effectiveRows: rows,
             lastKnownCols: cols,
-            lastKnownRows: rows
+            lastKnownRows: rows,
+            gridGeneration: nil
         )
     }
 
@@ -381,7 +396,8 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
             effectiveCols: 0,
             effectiveRows: 0,
             lastKnownCols: 0,
-            lastKnownRows: 0
+            lastKnownRows: 0,
+            gridGeneration: nil
         )
     }
 

@@ -6,13 +6,18 @@ private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "content")
 
 struct ContentView: View {
     private let authManager = AuthManager.shared
-    @State private var terminalStore = TerminalSidebarRootView.makeLiveStore()
+    private static let liveTerminalStore = TerminalSidebarRootView.makeLiveStore()
+    @State private var terminalStore: TerminalSidebarStore
     private let notificationRouteStore = NotificationRouteStore.shared
     private let uiTestTerminalSetupFixture = UITestConfig.terminalSetupFixtureEnabled
     private let uiTestTerminalInputFixture = UITestConfig.terminalInputFixtureEnabled
     private let uiTestTerminalInboxFixture = UITestConfig.terminalInboxFixtureEnabled
     private let uiTestTerminalDirectFixture = UITestConfig.terminalDirectFixtureEnabled
     private let uiTestTerminalDiscoveredFixture = UITestConfig.terminalDiscoveredFixtureEnabled
+
+    init(terminalStore: TerminalSidebarStore? = nil) {
+        _terminalStore = State(wrappedValue: terminalStore ?? Self.liveTerminalStore)
+    }
 
     private static let hasMobileWsSecret: Bool = {
         #if DEBUG

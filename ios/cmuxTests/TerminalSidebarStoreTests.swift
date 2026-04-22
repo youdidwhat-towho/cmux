@@ -616,6 +616,58 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testApplyRemoteWorkspacesPersistsPrunedSnapshot() throws {
+        let host = TerminalHost(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000030")!,
+            stableID: "127.0.0.1-52126",
+            name: "Local Dev (:52126)",
+            hostname: "127.0.0.1",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            source: .discovered,
+            transportPreference: .remoteDaemon
+        )
+        let liveWorkspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Live",
+            tmuxSessionName: "sess-live",
+            remoteWorkspaceID: "remote-live"
+        )
+        let staleWorkspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Stale",
+            tmuxSessionName: "sess-stale",
+            remoteWorkspaceID: "remote-stale"
+        )
+        let fixture = makeStore(
+            snapshot: TerminalStoreSnapshot(
+                hosts: [host],
+                workspaces: [staleWorkspace, liveWorkspace],
+                selectedWorkspaceID: staleWorkspace.id
+            )
+        )
+
+        fixture.store.applyRemoteWorkspaces(
+            [
+                [
+                    "id": "remote-live",
+                    "title": "Live",
+                    "session_id": "sess-live",
+                    "last_activity_at": Int64(1_800_000_000_000),
+                ],
+            ],
+            hostID: host.id,
+            host: host
+        )
+
+        XCTAssertEqual(fixture.store.workspaces.map(\.remoteWorkspaceID), ["remote-live"])
+        XCTAssertEqual(fixture.store.selectedWorkspaceID, liveWorkspace.id)
+        XCTAssertEqual(fixture.snapshotStore.load().workspaces.map(\.remoteWorkspaceID), ["remote-live"])
+        XCTAssertEqual(fixture.snapshotStore.load().selectedWorkspaceID, liveWorkspace.id)
+    }
+
+    @MainActor
     func testApplyDiscoveredHostsReplacesPlaceholderCustomHostWithLiveMachine() throws {
         let placeholderHost = TerminalHost(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,

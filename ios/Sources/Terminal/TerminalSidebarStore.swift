@@ -173,6 +173,7 @@ final class TerminalSidebarStore {
     private var lastNetworkPathState: TerminalNetworkPathState?
     private var attachAttemptStartedAt: [TerminalWorkspace.ID: Date] = [:]
     private var reportedAttachResults: [TerminalWorkspace.ID: String] = [:]
+    private var activeWorkspaceSubscriptionKeys: [String: String] = [:]
 
     init(
         snapshotStore: TerminalSnapshotPersisting = TerminalSnapshotStore(),
@@ -700,10 +701,16 @@ final class TerminalSidebarStore {
         let stableID = host.stableID
         let hostname = host.hostname
         let port = host.wsPort ?? 0
+        let endpointKey = "\(hostname):\(port):\(host.wsSecret ?? "")"
+
+        if activeWorkspaceSubscriptionKeys[stableID] == endpointKey {
+            return
+        }
+        activeWorkspaceSubscriptionKeys[stableID] = endpointKey
 
         Self.debugLog("subscription: starting for \(hostname):\(port)")
 
-        Task { [weak self, connection, stableID, hostname, port] in
+        Task { [connection, stableID, hostname, port] in
             await connection.startWorkspaceSubscription { event in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
@@ -787,7 +794,7 @@ final class TerminalSidebarStore {
         }
     }
 
-    private func applyRemoteWorkspaces(_ data: [[String: Any]], hostID: UUID, host: TerminalHost) {
+    func applyRemoteWorkspaces(_ data: [[String: Any]], hostID: UUID, host: TerminalHost) {
         let remoteIds = data.compactMap { $0["id"] as? String }
 
         // Remove stale workspaces for this host. Two flavors to prune:
@@ -889,8 +896,13 @@ final class TerminalSidebarStore {
         // preserving any non-remote workspaces
         let nonRemoteWorkspaces = workspaces.filter { $0.hostID != hostID || $0.remoteWorkspaceID == nil }
         workspaces = nonRemoteWorkspaces + updatedWorkspaces
+        if let selectedWorkspaceID,
+           !workspaces.contains(where: { $0.id == selectedWorkspaceID }) {
+            self.selectedWorkspaceID = workspaces.first?.id
+        }
 
         Self.debugLog("applyRemoteWorkspaces: \(data.count) workspaces from host \(host.name)")
+        persist()
     }
 
 

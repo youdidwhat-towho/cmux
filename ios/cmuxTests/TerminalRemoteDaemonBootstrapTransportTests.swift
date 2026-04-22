@@ -19,7 +19,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                 effectiveRows: 40,
                 lastKnownCols: 120,
                 lastKnownRows: 40,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: [
                 .success(
@@ -63,7 +64,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         let outputExpectation = expectation(description: "output")
         var events: [TerminalTransportEvent] = []
 
-        transport.eventHandler = { event in
+        transport.eventHandler = { (event: TerminalTransportEvent) in
             events.append(event)
             switch event {
             case .connected:
@@ -75,7 +76,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             }
         }
 
-        try await transport.connect(initialSize: .fixture(columns: 120, rows: 40))
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 120, rows: 40))
 
         await fulfillment(of: [connectedExpectation, outputExpectation], timeout: 1.0)
         await transport.disconnect()
@@ -116,7 +117,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                 effectiveRows: 24,
                 lastKnownCols: 80,
                 lastKnownRows: 24,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -145,9 +147,9 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             sessionClientFactory: { _ in sessionClient }
         )
 
-        try await transport.connect(initialSize: .fixture(columns: 80, rows: 24))
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 80, rows: 24))
         try await transport.send(Data("ls\n".utf8))
-        await transport.resize(.fixture(columns: 100, rows: 30))
+        await transport.resize(TerminalGridSize.fixture(columns: 100, rows: 30))
         await transport.disconnect()
 
         let writes = await sessionClient.recordedWrites()
@@ -179,7 +181,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                     effectiveCols: 90,
                     effectiveRows: 20,
                     lastKnownCols: 90,
-                    lastKnownRows: 20
+                    lastKnownRows: 20,
+                    gridGeneration: nil
                 )
             ),
             openResult: .init(
@@ -190,7 +193,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                 effectiveRows: 20,
                 lastKnownCols: 90,
                 lastKnownRows: 20,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -221,13 +225,13 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         )
 
         let connectedExpectation = expectation(description: "connected")
-        transport.eventHandler = { event in
+        transport.eventHandler = { (event: TerminalTransportEvent) in
             if case .connected = event {
                 connectedExpectation.fulfill()
             }
         }
 
-        try await transport.connect(initialSize: .fixture(columns: 90, rows: 20))
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 90, rows: 20))
         await fulfillment(of: [connectedExpectation], timeout: 1.0)
 
         let attachCalls = await sessionClient.recordedAttaches()
@@ -235,10 +239,14 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         XCTAssertEqual(attachCalls.count, 1)
         XCTAssertEqual(attachCalls.first?.sessionID, "sess-existing")
         XCTAssertEqual(attachCalls.first?.attachmentID, "att-existing")
-        XCTAssertEqual(openedCommands, [])
+        XCTAssertEqual(openedCommands, [String]())
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
-            .init(sessionID: "sess-existing", attachmentID: "att-existing", readOffset: 11)
+            TerminalRemoteDaemonResumeState(
+                sessionID: "sess-existing",
+                attachmentID: "att-existing",
+                readOffset: 11
+            )
         )
 
         await transport.disconnect()
@@ -261,7 +269,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                 effectiveRows: 24,
                 lastKnownCols: 80,
                 lastKnownRows: 24,
-                offset: 0
+                offset: 0,
+                gridGeneration: nil
             ),
             readResults: []
         )
@@ -290,10 +299,14 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             sessionClientFactory: { _ in sessionClient }
         )
 
-        try await transport.connect(initialSize: .fixture(columns: 80, rows: 24))
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 80, rows: 24))
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
-            .init(sessionID: "sess-park", attachmentID: "att-park", readOffset: 0)
+            TerminalRemoteDaemonResumeState(
+                sessionID: "sess-park",
+                attachmentID: "att-park",
+                readOffset: 0
+            )
         )
 
         await transport.suspendPreservingSession()
@@ -303,12 +316,16 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         XCTAssertEqual(detachCalls.count, 1)
         XCTAssertEqual(detachCalls.first?.sessionID, "sess-park")
         XCTAssertEqual(detachCalls.first?.attachmentID, "att-park")
-        XCTAssertEqual(closedSessions, [])
+        XCTAssertEqual(closedSessions, [String]())
         let didDisconnectSSH = await sshSession.didDisconnect()
         XCTAssertTrue(didDisconnectSSH)
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
-            .init(sessionID: "sess-park", attachmentID: "att-park", readOffset: 0)
+            TerminalRemoteDaemonResumeState(
+                sessionID: "sess-park",
+                attachmentID: "att-park",
+                readOffset: 0
+            )
         )
     }
 
@@ -347,7 +364,8 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                         effectiveRows: 24,
                         lastKnownCols: 80,
                         lastKnownRows: 24,
-                        offset: 0
+                        offset: 0,
+                        gridGeneration: nil
                     ),
                     readResults: []
                 )
@@ -355,7 +373,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         )
 
         do {
-            try await transport.connect(initialSize: .fixture(columns: 80, rows: 24))
+            try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 80, rows: 24))
             XCTFail("Expected bootstrap timeout")
         } catch let error as TerminalRemoteDaemonBootstrapTransportError {
             switch error {
@@ -507,7 +525,8 @@ private actor StubBootstrapSessionClient: TerminalRemoteDaemonSessionClient {
             effectiveCols: cols,
             effectiveRows: rows,
             lastKnownCols: cols,
-            lastKnownRows: rows
+            lastKnownRows: rows,
+            gridGeneration: nil
         )
     }
 
@@ -519,7 +538,8 @@ private actor StubBootstrapSessionClient: TerminalRemoteDaemonSessionClient {
             effectiveCols: 0,
             effectiveRows: 0,
             lastKnownCols: 0,
-            lastKnownRows: 0
+            lastKnownRows: 0,
+            gridGeneration: nil
         )
     }
 

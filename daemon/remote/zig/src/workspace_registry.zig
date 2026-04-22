@@ -451,14 +451,52 @@ pub const Registry = struct {
     ///     daemon-owned session bindings survive.
     ///   * Workspaces in the payload that aren't in the registry are
     ///     created.
-    ///   * Workspaces missing from the payload are left alone. The mac
-    ///     must issue an explicit `workspace.close` RPC to remove them;
-    ///     silently omitting them from sync no longer deletes them.
+    ///   * Workspaces missing from the payload are preserved when they own
+    ///     distinct sessions, which protects iOS-created workspaces that
+    ///     have not round-tripped to mac's TabManager yet.
+    ///   * Missing workspaces that duplicate incoming session ids are pruned.
+    ///     This handles mac relaunch/session-restore cases where the same
+    ///     shells are synced back under freshly minted workspace ids.
     ///
     /// This aligns `workspace.sync` with the SSOT direction where the
     /// daemon owns pane/session state and mac just pushes metadata.
     pub fn syncAll(self: *Registry, workspaces_data: []const SyncWorkspace, selected_id: ?[]const u8) !void {
-        // Preserve existing entries; we only update/create.
+        var incoming_ids = std.StringHashMap(void).init(self.alloc);
+        defer incoming_ids.deinit();
+        var incoming_session_ids = std.StringHashMap(void).init(self.alloc);
+        defer incoming_session_ids.deinit();
+
+        for (workspaces_data) |ws_data| {
+            try incoming_ids.put(ws_data.id, {});
+            try addIncomingSessionId(&incoming_session_ids, ws_data.session_id);
+            for (ws_data.session_ids) |sid| {
+                try addIncomingSessionId(&incoming_session_ids, sid);
+            }
+            for (ws_data.panes) |pane| {
+                try addIncomingSessionId(&incoming_session_ids, pane.session_id);
+            }
+        }
+
+        var ids_to_prune: std.ArrayList([]const u8) = .empty;
+        defer {
+            for (ids_to_prune.items) |id| self.alloc.free(id);
+            ids_to_prune.deinit(self.alloc);
+        }
+
+        const now_ms = std.time.milliTimestamp();
+        for (self.order.items) |existing_id| {
+            if (incoming_ids.contains(existing_id)) continue;
+            const existing = self.workspaces.getPtr(existing_id) orelse continue;
+            if (!shouldPruneMissingWorkspace(existing, &incoming_session_ids, now_ms)) continue;
+
+            const id_copy = try self.alloc.dupe(u8, existing_id);
+            errdefer self.alloc.free(id_copy);
+            try ids_to_prune.append(self.alloc, id_copy);
+        }
+
+        for (ids_to_prune.items) |id| {
+            try self.close(id);
+        }
 
         // Insert new workspaces in order
         for (workspaces_data) |ws_data| {
@@ -607,6 +645,69 @@ pub const Registry = struct {
         self.selected_id = if (selected_id) |s| try self.alloc.dupe(u8, s) else null;
 
         self.change_seq += 1;
+    }
+
+    const sessionless_missing_workspace_prune_grace_ms: i64 = 10_000;
+
+    fn addIncomingSessionId(set: *std.StringHashMap(void), maybe_session_id: ?[]const u8) !void {
+        const session_id = maybe_session_id orelse return;
+        if (session_id.len == 0) return;
+        try set.put(session_id, {});
+    }
+
+    fn shouldPruneMissingWorkspace(
+        ws: *const Workspace,
+        incoming_session_ids: *const std.StringHashMap(void),
+        now_ms: i64,
+    ) bool {
+        if (!workspaceHasAnySession(ws)) {
+            return now_ms - ws.last_activity_at >= sessionless_missing_workspace_prune_grace_ms;
+        }
+        return workspaceHasOverlappingSession(ws, incoming_session_ids);
+    }
+
+    fn workspaceHasAnySession(ws: *const Workspace) bool {
+        if (ws.session_id) |session_id| {
+            if (session_id.len > 0) return true;
+        }
+        return paneTreeHasAnySession(ws.root_pane);
+    }
+
+    fn paneTreeHasAnySession(node: *const PaneNode) bool {
+        switch (node.*) {
+            .leaf => |leaf| {
+                if (leaf.session_id) |session_id| {
+                    return session_id.len > 0;
+                }
+                return false;
+            },
+            .split => |split| {
+                return paneTreeHasAnySession(split.first) or paneTreeHasAnySession(split.second);
+            },
+        }
+    }
+
+    fn workspaceHasOverlappingSession(ws: *const Workspace, incoming_session_ids: *const std.StringHashMap(void)) bool {
+        if (incoming_session_ids.count() == 0) return false;
+        if (ws.session_id) |session_id| {
+            if (session_id.len > 0 and incoming_session_ids.contains(session_id)) return true;
+        }
+        return paneTreeHasOverlappingSession(ws.root_pane, incoming_session_ids);
+    }
+
+    fn paneTreeHasOverlappingSession(node: *const PaneNode, incoming_session_ids: *const std.StringHashMap(void)) bool {
+        switch (node.*) {
+            .leaf => |leaf| {
+                if (leaf.session_id) |session_id| {
+                    return session_id.len > 0 and incoming_session_ids.contains(session_id);
+                }
+                return false;
+            },
+            .split => |split| {
+                return paneTreeHasOverlappingSession(split.first, incoming_session_ids) or
+                    paneTreeHasOverlappingSession(split.second, incoming_session_ids);
+            },
+        }
     }
 
     /// Build a pane tree from sync data. Prefers per-pane metadata; falls
@@ -983,19 +1084,19 @@ test "syncAll upsert-in-place: metadata-only update keeps existing pane tree" {
     try std.testing.expectEqualStrings("sess-stable", after.root_pane.leaf.session_id.?);
 }
 
-test "syncAll does not delete workspaces missing from the payload" {
+test "syncAll preserves missing workspace with distinct session" {
     // Regression: workspace.sync used to delete every workspace not in the
     // payload. iOS-created workspaces that hadn't yet round-tripped to mac's
     // TabManager could therefore vanish on the next mac sync. Post-upsert,
-    // mac must issue an explicit workspace.close to remove.
+    // missing workspaces with distinct live sessions must survive.
     const alloc = std.testing.allocator;
     var reg = Registry.init(alloc);
     defer reg.deinit();
 
     // Two workspaces seeded.
     const initial = [_]Registry.SyncWorkspace{
-        .{ .id = "ws-keep", .title = "keep", .directory = "" },
-        .{ .id = "ws-only-on-phone", .title = "phone", .directory = "" },
+        .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
+        .{ .id = "ws-only-on-phone", .title = "phone", .directory = "", .session_id = "sess-phone" },
     };
     try reg.syncAll(&initial, null);
     try std.testing.expect(reg.get("ws-keep") != null);
@@ -1003,9 +1104,66 @@ test "syncAll does not delete workspaces missing from the payload" {
 
     // Mac sync only mentions ws-keep. ws-only-on-phone must survive.
     const partial = [_]Registry.SyncWorkspace{
-        .{ .id = "ws-keep", .title = "keep", .directory = "" },
+        .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
     };
     try reg.syncAll(&partial, null);
     try std.testing.expect(reg.get("ws-keep") != null);
     try std.testing.expect(reg.get("ws-only-on-phone") != null);
+}
+
+test "syncAll prunes missing workspace with duplicate incoming session" {
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    const initial = [_]Registry.SyncWorkspace{
+        .{
+            .id = "ws-old",
+            .title = "old",
+            .directory = "",
+            .panes = &[_]Registry.SyncPane{
+                .{ .session_id = "sess-shared", .title = "old shell", .directory = "" },
+            },
+        },
+    };
+    try reg.syncAll(&initial, null);
+    try std.testing.expect(reg.get("ws-old") != null);
+
+    const relaunched = [_]Registry.SyncWorkspace{
+        .{
+            .id = "ws-new",
+            .title = "new",
+            .directory = "",
+            .panes = &[_]Registry.SyncPane{
+                .{ .session_id = "sess-shared", .title = "same shell", .directory = "" },
+            },
+        },
+    };
+    try reg.syncAll(&relaunched, null);
+
+    try std.testing.expect(reg.get("ws-old") == null);
+    try std.testing.expect(reg.get("ws-new") != null);
+    try std.testing.expectEqual(@as(usize, 1), reg.order.items.len);
+    try std.testing.expectEqual(@as(u32, 1), reg.workspaces.count());
+}
+
+test "syncAll prunes stale missing sessionless workspace" {
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    const initial = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-empty", .title = "empty", .directory = "" },
+    };
+    try reg.syncAll(&initial, null);
+    const empty = reg.get("ws-empty").?;
+    empty.last_activity_at -= Registry.sessionless_missing_workspace_prune_grace_ms + 1;
+
+    const live = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-live", .title = "live", .directory = "", .session_id = "sess-live" },
+    };
+    try reg.syncAll(&live, null);
+
+    try std.testing.expect(reg.get("ws-empty") == null);
+    try std.testing.expect(reg.get("ws-live") != null);
 }
