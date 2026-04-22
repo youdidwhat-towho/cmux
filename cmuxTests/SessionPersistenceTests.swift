@@ -603,15 +603,13 @@ final class SessionPersistenceTests: XCTestCase {
         )
     }
 
-    @MainActor
     func testSessionAutosaveFingerprintIncludesRestorableAgentMetadata() throws {
-        let tabManager = TabManager()
-        let workspace = try XCTUnwrap(tabManager.tabs.first)
-        let panelId = try XCTUnwrap(workspace.focusedPanelId)
-        let baselineFingerprint = tabManager.sessionAutosaveFingerprint()
+        let workspaceId = UUID()
+        let panelId = UUID()
+        let baselineFingerprint = TabManager.restorableAgentSnapshotFingerprint(nil)
 
         let firstIndex = try makeRestorableAgentIndex(
-            workspaceId: workspace.id,
+            workspaceId: workspaceId,
             panelId: panelId,
             sessionId: "codex-session-1",
             arguments: [
@@ -622,12 +620,12 @@ final class SessionPersistenceTests: XCTestCase {
                 "codex-session-1",
             ]
         )
-        let firstFingerprint = tabManager.sessionAutosaveFingerprint(
-            restorableAgentIndex: firstIndex
+        let firstFingerprint = TabManager.restorableAgentSnapshotFingerprint(
+            try XCTUnwrap(firstIndex.snapshot(workspaceId: workspaceId, panelId: panelId))
         )
 
         let secondIndex = try makeRestorableAgentIndex(
-            workspaceId: workspace.id,
+            workspaceId: workspaceId,
             panelId: panelId,
             sessionId: "codex-session-2",
             arguments: [
@@ -638,8 +636,8 @@ final class SessionPersistenceTests: XCTestCase {
                 "codex-session-2",
             ]
         )
-        let secondFingerprint = tabManager.sessionAutosaveFingerprint(
-            restorableAgentIndex: secondIndex
+        let secondFingerprint = TabManager.restorableAgentSnapshotFingerprint(
+            try XCTUnwrap(secondIndex.snapshot(workspaceId: workspaceId, panelId: panelId))
         )
 
         XCTAssertNotEqual(baselineFingerprint, firstFingerprint)

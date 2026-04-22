@@ -7094,7 +7094,7 @@ extension TabManager {
             hasher.combine(panelIds.count)
             for panelId in panelIds {
                 hasher.combine(panelId)
-                hashRestorableAgentSnapshot(
+                Self.hashRestorableAgentSnapshot(
                     restorableAgentIndex.snapshot(
                         workspaceId: workspace.id,
                         panelId: panelId
@@ -7122,7 +7122,15 @@ extension TabManager {
         return hasher.finalize()
     }
 
-    private func hashRestorableAgentSnapshot(
+    nonisolated static func restorableAgentSnapshotFingerprint(
+        _ snapshot: SessionRestorableAgentSnapshot?
+    ) -> Int {
+        var hasher = Hasher()
+        hashRestorableAgentSnapshot(snapshot, into: &hasher)
+        return hasher.finalize()
+    }
+
+    nonisolated private static func hashRestorableAgentSnapshot(
         _ snapshot: SessionRestorableAgentSnapshot?,
         into hasher: inout Hasher
     ) {
@@ -7138,7 +7146,7 @@ extension TabManager {
         hashAgentLaunchCommand(snapshot.launchCommand, into: &hasher)
     }
 
-    private func hashAgentLaunchCommand(
+    nonisolated private static func hashAgentLaunchCommand(
         _ launchCommand: AgentLaunchCommandSnapshot?,
         into hasher: inout Hasher
     ) {
@@ -7166,7 +7174,7 @@ extension TabManager {
         hashOptionalString(launchCommand.source, into: &hasher)
     }
 
-    private func hashOptionalString(_ value: String?, into hasher: inout Hasher) {
+    nonisolated private static func hashOptionalString(_ value: String?, into hasher: inout Hasher) {
         if let value {
             hasher.combine(true)
             hasher.combine(value)
@@ -7175,7 +7183,7 @@ extension TabManager {
         }
     }
 
-    private func hashOptionalDouble(_ value: Double?, into hasher: inout Hasher) {
+    nonisolated private static func hashOptionalDouble(_ value: Double?, into hasher: inout Hasher) {
         if let value {
             hasher.combine(true)
             hasher.combine(value)
