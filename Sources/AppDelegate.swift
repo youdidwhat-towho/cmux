@@ -11368,53 +11368,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
-        // Pane focus navigation (defaults to Cmd+Option+Arrow, but can be customized to letter/number keys).
-        if matchConfiguredDirectionalShortcut(
+        if handlePaneFocusNavigationShortcut(
             event: event,
-            action: .focusLeft,
-            arrowGlyph: "←",
-            arrowKeyCode: 123
-        ) || (ghosttyGotoSplitLeftShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "←", arrowKeyCode: 123) } ?? false) {
-            tabManager?.movePaneFocus(direction: .left)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .left)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusRight,
-            arrowGlyph: "→",
-            arrowKeyCode: 124
-        ) || (ghosttyGotoSplitRightShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "→", arrowKeyCode: 124) } ?? false) {
-            tabManager?.movePaneFocus(direction: .right)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .right)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusUp,
-            arrowGlyph: "↑",
-            arrowKeyCode: 126
-        ) || (ghosttyGotoSplitUpShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↑", arrowKeyCode: 126) } ?? false) {
-            tabManager?.movePaneFocus(direction: .up)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .up)
-#endif
-            return true
-        }
-        if matchConfiguredDirectionalShortcut(
-            event: event,
-            action: .focusDown,
-            arrowGlyph: "↓",
-            arrowKeyCode: 125
-        ) || (ghosttyGotoSplitDownShortcut.map { matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↓", arrowKeyCode: 125) } ?? false) {
-            tabManager?.movePaneFocus(direction: .down)
-#if DEBUG
-            recordGotoSplitMoveIfNeeded(direction: .down)
-#endif
+            preferredWindow: mainWindowForShortcutEvent(event),
+            source: "custom"
+        ) {
             return true
         }
 
@@ -12323,6 +12281,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         handleCustomShortcut(event: event)
     }
 
+    /// Browser find is hosted by AppKit text controls, whose field editor can consume
+    /// Cmd+Ctrl letter chords before the normal browser surface fallback sees them.
+    /// Route pane navigation at the window boundary while the find overlay owns focus.
+    @discardableResult
+    func handleBrowserSearchOverlayKeyDown(
+        _ event: NSEvent,
+        panelId: UUID,
+        in window: NSWindow
+    ) -> Bool {
+        guard event.type == .keyDown else { return false }
+        guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) else {
+            return false
+        }
+        if handlePaneFocusNavigationShortcut(
+            event: event,
+            preferredWindow: window,
+            source: "browserFindOverlay"
+        ) {
+#if DEBUG
+            dlog(
+                "shortcut.browserFindOverlay paneFocus panel=\(panelId.uuidString.prefix(5)) " +
+                "keyCode=\(event.keyCode)"
+            )
+#endif
+            return true
+        }
+        return handleCustomShortcut(event: event)
+    }
+
     @discardableResult
     func requestRenameWorkspaceViaCommandPalette(preferredWindow: NSWindow? = nil) -> Bool {
         let targetWindow = preferredWindow ?? NSApp.keyWindow ?? NSApp.mainWindow
@@ -12486,6 +12473,92 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             arrowGlyph: arrowGlyph,
             arrowKeyCode: arrowKeyCode
         )
+    }
+
+    @discardableResult
+    private func handlePaneFocusNavigationShortcut(
+        event: NSEvent,
+        preferredWindow: NSWindow?,
+        source: String
+    ) -> Bool {
+        // Pane focus navigation defaults to Cmd+Option+Arrow, but can be customized
+        // to letter/number keys. Ghostty's goto_split bindings are accepted too.
+        if matchConfiguredDirectionalShortcut(
+            event: event,
+            action: .focusLeft,
+            arrowGlyph: "←",
+            arrowKeyCode: 123
+        ) || (ghosttyGotoSplitLeftShortcut.map {
+            matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "←", arrowKeyCode: 123)
+        } ?? false) {
+            return movePaneFocusForShortcut(
+                direction: .left,
+                preferredWindow: preferredWindow,
+                source: source
+            )
+        }
+        if matchConfiguredDirectionalShortcut(
+            event: event,
+            action: .focusRight,
+            arrowGlyph: "→",
+            arrowKeyCode: 124
+        ) || (ghosttyGotoSplitRightShortcut.map {
+            matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "→", arrowKeyCode: 124)
+        } ?? false) {
+            return movePaneFocusForShortcut(
+                direction: .right,
+                preferredWindow: preferredWindow,
+                source: source
+            )
+        }
+        if matchConfiguredDirectionalShortcut(
+            event: event,
+            action: .focusUp,
+            arrowGlyph: "↑",
+            arrowKeyCode: 126
+        ) || (ghosttyGotoSplitUpShortcut.map {
+            matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↑", arrowKeyCode: 126)
+        } ?? false) {
+            return movePaneFocusForShortcut(
+                direction: .up,
+                preferredWindow: preferredWindow,
+                source: source
+            )
+        }
+        if matchConfiguredDirectionalShortcut(
+            event: event,
+            action: .focusDown,
+            arrowGlyph: "↓",
+            arrowKeyCode: 125
+        ) || (ghosttyGotoSplitDownShortcut.map {
+            matchDirectionalShortcut(event: event, shortcut: $0, arrowGlyph: "↓", arrowKeyCode: 125)
+        } ?? false) {
+            return movePaneFocusForShortcut(
+                direction: .down,
+                preferredWindow: preferredWindow,
+                source: source
+            )
+        }
+        return false
+    }
+
+    @discardableResult
+    private func movePaneFocusForShortcut(
+        direction: NavigationDirection,
+        preferredWindow: NSWindow?,
+        source: String
+    ) -> Bool {
+        let routedManager = synchronizeActiveMainWindowContext(preferredWindow: preferredWindow) ?? tabManager
+        guard let routedManager else { return false }
+        routedManager.movePaneFocus(direction: direction)
+#if DEBUG
+        recordGotoSplitMoveIfNeeded(direction: direction)
+        dlog(
+            "shortcut.paneFocus source=\(source) direction=\(direction.rawValue) " +
+            "target={\(debugWindowToken(preferredWindow))} manager=\(debugManagerToken(routedManager))"
+        )
+#endif
+        return true
     }
 
     private func configuredShortcutChordWindowNumber(for event: NSEvent) -> Int? {
@@ -14483,14 +14556,18 @@ private extension NSWindow {
             browserSearchOverlayPanelId(for: $0) ??
                 BrowserWindowPortalRegistry.searchOverlayPanelId(for: $0, in: self)
         }
-        guard searchOverlayPanelId != nil else { return false }
-        guard AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true else {
+        guard let searchOverlayPanelId else { return false }
+        guard AppDelegate.shared?.handleBrowserSearchOverlayKeyDown(
+            event,
+            panelId: searchOverlayPanelId,
+            in: self
+        ) == true else {
             return false
         }
 #if DEBUG
         dlog(
             "window.sendEvent.browserSearchOverlay.command " +
-            "panel=\(searchOverlayPanelId?.uuidString.prefix(5) ?? "nil") " +
+            "panel=\(searchOverlayPanelId.uuidString.prefix(5)) " +
             "keyCode=\(event.keyCode)"
         )
 #endif

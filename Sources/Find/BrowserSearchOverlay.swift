@@ -225,9 +225,19 @@ private final class BrowserSearchNativeTextField: NSTextField {
         let flags = event.modifierFlags
             .intersection(.deviceIndependentFlagsMask)
             .subtracting([.numericPad, .function, .capsLock])
-        if flags.contains(.command),
-           AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
-            return true
+        if flags.contains(.command) {
+            if let panelId = browserSearchOverlayPanelId(for: self),
+               let window,
+               AppDelegate.shared?.handleBrowserSearchOverlayKeyDown(
+                   event,
+                   panelId: panelId,
+                   in: window
+               ) == true {
+                return true
+            }
+            if AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
+                return true
+            }
         }
         return super.performKeyEquivalent(with: event)
     }
@@ -316,9 +326,18 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
             markFieldEditor(textView)
             if let event = NSApp.currentEvent,
                event.type == .keyDown,
-               event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
-               AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
-                return true
+               event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) {
+                if let window = textView.window,
+                   AppDelegate.shared?.handleBrowserSearchOverlayKeyDown(
+                       event,
+                       panelId: parent.panelId,
+                       in: window
+                   ) == true {
+                    return true
+                }
+                if AppDelegate.shared?.handleBrowserSurfaceKeyEquivalent(event) == true {
+                    return true
+                }
             }
 
             switch commandSelector {

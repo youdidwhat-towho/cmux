@@ -240,7 +240,7 @@ private final class BrowserPanelFakeWebContentResponderView: NSView {
 @MainActor
 final class BrowserPanelFindFocusRequestTests: XCTestCase {
     @MainActor
-    func testWebContentFocusRestoreReactivatesAlreadyFocusedEditable() async throws {
+    func testWebContentFocusRestorePreservesAlreadyFocusedEditable() async throws {
         let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
         let navigation = expectation(description: "test page loaded")
         let delegate = BrowserPanelTestNavigationDelegate {
@@ -286,7 +286,7 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
 
         XCTAssertEqual(
             snapshot,
-            #"{"activeId":"target","events":["blur","focus"],"selectionStart":3,"selectionEnd":3}"#
+            #"{"activeId":"target","events":[],"selectionStart":3,"selectionEnd":3}"#
         )
         _ = delegate
     }
