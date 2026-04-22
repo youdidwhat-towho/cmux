@@ -10,7 +10,17 @@ import Carbon.HIToolbox
 import Sentry
 import Bonsplit
 import IOSurface
+import OSLog
 import UniformTypeIdentifiers
+
+private let notificationSurfaceLogger = Logger(
+    subsystem: "com.manaflow.cmux",
+    category: "notification-debug"
+)
+
+private func notificationSurfaceLog(_ message: String) {
+    notificationSurfaceLogger.debug("\(message, privacy: .public)")
+}
 
 @_silgen_name("ghostty_surface_clear_selection")
 private func ghostty_surface_clear_selection_compat(_ surface: ghostty_surface_t) -> Bool
@@ -9563,6 +9573,11 @@ final class GhosttySurfaceScrollView: NSView {
     /// Request an immediate terminal redraw after geometry updates so stale IOSurface
     /// contents do not remain stretched during live resize churn.
     func refreshSurfaceNow(reason: String = "portal.refreshSurfaceNow") {
+        notificationSurfaceLog(
+            "surface.refreshSurfaceNow surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") " +
+                "reason=\(reason) visibleInUI=\(surfaceView.isVisibleInUI ? 1 : 0) " +
+                "inWindow=\(window != nil ? 1 : 0)"
+        )
         // Portal reparent/reveal can settle geometry a tick before AppKit finishes
         // realizing the terminal subtree's backing layer state. Flush display for the
         // hosted subtree first so forceRefresh does not race a still-unrealized layer.
@@ -10455,6 +10470,10 @@ final class GhosttySurfaceScrollView: NSView {
 
     func setVisibleInUI(_ visible: Bool) {
         let wasVisible = surfaceView.isVisibleInUI
+        notificationSurfaceLog(
+            "surface.setVisibleInUI surface=\(surfaceView.terminalSurface?.id.uuidString ?? "nil") " +
+                "transition=\(wasVisible ? 1 : 0)->\(visible ? 1 : 0) inWindow=\(window != nil ? 1 : 0)"
+        )
         surfaceView.setVisibleInUI(visible)
         isHidden = !visible
         if wasVisible != visible, lastRequestedPortalOcclusionVisible != visible {
@@ -12462,11 +12481,13 @@ struct GhosttyTerminalView: NSViewRepresentable {
         let coordinator = context.coordinator
         let previousDesiredIsActive = coordinator.desiredIsActive
         let previousDesiredIsVisibleInUI = coordinator.desiredIsVisibleInUI
+        let previousDesiredShowsUnreadNotificationRing = coordinator.desiredShowsUnreadNotificationRing
         let previousDesiredPortalZPriority = coordinator.desiredPortalZPriority
         let desiredStateChanged =
             previousDesiredIsActive != isActive ||
             previousDesiredIsVisibleInUI != isVisibleInUI ||
             previousDesiredPortalZPriority != portalZPriority
+        let notificationRingChanged = previousDesiredShowsUnreadNotificationRing != showsUnreadNotificationRing
         coordinator.desiredIsActive = isActive
         coordinator.desiredIsVisibleInUI = isVisibleInUI
         coordinator.desiredShowsUnreadNotificationRing = showsUnreadNotificationRing
@@ -12495,6 +12516,8 @@ struct GhosttyTerminalView: NSViewRepresentable {
 #endif
 
         let hostContainer = nsView as? HostContainerView
+        let currentHostId = hostContainer.map { String(describing: ObjectIdentifier($0)) } ?? "nil"
+        let previousHostId = coordinator.lastBoundHostId.map { String(describing: $0) } ?? "nil"
         let hostOwnsPortalNow = hostContainer.map { host in
             terminalSurface.claimPortalHost(
                 hostId: ObjectIdentifier(host),
@@ -12505,6 +12528,17 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 reason: "update"
             )
         } ?? true
+        if notificationRingChanged || desiredStateChanged {
+            let guardState = hostedView.portalBindingGuardState()
+            notificationSurfaceLog(
+                "ghostty.update.enter surface=\(terminalSurface.id.uuidString) hostId=\(currentHostId) " +
+                    "prevHostId=\(previousHostId) visible=\(isVisibleInUI ? 1 : 0) active=\(isActive ? 1 : 0) " +
+                    "ring=\(showsUnreadNotificationRing ? 1 : 0) prevRing=\(previousDesiredShowsUnreadNotificationRing ? 1 : 0) " +
+                    "guardState=\(guardState.state) guardGeneration=\(guardState.generation.map { String($0) } ?? "nil") " +
+                    "hostOwns=\(hostOwnsPortalNow ? 1 : 0) hostedInWindow=\(hostedView.window != nil ? 1 : 0) " +
+                    "hostedHasSuperview=\(hostedView.superview != nil ? 1 : 0)"
+            )
+        }
 
         // Keep the surface lifecycle and handlers updated even if we defer re-parenting.
         hostedView.attachSurface(terminalSurface)
@@ -12554,6 +12588,9 @@ struct GhosttyTerminalView: NSViewRepresentable {
 
         coordinator.attachGeneration += 1
         let generation = coordinator.attachGeneration
+        var didBindOnUpdate = false
+        var didRefreshAfterNotificationUpdate = false
+        var didDeferBindVisibilityUpdate = false
 
         if let host = hostContainer {
             host.onDidMoveToWindow = { [weak host, weak hostedView, weak coordinator] in
@@ -12657,6 +12694,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
                         expectedSurfaceId: portalExpectedSurfaceId,
                         expectedGeneration: portalExpectedGeneration
                     )
+                    didBindOnUpdate = true
                     coordinator.lastBoundHostId = hostId
                     coordinator.lastSynchronizedHostGeometryRevision = geometryRevision
                 } else if portalBindingLive && coordinator.lastSynchronizedHostGeometryRevision != geometryRevision {
@@ -12683,6 +12721,7 @@ struct GhosttyTerminalView: NSViewRepresentable {
                     for: hostedView,
                     visibleInUI: coordinator.desiredIsVisibleInUI
                 )
+                didDeferBindVisibilityUpdate = true
             }
         }
 
@@ -12712,6 +12751,27 @@ struct GhosttyTerminalView: NSViewRepresentable {
                 )
             }
 #endif
+        }
+        let shouldRefreshAfterNotificationUpdate =
+            portalBindingStillLive() &&
+            isVisibleInUI &&
+            hostOwnsPortalNow &&
+            isBoundToCurrentHost &&
+            hostedView.window != nil &&
+            (notificationRingChanged || didBindOnUpdate)
+        if shouldRefreshAfterNotificationUpdate {
+            let reason = notificationRingChanged ? "notificationRing.updateNSView" : "notificationPortal.rebind"
+            hostedView.refreshSurfaceNow(reason: reason)
+            didRefreshAfterNotificationUpdate = true
+        }
+        if notificationRingChanged || didBindOnUpdate || didDeferBindVisibilityUpdate || desiredStateChanged {
+            notificationSurfaceLog(
+                "ghostty.update.exit surface=\(terminalSurface.id.uuidString) hostId=\(currentHostId) " +
+                    "boundToCurrent=\(isBoundToCurrentHost ? 1 : 0) hostOwns=\(hostOwnsPortalNow ? 1 : 0) " +
+                    "didBind=\(didBindOnUpdate ? 1 : 0) deferVisibility=\(didDeferBindVisibilityUpdate ? 1 : 0) " +
+                    "refreshed=\(didRefreshAfterNotificationUpdate ? 1 : 0) visible=\(isVisibleInUI ? 1 : 0) " +
+                    "active=\(isActive ? 1 : 0) ring=\(showsUnreadNotificationRing ? 1 : 0)"
+            )
         }
     }
 

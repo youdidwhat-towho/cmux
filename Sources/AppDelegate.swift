@@ -8,6 +8,16 @@ import WebKit
 import Combine
 import ObjectiveC.runtime
 import Darwin
+import OSLog
+
+private let notificationDebugLogger = Logger(
+    subsystem: "com.manaflow.cmux",
+    category: "notification-debug"
+)
+
+private func notificationDebugLog(_ message: String) {
+    notificationDebugLogger.debug("\(message, privacy: .public)")
+}
 
 func cmuxJavaScriptStringLiteral(_ value: String?) -> String? {
     guard let value else { return nil }
@@ -2961,6 +2971,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         notificationStore.markRead(forTabId: tabId, surfaceId: surfaceId)
     }
 
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        let targetWindow: NSWindow? = {
+            if let keyWindow = sender.keyWindow, isMainTerminalWindow(keyWindow) {
+                return keyWindow
+            }
+            if let mainWindow = sender.mainWindow, isMainTerminalWindow(mainWindow) {
+                return mainWindow
+            }
+            if let context = mainWindowContexts.values.first(where: { resolvedWindow(for: $0)?.isVisible == true }) {
+                return resolvedWindow(for: context)
+            }
+            return flag ? sender.windows.first(where: { $0.isVisible }) : nil
+        }()
+
+        notificationDebugLog(
+            "app.reopen hasVisibleWindows=\(flag ? 1 : 0) target={\(notificationDebugWindowSummary(targetWindow))} " +
+                "nsWindowCount=\(sender.windows.count) mainContextCount=\(mainWindowContexts.count)"
+        )
+
+        guard let targetWindow else { return false }
+
+        if isMainTerminalWindow(targetWindow) {
+            bringToFront(targetWindow)
+        } else {
+            if targetWindow.isMiniaturized {
+                targetWindow.deminiaturize(nil)
+            }
+            targetWindow.makeKeyAndOrderFront(nil)
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        }
+
+        return true
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         isTerminatingApp = true
         _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
@@ -4950,6 +4994,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         ]
     }
 #endif
+
+    private func notificationDebugWindowSummary(_ window: NSWindow?) -> String {
+        guard let window else { return "nil" }
+        let identifier = window.identifier?.rawValue ?? "nil"
+        return "num=\(window.windowNumber) id=\(identifier) key=\(window.isKeyWindow ? 1 : 0) main=\(window.isMainWindow ? 1 : 0) visible=\(window.isVisible ? 1 : 0)"
+    }
+
+    private func notificationDebugContextSummary(_ context: MainWindowContext?) -> String {
+        guard let context else { return "nil" }
+        let window = context.window ?? windowForMainWindowId(context.windowId)
+        let selected = context.tabManager.selectedTabId?.uuidString ?? "nil"
+        return "windowId=\(context.windowId.uuidString) window={\(notificationDebugWindowSummary(window))} tabs=\(context.tabManager.tabs.count) selected=\(selected)"
+    }
+
+    private func notificationDebugCallStack(limit: Int = 6) -> String {
+        Thread.callStackSymbols
+            .dropFirst()
+            .prefix(limit)
+            .map { line in
+                line.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            .joined(separator: " | ")
+    }
+
+    private func activeMainWindowContext(containing tabId: UUID) -> MainWindowContext? {
+        if let activeManager = tabManager,
+           let context = mainWindowContexts.values.first(where: { $0.tabManager === activeManager }),
+           context.tabManager.tabs.contains(where: { $0.id == tabId }) {
+            return context
+        }
+
+        for candidateWindow in [NSApp.keyWindow, NSApp.mainWindow] {
+            guard let candidateWindow,
+                  let context = contextForMainTerminalWindow(candidateWindow),
+                  context.tabManager.tabs.contains(where: { $0.id == tabId }) else {
+                continue
+            }
+            return context
+        }
+
+        return nil
+    }
 
     func windowMoveTargets(referenceWindowId: UUID?) -> [WindowMoveTarget] {
         let orderedSummaries = orderedMainWindowSummaries(referenceWindowId: referenceWindowId)
@@ -7147,6 +7233,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sessionWindowSnapshot: SessionWindowSnapshot? = nil
     ) -> UUID {
         let windowId = UUID()
+        notificationDebugLog(
+            "mainWindow.create windowId=\(windowId.uuidString) initialWorkingDirectory=\(initialWorkingDirectory ?? "nil") " +
+                "restoreSnapshot=\(sessionWindowSnapshot != nil ? 1 : 0) nsWindowCountBefore=\(NSApp.windows.count) " +
+                "mainContextCountBefore=\(mainWindowContexts.count) stack=\(notificationDebugCallStack())"
+        )
         let tabManager = TabManager(initialWorkingDirectory: initialWorkingDirectory)
         if let tabManagerSnapshot = sessionWindowSnapshot?.tabManager {
             tabManager.restoreSessionSnapshot(tabManagerSnapshot)
@@ -7283,6 +7374,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
 #endif
         }
+        notificationDebugLog(
+            "mainWindow.create.complete windowId=\(windowId.uuidString) window={\(notificationDebugWindowSummary(window))} " +
+                "nsWindowCountAfter=\(NSApp.windows.count) mainContextCountAfter=\(mainWindowContexts.count)"
+        )
         return windowId
     }
 
@@ -12814,6 +12909,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return UUID(uuidString: surfaceIdString)
         }()
+        let resolvedContext = contextContainingTabId(tabId)
+        let resolvedWindow = resolvedContext.flatMap { $0.window ?? windowForMainWindowId($0.windowId) }
+        notificationDebugLog(
+            "notification.response action=\(response.actionIdentifier) tabId=\(tabId.uuidString) " +
+                "surfaceId=\(surfaceId?.uuidString ?? "nil") context={\(notificationDebugContextSummary(resolvedContext))} " +
+                "window={\(notificationDebugWindowSummary(resolvedWindow))}"
+        )
 
         switch response.actionIdentifier {
         case UNNotificationDefaultActionIdentifier, TerminalNotificationStore.actionShowIdentifier:
@@ -13127,6 +13229,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             ])
         }
 #endif
+        notificationDebugLog(
+            "notification.open.request tabId=\(tabId.uuidString) surfaceId=\(surfaceId?.uuidString ?? "nil") " +
+                "notificationId=\(notificationId?.uuidString ?? "nil") activeTabManagerTabs=\(tabManager?.tabs.count ?? -1) " +
+                "mainContextCount=\(mainWindowContexts.count)"
+        )
         guard let context = contextContainingTabId(tabId) else {
 #if DEBUG
             recordMultiWindowNotificationOpenFailureIfNeeded(
@@ -13160,6 +13267,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func openNotificationInContext(_ context: MainWindowContext, tabId: UUID, surfaceId: UUID?, notificationId: UUID?) -> Bool {
         let expectedIdentifier = "cmux.main.\(context.windowId.uuidString)"
         let window: NSWindow? = context.window ?? NSApp.windows.first(where: { $0.identifier?.rawValue == expectedIdentifier })
+        notificationDebugLog(
+            "notification.open.context tabId=\(tabId.uuidString) surfaceId=\(surfaceId?.uuidString ?? "nil") " +
+                "context={\(notificationDebugContextSummary(context))} window={\(notificationDebugWindowSummary(window))}"
+        )
         guard let window else {
 #if DEBUG
             recordMultiWindowNotificationOpenFailureIfNeeded(
@@ -13225,7 +13336,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private func openNotificationFallback(tabId: UUID, surfaceId: UUID?, notificationId: UUID?) -> Bool {
         // If the owning window context hasn't been registered yet, fall back to the "active" window.
-        guard let tabManager else {
+        guard let context = activeMainWindowContext(containing: tabId) else {
+            notificationDebugLog(
+                "notification.open.fallback.miss tabId=\(tabId.uuidString) surfaceId=\(surfaceId?.uuidString ?? "nil") " +
+                    "activeTabManagerTabs=\(tabManager?.tabs.count ?? -1) mainContextCount=\(mainWindowContexts.count)"
+            )
 #if DEBUG
             if ProcessInfo.processInfo.environment["CMUX_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
                 writeJumpUnreadTestData(["jumpUnreadFallbackFail": "missing_tabManager"])
@@ -13233,15 +13348,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #endif
             return false
         }
-        guard tabManager.tabs.contains(where: { $0.id == tabId }) else {
-#if DEBUG
-            if ProcessInfo.processInfo.environment["CMUX_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
-                writeJumpUnreadTestData(["jumpUnreadFallbackFail": "tab_not_in_active_manager"])
-            }
-#endif
-            return false
-        }
-        guard let window = (NSApp.keyWindow ?? NSApp.windows.first(where: { isMainTerminalWindow($0) })) else {
+        guard let window = context.window ?? windowForMainWindowId(context.windowId) else {
+            notificationDebugLog(
+                "notification.open.fallback.windowMissing tabId=\(tabId.uuidString) surfaceId=\(surfaceId?.uuidString ?? "nil") " +
+                    "context={\(notificationDebugContextSummary(context))}"
+            )
 #if DEBUG
             if ProcessInfo.processInfo.environment["CMUX_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
                 writeJumpUnreadTestData(["jumpUnreadFallbackFail": "missing_window"])
@@ -13250,9 +13361,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return false
         }
 
-        sidebarSelectionState?.selection = .tabs
+        notificationDebugLog(
+            "notification.open.fallback tabId=\(tabId.uuidString) surfaceId=\(surfaceId?.uuidString ?? "nil") " +
+                "context={\(notificationDebugContextSummary(context))} window={\(notificationDebugWindowSummary(window))}"
+        )
+
+        context.sidebarSelectionState.selection = .tabs
         bringToFront(window)
-        guard tabManager.focusTabFromNotification(tabId, surfaceId: surfaceId) else {
+        guard context.tabManager.focusTabFromNotification(tabId, surfaceId: surfaceId) else {
 #if DEBUG
             if ProcessInfo.processInfo.environment["CMUX_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
                 writeJumpUnreadTestData([
@@ -13266,7 +13382,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
 #if DEBUG
         recordJumpUnreadFocusFromModelIfNeeded(
-            tabManager: tabManager,
+            tabManager: context.tabManager,
             tabId: tabId,
             expectedSurfaceId: surfaceId
         )
@@ -13277,10 +13393,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 notificationId: notificationId,
                 tabId: tabId,
                 surfaceId: surfaceId,
-                tabManager: tabManager,
+                tabManager: context.tabManager,
                 notificationStore: store
             )
         }
+#if DEBUG
+        recordMultiWindowNotificationFocusIfNeeded(
+            windowId: context.windowId,
+            tabId: tabId,
+            surfaceId: surfaceId,
+            sidebarSelection: context.sidebarSelectionState.selection
+        )
+#endif
 #if DEBUG
         if ProcessInfo.processInfo.environment["CMUX_UI_TEST_JUMP_UNREAD_SETUP"] == "1" {
             writeJumpUnreadTestData(["jumpUnreadOpenInFallback": "1", "jumpUnreadOpenResult": "1"])
