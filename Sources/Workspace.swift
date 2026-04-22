@@ -249,7 +249,7 @@ extension Workspace {
 
     func sessionSnapshot(
         includeScrollback: Bool,
-        restorableAgentIndex: RestorableAgentSessionIndex?
+        restorableAgentIndex: RestorableAgentSessionIndex? = nil
     ) -> SessionWorkspaceSnapshot {
         let tree = bonsplitController.treeSnapshot()
         let layout = sessionLayoutSnapshot(from: tree)

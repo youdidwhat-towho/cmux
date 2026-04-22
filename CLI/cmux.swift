@@ -324,10 +324,21 @@ private struct ClaudeHookSessionRecord: Codable {
     var surfaceId: String
     var cwd: String?
     var pid: Int?
+    var launchCommand: AgentHookLaunchCommandRecord?
     var lastSubtitle: String?
     var lastBody: String?
     var startedAt: TimeInterval
     var updatedAt: TimeInterval
+}
+
+private struct AgentHookLaunchCommandRecord: Codable {
+    var launcher: String?
+    var executablePath: String?
+    var arguments: [String]
+    var workingDirectory: String?
+    var environment: [String: String]?
+    var capturedAt: TimeInterval?
+    var source: String?
 }
 
 private struct ClaudeHookSessionStoreFile: Codable {
@@ -372,6 +383,7 @@ private final class ClaudeHookSessionStore {
         surfaceId: String,
         cwd: String?,
         pid: Int? = nil,
+        launchCommand: AgentHookLaunchCommandRecord? = nil,
         lastSubtitle: String? = nil,
         lastBody: String? = nil
     ) throws {
@@ -385,6 +397,7 @@ private final class ClaudeHookSessionStore {
                 surfaceId: surfaceId,
                 cwd: nil,
                 pid: nil,
+                launchCommand: nil,
                 lastSubtitle: nil,
                 lastBody: nil,
                 startedAt: now,
@@ -399,6 +412,9 @@ private final class ClaudeHookSessionStore {
             }
             if let pid {
                 record.pid = pid
+            }
+            if let launchCommand, !launchCommand.arguments.isEmpty {
+                record.launchCommand = launchCommand
             }
             if let subtitle = normalizeOptional(lastSubtitle) {
                 record.lastSubtitle = subtitle
@@ -10412,6 +10428,33 @@ struct CMUXCLI {
         return ["--teammate-mode", "auto"] + commandArgs
     }
 
+    private func exportAgentLaunchCommandEnvironment(
+        launcher: String,
+        executablePath: String,
+        arguments: [String],
+        workingDirectory: String? = nil
+    ) {
+        guard !arguments.isEmpty else { return }
+        setenv("CMUX_AGENT_LAUNCH_KIND", launcher, 1)
+        setenv("CMUX_AGENT_LAUNCH_EXECUTABLE", executablePath, 1)
+        setenv("CMUX_AGENT_LAUNCH_ARGV_B64", Self.nulSeparatedBase64(arguments), 1)
+        if let workingDirectory,
+           !workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            setenv("CMUX_AGENT_LAUNCH_CWD", workingDirectory, 1)
+        } else {
+            unsetenv("CMUX_AGENT_LAUNCH_CWD")
+        }
+    }
+
+    private static func nulSeparatedBase64(_ values: [String]) -> String {
+        var data = Data()
+        for value in values {
+            data.append(contentsOf: value.utf8)
+            data.append(0)
+        }
+        return data.base64EncodedString()
+    }
+
     private func configureTmuxCompatEnvironment(
         processEnvironment: [String: String],
         shimDirectory: URL,
@@ -10503,7 +10546,7 @@ struct CMUXCLI {
         }
         if let existing = processEnvironment["NODE_OPTIONS"] {
             setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "1", 1)
-            setenv("CMUX_ORIGINAL_NODE_OPTIONS", existing, 1)
+            setenv("CMUX_ORIGINAL_NODE_OPTIONS", normalizedNodeOptionsForRestore(existing), 1)
         } else {
             setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "0", 1)
             unsetenv("CMUX_ORIGINAL_NODE_OPTIONS")
@@ -10611,6 +10654,12 @@ struct CMUXCLI {
 
         let launchPath = claudeExecutablePath ?? "claude"
         let launchArguments = claudeTeamsLaunchArguments(commandArgs: commandArgs)
+        exportAgentLaunchCommandEnvironment(
+            launcher: "claudeTeams",
+            executablePath: executablePath,
+            arguments: [executablePath, "claude-teams"] + commandArgs,
+            workingDirectory: launcherEnvironment["PWD"]
+        )
         var argv = ([launchPath] + launchArguments).map { strdup($0) }
         defer {
             for item in argv {
@@ -11136,6 +11185,12 @@ struct CMUXCLI {
             effectiveArgs.append("--port")
             effectiveArgs.append(openCodePort)
         }
+        exportAgentLaunchCommandEnvironment(
+            launcher: "omo",
+            executablePath: executablePath,
+            arguments: [executablePath, "omo"] + commandArgs,
+            workingDirectory: launcherEnvironment["PWD"]
+        )
         var argv = ([launchPath] + effectiveArgs).map { strdup($0) }
         defer {
             for item in argv {
@@ -11239,6 +11294,12 @@ struct CMUXCLI {
         )
 
         let launchPath = omxExecutablePath ?? "omx"
+        exportAgentLaunchCommandEnvironment(
+            launcher: "omx",
+            executablePath: executablePath,
+            arguments: [executablePath, "omx"] + commandArgs,
+            workingDirectory: launcherEnvironment["PWD"]
+        )
         var argv = ([launchPath] + commandArgs).map { strdup($0) }
         defer {
             for item in argv {
@@ -11304,7 +11365,7 @@ struct CMUXCLI {
         }
         if let existing = processEnvironment["NODE_OPTIONS"] {
             setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "1", 1)
-            setenv("CMUX_ORIGINAL_NODE_OPTIONS", existing, 1)
+            setenv("CMUX_ORIGINAL_NODE_OPTIONS", normalizedNodeOptionsForRestore(existing), 1)
         } else {
             setenv("CMUX_ORIGINAL_NODE_OPTIONS_PRESENT", "0", 1)
             unsetenv("CMUX_ORIGINAL_NODE_OPTIONS")
@@ -11363,6 +11424,12 @@ struct CMUXCLI {
         )
 
         let launchPath = omcExecutablePath ?? "omc"
+        exportAgentLaunchCommandEnvironment(
+            launcher: "omc",
+            executablePath: executablePath,
+            arguments: [executablePath, "omc"] + commandArgs,
+            workingDirectory: launcherEnvironment["PWD"]
+        )
         var argv = ([launchPath] + commandArgs).map { strdup($0) }
         defer {
             for item in argv {
@@ -12499,13 +12566,20 @@ struct CMUXCLI {
                 }
                 return pid
             }()
+            let launchCommand = agentLaunchCommandFromEnvironment(
+                ProcessInfo.processInfo.environment,
+                fallbackPID: claudePid,
+                fallbackKind: "claude",
+                cwd: parsedInput.cwd
+            )
             if let sessionId = parsedInput.sessionId {
                 try? sessionStore.upsert(
                     sessionId: sessionId,
                     workspaceId: workspaceId,
                     surfaceId: surfaceId,
                     cwd: parsedInput.cwd,
-                    pid: claudePid
+                    pid: claudePid,
+                    launchCommand: launchCommand
                 )
             }
             // Register PID for stale-session detection and OSC suppression,
@@ -13462,6 +13536,27 @@ struct CMUXCLI {
         return filtered.joined(separator: " ")
     }
 
+    private func normalizedNodeOptionsForRestore(_ existing: String) -> String {
+        let tokens = existing
+            .split(whereSeparator: \.isWhitespace)
+            .map(String.init)
+        guard !tokens.isEmpty else { return "" }
+
+        var normalized: [String] = []
+        var index = 0
+        while index < tokens.count {
+            let token = tokens[index]
+            if token == "--max-old-space-size", index + 1 < tokens.count {
+                normalized.append("--max-old-space-size=\(tokens[index + 1])")
+                index += 2
+                continue
+            }
+            normalized.append(token)
+            index += 1
+        }
+        return normalized.joined(separator: " ")
+    }
+
     // MARK: - Codex hooks
 
     /// The hooks.json content that cmux installs into ~/.codex/.
@@ -13523,6 +13618,125 @@ struct CMUXCLI {
             return nil
         }
         return URL(fileURLWithPath: output).lastPathComponent.lowercased()
+    }
+
+    private func processArguments(for pid: pid_t) -> [String]? {
+        var argMax: Int32 = 0
+        var argMaxSize = MemoryLayout<Int32>.size
+        var argMaxMib: [Int32] = [CTL_KERN, KERN_ARGMAX]
+        guard sysctl(&argMaxMib, UInt32(argMaxMib.count), &argMax, &argMaxSize, nil, 0) == 0,
+              argMax > 0 else {
+            return nil
+        }
+
+        var buffer = [UInt8](repeating: 0, count: Int(argMax))
+        var size = buffer.count
+        var mib: [Int32] = [CTL_KERN, KERN_PROCARGS2, pid]
+        let status = buffer.withUnsafeMutableBytes { rawBuffer in
+            sysctl(&mib, UInt32(mib.count), rawBuffer.baseAddress, &size, nil, 0)
+        }
+        guard status == 0, size > MemoryLayout<Int32>.size else {
+            return nil
+        }
+
+        var argc: Int32 = 0
+        withUnsafeMutableBytes(of: &argc) { argcBytes in
+            _ = buffer.withUnsafeBytes { bufferBytes in
+                bufferBytes.copyBytes(to: argcBytes, from: 0..<MemoryLayout<Int32>.size)
+            }
+        }
+        guard argc > 0 else { return nil }
+
+        var index = MemoryLayout<Int32>.size
+        while index < size, buffer[index] != 0 {
+            index += 1
+        }
+        while index < size, buffer[index] == 0 {
+            index += 1
+        }
+
+        var arguments: [String] = []
+        for _ in 0..<argc {
+            guard index < size else { break }
+            let start = index
+            while index < size, buffer[index] != 0 {
+                index += 1
+            }
+            guard index > start else { break }
+            if let value = String(bytes: buffer[start..<index], encoding: .utf8) {
+                arguments.append(value)
+            }
+            while index < size, buffer[index] == 0 {
+                index += 1
+            }
+        }
+
+        return arguments.isEmpty ? nil : arguments
+    }
+
+    private func agentLaunchCommandFromEnvironment(
+        _ env: [String: String],
+        fallbackPID: Int?,
+        fallbackKind: String,
+        cwd: String?
+    ) -> AgentHookLaunchCommandRecord? {
+        let envArguments = decodeNULSeparatedBase64(env["CMUX_AGENT_LAUNCH_ARGV_B64"])
+        let processArguments = fallbackPID.flatMap { self.processArguments(for: pid_t($0)) }
+        let arguments = envArguments ?? processArguments
+        guard let arguments, !arguments.isEmpty else { return nil }
+
+        let executablePath = normalizedHookValue(env["CMUX_AGENT_LAUNCH_EXECUTABLE"]) ?? arguments.first
+        let workingDirectory = normalizedHookValue(env["CMUX_AGENT_LAUNCH_CWD"])
+            ?? normalizedHookValue(cwd)
+            ?? normalizedHookValue(env["PWD"])
+        let source = envArguments == nil ? "process" : "environment"
+        let environment = selectedAgentLaunchEnvironment(from: env)
+
+        return AgentHookLaunchCommandRecord(
+            launcher: normalizedHookValue(env["CMUX_AGENT_LAUNCH_KIND"]) ?? fallbackKind,
+            executablePath: executablePath,
+            arguments: arguments,
+            workingDirectory: workingDirectory,
+            environment: environment.isEmpty ? nil : environment,
+            capturedAt: Date().timeIntervalSince1970,
+            source: source
+        )
+    }
+
+    private func decodeNULSeparatedBase64(_ rawValue: String?) -> [String]? {
+        guard let rawValue = normalizedHookValue(rawValue),
+              let data = Data(base64Encoded: rawValue) else {
+            return nil
+        }
+        let parts = data.split(separator: 0).compactMap { bytes -> String? in
+            guard !bytes.isEmpty else { return nil }
+            return String(bytes: bytes, encoding: .utf8)
+        }
+        return parts.isEmpty ? nil : parts
+    }
+
+    private func selectedAgentLaunchEnvironment(from env: [String: String]) -> [String: String] {
+        let allowedKeys = [
+            "ANTHROPIC_MODEL",
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "OPENCODE_CONFIG_DIR",
+            "SHELL"
+        ]
+        var result: [String: String] = [:]
+        for key in allowedKeys {
+            guard let value = normalizedHookValue(env[key]) else { continue }
+            result[key] = value
+        }
+        return result
+    }
+
+    private func normalizedHookValue(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
     }
 
     // MARK: - Generic agent hook system
@@ -13903,8 +14117,21 @@ struct CMUXCLI {
             let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(preferred: nil, fallback: workspaceArg, client: client)
             let surfaceId = try resolvePreferredSurfaceIdForClaudeHook(preferred: nil, fallback: surfaceArg, workspaceId: workspaceId, client: client)
             let pid = inferredCodexAgentPID()
+            let launchCommand = agentLaunchCommandFromEnvironment(
+                env,
+                fallbackPID: pid,
+                fallbackKind: def.name,
+                cwd: input.cwd
+            )
             if !sessionId.isEmpty {
-                try? store.upsert(sessionId: sessionId, workspaceId: workspaceId, surfaceId: surfaceId, cwd: input.cwd, pid: pid)
+                try? store.upsert(
+                    sessionId: sessionId,
+                    workspaceId: workspaceId,
+                    surfaceId: surfaceId,
+                    cwd: input.cwd,
+                    pid: pid,
+                    launchCommand: launchCommand
+                )
             }
             if let pid {
                 _ = try? sendV1Command("set_agent_pid \(pidKey) \(pid) --tab=\(workspaceId)", client: client)
@@ -13914,8 +14141,21 @@ struct CMUXCLI {
             let mapped = sessionId.isEmpty ? nil : (try? store.lookup(sessionId: sessionId))
             let workspaceId = try resolvePreferredWorkspaceIdForClaudeHook(preferred: mapped?.workspaceId, fallback: workspaceArg, client: client)
             let pid = mapped?.pid ?? inferredCodexAgentPID()
+            let launchCommand = agentLaunchCommandFromEnvironment(
+                env,
+                fallbackPID: pid,
+                fallbackKind: def.name,
+                cwd: input.cwd ?? mapped?.cwd
+            )
             if !sessionId.isEmpty {
-                try? store.upsert(sessionId: sessionId, workspaceId: workspaceId, surfaceId: mapped?.surfaceId ?? (surfaceArg ?? ""), cwd: input.cwd ?? mapped?.cwd, pid: pid)
+                try? store.upsert(
+                    sessionId: sessionId,
+                    workspaceId: workspaceId,
+                    surfaceId: mapped?.surfaceId ?? (surfaceArg ?? ""),
+                    cwd: input.cwd ?? mapped?.cwd,
+                    pid: pid,
+                    launchCommand: launchCommand
+                )
             }
             if let pid {
                 _ = try? sendV1Command("set_agent_pid \(pidKey) \(pid) --tab=\(workspaceId)", client: client)
@@ -13939,7 +14179,14 @@ struct CMUXCLI {
                 }()
 
                 if !sessionId.isEmpty {
+                    let launchCommand = agentLaunchCommandFromEnvironment(
+                        env,
+                        fallbackPID: pid,
+                        fallbackKind: def.name,
+                        cwd: cwd
+                    )
                     try? store.upsert(sessionId: sessionId, workspaceId: workspaceId, surfaceId: surfaceId, cwd: cwd, pid: pid,
+                                      launchCommand: launchCommand,
                                       lastSubtitle: "Completed", lastBody: lastMsg.map { truncate($0, maxLength: 200) })
                 }
                 if let pid {

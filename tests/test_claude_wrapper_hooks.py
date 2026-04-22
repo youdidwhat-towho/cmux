@@ -275,6 +275,7 @@ def test_live_socket_injects_supported_hooks(failures: list[str]) -> None:
 
 def test_live_socket_enforces_heap_cap_for_space_separated_flag(failures: list[str]) -> None:
     existing = "--max-old-space-size 2048 --trace-warnings"
+    restored = "--max-old-space-size=2048 --trace-warnings"
     code, _, _, stderr, _, node_options, runtime_node_options, child_node_options, _ = run_wrapper(
         socket_state="live",
         argv=["hello"],
@@ -293,8 +294,8 @@ def test_live_socket_enforces_heap_cap_for_space_separated_flag(failures: list[s
         f"got {node_options!r}",
         failures,
     )
-    expect(runtime_node_options == existing, f"space-separated heap flag: expected runtime NODE_OPTIONS restored, got {runtime_node_options!r}", failures)
-    expect(child_node_options == existing, f"space-separated heap flag: expected child NODE_OPTIONS restored, got {child_node_options!r}", failures)
+    expect(runtime_node_options == restored, f"space-separated heap flag: expected runtime NODE_OPTIONS restored, got {runtime_node_options!r}", failures)
+    expect(child_node_options == restored, f"space-separated heap flag: expected child NODE_OPTIONS restored, got {child_node_options!r}", failures)
 
 
 def test_live_socket_tmpdir_failure_skips_node_options_injection(failures: list[str]) -> None:

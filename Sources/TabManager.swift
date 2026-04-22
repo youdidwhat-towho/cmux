@@ -6785,7 +6785,7 @@ extension TabManager {
 
     func sessionSnapshot(
         includeScrollback: Bool,
-        restorableAgentIndex: RestorableAgentSessionIndex
+        restorableAgentIndex: RestorableAgentSessionIndex = .empty
     ) -> SessionTabManagerSnapshot {
         let restorableTabs = tabs
             .filter { !$0.isRemoteWorkspace }
