@@ -3558,7 +3558,8 @@ final class BrowserPanel: Panel, ObservableObject {
             }
         }
 
-        if Self.responderChainContains(window.firstResponder, target: webView) {
+        if Self.responderChainContains(window.firstResponder, target: webView),
+           !webViewWrapperIsFirstResponder(in: window) {
             noteWebViewFocused()
             return
         }
@@ -3577,7 +3578,8 @@ final class BrowserPanel: Panel, ObservableObject {
 
         guard let window = webView.window, !webView.isHiddenOrHasHiddenAncestor else { return false }
 
-        if Self.responderChainContains(window.firstResponder, target: webView) {
+        if Self.responderChainContains(window.firstResponder, target: webView),
+           !webViewWrapperIsFirstResponder(in: window) {
             suppressOmnibarAutofocusForExplicitWebViewFocus(reason: "alreadyFocused")
             noteWebViewFocused()
             return true
@@ -3599,12 +3601,24 @@ final class BrowserPanel: Panel, ObservableObject {
 
     @discardableResult
     private func acquireWebViewFirstResponder(_ targetWebView: WKWebView, in window: NSWindow) -> Bool {
+        let focused: Bool
         if let cmuxWebView = targetWebView as? CmuxWebView {
-            return cmuxWebView.withProgrammaticFocusAllowance {
-                window.makeFirstResponder(targetWebView)
-            }
+            focused = cmuxWebView.requestWebContentFirstResponder(in: window)
+        } else {
+            focused = window.makeFirstResponder(targetWebView)
         }
-        return window.makeFirstResponder(targetWebView)
+#if DEBUG
+        dlog(
+            "browser.focus.acquireWebContent.panel panel=\(id.uuidString.prefix(5)) " +
+            "focused=\(focused ? 1 : 0) " +
+            "fr=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")"
+        )
+#endif
+        return focused
+    }
+
+    private func webViewWrapperIsFirstResponder(in window: NSWindow) -> Bool {
+        (window.firstResponder as? NSView) === webView
     }
 
     @discardableResult
@@ -5739,11 +5753,10 @@ extension BrowserPanel {
                 complete(restored)
                 return
             }
-            var hasWebViewResponder =
+            let reacquiredWebContentResponder = self.acquireWebViewFirstResponder(in: window)
+            let hasWebViewResponder =
+                reacquiredWebContentResponder ||
                 Self.responderChainContains(window.firstResponder, target: self.webView)
-            if !hasWebViewResponder {
-                hasWebViewResponder = self.acquireWebViewFirstResponder(in: window)
-            }
             if hasWebViewResponder {
                 self.noteWebViewFocused()
             }
@@ -5751,11 +5764,12 @@ extension BrowserPanel {
             dlog(
                 "browser.focus.webContent.return panel=\(self.id.uuidString.prefix(5)) " +
                 "reason=\(reason) restored=\(restored ? 1 : 0) " +
-                "webViewResponder=\(hasWebViewResponder ? 1 : 0)"
+                "webViewResponder=\(hasWebViewResponder ? 1 : 0) " +
+                "reacquired=\(reacquiredWebContentResponder ? 1 : 0)"
             )
             self.debugLogWebContentFocusSnapshot(
                 event: "webContent.return.end",
-                detail: "reason=\(reason) restored=\(restored ? 1 : 0) webViewResponder=\(hasWebViewResponder ? 1 : 0)"
+                detail: "reason=\(reason) restored=\(restored ? 1 : 0) webViewResponder=\(hasWebViewResponder ? 1 : 0) reacquired=\(reacquiredWebContentResponder ? 1 : 0)"
             )
 #endif
             complete(restored)
@@ -5954,29 +5968,6 @@ extension BrowserPanel {
     ) {
         webContentFocusRestoreGeneration &+= 1
         let generation = webContentFocusRestoreGeneration
-        let delays: [TimeInterval] = [0.0, 0.03, 0.09, 0.2]
-        restoreStoredWebContentFocusAttemptIfNeeded(
-            script: script,
-            logPrefix: logPrefix,
-            attempt: 0,
-            delays: delays,
-            generation: generation,
-            completion: completion
-        )
-    }
-
-    private func restoreStoredWebContentFocusAttemptIfNeeded(
-        script: String,
-        logPrefix: String,
-        attempt: Int,
-        delays: [TimeInterval],
-        generation: UInt64,
-        completion: @escaping (Bool) -> Void
-    ) {
-        guard generation == webContentFocusRestoreGeneration else {
-            completion(false)
-            return
-        }
         webView.evaluateJavaScript(script) { [weak self] result, error in
             guard let self else {
                 completion(false)
@@ -5988,53 +5979,23 @@ extension BrowserPanel {
             }
 
             let status = Self.webContentFocusRestoreStatus(from: result, error: error)
-            let canRetry = (status == .notFocused || status == .error)
-            let hasNextAttempt = attempt + 1 < delays.count
 
 #if DEBUG
             if let error {
                 dlog(
                     "\(logPrefix) panel=\(self.id.uuidString.prefix(5)) " +
-                    "attempt=\(attempt) status=\(status.rawValue) " +
+                    "status=\(status.rawValue) " +
                     "message=\(error.localizedDescription)"
                 )
             } else {
                 dlog(
                     "\(logPrefix) panel=\(self.id.uuidString.prefix(5)) " +
-                    "attempt=\(attempt) status=\(status.rawValue)"
+                    "status=\(status.rawValue)"
                 )
             }
 #endif
 
-            if status == .restored {
-                completion(true)
-                return
-            }
-
-            if canRetry && hasNextAttempt {
-                let delay = delays[attempt + 1]
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                    guard let self else {
-                        completion(false)
-                        return
-                    }
-                    guard generation == self.webContentFocusRestoreGeneration else {
-                        completion(false)
-                        return
-                    }
-                    self.restoreStoredWebContentFocusAttemptIfNeeded(
-                        script: script,
-                        logPrefix: logPrefix,
-                        attempt: attempt + 1,
-                        delays: delays,
-                        generation: generation,
-                        completion: completion
-                    )
-                }
-                return
-            }
-
-            completion(false)
+            completion(status == .restored)
         }
     }
 

@@ -347,6 +347,11 @@ final class CmuxWebView: WKWebView {
 
     private static var contextMenuFallbackKey: UInt8 = 0
     private static let pasteAsPlainTextKeyCode: UInt16 = 9 // V key (hardware position, layout-independent)
+    private static let webContentInputSelectors: [Selector] = [
+        NSSelectorFromString("insertText:replacementRange:"),
+        NSSelectorFromString("doCommandBySelector:"),
+        NSSelectorFromString("setMarkedText:selectedRange:replacementRange:"),
+    ]
 
     var onContextMenuDownloadStateChanged: ((Bool) -> Void)?
     /// Called when "Open Link in New Tab" context menu is selected.
@@ -488,6 +493,67 @@ final class CmuxWebView: WKWebView {
 #endif
         }
         return body()
+    }
+
+    @discardableResult
+    func requestWebContentFirstResponder(in window: NSWindow) -> Bool {
+        withProgrammaticFocusAllowance {
+            if let contentResponder = preferredWebContentFirstResponder(in: window),
+               window.makeFirstResponder(contentResponder) {
+#if DEBUG
+                dlog(
+                    "browser.focus.acquireWebContent web=\(ObjectIdentifier(self)) " +
+                    "responder=\(String(describing: type(of: contentResponder))) result=content"
+                )
+#endif
+                NotificationCenter.default.post(name: .browserDidBecomeFirstResponderWebView, object: self)
+                return true
+            }
+
+            let focusedWrapper = window.makeFirstResponder(self)
+#if DEBUG
+            dlog(
+                "browser.focus.acquireWebContent web=\(ObjectIdentifier(self)) " +
+                "responder=\(String(describing: type(of: self))) " +
+                "result=\(focusedWrapper ? "wrapper" : "failed")"
+            )
+#endif
+            return focusedWrapper
+        }
+    }
+
+    private func preferredWebContentFirstResponder(in window: NSWindow) -> NSView? {
+        if let firstResponder = window.firstResponder as? NSView,
+           firstResponder !== self,
+           firstResponder.isDescendant(of: self),
+           Self.isWebContentFirstResponderCandidate(firstResponder) {
+            return firstResponder
+        }
+
+        var stack = Array(subviews.reversed())
+        while let view = stack.popLast() {
+            if view.window === window,
+               !view.isHiddenOrHasHiddenAncestor,
+               Self.isWebContentFirstResponderCandidate(view) {
+                return view
+            }
+            stack.append(contentsOf: view.subviews.reversed())
+        }
+
+        return nil
+    }
+
+    private static func isWebContentFirstResponderCandidate(_ view: NSView) -> Bool {
+        guard view.acceptsFirstResponder else { return false }
+
+        if webContentInputSelectors.contains(where: { view.responds(to: $0) }) {
+            return true
+        }
+
+        let className = String(describing: type(of: view))
+        return className.contains("WKContent") ||
+            className == "WKView" ||
+            className.contains("WebHTML")
     }
 
     private static func isPasteAsPlainTextCommandEquivalent(_ event: NSEvent) -> Bool {

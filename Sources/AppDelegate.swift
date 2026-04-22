@@ -9038,6 +9038,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         updates["browserPageTitle"] = browserPanel.webView.title?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         updates["browserPageURL"] = browserPanel.preferredURLStringForOmnibar() ?? ""
+        if let firstResponder = browserPanel.webView.window?.firstResponder {
+            updates["webViewFirstResponderType"] = String(describing: type(of: firstResponder))
+            if let firstResponderView = firstResponder as? NSView {
+                updates["webViewFirstResponderDescendant"] = firstResponderView.isDescendant(of: browserPanel.webView) ? "true" : "false"
+                updates["webViewFirstResponderIsWebView"] = firstResponderView === browserPanel.webView ? "true" : "false"
+            } else {
+                updates["webViewFirstResponderDescendant"] = "false"
+                updates["webViewFirstResponderIsWebView"] = "false"
+            }
+        } else {
+            updates["webViewFirstResponderType"] = ""
+            updates["webViewFirstResponderDescendant"] = "false"
+            updates["webViewFirstResponderIsWebView"] = "false"
+        }
         writeGotoSplitTestData(updates)
     }
 
