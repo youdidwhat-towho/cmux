@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { $ } from "bun";
+import { spawn } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,9 +62,14 @@ if (target === "freestyle" || target === "all") {
 console.log(JSON.stringify(output, null, 2));
 
 async function buildRemoteDaemon(outPath: string): Promise<void> {
-  await $`env GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags=-s\ -w -o ${outPath} ./cmd/cmuxd-remote`
-    .cwd(path.join(repoRoot, "daemon/remote"))
-    .quiet();
+  await runCommand(
+    "go",
+    ["build", "-trimpath", "-ldflags=-s -w", "-o", outPath, "./cmd/cmuxd-remote"],
+    {
+      cwd: path.join(repoRoot, "daemon/remote"),
+      env: { GOOS: "linux", GOARCH: "amd64", CGO_ENABLED: "0" },
+    },
+  );
 }
 
 async function buildE2BTemplate(tag: string, daemonPath: string, skipCache: boolean): Promise<unknown> {
@@ -160,15 +165,74 @@ async function remoteDaemonBuildURL(tag: string, daemonPath: string): Promise<st
   }
 
   const key = `cmux-build-artifacts/cloud-vm/${tag}/cmuxd-remote-linux-amd64`;
-  await $`env AWS_ACCESS_KEY_ID=${process.env.R2_ACCESS_KEY_ID!} AWS_SECRET_ACCESS_KEY=${process.env.R2_SECRET_ACCESS_KEY!} AWS_DEFAULT_REGION=auto AWS_REGION=auto aws s3 cp ${daemonPath} s3://${process.env.R2_BUCKET_NAME!}/${key} --endpoint-url ${process.env.R2_ENDPOINT!} --content-type application/octet-stream --cache-control no-store --only-show-errors`
-    .quiet();
+  const env = {
+    AWS_ACCESS_KEY_ID: process.env.R2_ACCESS_KEY_ID!,
+    AWS_SECRET_ACCESS_KEY: process.env.R2_SECRET_ACCESS_KEY!,
+    AWS_DEFAULT_REGION: "auto",
+    AWS_REGION: "auto",
+  };
+  await runCommand(
+    "aws",
+    [
+      "s3",
+      "cp",
+      daemonPath,
+      `s3://${process.env.R2_BUCKET_NAME!}/${key}`,
+      "--endpoint-url",
+      process.env.R2_ENDPOINT!,
+      "--content-type",
+      "application/octet-stream",
+      "--cache-control",
+      "no-store",
+      "--only-show-errors",
+    ],
+    { env },
+  );
 
-  const presigned = await $`env AWS_ACCESS_KEY_ID=${process.env.R2_ACCESS_KEY_ID!} AWS_SECRET_ACCESS_KEY=${process.env.R2_SECRET_ACCESS_KEY!} AWS_DEFAULT_REGION=auto AWS_REGION=auto aws s3 presign s3://${process.env.R2_BUCKET_NAME!}/${key} --endpoint-url ${process.env.R2_ENDPOINT!} --expires-in 3600`
-    .quiet()
-    .text();
+  const presigned = await runCommand(
+    "aws",
+    [
+      "s3",
+      "presign",
+      `s3://${process.env.R2_BUCKET_NAME!}/${key}`,
+      "--endpoint-url",
+      process.env.R2_ENDPOINT!,
+      "--expires-in",
+      "3600",
+    ],
+    { env },
+  );
   return presigned.trim();
 }
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function runCommand(
+  command: string,
+  args: string[],
+  options: { cwd?: string; env?: Record<string, string> } = {},
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: { ...process.env, ...options.env },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (code) => {
+      const output = Buffer.concat(stdout).toString();
+      const errorOutput = Buffer.concat(stderr).toString();
+      if (code === 0) {
+        resolve(output);
+        return;
+      }
+      reject(new Error(`${command} ${args.join(" ")} failed with ${code}\n${errorOutput}`));
+    });
+  });
 }

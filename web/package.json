@@ -29,6 +29,7 @@
     "react-wrap-balancer": "^1.1.1",
     "resend": "^6.9.3",
     "shiki": "^3.22.0",
+    "ws": "^8.20.0",
     "zod": "^4.3.6"
   },
   "devDependencies": {
@@ -36,6 +37,7 @@
     "@types/node": "^20",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@types/ws": "^8.18.1",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
     "tailwindcss": "^4",
