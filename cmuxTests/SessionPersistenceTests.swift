@@ -1246,6 +1246,19 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
         XCTAssertNil(omc.resumeCommand)
     }
 
+    func testRestoredAgentResumeInputDoesNotExpireForInactiveWorkspaceTerminals() {
+        XCTAssertNil(WorkspacePendingTerminalInputPolicy.timeout(for: .restoredAgentResume))
+        guard let configurationTimeout = WorkspacePendingTerminalInputPolicy.timeout(for: .configurationCommand) else {
+            XCTFail("Configuration command timeout should stay finite")
+            return
+        }
+        XCTAssertEqual(
+            configurationTimeout,
+            3.0,
+            accuracy: 0.001
+        )
+    }
+
     func testNonInteractiveAgentLaunchesAreNotAutoRestored() {
         let claudePrint = SessionRestorableAgentSnapshot(
             kind: .claude,
