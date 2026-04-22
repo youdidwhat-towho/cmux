@@ -1513,6 +1513,15 @@ final class TerminalInputTextView: UITextView {
         fatalError("init(coder:) is not supported")
     }
 
+    override func insertText(_ text: String) {
+        guard !text.isEmpty else { return }
+        if markedTextRange != nil {
+            super.insertText(text)
+            return
+        }
+        emitCommittedText(text)
+    }
+
     override func deleteBackward() {
         if commandAccessoryArmed, markedTextRange == nil, !hasText {
             if !commandAccessorySticky {
@@ -1737,44 +1746,48 @@ final class TerminalInputTextView: UITextView {
     private func handleTextChange(currentText: String, isComposing: Bool) {
         let result = TerminalTextInputPipeline.process(text: currentText, isComposing: isComposing)
         if let committedText = result.committedText {
-            if controlAccessoryArmed {
-                if !controlAccessorySticky {
-                    setControlAccessoryArmed(false)
-                }
-                if let controlSequence = controlSequence(for: committedText) {
-                    onEscapeSequence?(controlSequence)
-                } else {
-                    onText?(committedText)
-                }
-            } else if alternateAccessoryArmed {
-                if !alternateAccessorySticky {
-                    setAlternateAccessoryArmed(false)
-                }
-                if let alternateSequence = alternateSequence(for: committedText) {
-                    onEscapeSequence?(alternateSequence)
-                } else {
-                    onText?(committedText)
-                }
-            } else if commandAccessoryArmed {
-                if !commandAccessorySticky {
-                    setCommandAccessoryArmed(false)
-                }
-                if let commandSequence = commandTextSequence(for: committedText) {
-                    onEscapeSequence?(commandSequence)
-                } else {
-                    onText?(committedText)
-                }
-            } else if shiftAccessoryArmed {
-                if !shiftAccessorySticky {
-                    setShiftAccessoryArmed(false)
-                }
-                onText?(committedText.uppercased())
-            } else {
-                onText?(committedText)
-            }
+            emitCommittedText(committedText)
         }
         if text != result.nextBufferText {
             text = result.nextBufferText
+        }
+    }
+
+    private func emitCommittedText(_ committedText: String) {
+        if controlAccessoryArmed {
+            if !controlAccessorySticky {
+                setControlAccessoryArmed(false)
+            }
+            if let controlSequence = controlSequence(for: committedText) {
+                onEscapeSequence?(controlSequence)
+            } else {
+                onText?(committedText)
+            }
+        } else if alternateAccessoryArmed {
+            if !alternateAccessorySticky {
+                setAlternateAccessoryArmed(false)
+            }
+            if let alternateSequence = alternateSequence(for: committedText) {
+                onEscapeSequence?(alternateSequence)
+            } else {
+                onText?(committedText)
+            }
+        } else if commandAccessoryArmed {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            if let commandSequence = commandTextSequence(for: committedText) {
+                onEscapeSequence?(commandSequence)
+            } else {
+                onText?(committedText)
+            }
+        } else if shiftAccessoryArmed {
+            if !shiftAccessorySticky {
+                setShiftAccessoryArmed(false)
+            }
+            onText?(committedText.uppercased())
+        } else {
+            onText?(committedText)
         }
     }
 

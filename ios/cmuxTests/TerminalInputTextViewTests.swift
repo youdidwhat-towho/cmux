@@ -15,6 +15,30 @@ final class TerminalInputTextViewTests: XCTestCase {
         XCTAssertEqual(textView.text, "")
     }
 
+    func testInsertTextEmitsPlainTextOnceWithoutBuffering() {
+        let textView = TerminalInputTextView()
+        var outputs: [String] = []
+        textView.onText = { outputs.append($0) }
+
+        textView.insertText("pwd")
+
+        XCTAssertEqual(outputs, ["pwd"])
+        XCTAssertEqual(textView.text, "")
+    }
+
+    func testRepeatedInsertTextDoesNotDropRepeatedCharacters() {
+        let textView = TerminalInputTextView()
+        var outputs: [String] = []
+        textView.onText = { outputs.append($0) }
+
+        textView.insertText("l")
+        textView.insertText("l")
+        textView.insertText("s")
+
+        XCTAssertEqual(outputs, ["l", "l", "s"])
+        XCTAssertEqual(textView.text, "")
+    }
+
     func testComposingTextStaysBufferedWithoutEmitting() {
         let textView = TerminalInputTextView()
         var outputs: [String] = []
