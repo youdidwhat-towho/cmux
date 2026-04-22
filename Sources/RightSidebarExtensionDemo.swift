@@ -9,12 +9,12 @@ enum RightSidebarExtensionPoint {
     static let identifier = "com.cmuxterm.app.debug.extkit.right-sidebar-panel"
     static let productionIdentifier = "com.cmuxterm.app.extkit.right-sidebar-panel"
     static let legacyIdentifier = "com.cmuxterm.right-sidebar-panel"
-    static let discoveryIdentifiers: [StaticString] = [
+    static let monitorDiscoveryIdentifiers: [StaticString] = [
         "com.cmuxterm.app.debug.extkit.right-sidebar-panel",
         "com.cmuxterm.app.extkit.right-sidebar-panel",
         "com.cmuxterm.right-sidebar-panel",
     ]
-    static let matchingDiscoveryIdentifiers: [String] = [
+    static let matchingDiscoveryIdentifiers = [
         identifier,
         productionIdentifier,
         legacyIdentifier,
@@ -63,11 +63,9 @@ final class RightSidebarExtensionDemoStore: ObservableObject {
 
     private func loadIdentities(generation: Int) async {
         do {
-            startBundledDemoRegistrationIfNeeded(generation: generation)
-
             if #available(macOS 26.0, *) {
                 let monitor = AppExtensionPoint.Monitor()
-                for identifier in RightSidebarExtensionPoint.discoveryIdentifiers {
+                for identifier in RightSidebarExtensionPoint.monitorDiscoveryIdentifiers {
                     let point = try AppExtensionPoint(identifier: identifier)
                     try await monitor.addAppExtensionPoint(point)
                 }
@@ -128,7 +126,8 @@ final class RightSidebarExtensionDemoStore: ObservableObject {
         let sortedIdentities = uniqueIdentities(discoveredIdentities).sorted {
             $0.localizedName.localizedCaseInsensitiveCompare($1.localizedName) == .orderedAscending
         }
-        if sortedIdentities.isEmpty, !identities.isEmpty {
+        let unavailableCount = disabledCount + unapprovedCount
+        if sortedIdentities.isEmpty, unavailableCount == 0, !identities.isEmpty {
             let bundledIdentifier = RightSidebarExtensionDemoStore.bundledDemoExtensionBundleIdentifier()
             let bundledIdentities = identities.filter { identity in
                 bundledIdentifier.map { $0 == identity.bundleIdentifier } == true &&
@@ -153,15 +152,15 @@ final class RightSidebarExtensionDemoStore: ObservableObject {
         }
 
         if sortedIdentities.isEmpty {
-            if isBundledDemoExtensionPresent {
-                statusMessage = String(
-                    localized: "rightSidebar.extensionDemo.registrationSettlingStatus",
-                    defaultValue: "Bundled demo extension is installed. Waiting for macOS registration."
-                )
-            } else if disabledCount > 0 || unapprovedCount > 0 {
+            if unavailableCount > 0 {
                 statusMessage = String(
                     localized: "rightSidebar.extensionDemo.unavailableStatus",
                     defaultValue: "Extension is registered but not available yet."
+                )
+            } else if isBundledDemoExtensionPresent {
+                statusMessage = String(
+                    localized: "rightSidebar.extensionDemo.registrationSettlingStatus",
+                    defaultValue: "Bundled demo extension is installed. Waiting for macOS registration."
                 )
             } else {
                 statusMessage = String(
@@ -223,60 +222,6 @@ final class RightSidebarExtensionDemoStore: ObservableObject {
             discoveredIdentities.append(contentsOf: await iterator.next() ?? [])
         }
         return uniqueIdentities(discoveredIdentities)
-    }
-
-    private func startBundledDemoRegistrationIfNeeded(generation: Int) {
-        #if DEBUG
-        // Tagged dev builds are copied under DerivedData, so make OS registration idempotent
-        // without blocking ExtensionKit monitor setup on Launch Services or pluginkit.
-        let appURL = Bundle.main.bundleURL
-        let extensionURL = Self.bundledDemoExtensionURL
-
-        guard Self.bundledDemoExtensionExists() else {
-            return
-        }
-
-        Task.detached(priority: .utility) {
-            _ = Self.runProcess(
-                executablePath: "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-                arguments: ["-f", appURL.path]
-            )
-            _ = Self.runProcess(
-                executablePath: "/usr/bin/pluginkit",
-                arguments: ["-a", extensionURL.path]
-            )
-            Task { @MainActor [weak self] in
-                guard let self, generation == self.reloadGeneration else {
-                    return
-                }
-
-                let matchingIdentities = (try? await self.loadMatchingIdentities()) ?? []
-                guard generation == self.reloadGeneration else {
-                    return
-                }
-
-                if self.identities.isEmpty || !matchingIdentities.isEmpty {
-                    self.applyDiscoveredIdentities(matchingIdentities)
-                }
-            }
-        }
-        #endif
-    }
-
-    nonisolated private static func runProcess(executablePath: String, arguments: [String]) -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executablePath)
-        process.arguments = arguments
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
-        } catch {
-            return -1
-        }
     }
 }
 
