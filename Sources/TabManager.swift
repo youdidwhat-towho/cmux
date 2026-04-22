@@ -3985,6 +3985,18 @@ class TabManager: ObservableObject {
         }
     }
 
+    func updateSurfaceTmuxPaneScrollbar(
+        tabId: UUID,
+        surfaceId: UUID,
+        active: Bool
+    ) {
+        guard let tab = tabs.first(where: { $0.id == tabId }),
+              let terminalSurface = tab.terminalPanel(for: surfaceId)?.surface else {
+            return
+        }
+        terminalSurface.setTmuxPaneScrollbarActive(active)
+    }
+
     func handleWorkspacePullRequestCommandHint(
         tabId: UUID,
         surfaceId: UUID,
