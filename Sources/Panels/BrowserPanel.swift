@@ -2118,7 +2118,6 @@ final class BrowserPanel: Panel, ObservableObject {
             target.setSelectionRange(state.selectionStart, state.selectionEnd);
           } catch (_) {}
         }
-        clearState();
         return "restored";
       } catch (_) {
         return "error";

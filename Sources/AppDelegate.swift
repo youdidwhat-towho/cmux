@@ -10367,6 +10367,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 preludeMs = (ProcessInfo.processInfo.systemUptime - preludeStart) * 1000.0
                 let shortcutTimingStart = CmuxTypingTiming.start()
 #endif
+                if self.handlePaneFocusNavigationCommandEvent(
+                    event,
+                    preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow,
+                    source: "monitorEarly"
+                ) {
+#if DEBUG
+                    dlog("  -> consumed by early pane focus routing")
+#endif
+                    return nil
+                }
                 if self.handleBrowserSearchOverlayCommandEvent(
                     event,
                     preferredWindow: event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
@@ -12296,9 +12306,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         handleCustomShortcut(event: event)
     }
 
-    /// Browser find is hosted by AppKit text controls, whose field editor can consume
-    /// Cmd+Ctrl letter chords before the normal browser surface fallback sees them.
-    /// Route pane navigation at the window boundary while the find overlay owns focus.
+    /// AppKit text controls can consume Cmd+Ctrl pane-focus chords before the normal
+    /// shortcut fallback sees them. Route pane navigation at the window boundary.
+    @discardableResult
+    func handlePaneFocusNavigationCommandEvent(
+        _ event: NSEvent,
+        preferredWindow: NSWindow?,
+        source: String
+    ) -> Bool {
+        guard event.type == .keyDown else { return false }
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard flags.contains(.command) else { return false }
+        guard NSApp.modalWindow == nil,
+              preferredWindow?.attachedSheet == nil else {
+            return false
+        }
+        return handlePaneFocusNavigationShortcut(
+            event: event,
+            preferredWindow: preferredWindow,
+            source: source
+        )
+    }
+
     @discardableResult
     func handleBrowserSearchOverlayKeyDown(
         _ event: NSEvent,
@@ -12309,8 +12338,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command) else {
             return false
         }
-        if handlePaneFocusNavigationShortcut(
-            event: event,
+        if handlePaneFocusNavigationCommandEvent(
+            event,
             preferredWindow: window,
             source: "browserFindOverlay"
         ) {
@@ -14395,6 +14424,13 @@ private extension NSApplication {
             }
         }
 #endif
+        if AppDelegate.shared?.handlePaneFocusNavigationCommandEvent(
+            event,
+            preferredWindow: event.window ?? keyWindow ?? mainWindow,
+            source: "appSendEvent"
+        ) == true {
+            return
+        }
         if AppDelegate.shared?.handleBrowserSearchOverlayCommandEvent(
             event,
             preferredWindow: event.window ?? keyWindow ?? mainWindow
@@ -14607,6 +14643,15 @@ private extension NSWindow {
             return
         }
 
+        if event.type == .keyDown,
+           AppDelegate.shared?.handlePaneFocusNavigationCommandEvent(
+               event,
+               preferredWindow: self,
+               source: "windowSendEvent"
+           ) == true {
+            return
+        }
+
         guard shouldSuppressWindowMoveForFolderDrag(window: self, event: event),
               let contentView = self.contentView else {
 #if DEBUG
@@ -14720,6 +14765,18 @@ private extension NSWindow {
 #if DEBUG
             dlog(
                 "  → browser search overlay command routed to app"
+            )
+#endif
+            return true
+        }
+        if AppDelegate.shared?.handlePaneFocusNavigationCommandEvent(
+            event,
+            preferredWindow: self,
+            source: "windowPerformKeyEquivalent"
+        ) == true {
+#if DEBUG
+            dlog(
+                "  → pane focus routed before performKeyEquivalent"
             )
 #endif
             return true

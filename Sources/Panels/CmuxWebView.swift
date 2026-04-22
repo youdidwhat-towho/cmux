@@ -713,8 +713,55 @@ final class CmuxWebView: WKWebView {
               if (tag === "input" || tag === "textarea") return active;
               return null;
             };
-            const target = activeEditable(document);
+            const readState = () => {
+              let state = window.__cmuxAddressBarFocusState;
+              try {
+                if ((!state || typeof state.id !== "string" || !state.id) &&
+                    window.top && window.top.__cmuxAddressBarFocusState) {
+                  state = window.top.__cmuxAddressBarFocusState;
+                }
+              } catch (_) {}
+              return state;
+            };
+            const targetFromStoredState = (doc) => {
+              const state = readState();
+              if (!doc || !state || typeof state.id !== "string" || !state.id) return null;
+              const selector = '[data-cmux-addressbar-focus-id="' + state.id + '"]';
+              const findTarget = (rootDoc) => {
+                if (!rootDoc) return null;
+                const direct = rootDoc.querySelector(selector);
+                if (direct && direct.isConnected) return direct;
+                const frames = rootDoc.querySelectorAll("iframe,frame");
+                for (let i = 0; i < frames.length; i += 1) {
+                  try {
+                    const nested = findTarget(frames[i].contentDocument);
+                    if (nested) return nested;
+                  } catch (_) {}
+                }
+                return null;
+              };
+              const target = findTarget(doc);
+              if (!target) return null;
+              if (
+                typeof state.selectionStart === "number" &&
+                typeof state.selectionEnd === "number" &&
+                typeof target.setSelectionRange === "function"
+              ) {
+                try {
+                  target.setSelectionRange(state.selectionStart, state.selectionEnd);
+                } catch (_) {}
+              }
+              return target;
+            };
+            const target = activeEditable(document) || targetFromStoredState(document);
             if (!target) return { inserted: false, reason: "missing_active_editable" };
+            if (target.ownerDocument.activeElement !== target) {
+              try {
+                target.focus({ preventScroll: true });
+              } catch (_) {
+                try { target.focus(); } catch (_) {}
+              }
+            }
             if (target.ownerDocument.activeElement !== target) {
               return { inserted: false, reason: "not_focused" };
             }
@@ -799,9 +846,8 @@ final class CmuxWebView: WKWebView {
         text: String
     ) -> String? {
         guard restoredWebContentTextInputRepairArmed else { return nil }
-        if window?.firstResponder === self,
-           let bridgeRoute = bridgeRestoredTextInputRepairToActiveElement(text: text) {
-            return bridgeRoute
+        if window?.firstResponder === self {
+            return bridgeRestoredTextInputRepairToActiveElement(text: text)
         }
         guard let before = restoredTextInputSnapshot() else {
             disarmRestoredWebContentTextInputRepair(reason: "snapshotMissing")
@@ -860,7 +906,26 @@ final class CmuxWebView: WKWebView {
             "inserted=\(inserted ? 1 : 0) reason=\(reason) error=\(errorDescription)"
         )
 #endif
-        if !inserted, insert.completed, insert.error == nil {
+        if !insert.completed || insert.error != nil {
+            let webIdentifier = ObjectIdentifier(self)
+            evaluateJavaScript(script) { [weak self] result, error in
+                let inserted = error == nil &&
+                    ((result as? [String: Any])?["inserted"] as? Bool == true)
+#if DEBUG
+                let reason = ((result as? [String: Any])?["reason"] as? String) ?? "nil"
+                let errorDescription = error?.localizedDescription ?? "nil"
+                dlog(
+                    "browser.focus.textRepair.bridgeAsync web=\(webIdentifier) " +
+                    "inserted=\(inserted ? 1 : 0) reason=\(reason) error=\(errorDescription)"
+                )
+#endif
+                if inserted {
+                    self?.disarmRestoredWebContentTextInputRepair(reason: "bridgeAsyncInserted")
+                }
+            }
+            return "focusRepairBridgeScheduled"
+        }
+        if !inserted {
             disarmRestoredWebContentTextInputRepair(reason: "bridgeInsertFailed")
         }
         return inserted ? "focusRepairBridgeInserted" : nil
