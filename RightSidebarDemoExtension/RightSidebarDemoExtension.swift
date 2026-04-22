@@ -1,3 +1,4 @@
+#if compiler(>=6.3)
 import ExtensionFoundation
 import ExtensionKit
 import Foundation
@@ -442,3 +443,11 @@ private struct RightSidebarDemoExtensionView: View {
         lastAction = String(localized: "sampleExtension.actionReset", defaultValue: "Controls reset")
     }
 }
+#else
+import Foundation
+
+@main
+enum RightSidebarDemoExtensionFallback {
+    static func main() {}
+}
+#endif

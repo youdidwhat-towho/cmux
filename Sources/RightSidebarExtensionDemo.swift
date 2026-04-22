@@ -1,3 +1,4 @@
+#if compiler(>=6.3)
 import AppKit
 import ExtensionFoundation
 import ExtensionKit
@@ -548,3 +549,97 @@ private struct ExtensionKitHostPlaceholderView: View {
         .padding(14)
     }
 }
+#else
+import AppKit
+import SwiftUI
+
+enum RightSidebarExtensionPoint {
+    static let identifier = "com.cmuxterm.app.debug.extkit.right-sidebar-panel"
+    static let legacyIdentifier = "com.cmuxterm.right-sidebar-panel"
+    static let sceneID = "cmux-right-sidebar-demo"
+}
+
+struct RightSidebarExtensionDemoPanelView: View {
+    @State private var statusMessage = String(
+        localized: "rightSidebar.extensionDemo.requiresMacOS26",
+        defaultValue: "ExtensionKit sidebar demos require macOS 26."
+    )
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            VStack(spacing: 9) {
+                Image(systemName: "puzzlepiece.extension")
+                    .font(.system(size: 22))
+                    .foregroundStyle(.secondary)
+                Text(statusMessage)
+                    .font(.system(size: 12))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Text(String(
+                    localized: "rightSidebar.extensionDemo.copyPromptHint",
+                    defaultValue: "Copy a starter prompt and paste it into your AI agent to generate a sidebar extension."
+                ))
+                .font(.system(size: 11))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+                Button {
+                    copyStarterPrompt()
+                } label: {
+                    Label(
+                        String(localized: "rightSidebar.extensionDemo.copyPrompt", defaultValue: "Copy extension prompt"),
+                        systemImage: "doc.on.clipboard"
+                    )
+                }
+                .controlSize(.small)
+            }
+            .padding(18)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Label {
+                Text(String(localized: "rightSidebar.extensionDemo.title", defaultValue: "ExtensionKit Demo"))
+            } icon: {
+                Image(systemName: "puzzlepiece.extension")
+            }
+            .font(.system(size: 12, weight: .semibold))
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+    }
+
+    private func copyStarterPrompt() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(Self.starterPrompt, forType: .string)
+        statusMessage = String(
+            localized: "rightSidebar.extensionDemo.copyPromptCopied",
+            defaultValue: "Starter prompt copied."
+        )
+    }
+
+    private static var starterPrompt: String {
+        String(
+            localized: "rightSidebar.extensionDemo.copyPromptBody",
+            defaultValue: """
+            Build a cmux right sidebar ExtensionKit demo extension in Swift.
+
+            Requirements:
+            - Use ExtensionFoundation and ExtensionKit.
+            - Bind to app extension point com.cmuxterm.app.debug.extkit.right-sidebar-panel.
+            - Provide a PrimitiveAppExtensionScene with scene id cmux-right-sidebar-demo.
+            - Render a compact SwiftUI panel that fits a narrow right sidebar.
+            - Accept the scene XPC connection.
+            - Add the Info.plist and Xcode project settings needed for an ExtensionKit .appex, including EXAppExtensionAttributes.EXExtensionPointIdentifier = com.cmuxterm.app.debug.extkit.right-sidebar-panel.
+            - Keep all UI strings localized.
+            """
+        )
+    }
+}
+#endif
