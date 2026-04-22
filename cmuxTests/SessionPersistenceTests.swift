@@ -1618,6 +1618,7 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
         let scriptPath = String(trimmedInput.dropFirst(prefix.count).dropLast())
         let scriptContents = try String(contentsOfFile: scriptPath, encoding: .utf8)
         XCTAssertTrue(scriptContents.contains(longPath))
+        XCTAssertFalse(scriptContents.contains("initial prompt should not replay"))
         XCTAssertTrue(scriptContents.contains("'resume'"))
         XCTAssertTrue(scriptContents.contains("'019dad34-d218-7943-b81a-eddac5c87951'"))
 
@@ -1708,6 +1709,10 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
                     "--search",
                     "--cd",
                     "/Users/example/repo",
+                    "--add-dir",
+                    "/Users/example/repo-a",
+                    "--add-dir",
+                    "/Users/example/repo-b",
                     "initial prompt should not replay"
                 ],
                 workingDirectory: "/Users/example/repo",
@@ -1719,7 +1724,7 @@ final class SocketListenerAcceptPolicyTests: XCTestCase {
 
         XCTAssertEqual(
             snapshot.resumeCommand,
-            "cd '/Users/example/repo' && 'env' 'CODEX_HOME=/tmp/codex home' '/Users/example/.bun/bin/codex' 'resume' '--model' 'gpt-5.4' '--sandbox' 'danger-full-access' '--ask-for-approval' 'never' '--search' '--cd' '/Users/example/repo' '019dad34-d218-7943-b81a-eddac5c87951'"
+            "cd '/Users/example/repo' && 'env' 'CODEX_HOME=/tmp/codex home' '/Users/example/.bun/bin/codex' 'resume' '--model' 'gpt-5.4' '--sandbox' 'danger-full-access' '--ask-for-approval' 'never' '--search' '--cd' '/Users/example/repo' '--add-dir' '/Users/example/repo-a' '--add-dir' '/Users/example/repo-b' '019dad34-d218-7943-b81a-eddac5c87951'"
         )
     }
 
