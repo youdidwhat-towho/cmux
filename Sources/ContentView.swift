@@ -239,9 +239,6 @@ func sidebarWorkspaceRowBackgroundStyle(
             forceBright: activeTabIndicatorStyle == .leftRail
         )
     }
-    let selectedCustomBackground = customColorHex.flatMap {
-        sidebarSelectedWorkspaceCustomBackgroundNSColor(hex: $0, colorScheme: colorScheme)
-    }
 
     switch activeTabIndicatorStyle {
     case .leftRail:
@@ -259,7 +256,7 @@ func sidebarWorkspaceRowBackgroundStyle(
     case .solidFill:
         if isActive {
             return SidebarWorkspaceRowBackgroundStyle(
-                color: selectedCustomBackground ?? selectedBackground,
+                color: selectedBackground,
                 opacity: 1
             )
         }

@@ -61,7 +61,7 @@ final class SidebarSelectedWorkspaceColorTests: XCTestCase {
     }
 
     @MainActor
-    func testSetTabColorFeedsSelectedSolidFillSidebarBackground() {
+    func testSolidFillKeepsSelectedBackgroundForActiveCustomColoredWorkspaceRow() {
         let manager = TabManager()
         guard let workspace = manager.tabs.first else {
             XCTFail("Expected TabManager to initialise with a workspace")
@@ -87,7 +87,10 @@ final class SidebarSelectedWorkspaceColorTests: XCTestCase {
             sidebarSelectionColorHex: nil
         )
 
-        XCTAssertEqual(background.color?.hexString(), "#C0392B")
+        XCTAssertEqual(
+            background.color?.hexString(),
+            sidebarSelectedWorkspaceBackgroundNSColor(for: .light).hexString()
+        )
         XCTAssertEqual(background.opacity, 1.0, accuracy: 0.001)
         withExtendedLifetime(cancellable) {}
     }
