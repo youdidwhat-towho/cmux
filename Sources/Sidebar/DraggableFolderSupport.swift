@@ -252,7 +252,7 @@ final class DraggableFolderNSView: NSView, NSDraggingSource {
     }
 }
 
-private func temporarilyDisableWindowDragging(window: NSWindow?) -> Bool? {
+func temporarilyDisableWindowDragging(window: NSWindow?) -> Bool? {
     guard let window else { return nil }
     let wasMovable = window.isMovable
     if wasMovable {
@@ -261,7 +261,7 @@ private func temporarilyDisableWindowDragging(window: NSWindow?) -> Bool? {
     return wasMovable
 }
 
-private func restoreWindowDragging(window: NSWindow?, previousMovableState: Bool?) {
+func restoreWindowDragging(window: NSWindow?, previousMovableState: Bool?) {
     guard let window, let previousMovableState else { return }
     window.isMovable = previousMovableState
 }
