@@ -285,7 +285,7 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         XCTAssertNil(panel.pendingFindFieldFocusRequestId)
     }
 
-    func testHideFindDefersDismissRestoreUntilOverlayDisappears() throws {
+    func testHideFindStartsPendingWebContentRestoreImmediately() throws {
         let panel = BrowserPanel(workspaceId: UUID())
 
         panel.startFind()
@@ -297,7 +297,6 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         XCTAssertNil(panel.searchState)
         XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.webView))
 
-        panel.completePendingFindDismissIfNeeded(source: "test")
         let pendingRestoreRequest = try XCTUnwrap(panel.pendingWebContentRestoreRequestId)
         XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.webView))
 
@@ -307,21 +306,18 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         XCTAssertNil(panel.pendingWebContentRestoreRequestId)
     }
 
-    func testFindDismissOverlayDisappearStartsPendingWebContentRestore() throws {
+    func testFindOverlayDisappearRequestsFindFocusWhenFindStaysVisible() throws {
         let panel = BrowserPanel(workspaceId: UUID())
 
         panel.startFind()
         let requestId = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
         panel.noteFindFieldFocused(requestId: requestId)
-        panel.hideFind(reason: "test")
 
-        XCTAssertNil(panel.pendingWebContentRestoreRequestId)
+        panel.noteFindOverlayDisappeared(source: "test")
 
-        panel.completePendingFindDismissIfNeeded(source: "test")
-
-        XCTAssertNotNil(panel.pendingWebContentRestoreRequestId)
-        XCTAssertNil(panel.searchState)
-        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.webView))
+        XCTAssertNotNil(panel.searchState)
+        XCTAssertNotEqual(panel.pendingFindFieldFocusRequestId, requestId)
+        XCTAssertEqual(panel.preferredFocusIntentForActivation(), .browser(.findField))
     }
 
     func testPendingFindDismissRestoreWaitsForPaneFocusBeforeTakingWebViewFocus() throws {
@@ -351,7 +347,6 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         let requestId = try XCTUnwrap(panel.pendingFindFieldFocusRequestId)
         panel.noteFindFieldFocused(requestId: requestId)
         panel.hideFind(reason: "test")
-        panel.completePendingFindDismissIfNeeded(source: "test")
 
         XCTAssertNotNil(panel.pendingWebContentRestoreRequestId)
         XCTAssertEqual(browserSearchOverlayPanelId(for: window.firstResponder), panel.id)
@@ -451,7 +446,6 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         panel.noteFindFieldFocused(requestId: requestId)
         panel.notePanelFocusChanged(true)
         panel.hideFind(reason: "test")
-        panel.completePendingFindDismissIfNeeded(source: "test")
 
         XCTAssertEqual(panel.captureFocusIntent(in: window), .browser(.webView))
     }
