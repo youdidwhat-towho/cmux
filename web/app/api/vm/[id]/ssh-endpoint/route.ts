@@ -1,12 +1,11 @@
-import { unauthorized, verifyRequest } from "../../../../../services/vms/auth";
 import {
   isActorMissingError,
   jsonResponse,
   notFoundVm,
-  parseForwardedCreds,
-  rivetClient,
   userOwnsVm,
+  withAuthedVmApiRoute,
 } from "../../../../../services/vms/routeHelpers";
+import { setSpanAttributes } from "../../../../../services/telemetry";
 
 export const dynamic = "force-dynamic";
 
@@ -26,25 +25,27 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ): Promise<Response> {
-  try {
-    const user = await verifyRequest(request);
-    if (!user) return unauthorized();
-    const creds = parseForwardedCreds(request);
-    if (!creds) return unauthorized();
-
-    const { id } = await params;
-    const client = rivetClient(creds);
-    if (!(await userOwnsVm(client, user.id, id))) return notFoundVm(id);
-    // `get` not `getOrCreate` — see the exec route for the rationale.
-    try {
-      const endpoint = await client.vmActor.get([id]).openSSH();
-      return jsonResponse(endpoint);
-    } catch (err) {
-      if (isActorMissingError(err)) return notFoundVm(id);
-      throw err;
-    }
-  } catch (err) {
-    console.error("/api/vm/[id]/ssh-endpoint failed", err);
-    return jsonResponse({ error: err instanceof Error ? err.message : "internal error" }, 500);
-  }
+  return withAuthedVmApiRoute(
+    request,
+    "/api/vm/[id]/ssh-endpoint",
+    { "cmux.vm.operation": "open_ssh" },
+    "/api/vm/[id]/ssh-endpoint failed",
+    async ({ user, client, span }) => {
+      const { id } = await params;
+      setSpanAttributes(span, { "cmux.vm.id": id });
+      if (!(await userOwnsVm(client, user.id, id))) return notFoundVm(id);
+      // `get` not `getOrCreate` — see the exec route for the rationale.
+      try {
+        const endpoint = await client.vmActor.get([id]).openSSH();
+        setSpanAttributes(span, { "cmux.ssh.credential_kind": endpoint.credential.kind });
+        return jsonResponse(endpoint);
+      } catch (err) {
+        if (isActorMissingError(err)) {
+          setSpanAttributes(span, { "cmux.rivet.actor_missing": true });
+          return notFoundVm(id);
+        }
+        throw err;
+      }
+    },
+  );
 }

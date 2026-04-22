@@ -1,4 +1,7 @@
+import type { Span } from "@opentelemetry/api";
 import { createClient, type Client } from "rivetkit/client";
+import { recordSpanError, withApiRouteSpan, type MaybeAttributes } from "../telemetry";
+import { unauthorized, verifyRequest, type AuthedUser } from "./auth";
 import { getProvider } from "./drivers";
 import type { UserVmEntry } from "./actors/userVms";
 import type { Registry } from "./registry";
@@ -134,6 +137,40 @@ export function rivetClient(creds: ForwardedCreds): Client<Registry> {
     endpoint: `${rivetBaseURL()}/api/rivet`,
     headers,
   });
+}
+
+export type AuthedVmRouteContext = {
+  user: AuthedUser;
+  creds: ForwardedCreds;
+  client: Client<Registry>;
+  span: Span;
+};
+
+export async function withAuthedVmApiRoute(
+  request: Request,
+  route: string,
+  attributes: MaybeAttributes,
+  failureLog: string,
+  handler: (context: AuthedVmRouteContext) => Promise<Response>,
+): Promise<Response> {
+  return withApiRouteSpan(
+    request,
+    route,
+    { "cmux.subsystem": "vm-cloud", ...attributes },
+    async (span) => {
+      try {
+        const user = await verifyRequest(request);
+        if (!user) return unauthorized();
+        const creds = parseForwardedCreds(request);
+        if (!creds) return unauthorized();
+        return await handler({ user, creds, client: rivetClient(creds), span });
+      } catch (err) {
+        recordSpanError(span, err);
+        console.error(failureLog, err);
+        return jsonResponse({ error: err instanceof Error ? err.message : "internal error" }, 500);
+      }
+    },
+  );
 }
 
 /**
