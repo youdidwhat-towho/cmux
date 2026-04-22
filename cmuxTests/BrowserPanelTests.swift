@@ -368,6 +368,11 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
 
         panel.notePanelFocusChanged(true)
 
+        XCTAssertNotNil(panel.pendingWebContentRestoreRequestId)
+        XCTAssertEqual(browserSearchOverlayPanelId(for: window.firstResponder), panel.id)
+
+        panel.noteFindOverlayDisappeared(source: "test")
+
         XCTAssertNil(panel.pendingWebContentRestoreRequestId)
         XCTAssertEqual(panel.captureFocusIntent(in: window), .browser(.webView))
     }
@@ -493,6 +498,11 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         panel.notePanelFocusChanged(true)
         panel.hideFind(reason: "test")
 
+        XCTAssertNotNil(panel.pendingWebContentRestoreRequestId)
+
+        panel.noteFindOverlayDisappeared(source: "test")
+
+        XCTAssertNil(panel.pendingWebContentRestoreRequestId)
         XCTAssertEqual(panel.captureFocusIntent(in: window), .browser(.webView))
     }
 }
