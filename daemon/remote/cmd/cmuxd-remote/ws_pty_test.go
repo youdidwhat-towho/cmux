@@ -164,6 +164,7 @@ func TestWebSocketPTYRunsShellOverBinaryFrames(t *testing.T) {
 
 	var output strings.Builder
 	deadline := time.Now().Add(5 * time.Second)
+	sawExpectedOutput := false
 	for time.Now().Before(deadline) {
 		readCtx, cancelRead := context.WithTimeout(ctx, time.Until(deadline))
 		msgType, payload, err = conn.Read(readCtx)
@@ -174,11 +175,29 @@ func TestWebSocketPTYRunsShellOverBinaryFrames(t *testing.T) {
 		if msgType == websocket.MessageBinary {
 			output.Write(payload)
 			if strings.Contains(output.String(), "CMUX_WS_OK") {
-				return
+				sawExpectedOutput = true
+				break
 			}
 		}
 	}
-	t.Fatalf("timed out waiting for terminal output, got %q", output.String())
+	if !sawExpectedOutput {
+		t.Fatalf("timed out waiting for terminal output, got %q", output.String())
+	}
+
+	closeDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(closeDeadline) {
+		readCtx, cancelRead := context.WithTimeout(ctx, time.Until(closeDeadline))
+		_, _, err = conn.Read(readCtx)
+		cancelRead()
+		if err == nil {
+			continue
+		}
+		if websocket.CloseStatus(err) != websocket.StatusNormalClosure {
+			t.Fatalf("shell exit should close websocket normally, got err=%v status=%v output=%q", err, websocket.CloseStatus(err), output.String())
+		}
+		return
+	}
+	t.Fatalf("websocket stayed open after shell exit, output=%q", output.String())
 }
 
 func dialPTY(t *testing.T, ctx context.Context, serverURL string) *websocket.Conn {
