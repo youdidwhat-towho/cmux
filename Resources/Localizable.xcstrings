@@ -90333,6 +90333,23 @@
         }
       }
     },
+    "rightSidebar.panelPicker.accessibilityLabel": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Right sidebar panel"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "右サイドバーパネル"
+          }
+        }
+      }
+    },
     "rightSidebar.command.exitCode": {
       "extractionState": "manual",
       "localizations": {

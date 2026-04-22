@@ -172,6 +172,16 @@ struct RightSidebarPanelView: View {
         return descriptors[0]
     }
 
+    private var selectedPanelBinding: Binding<String> {
+        Binding(
+            get: { selectedDescriptor.id },
+            set: { panelId in
+                guard let descriptor = panelDescriptors.first(where: { $0.id == panelId }) else { return }
+                selectPanel(descriptor)
+            }
+        )
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             modeBar
@@ -189,21 +199,25 @@ struct RightSidebarPanelView: View {
     }
 
     private var modeBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 4) {
+        HStack(spacing: 0) {
+            Picker(
+                String(localized: "rightSidebar.panelPicker.accessibilityLabel", defaultValue: "Right sidebar panel"),
+                selection: selectedPanelBinding
+            ) {
                 ForEach(panelDescriptors) { descriptor in
-                    ModeBarButton(
-                        title: descriptor.title,
-                        symbolName: descriptor.symbolName,
-                        isSelected: selectedDescriptor.id == descriptor.id
-                    ) {
-                        selectPanel(descriptor)
-                    }
+                    Label(descriptor.title, systemImage: descriptor.symbolName)
+                        .tag(descriptor.id)
                 }
             }
-            .padding(.leading, 4)
-            .padding(.trailing, 6)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize(horizontal: true, vertical: false)
+
+            Spacer(minLength: 0)
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
         .frame(height: 31)
     }
 
@@ -260,49 +274,6 @@ struct RightSidebarPanelView: View {
 
     private var sessionIndexDirectory: String? {
         fileExplorerStore.rootPath.isEmpty ? nil : fileExplorerStore.rootPath
-    }
-}
-
-private struct ModeBarButton: View {
-    let title: String
-    let symbolName: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovered: Bool = false
-
-    var body: some View {
-        Button(action: action) {
-            HStack(spacing: 4) {
-                Image(systemName: symbolName)
-                    .font(.system(size: 11, weight: .medium))
-                    .frame(width: 13)
-                Text(title)
-                    .font(.system(size: 11, weight: .medium))
-                    .lineLimit(1)
-            }
-            .foregroundColor(isSelected ? .primary : .secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(
-                RoundedRectangle(cornerRadius: 5, style: .continuous)
-                    .fill(backgroundColor)
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovered = $0 }
-        .help(title)
-    }
-
-    private var backgroundColor: Color {
-        if isSelected {
-            return Color.primary.opacity(0.10)
-        }
-        if isHovered {
-            return Color.primary.opacity(0.05)
-        }
-        return Color.clear
     }
 }
 
