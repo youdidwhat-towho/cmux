@@ -2179,7 +2179,7 @@ class TerminalController {
                         "public_key_fingerprint": ep.publicKeyFingerprint ?? NSNull(),
                     ]
                 case .websocket(let ep):
-                    return [
+                    var payload: [String: Any] = [
                         "transport": "websocket",
                         "url": ep.url,
                         "headers": ep.headers,
@@ -2187,6 +2187,16 @@ class TerminalController {
                         "session_id": ep.sessionId,
                         "expires_at_unix": ep.expiresAtUnix,
                     ]
+                    if let daemon = ep.daemon {
+                        payload["daemon"] = [
+                            "url": daemon.url,
+                            "headers": daemon.headers,
+                            "token": daemon.token,
+                            "session_id": daemon.sessionId,
+                            "expires_at_unix": daemon.expiresAtUnix,
+                        ]
+                    }
+                    return payload
                 }
             }
 
@@ -4065,6 +4075,37 @@ class TerminalController {
         let localSocketPath = v2RawString(params, "local_socket_path")
         let terminalStartupCommand = v2RawString(params, "terminal_startup_command")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketURL = v2RawString(params, "daemon_websocket_url")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketToken = v2RawString(params, "daemon_websocket_token")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketSessionID = v2RawString(params, "daemon_websocket_session_id")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketExpiresAtUnix = (params["daemon_websocket_expires_at_unix"] as? Int64)
+            ?? Int64((params["daemon_websocket_expires_at_unix"] as? Double) ?? 0)
+        let rawDaemonHeaders = params["daemon_websocket_headers"] as? [String: Any] ?? [:]
+        let daemonWebSocketHeaders = rawDaemonHeaders.reduce(into: [String: String]()) { result, pair in
+            if let value = pair.value as? String {
+                result[pair.key] = value
+            }
+        }
+        let daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint?
+        if let daemonWebSocketURL,
+           !daemonWebSocketURL.isEmpty,
+           let daemonWebSocketToken,
+           !daemonWebSocketToken.isEmpty,
+           let daemonWebSocketSessionID,
+           !daemonWebSocketSessionID.isEmpty {
+            daemonWebSocketEndpoint = WorkspaceRemoteWebSocketDaemonEndpoint(
+                url: daemonWebSocketURL,
+                headers: daemonWebSocketHeaders,
+                token: daemonWebSocketToken,
+                sessionId: daemonWebSocketSessionID,
+                expiresAtUnix: daemonWebSocketExpiresAtUnix
+            )
+        } else {
+            daemonWebSocketEndpoint = nil
+        }
         let skipDaemonBootstrap = v2Bool(params, "skip_daemon_bootstrap") ?? false
         if relayPort != nil {
             guard let relayID, !relayID.isEmpty else {
@@ -4110,6 +4151,7 @@ class TerminalController {
                 localSocketPath: localSocketPath,
                 terminalStartupCommand: terminalStartupCommand?.isEmpty == true ? nil : terminalStartupCommand,
                 foregroundAuthToken: foregroundAuthToken?.isEmpty == true ? nil : foregroundAuthToken,
+                daemonWebSocketEndpoint: daemonWebSocketEndpoint,
                 skipDaemonBootstrap: skipDaemonBootstrap
             )
             workspace.configureRemoteConnection(config, autoConnect: autoConnect)

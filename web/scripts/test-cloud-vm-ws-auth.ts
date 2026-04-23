@@ -20,7 +20,8 @@ if (!image) {
 }
 
 const keep = hasFlag("--keep");
-const leasePath = "/tmp/cmux/attach-lease.json";
+const ptyLeasePath = "/tmp/cmux/attach-pty-lease.json";
+const rpcLeasePath = "/tmp/cmux/attach-rpc-lease.json";
 
 const result = provider === "e2b"
   ? await testE2B(image, keep)
@@ -48,6 +49,7 @@ async function testE2B(template: string, keep: boolean): Promise<Record<string, 
   const host = sandbox.getHost(7777);
   const httpURL = `https://${host}`;
   const wsURL = `wss://${host}/terminal`;
+  const rpcURL = `wss://${host}/rpc`;
   const headers = { "e2b-traffic-access-token": sandbox.trafficAccessToken ?? "" };
 
   try {
@@ -60,14 +62,18 @@ async function testE2B(template: string, keep: boolean): Promise<Record<string, 
       throw new Error(`expected healthz with E2B token to return 200, got ${trafficAuth.status}`);
     }
 
-    await installLeaseE2B(sandbox, "wrong-e2b", "sess-e2b");
+    await installLeaseE2B(sandbox, ptyLeasePath, "wrong-e2b", "sess-e2b", true);
     const wrongCmuxToken = await websocketAuthShouldFail(wsURL, headers, "wrong-token", "sess-e2b");
-    const leaseStillThere = await e2bFileExists(sandbox, leasePath);
+    const leaseStillThere = await e2bFileExists(sandbox, ptyLeasePath);
     if (!leaseStillThere) throw new Error("wrong cmux token consumed E2B lease");
 
-    const token = await installLeaseE2B(sandbox, "right-e2b", "sess-e2b");
+    const token = await installLeaseE2B(sandbox, ptyLeasePath, "right-e2b", "sess-e2b", true);
     const terminalOutput = await websocketShellRoundTrip(wsURL, headers, token, "sess-e2b");
     const replay = await websocketAuthShouldFail(wsURL, headers, token, "sess-e2b");
+
+    const rpcToken = await installLeaseE2B(sandbox, rpcLeasePath, "rpc-e2b", "sess-rpc-e2b", false);
+    const rpcHello = await websocketRPCHello(rpcURL, headers, rpcToken, "sess-rpc-e2b");
+    const rpcHelloReplay = await websocketRPCHello(rpcURL, headers, rpcToken, "sess-rpc-e2b");
 
     return {
       provider: "e2b",
@@ -78,6 +84,8 @@ async function testE2B(template: string, keep: boolean): Promise<Record<string, 
       wrongCmuxToken,
       terminalOutput,
       replay,
+      rpcHello,
+      rpcHelloReplay,
       kept: keep,
     };
   } finally {
@@ -104,20 +112,25 @@ async function testFreestyle(snapshotId: string, keep: boolean): Promise<Record<
     const domain = (created as { domains?: string[] }).domains?.[0] ?? `${vmId}.vm.freestyle.sh`;
     const httpURL = `https://${domain}`;
     const wsURL = `wss://${domain}/terminal`;
+    const rpcURL = `wss://${domain}/rpc`;
 
     const health = await fetch(`${httpURL}/healthz`);
     if (health.status !== 200) {
       throw new Error(`expected Freestyle healthz 200, got ${health.status}`);
     }
 
-    await installLeaseFreestyle(vm, "wrong-freestyle", "sess-fs");
+    await installLeaseFreestyle(vm, ptyLeasePath, "wrong-freestyle", "sess-fs", true);
     const wrongCmuxToken = await websocketAuthShouldFail(wsURL, {}, "wrong-token", "sess-fs");
-    const leaseStillThere = await freestyleFileExists(vm, leasePath);
+    const leaseStillThere = await freestyleFileExists(vm, ptyLeasePath);
     if (!leaseStillThere) throw new Error("wrong cmux token consumed Freestyle lease");
 
-    const token = await installLeaseFreestyle(vm, "right-freestyle", "sess-fs");
+    const token = await installLeaseFreestyle(vm, ptyLeasePath, "right-freestyle", "sess-fs", true);
     const terminalOutput = await websocketShellRoundTrip(wsURL, {}, token, "sess-fs");
     const replay = await websocketAuthShouldFail(wsURL, {}, token, "sess-fs");
+
+    const rpcToken = await installLeaseFreestyle(vm, rpcLeasePath, "rpc-freestyle", "sess-rpc-fs", false);
+    const rpcHello = await websocketRPCHello(rpcURL, {}, rpcToken, "sess-rpc-fs");
+    const rpcHelloReplay = await websocketRPCHello(rpcURL, {}, rpcToken, "sess-rpc-fs");
 
     return {
       provider: "freestyle",
@@ -127,6 +140,8 @@ async function testFreestyle(snapshotId: string, keep: boolean): Promise<Record<
       wrongCmuxToken,
       terminalOutput,
       replay,
+      rpcHello,
+      rpcHelloReplay,
       kept: keep,
     };
   } finally {
@@ -136,27 +151,39 @@ async function testFreestyle(snapshotId: string, keep: boolean): Promise<Record<
   }
 }
 
-async function installLeaseE2B(sandbox: Sandbox, label: string, sessionId: string): Promise<string> {
-  const { token, lease } = makeLease(label, sessionId);
+async function installLeaseE2B(
+  sandbox: Sandbox,
+  path: string,
+  label: string,
+  sessionId: string,
+  singleUse: boolean,
+): Promise<string> {
+  const { token, lease } = makeLease(label, sessionId, singleUse);
   const encoded = Buffer.from(JSON.stringify(lease)).toString("base64");
   await sandbox.commands.run(
-    `install -d -m 0700 /tmp/cmux && printf '%s' '${encoded}' | base64 -d > ${shellQuote(leasePath)} && chmod 600 ${shellQuote(leasePath)}`,
+    `install -d -m 0700 /tmp/cmux && printf '%s' '${encoded}' | base64 -d > ${shellQuote(path)} && chmod 600 ${shellQuote(path)}`,
     { timeoutMs: 30_000 },
   );
   return token;
 }
 
-async function installLeaseFreestyle(vm: FreestyleVmRef, label: string, sessionId: string): Promise<string> {
-  const { token, lease } = makeLease(label, sessionId);
+async function installLeaseFreestyle(
+  vm: FreestyleVmRef,
+  path: string,
+  label: string,
+  sessionId: string,
+  singleUse: boolean,
+): Promise<string> {
+  const { token, lease } = makeLease(label, sessionId, singleUse);
   const encoded = Buffer.from(JSON.stringify(lease)).toString("base64");
   await vm.exec({
-    command: `install -d -m 0700 /tmp/cmux && printf '%s' '${encoded}' | base64 -d > ${shellQuote(leasePath)} && chmod 600 ${shellQuote(leasePath)}`,
+    command: `install -d -m 0700 /tmp/cmux && printf '%s' '${encoded}' | base64 -d > ${shellQuote(path)} && chmod 600 ${shellQuote(path)}`,
     timeoutMs: 30_000,
   });
   return token;
 }
 
-function makeLease(label: string, sessionId: string): { token: string; lease: unknown } {
+function makeLease(label: string, sessionId: string, singleUse: boolean): { token: string; lease: unknown } {
   const token = `cmux-${label}-${randomBytes(24).toString("hex")}`;
   const hash = createHash("sha256").update(token).digest("hex");
   return {
@@ -166,7 +193,7 @@ function makeLease(label: string, sessionId: string): { token: string; lease: un
       token_sha256: hash,
       expires_at_unix: Math.floor(Date.now() / 1000) + 120,
       session_id: sessionId,
-      single_use: true,
+      single_use: singleUse,
     },
   };
 }
@@ -211,6 +238,24 @@ async function websocketShellRoundTrip(
   const output = await waitForMessage(ws, (data, isBinary) => isBinary && data.toString().includes("CMUX_CLOUD_WS_OK"));
   ws.close();
   return output.toString();
+}
+
+async function websocketRPCHello(
+  url: string,
+  headers: Record<string, string>,
+  token: string,
+  sessionId: string,
+): Promise<unknown> {
+  const ws = await openWebSocket(url, headers);
+  ws.send(JSON.stringify({ type: "auth", token, session_id: sessionId }));
+  const ready = await waitForMessage(ws, (data, isBinary) => !isBinary && data.toString().includes('"ready"'));
+  if (!ready.toString().includes('"ready"')) {
+    throw new Error(`expected rpc ready frame, got ${ready.toString()}`);
+  }
+  ws.send(JSON.stringify({ id: 1, method: "hello", params: {} }));
+  const response = await waitForMessage(ws, (data, isBinary) => !isBinary && data.toString().includes('"id":1'));
+  ws.close();
+  return JSON.parse(response.toString());
 }
 
 function openWebSocket(url: string, headers: Record<string, string>): Promise<WebSocket> {

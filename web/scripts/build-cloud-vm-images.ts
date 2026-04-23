@@ -90,7 +90,7 @@ async function buildE2BTemplate(tag: string, daemonPath: string, skipCache: bool
     })
     .runCmd(cloudRootSetupCommands(), { user: "root" })
     .setStartCmd(
-      "/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-lease.json --shell /bin/bash",
+      "/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-pty-lease.json --rpc-auth-lease-file /tmp/cmux/attach-rpc-lease.json --shell /bin/bash",
       waitForURL("http://127.0.0.1:7777/healthz", 200),
     );
 
@@ -123,7 +123,7 @@ async function buildFreestyleSnapshot(tag: string, daemonPath: string, skipCache
           name: "cmuxd-ws",
           mode: "service",
           exec: [
-            "/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-lease.json --shell /bin/bash",
+            "/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-pty-lease.json --rpc-auth-lease-file /tmp/cmux/attach-rpc-lease.json --shell /bin/bash",
           ],
           user: "root",
           enable: true,

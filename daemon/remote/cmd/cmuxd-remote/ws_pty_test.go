@@ -31,8 +31,8 @@ func TestServeWSRequiresExplicitLeaseFile(t *testing.T) {
 func TestWebSocketPTYHealthIsAvailableWhenLocked(t *testing.T) {
 	leasePath := filepath.Join(t.TempDir(), "lease.json")
 	server := httptest.NewServer(newWebSocketPTYHandler(wsPTYServerConfig{
-		AuthLeaseFile: leasePath,
-		Shell:         "/bin/sh",
+		PTYAuthLeaseFile: leasePath,
+		Shell:            "/bin/sh",
 	}, &bytes.Buffer{}))
 	defer server.Close()
 
@@ -56,8 +56,8 @@ func TestWebSocketPTYHealthIsAvailableWhenLocked(t *testing.T) {
 func TestWebSocketPTYRejectsMissingAndWrongLease(t *testing.T) {
 	leasePath := filepath.Join(t.TempDir(), "lease.json")
 	server := httptest.NewServer(newWebSocketPTYHandler(wsPTYServerConfig{
-		AuthLeaseFile: leasePath,
-		Shell:         "/bin/sh",
+		PTYAuthLeaseFile: leasePath,
+		Shell:            "/bin/sh",
 	}, &bytes.Buffer{}))
 	defer server.Close()
 
@@ -94,8 +94,8 @@ func TestWebSocketPTYRejectsMissingAndWrongLease(t *testing.T) {
 func TestWebSocketPTYRequiresSessionMatchAndConsumesLeaseOnce(t *testing.T) {
 	leasePath := filepath.Join(t.TempDir(), "lease.json")
 	server := httptest.NewServer(newWebSocketPTYHandler(wsPTYServerConfig{
-		AuthLeaseFile: leasePath,
-		Shell:         "/bin/sh",
+		PTYAuthLeaseFile: leasePath,
+		Shell:            "/bin/sh",
 	}, &bytes.Buffer{}))
 	defer server.Close()
 
@@ -138,8 +138,8 @@ func TestWebSocketPTYRequiresSessionMatchAndConsumesLeaseOnce(t *testing.T) {
 func TestWebSocketPTYRunsShellOverBinaryFrames(t *testing.T) {
 	leasePath := filepath.Join(t.TempDir(), "lease.json")
 	server := httptest.NewServer(newWebSocketPTYHandler(wsPTYServerConfig{
-		AuthLeaseFile: leasePath,
-		Shell:         "/bin/sh",
+		PTYAuthLeaseFile: leasePath,
+		Shell:            "/bin/sh",
 	}, &bytes.Buffer{}))
 	defer server.Close()
 
@@ -203,8 +203,8 @@ func TestWebSocketPTYRunsShellOverBinaryFrames(t *testing.T) {
 func TestWebSocketPTYSeedsUTF8LocaleAndTerminalEnv(t *testing.T) {
 	leasePath := filepath.Join(t.TempDir(), "lease.json")
 	server := httptest.NewServer(newWebSocketPTYHandler(wsPTYServerConfig{
-		AuthLeaseFile: leasePath,
-		Shell:         "/bin/sh",
+		PTYAuthLeaseFile: leasePath,
+		Shell:            "/bin/sh",
 	}, &bytes.Buffer{}))
 	defer server.Close()
 

@@ -61,6 +61,15 @@ struct VMWebSocketPtyEndpoint {
     let token: String
     let sessionId: String
     let expiresAtUnix: Int64
+    let daemon: VMWebSocketDaemonEndpoint?
+}
+
+struct VMWebSocketDaemonEndpoint {
+    let url: String
+    let headers: [String: String]
+    let token: String
+    let sessionId: String
+    let expiresAtUnix: Int64
 }
 
 enum VMAttachEndpoint {
@@ -163,13 +172,15 @@ actor VMClient {
             }
             let expiresAtUnix = (obj["expiresAtUnix"] as? Int64)
                 ?? Int64((obj["expiresAtUnix"] as? Double) ?? 0)
+            let daemon = try decodeWebSocketDaemonEndpoint(obj["daemon"])
             return .websocket(VMWebSocketPtyEndpoint(
                 transport: "websocket",
                 url: url,
                 headers: headers,
                 token: token,
                 sessionId: sessionId,
-                expiresAtUnix: expiresAtUnix
+                expiresAtUnix: expiresAtUnix,
+                daemon: daemon
             ))
         default:
             throw VMClientError.malformedResponse("attach-endpoint unknown transport: \(String(describing: transport))")
@@ -251,6 +262,30 @@ actor VMClient {
             throw VMClientError.malformedResponse("non-HTTP response")
         }
         return (data, http)
+    }
+
+    private func decodeWebSocketDaemonEndpoint(_ value: Any?) throws -> VMWebSocketDaemonEndpoint? {
+        guard let obj = value as? [String: Any] else { return nil }
+        guard let url = obj["url"] as? String,
+              let token = obj["token"] as? String,
+              let sessionId = obj["sessionId"] as? String else {
+            throw VMClientError.malformedResponse("attach-endpoint websocket daemon missing url/token/sessionId: \(obj)")
+        }
+        let rawHeaders = obj["headers"] as? [String: Any] ?? [:]
+        let headers = rawHeaders.reduce(into: [String: String]()) { result, pair in
+            if let headerValue = pair.value as? String {
+                result[pair.key] = headerValue
+            }
+        }
+        let expiresAtUnix = (obj["expiresAtUnix"] as? Int64)
+            ?? Int64((obj["expiresAtUnix"] as? Double) ?? 0)
+        return VMWebSocketDaemonEndpoint(
+            url: url,
+            headers: headers,
+            token: token,
+            sessionId: sessionId,
+            expiresAtUnix: expiresAtUnix
+        )
     }
 
     private func ensureOK(_ http: HTTPURLResponse, data: Data) throws {

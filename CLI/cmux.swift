@@ -4460,6 +4460,15 @@ struct CMUXCLI {
         let token: String
         let sessionId: String
         let expiresAtUnix: Int64
+        let daemon: VMDaemonWebSocketEndpoint?
+    }
+
+    private struct VMDaemonWebSocketEndpoint {
+        let url: String
+        let headers: [String: String]
+        let token: String
+        let sessionId: String
+        let expiresAtUnix: Int64
     }
 
     private struct VMPtyWebSocketConfig: Codable {
@@ -4613,22 +4622,27 @@ struct CMUXCLI {
         let initialSSHStartupCommand: String
         let remoteTerminalSSHStartupCommand: String
         if let remoteTerminalBootstrapScript, !remoteTerminalBootstrapScript.isEmpty {
-            let bootstrapSSHStartupCommand = try buildBootstrapSSHStartupCommand(
+            initialSSHStartupCommand = try buildBootstrapSSHStartupCommand(
                 options: sshOptions,
                 remoteBootstrapScript: remoteTerminalBootstrapScript,
                 shellFeatures: shellFeaturesValue,
                 remoteRelayPort: sshOptions.remoteRelayPort,
                 localCommand: combinedLocalCommand
             )
-            initialSSHStartupCommand = bootstrapSSHStartupCommand
-            remoteTerminalSSHStartupCommand = bootstrapSSHStartupCommand
+            remoteTerminalSSHStartupCommand = buildReusableBootstrapSSHStartupCommand(
+                options: sshOptions,
+                remoteBootstrapScript: remoteTerminalBootstrapScript,
+                shellFeatures: shellFeaturesValue,
+                remoteRelayPort: sshOptions.remoteRelayPort,
+                localCommand: combinedLocalCommand
+            )
         } else {
             initialSSHStartupCommand = try buildSSHStartupCommand(
                 sshCommand: startupInitialSSHCommand,
                 shellFeatures: "",
                 remoteRelayPort: sshOptions.remoteRelayPort
             )
-            remoteTerminalSSHStartupCommand = try buildSSHStartupCommand(
+            remoteTerminalSSHStartupCommand = buildReusableSSHStartupCommand(
                 sshCommand: startupRemoteTerminalSSHCommand,
                 shellFeatures: shellFeaturesValue,
                 remoteRelayPort: sshOptions.remoteRelayPort
@@ -4904,6 +4918,26 @@ struct CMUXCLI {
             localCommand: localCommand
         )
         return try buildSSHStartupCommand(
+            sshCommand: commandSnippet,
+            shellFeatures: shellFeatures,
+            remoteRelayPort: remoteRelayPort,
+            isShellSnippet: true
+        )
+    }
+
+    func buildReusableBootstrapSSHStartupCommand(
+        options: SSHCommandOptions,
+        remoteBootstrapScript: String,
+        shellFeatures: String,
+        remoteRelayPort: Int,
+        localCommand: String? = nil
+    ) -> String {
+        let commandSnippet = buildSSHBootstrapCommandSnippet(
+            options: options,
+            remoteBootstrapScript: remoteBootstrapScript,
+            localCommand: localCommand
+        )
+        return buildReusableSSHStartupCommand(
             sshCommand: commandSnippet,
             shellFeatures: shellFeatures,
             remoteRelayPort: remoteRelayPort,
@@ -5431,6 +5465,39 @@ struct CMUXCLI {
         remoteRelayPort: Int,
         isShellSnippet: Bool = false
     ) throws -> String {
+        let script = buildSSHStartupScriptBody(
+            sshCommand: sshCommand,
+            shellFeatures: shellFeatures,
+            remoteRelayPort: remoteRelayPort,
+            isShellSnippet: isShellSnippet
+        )
+        return try writeSSHStartupScript(script, remoteRelayPort: remoteRelayPort)
+    }
+
+    func buildReusableSSHStartupCommand(
+        sshCommand: String,
+        shellFeatures: String,
+        remoteRelayPort: Int,
+        isShellSnippet: Bool = false
+    ) -> String {
+        let script = buildSSHStartupScriptBody(
+            sshCommand: sshCommand,
+            shellFeatures: shellFeatures,
+            remoteRelayPort: remoteRelayPort,
+            isShellSnippet: isShellSnippet
+        )
+        return reusableShellStartupCommand(
+            scriptBody: script,
+            tempPrefix: "cmux-ssh-startup"
+        )
+    }
+
+    private func buildSSHStartupScriptBody(
+        sshCommand: String,
+        shellFeatures: String,
+        remoteRelayPort: Int,
+        isShellSnippet: Bool
+    ) -> String {
         let trimmedFeatures = shellFeatures.trimmingCharacters(in: .whitespacesAndNewlines)
         let shellFeaturesBootstrap: String = trimmedFeatures.isEmpty
             ? ""
@@ -5467,8 +5534,7 @@ struct CMUXCLI {
             "fi",
             "exit $cmux_ssh_status",
         ]
-        let script = scriptLines.joined(separator: "\n")
-        return try writeSSHStartupScript(script, remoteRelayPort: remoteRelayPort)
+        return scriptLines.joined(separator: "\n")
     }
 
     private func writeSSHStartupScript(_ scriptBody: String, remoteRelayPort: Int) throws -> String {
@@ -5480,6 +5546,30 @@ struct CMUXCLI {
         try script.write(to: scriptURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: scriptURL.path)
         return shellQuote(scriptURL.path)
+    }
+
+    private func reusableShellStartupCommand(
+        scriptBody: String,
+        tempPrefix: String
+    ) -> String {
+        let fullScript = "#!/bin/sh\n\(scriptBody)\n"
+        let encodedScript = Data(fullScript.utf8).base64EncodedString()
+        let encodedLiteral = shellQuote(encodedScript)
+        let wrapper = [
+            "cmux_tmp=$(mktemp \"${TMPDIR:-/tmp}/\(tempPrefix).XXXXXX\") || exit 1",
+            "cmux_cleanup() { rm -f -- \"$cmux_tmp\" 2>/dev/null || true; }",
+            "trap 'cmux_cleanup' EXIT HUP INT TERM",
+            "(printf %s \(encodedLiteral) | base64 -d 2>/dev/null || printf %s \(encodedLiteral) | base64 -D 2>/dev/null) > \"$cmux_tmp\" || exit 1",
+            "chmod 700 \"$cmux_tmp\" >/dev/null 2>&1 || true",
+            "/bin/sh \"$cmux_tmp\"",
+            "cmux_status=$?",
+            "trap - EXIT HUP INT TERM",
+            "cmux_cleanup",
+            "unset cmux_tmp cmux_status",
+            "unset -f cmux_cleanup 2>/dev/null || true",
+            "exit $cmux_status",
+        ].joined(separator: "\n")
+        return "/bin/sh -c \(shellQuote(wrapper))"
     }
 
     private func buildSSHSessionEndShellCommand(remoteRelayPort: Int) -> String {
@@ -5620,20 +5710,47 @@ struct CMUXCLI {
     }
 
     private func parseVMPtyWebSocketEndpoint(_ response: [String: Any]) throws -> VMPtyWebSocketEndpoint {
+        func parseHeaders(_ value: Any?) -> [String: String] {
+            guard let raw = value as? [String: Any] else { return [:] }
+            return raw.reduce(into: [String: String]()) { result, pair in
+                if let headerValue = pair.value as? String {
+                    result[pair.key] = headerValue
+                }
+            }
+        }
         guard let url = response["url"] as? String,
               let token = response["token"] as? String,
               let sessionId = response["session_id"] as? String else {
             throw CLIError(message: "vm.attach_info websocket endpoint missing url/token/session_id: \(response)")
         }
-        let headers = response["headers"] as? [String: String] ?? [:]
+        let headers = parseHeaders(response["headers"])
         let expiresAtUnix = (response["expires_at_unix"] as? Int64)
             ?? Int64((response["expires_at_unix"] as? Double) ?? 0)
+        let daemon: VMDaemonWebSocketEndpoint?
+        if let daemonResponse = response["daemon"] as? [String: Any],
+           let daemonURL = daemonResponse["url"] as? String,
+           let daemonToken = daemonResponse["token"] as? String,
+           let daemonSessionID = daemonResponse["session_id"] as? String {
+            let daemonHeaders = parseHeaders(daemonResponse["headers"])
+            let daemonExpiresAtUnix = (daemonResponse["expires_at_unix"] as? Int64)
+                ?? Int64((daemonResponse["expires_at_unix"] as? Double) ?? 0)
+            daemon = VMDaemonWebSocketEndpoint(
+                url: daemonURL,
+                headers: daemonHeaders,
+                token: daemonToken,
+                sessionId: daemonSessionID,
+                expiresAtUnix: daemonExpiresAtUnix
+            )
+        } else {
+            daemon = nil
+        }
         return VMPtyWebSocketEndpoint(
             url: url,
             headers: headers,
             token: token,
             sessionId: sessionId,
-            expiresAtUnix: expiresAtUnix
+            expiresAtUnix: expiresAtUnix,
+            daemon: daemon
         )
     }
 
@@ -5673,14 +5790,22 @@ struct CMUXCLI {
 
         let target = URL(string: endpoint.url)?.host ?? "websocket"
         let configureStartedAt = Date()
-        let configuredPayload = try client.sendV2(method: "workspace.remote.configure", params: [
+        var configureParams: [String: Any] = [
             "workspace_id": workspaceId,
             "destination": target,
             "transport": "websocket",
-            "auto_connect": false,
+            "auto_connect": endpoint.daemon != nil,
             "terminal_startup_command": splitStartupCommand,
             "skip_daemon_bootstrap": true,
-        ])
+        ]
+        if let daemon = endpoint.daemon {
+            configureParams["daemon_websocket_url"] = daemon.url
+            configureParams["daemon_websocket_headers"] = daemon.headers
+            configureParams["daemon_websocket_token"] = daemon.token
+            configureParams["daemon_websocket_session_id"] = daemon.sessionId
+            configureParams["daemon_websocket_expires_at_unix"] = daemon.expiresAtUnix
+        }
+        let configuredPayload = try client.sendV2(method: "workspace.remote.configure", params: configureParams)
         logVMTiming(
             "workspace.remote.configure",
             vmID: id,

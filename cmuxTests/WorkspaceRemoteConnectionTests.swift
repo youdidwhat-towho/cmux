@@ -256,6 +256,113 @@ final class WorkspaceRemoteConnectionTests: XCTestCase {
         XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "ja_JP.UTF-8||")
     }
 
+    func testDaemonSocketForwardArgumentsTargetBakedVMSocket() {
+        let configuration = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: 2222,
+            identityFile: "/Users/test/.ssh/id_ed25519",
+            sshOptions: [
+                "ControlPath /tmp/cmux-ssh-%C",
+                "StrictHostKeyChecking=accept-new",
+            ],
+            localProxyPort: nil,
+            relayPort: nil,
+            relayID: nil,
+            relayToken: nil,
+            localSocketPath: nil,
+            terminalStartupCommand: nil,
+            skipDaemonBootstrap: true
+        )
+
+        let arguments = WorkspaceRemoteSSHBatchCommandBuilder.daemonSocketForwardArguments(
+            configuration: configuration,
+            localPort: 64123,
+            remoteSocketPath: "/run/cmuxd-remote.sock"
+        )
+
+        XCTAssertEqual(Array(arguments.prefix(4)), ["-N", "-T", "-S", "none"])
+        XCTAssertTrue(arguments.contains("-p"))
+        XCTAssertTrue(arguments.contains("2222"))
+        XCTAssertTrue(arguments.contains("-i"))
+        XCTAssertTrue(arguments.contains("/Users/test/.ssh/id_ed25519"))
+        XCTAssertTrue(arguments.contains("127.0.0.1:64123:/run/cmuxd-remote.sock"))
+        XCTAssertEqual(arguments.last, "cmux-macmini")
+    }
+
+    func testProxyBrokerTransportKeySeparatesVMBakedSSHFromStandardSSH() {
+        let standard = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: 2222,
+            identityFile: "/Users/test/.ssh/id_ed25519",
+            sshOptions: ["ControlPath /tmp/cmux-ssh-%C"],
+            localProxyPort: nil,
+            relayPort: 64099,
+            relayID: "relay-a",
+            relayToken: String(repeating: "a", count: 64),
+            localSocketPath: "/tmp/cmux.sock",
+            terminalStartupCommand: "ssh cmux-macmini"
+        )
+        let vmSSH = WorkspaceRemoteConfiguration(
+            destination: "cmux-macmini",
+            port: 2222,
+            identityFile: "/Users/test/.ssh/id_ed25519",
+            sshOptions: ["ControlPath /tmp/cmux-ssh-%C"],
+            localProxyPort: nil,
+            relayPort: 64099,
+            relayID: "relay-a",
+            relayToken: String(repeating: "a", count: 64),
+            localSocketPath: "/tmp/cmux.sock",
+            terminalStartupCommand: "ssh cmux-macmini",
+            skipDaemonBootstrap: true
+        )
+        let vmWebSocket = WorkspaceRemoteConfiguration(
+            transport: .websocket,
+            destination: "vm:abcd1234",
+            port: nil,
+            identityFile: nil,
+            sshOptions: [],
+            localProxyPort: nil,
+            relayPort: nil,
+            relayID: nil,
+            relayToken: nil,
+            localSocketPath: nil,
+            terminalStartupCommand: "cmux vm-pty-attach --id abcd1234",
+            daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint(
+                url: "wss://sandbox.example/rpc",
+                headers: ["e2b-traffic-access-token": "header-a"],
+                token: "token-a",
+                sessionId: "sess-a",
+                expiresAtUnix: 1_800_000_000
+            ),
+            skipDaemonBootstrap: true
+        )
+        let vmWebSocketRefreshed = WorkspaceRemoteConfiguration(
+            transport: .websocket,
+            destination: "vm:abcd1234",
+            port: nil,
+            identityFile: nil,
+            sshOptions: [],
+            localProxyPort: nil,
+            relayPort: nil,
+            relayID: nil,
+            relayToken: nil,
+            localSocketPath: nil,
+            terminalStartupCommand: "cmux vm-pty-attach --id abcd1234",
+            daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint(
+                url: "wss://sandbox.example/rpc",
+                headers: ["e2b-traffic-access-token": "header-b"],
+                token: "token-b",
+                sessionId: "sess-b",
+                expiresAtUnix: 1_800_000_100
+            ),
+            skipDaemonBootstrap: true
+        )
+
+        XCTAssertNotEqual(standard.proxyBrokerTransportKey, vmSSH.proxyBrokerTransportKey)
+        XCTAssertNotEqual(vmSSH.proxyBrokerTransportKey, vmWebSocket.proxyBrokerTransportKey)
+        XCTAssertNotEqual(vmWebSocket.proxyBrokerTransportKey, vmWebSocketRefreshed.proxyBrokerTransportKey)
+    }
+
     func testReverseRelayStartupFailureDetailCapturesImmediateForwardingFailure() throws {
         let process = Process()
         let stderrPipe = Pipe()

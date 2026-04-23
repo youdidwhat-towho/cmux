@@ -42,6 +42,13 @@ export type WebSocketPtyEndpoint = {
   token: string;
   sessionId: string;
   expiresAtUnix: number;
+  daemon?: {
+    url: string;
+    headers: Record<string, string>;
+    token: string;
+    sessionId: string;
+    expiresAtUnix: number;
+  };
 };
 
 export type AttachEndpoint = SSHEndpoint | WebSocketPtyEndpoint;

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -23,12 +24,13 @@ import (
 )
 
 type wsPTYServerConfig struct {
-	ListenAddr    string
-	AuthLeaseFile string
-	Shell         string
+	ListenAddr       string
+	PTYAuthLeaseFile string
+	RPCAuthLeaseFile string
+	Shell            string
 }
 
-type wsPTYLease struct {
+type wsLease struct {
 	Version       int    `json:"version"`
 	TokenSHA256   string `json:"token_sha256"`
 	ExpiresAtUnix int64  `json:"expires_at_unix"`
@@ -36,7 +38,7 @@ type wsPTYLease struct {
 	SingleUse     bool   `json:"single_use"`
 }
 
-type wsPTYAuthFrame struct {
+type wsAuthFrame struct {
 	Type         string `json:"type"`
 	Token        string `json:"token"`
 	SessionID    string `json:"session_id,omitempty"`
@@ -57,6 +59,9 @@ type wsPTYEventFrame struct {
 	Message   string `json:"message,omitempty"`
 }
 
+type wsPTYLease = wsLease
+type wsPTYAuthFrame = wsAuthFrame
+
 var (
 	errWSLeaseMissing   = errors.New("attach lease missing")
 	errWSLeaseExpired   = errors.New("attach lease expired")
@@ -69,7 +74,7 @@ func runWebSocketPTYServer(ctx context.Context, cfg wsPTYServerConfig, stderr io
 	if strings.TrimSpace(addr) == "" {
 		addr = "127.0.0.1:7777"
 	}
-	if strings.TrimSpace(cfg.AuthLeaseFile) == "" {
+	if strings.TrimSpace(cfg.PTYAuthLeaseFile) == "" {
 		return errors.New("auth lease file is required")
 	}
 
@@ -101,7 +106,7 @@ func runWebSocketPTYServer(ctx context.Context, cfg wsPTYServerConfig, stderr io
 func newWebSocketPTYHandler(cfg wsPTYServerConfig, stderr io.Writer) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		_, statErr := os.Stat(cfg.AuthLeaseFile)
+		_, statErr := os.Stat(cfg.PTYAuthLeaseFile)
 		locked := statErr != nil
 		w.Header().Set("content-type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -111,6 +116,9 @@ func newWebSocketPTYHandler(cfg wsPTYServerConfig, stderr io.Writer) http.Handle
 	})
 	mux.HandleFunc("/terminal", func(w http.ResponseWriter, r *http.Request) {
 		handleWebSocketPTY(w, r, cfg, stderr)
+	})
+	mux.HandleFunc("/rpc", func(w http.ResponseWriter, r *http.Request) {
+		handleWebSocketRPC(w, r, cfg)
 	})
 	return mux
 }
@@ -137,7 +145,7 @@ func handleWebSocketPTY(w http.ResponseWriter, r *http.Request, cfg wsPTYServerC
 		return
 	}
 
-	var auth wsPTYAuthFrame
+	var auth wsAuthFrame
 	if err := json.Unmarshal(payload, &auth); err != nil || auth.Type != "auth" || auth.Token == "" {
 		_ = conn.Close(websocket.StatusPolicyViolation, "invalid auth")
 		return
@@ -152,7 +160,7 @@ func handleWebSocketPTY(w http.ResponseWriter, r *http.Request, cfg wsPTYServerC
 		auth.SessionID = "default"
 	}
 
-	if err := consumeWebSocketPTYLease(cfg.AuthLeaseFile, auth); err != nil {
+	if err := consumeWebSocketLease(cfg.PTYAuthLeaseFile, auth); err != nil {
 		if errors.Is(err, errWSLeaseMissing) {
 			_ = conn.Close(websocket.StatusPolicyViolation, "no active lease")
 			return
@@ -201,7 +209,7 @@ func handleWebSocketPTY(w http.ResponseWriter, r *http.Request, cfg wsPTYServerC
 	_ = conn.Close(websocket.StatusNormalClosure, "closed")
 }
 
-func consumeWebSocketPTYLease(path string, auth wsPTYAuthFrame) error {
+func consumeWebSocketLease(path string, auth wsAuthFrame) error {
 	wsLeaseMu.Lock()
 	defer wsLeaseMu.Unlock()
 
@@ -212,7 +220,7 @@ func consumeWebSocketPTYLease(path string, auth wsPTYAuthFrame) error {
 		}
 		return err
 	}
-	var lease wsPTYLease
+	var lease wsLease
 	if err := json.Unmarshal(data, &lease); err != nil {
 		return errWSLeaseForbidden
 	}
@@ -241,6 +249,139 @@ func consumeWebSocketPTYLease(path string, auth wsPTYAuthFrame) error {
 		}
 	}
 	return nil
+}
+
+type wsRPCFrameWriter struct {
+	conn    *websocket.Conn
+	writeMu *sync.Mutex
+	ctx     context.Context
+}
+
+func (w *wsRPCFrameWriter) writeResponse(resp rpcResponse) error {
+	return w.writeJSONFrame(resp)
+}
+
+func (w *wsRPCFrameWriter) writeEvent(event rpcEvent) error {
+	return w.writeJSONFrame(event)
+}
+
+func (w *wsRPCFrameWriter) writeJSONFrame(payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+	return w.conn.Write(w.ctx, websocket.MessageText, data)
+}
+
+func handleWebSocketRPC(w http.ResponseWriter, r *http.Request, cfg wsPTYServerConfig) {
+	if strings.TrimSpace(cfg.RPCAuthLeaseFile) == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		CompressionMode: websocket.CompressionDisabled,
+	})
+	if err != nil {
+		return
+	}
+	defer conn.Close(websocket.StatusInternalError, "closed")
+	conn.SetReadLimit(maxRPCFrameBytes)
+
+	authCtx, cancelAuth := context.WithTimeout(r.Context(), 5*time.Second)
+	msgType, payload, err := conn.Read(authCtx)
+	cancelAuth()
+	if err != nil {
+		_ = conn.Close(websocket.StatusPolicyViolation, "auth required")
+		return
+	}
+	if msgType != websocket.MessageText {
+		_ = conn.Close(websocket.StatusUnsupportedData, "auth must be text JSON")
+		return
+	}
+
+	var auth wsAuthFrame
+	if err := json.Unmarshal(payload, &auth); err != nil || auth.Type != "auth" || auth.Token == "" {
+		_ = conn.Close(websocket.StatusPolicyViolation, "invalid auth")
+		return
+	}
+	if auth.SessionID == "" {
+		auth.SessionID = "default"
+	}
+
+	if err := consumeWebSocketLease(cfg.RPCAuthLeaseFile, auth); err != nil {
+		if errors.Is(err, errWSLeaseMissing) {
+			_ = conn.Close(websocket.StatusPolicyViolation, "no active lease")
+			return
+		}
+		if errors.Is(err, errWSLeaseExpired) {
+			_ = conn.Close(websocket.StatusPolicyViolation, "lease expired")
+			return
+		}
+		_ = conn.Close(websocket.StatusPolicyViolation, "lease rejected")
+		return
+	}
+
+	writeMu := &sync.Mutex{}
+	if err := writeWSJSON(r.Context(), conn, writeMu, wsPTYEventFrame{
+		Type:      "ready",
+		SessionID: auth.SessionID,
+	}); err != nil {
+		return
+	}
+
+	server := &rpcServer{
+		nextStreamID:  1,
+		nextSessionID: 1,
+		streams:       map[string]*streamState{},
+		sessions:      map[string]*sessionState{},
+		frameWriter: &wsRPCFrameWriter{
+			conn:    conn,
+			writeMu: writeMu,
+			ctx:     r.Context(),
+		},
+	}
+	defer server.closeAll()
+
+	for {
+		msgType, payload, err := conn.Read(r.Context())
+		if err != nil {
+			_ = conn.Close(websocket.StatusNormalClosure, "closed")
+			return
+		}
+		if msgType != websocket.MessageText {
+			_ = conn.Close(websocket.StatusUnsupportedData, "rpc frames must be text JSON")
+			return
+		}
+
+		payload = bytes.TrimSpace(payload)
+		if len(payload) == 0 {
+			continue
+		}
+
+		var req rpcRequest
+		if err := json.Unmarshal(payload, &req); err != nil {
+			if err := server.frameWriter.writeResponse(rpcResponse{
+				OK: false,
+				Error: &rpcError{
+					Code:    "invalid_request",
+					Message: "invalid JSON request",
+				},
+			}); err != nil {
+				_ = conn.Close(websocket.StatusInternalError, "write failed")
+				return
+			}
+			continue
+		}
+
+		resp := server.handleRequest(req)
+		if err := server.frameWriter.writeResponse(resp); err != nil {
+			_ = conn.Close(websocket.StatusInternalError, "write failed")
+			return
+		}
+	}
 }
 
 func defaultWebSocketPTYEnv(shellPath string) []string {

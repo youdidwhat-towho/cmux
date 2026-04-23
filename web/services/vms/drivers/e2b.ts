@@ -15,8 +15,10 @@ import { withVmSpan } from "../telemetry";
 
 export const DEFAULT_E2B_WS_TEMPLATE = "cmuxd-ws:sudofix";
 const CMUXD_WS_PORT = 7777;
-const CMUXD_WS_LEASE_PATH = "/tmp/cmux/attach-lease.json";
-const CMUXD_WS_LEASE_TTL_SECONDS = 5 * 60;
+const CMUXD_WS_PTY_LEASE_PATH = "/tmp/cmux/attach-pty-lease.json";
+const CMUXD_WS_RPC_LEASE_PATH = "/tmp/cmux/attach-rpc-lease.json";
+const CMUXD_WS_PTY_LEASE_TTL_SECONDS = 5 * 60;
+const CMUXD_WS_RPC_LEASE_TTL_SECONDS = 12 * 60 * 60;
 const DEFAULT_SANDBOX_ENVS = { LANG: "C.UTF-8" };
 
 // Default cmuxd WebSocket PTY template. Built by web/scripts/build-cloud-vm-images.ts.
@@ -197,34 +199,37 @@ export class E2BProvider implements VMProvider {
           if (!trafficAccessToken) {
             throw new Error("sandbox is missing a traffic access token; recreate it with the cmuxd WebSocket image");
           }
-          const token = `cmux-e2b-${randomBytes(32).toString("hex")}`;
-          const sessionId = randomBytes(16).toString("hex");
-          const expiresAtUnix = Math.floor(Date.now() / 1000) + CMUXD_WS_LEASE_TTL_SECONDS;
-          const lease = {
-            version: 1,
-            token_sha256: createHash("sha256").update(token).digest("hex"),
-            expires_at_unix: expiresAtUnix,
-            session_id: sessionId,
-            single_use: true,
-          };
-          const encoded = Buffer.from(JSON.stringify(lease)).toString("base64");
+          const pty = makeLease("pty", true, CMUXD_WS_PTY_LEASE_TTL_SECONDS);
+          const daemon = makeLease("rpc", false, CMUXD_WS_RPC_LEASE_TTL_SECONDS);
+          const encodedPTY = Buffer.from(JSON.stringify(pty.lease)).toString("base64");
+          const encodedDaemon = Buffer.from(JSON.stringify(daemon.lease)).toString("base64");
           await sandbox.commands.run(
             [
               "install -d -m 0700 /tmp/cmux",
-              `printf '%s' '${encoded}' | base64 -d > ${shellQuote(CMUXD_WS_LEASE_PATH)}`,
-              `chmod 600 ${shellQuote(CMUXD_WS_LEASE_PATH)}`,
+              `printf '%s' '${encodedPTY}' | base64 -d > ${shellQuote(CMUXD_WS_PTY_LEASE_PATH)}`,
+              `chmod 600 ${shellQuote(CMUXD_WS_PTY_LEASE_PATH)}`,
+              `printf '%s' '${encodedDaemon}' | base64 -d > ${shellQuote(CMUXD_WS_RPC_LEASE_PATH)}`,
+              `chmod 600 ${shellQuote(CMUXD_WS_RPC_LEASE_PATH)}`,
             ].join(" && "),
             { timeoutMs: 30_000 },
           );
           span.setAttribute("cmux.vm.attach.transport", "websocket");
-          span.setAttribute("cmux.vm.attach.expires_at_unix", expiresAtUnix);
+          span.setAttribute("cmux.vm.attach.expires_at_unix", pty.expiresAtUnix);
+          span.setAttribute("cmux.vm.attach.daemon_expires_at_unix", daemon.expiresAtUnix);
           return {
             transport: "websocket",
             url: `wss://${sandbox.getHost(CMUXD_WS_PORT)}/terminal`,
             headers: { "e2b-traffic-access-token": trafficAccessToken },
-            token,
-            sessionId,
-            expiresAtUnix,
+            token: pty.token,
+            sessionId: pty.sessionId,
+            expiresAtUnix: pty.expiresAtUnix,
+            daemon: {
+              url: `wss://${sandbox.getHost(CMUXD_WS_PORT)}/rpc`,
+              headers: { "e2b-traffic-access-token": trafficAccessToken },
+              token: daemon.token,
+              sessionId: daemon.sessionId,
+              expiresAtUnix: daemon.expiresAtUnix,
+            },
           };
         } catch (err) {
           throw new ProviderError("e2b", `openWebSocketPty(${vmId}) failed`, err);
@@ -242,4 +247,22 @@ export class E2BProvider implements VMProvider {
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+function makeLease(label: string, singleUse: boolean, ttlSeconds: number) {
+  const token = `cmux-e2b-${label}-${randomBytes(32).toString("hex")}`;
+  const sessionId = randomBytes(16).toString("hex");
+  const expiresAtUnix = Math.floor(Date.now() / 1000) + ttlSeconds;
+  return {
+    token,
+    sessionId,
+    expiresAtUnix,
+    lease: {
+      version: 1,
+      token_sha256: createHash("sha256").update(token).digest("hex"),
+      expires_at_unix: expiresAtUnix,
+      session_id: sessionId,
+      single_use: singleUse,
+    },
+  };
 }
