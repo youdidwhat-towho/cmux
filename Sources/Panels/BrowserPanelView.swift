@@ -966,7 +966,6 @@ struct BrowserPanelView: View {
             applyPendingAddressBarFocusRequestIfNeeded()
             autoFocusOmnibarIfBlank()
         } else {
-            panel.invalidateWebContentFocusRestoreAttempts()
             hideSuggestions()
             setAddressBarFocused(false, reason: "panelFocus.onChange.unfocused")
             // Surface switches in split layouts can keep the browser visible, so

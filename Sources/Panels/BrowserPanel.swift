@@ -1901,358 +1901,7 @@ final class BrowserPanel: Panel, ObservableObject {
     /// Used to keep omnibar text-field focus from being immediately stolen by panel focus.
     private var suppressWebViewFocusUntil: Date?
     private var suppressWebViewFocusForAddressBar: Bool = false
-    private var webContentFocusRestoreGeneration: UInt64 = 0
-    private var lastCapturedWebContentFocusStateJSON: String?
-    private var pendingBrowserFindPreflightFocusStateJSON: String?
     private let blankURLString = "about:blank"
-    private static let webContentFocusCaptureScript = """
-    (() => {
-      try {
-        const result = (status, state) => {
-          let stateJSON = null;
-          if (state && typeof state.id === "string" && state.id) {
-            try {
-              stateJSON = JSON.stringify(state);
-            } catch (_) {
-              stateJSON = null;
-            }
-          }
-          return { status, stateJSON };
-        };
-
-        const syncState = (state) => {
-          window.__cmuxAddressBarFocusState = state;
-          try {
-            if (window.top && window.top !== window) {
-              window.top.postMessage({ cmuxAddressBarFocusState: state }, "*");
-            } else if (window.top) {
-              window.top.__cmuxAddressBarFocusState = state;
-            }
-          } catch (_) {}
-        };
-
-        const isEditable = (el) => {
-          if (!el) return false;
-          const tag = (el.tagName || "").toLowerCase();
-          const type = (el.type || "").toLowerCase();
-          return !!el.isContentEditable || tag === "textarea" || (tag === "input" && type !== "hidden");
-        };
-
-        const readState = () => {
-          let state = window.__cmuxAddressBarFocusState;
-          try {
-            if ((!state || typeof state.id !== "string" || !state.id) &&
-                window.top && window.top.__cmuxAddressBarFocusState) {
-              state = window.top.__cmuxAddressBarFocusState;
-            }
-          } catch (_) {}
-          return state;
-        };
-
-        const storedTargetExists = () => {
-          const state = readState();
-          if (!state || typeof state.id !== "string" || !state.id) return false;
-          const selector = '[data-cmux-addressbar-focus-id="' + state.id + '"]';
-          const stateElementId = typeof state.elementId === "string" && state.elementId ? state.elementId : "";
-          const findTarget = (doc) => {
-            if (!doc) return null;
-            const direct = doc.querySelector(selector);
-            if (direct && direct.isConnected && isEditable(direct)) return direct;
-            if (stateElementId) {
-              const byElementId = doc.getElementById(stateElementId);
-              if (byElementId && byElementId.isConnected && isEditable(byElementId)) return byElementId;
-            }
-            const legacyByStateId = doc.getElementById(state.id);
-            if (legacyByStateId && legacyByStateId.isConnected && isEditable(legacyByStateId)) {
-              return legacyByStateId;
-            }
-            const frames = doc.querySelectorAll("iframe,frame");
-            for (let i = 0; i < frames.length; i += 1) {
-              try {
-                const nested = findTarget(frames[i].contentDocument);
-                if (nested) return nested;
-              } catch (_) {}
-            }
-            return null;
-          };
-          return !!findTarget(document);
-        };
-
-        const active = document.activeElement;
-        if (!active) {
-          const state = readState();
-          if (storedTargetExists()) return result("retained:none", state);
-          syncState(null);
-          return result("cleared:none", null);
-        }
-
-        if (!isEditable(active)) {
-          const state = readState();
-          if (storedTargetExists()) return result("retained:noneditable", state);
-          syncState(null);
-          return result("cleared:noneditable", null);
-        }
-
-        let id = active.getAttribute("data-cmux-addressbar-focus-id");
-        if (!id) {
-          id = "cmux-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-          active.setAttribute("data-cmux-addressbar-focus-id", id);
-        }
-
-        const elementId = typeof active.id === "string" && active.id ? active.id : null;
-        const state = { id, elementId, selectionStart: null, selectionEnd: null };
-        if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
-          state.selectionStart = active.selectionStart;
-          state.selectionEnd = active.selectionEnd;
-        }
-        syncState(state);
-        return result("captured:" + id, state);
-      } catch (_) {
-        return { status: "error", stateJSON: null };
-      }
-    })();
-    """
-    private static let webContentFocusTrackingBootstrapScript = """
-    (() => {
-      try {
-        if (window.__cmuxAddressBarFocusTrackerInstalled) return true;
-        window.__cmuxAddressBarFocusTrackerInstalled = true;
-
-        const syncState = (state) => {
-          window.__cmuxAddressBarFocusState = state;
-          try {
-            if (window.top && window.top !== window) {
-              window.top.postMessage({ cmuxAddressBarFocusState: state }, "*");
-            } else if (window.top) {
-              window.top.__cmuxAddressBarFocusState = state;
-            }
-          } catch (_) {}
-        };
-
-        if (window.top === window && !window.__cmuxAddressBarFocusMessageBridgeInstalled) {
-          window.__cmuxAddressBarFocusMessageBridgeInstalled = true;
-          window.addEventListener("message", (ev) => {
-            try {
-              const data = ev ? ev.data : null;
-              if (!data || !Object.prototype.hasOwnProperty.call(data, "cmuxAddressBarFocusState")) return;
-              window.__cmuxAddressBarFocusState = data.cmuxAddressBarFocusState || null;
-            } catch (_) {}
-          }, true);
-        }
-
-        const isEditable = (el) => {
-          if (!el) return false;
-          const tag = (el.tagName || "").toLowerCase();
-          const type = (el.type || "").toLowerCase();
-          return !!el.isContentEditable || tag === "textarea" || (tag === "input" && type !== "hidden");
-        };
-
-        const ensureFocusId = (el) => {
-          let id = el.getAttribute("data-cmux-addressbar-focus-id");
-          if (!id) {
-            id = "cmux-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-            el.setAttribute("data-cmux-addressbar-focus-id", id);
-          }
-          return id;
-        };
-
-        const snapshot = (el) => {
-          if (!isEditable(el)) {
-            return;
-          }
-          const state = {
-            id: ensureFocusId(el),
-            elementId: typeof el.id === "string" && el.id ? el.id : null,
-            selectionStart: null,
-            selectionEnd: null
-          };
-          if (typeof el.selectionStart === "number" && typeof el.selectionEnd === "number") {
-            state.selectionStart = el.selectionStart;
-            state.selectionEnd = el.selectionEnd;
-          }
-          syncState(state);
-        };
-
-        document.addEventListener("focusin", (ev) => {
-          snapshot(ev && ev.target ? ev.target : document.activeElement);
-        }, true);
-        document.addEventListener("selectionchange", () => {
-          snapshot(document.activeElement);
-        }, true);
-        document.addEventListener("input", () => {
-          snapshot(document.activeElement);
-        }, true);
-        document.addEventListener("mousedown", (ev) => {
-          const target = ev && ev.target ? ev.target : null;
-          if (!isEditable(target)) {
-            syncState(null);
-          }
-        }, true);
-        window.addEventListener("beforeunload", () => {
-          syncState(null);
-        }, true);
-
-        snapshot(document.activeElement);
-        return true;
-      } catch (_) {
-        return false;
-      }
-    })();
-    """
-    private static func webContentFocusRestoreScript(
-        fallbackStateJSON: String?,
-        returnPayload: Bool = false
-    ) -> String {
-        let fallbackStateLiteral = fallbackStateJSON ?? "null"
-        let returnPayloadLiteral = returnPayload ? "true" : "false"
-        return """
-    (() => {
-      try {
-        const nativeFallbackState = \(fallbackStateLiteral);
-        const shouldReturnPayload = \(returnPayloadLiteral);
-        const stateIsValid = (state) => !!state && typeof state.id === "string" && !!state.id;
-        const response = (status, target = null) => {
-          if (!shouldReturnPayload) {
-            return status;
-          }
-          let selectionStart = -1;
-          let selectionEnd = -1;
-          if (target) {
-            try {
-              if (typeof target.selectionStart === "number") selectionStart = target.selectionStart;
-              if (typeof target.selectionEnd === "number") selectionEnd = target.selectionEnd;
-            } catch (_) {}
-          }
-          return { status, selectionStart, selectionEnd };
-        };
-        const syncState = (state) => {
-          window.__cmuxAddressBarFocusState = state;
-          try {
-            if (window.top && window.top !== window) {
-              window.top.postMessage({ cmuxAddressBarFocusState: state }, "*");
-            } else if (window.top) {
-              window.top.__cmuxAddressBarFocusState = state;
-            }
-          } catch (_) {}
-        };
-
-        const readState = () => {
-          if (stateIsValid(nativeFallbackState)) {
-            syncState(nativeFallbackState);
-            return nativeFallbackState;
-          }
-          let state = window.__cmuxAddressBarFocusState;
-          try {
-            if (stateIsValid(state)) {
-              return state;
-            }
-            if (window.top && stateIsValid(window.top.__cmuxAddressBarFocusState)) {
-              return window.top.__cmuxAddressBarFocusState;
-            }
-          } catch (_) {}
-          return stateIsValid(state) ? state : null;
-        };
-
-        const clearState = () => {
-          window.__cmuxAddressBarFocusState = null;
-          try {
-            if (window.top && window.top !== window) {
-              window.top.postMessage({ cmuxAddressBarFocusState: null }, "*");
-            } else if (window.top) {
-              window.top.__cmuxAddressBarFocusState = null;
-            }
-          } catch (_) {}
-        };
-
-        const state = readState();
-        if (!state || typeof state.id !== "string" || !state.id) {
-          return response("no_state");
-        }
-
-        const selector = '[data-cmux-addressbar-focus-id="' + state.id + '"]';
-        const stateElementId = typeof state.elementId === "string" && state.elementId ? state.elementId : "";
-        const isEditable = (el) => {
-          if (!el) return false;
-          const tag = (el.tagName || "").toLowerCase();
-          const type = (el.type || "").toLowerCase();
-          return !!el.isContentEditable || tag === "textarea" || (tag === "input" && type !== "hidden");
-        };
-        const findTarget = (doc) => {
-          if (!doc) return null;
-          const direct = doc.querySelector(selector);
-          if (direct && direct.isConnected && isEditable(direct)) return direct;
-          if (stateElementId) {
-            const byElementId = doc.getElementById(stateElementId);
-            if (byElementId && byElementId.isConnected && isEditable(byElementId)) return byElementId;
-          }
-          const legacyByStateId = doc.getElementById(state.id);
-          if (legacyByStateId && legacyByStateId.isConnected && isEditable(legacyByStateId)) {
-            return legacyByStateId;
-          }
-          const frames = doc.querySelectorAll("iframe,frame");
-          for (let i = 0; i < frames.length; i += 1) {
-            const frame = frames[i];
-            try {
-              const childDoc = frame.contentDocument;
-              if (!childDoc) continue;
-              const nested = findTarget(childDoc);
-              if (nested) return nested;
-            } catch (_) {}
-          }
-          return null;
-        };
-
-        const target = findTarget(document);
-        if (!target) {
-          clearState();
-          return response("missing_target");
-        }
-
-        try {
-          target.focus({ preventScroll: true });
-        } catch (_) {
-          try { target.focus(); } catch (_) {}
-        }
-
-        let focused = false;
-        try {
-          focused =
-            target === target.ownerDocument.activeElement ||
-            (typeof target.matches === "function" && target.matches(":focus"));
-        } catch (_) {}
-        if (!focused) {
-          return response("not_focused", target);
-        }
-
-        if (
-          typeof state.selectionStart === "number" &&
-          typeof state.selectionEnd === "number" &&
-          typeof target.setSelectionRange === "function"
-        ) {
-          try {
-            target.setSelectionRange(state.selectionStart, state.selectionEnd);
-          } catch (_) {}
-        }
-        return response("restored", target);
-      } catch (_) {
-        return response("error");
-      }
-    })();
-    """
-    }
-#if DEBUG
-    static var webContentFocusRestoreScriptForTesting: String {
-        webContentFocusRestoreScript(fallbackStateJSON: nil)
-    }
-
-    var debugLastCapturedWebContentFocusStateJSON: String? {
-        lastCapturedWebContentFocusStateJSON
-    }
-
-    var debugPendingBrowserFindPreflightFocusStateJSON: String? {
-        pendingBrowserFindPreflightFocusStateJSON
-    }
-#endif
     /// Published URL being displayed
     @Published private(set) var currentURL: URL?
 
@@ -2937,17 +2586,6 @@ final class BrowserPanel: Panel, ObservableObject {
                 forMainFrameOnly: true
             )
         )
-        // Track the last editable focused element continuously so browser chrome
-        // exit can restore page input focus after native first-responder handoff.
-        // Main frame only so CAPTCHA frames do not observe cmux focus globals.
-        configuration.userContentController.addUserScript(
-            WKUserScript(
-                source: Self.webContentFocusTrackingBootstrapScript,
-                injectionTime: .atDocumentStart,
-                forMainFrameOnly: true,
-                in: .page
-            )
-        )
         // WebAuthn can originate from same-origin child frames. The native
         // bridge rejects first-time authorization requests from cross-origin
         // subframes before touching the shared browser authorization state.
@@ -2981,22 +2619,6 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.onContextMenuOpenLinkInNewTab = { [weak self] url in
             self?.openLinkInNewTab(url: url)
         }
-        webView.onBrowserFindCommandPreflight = { [weak self, weak webView] in
-            guard let self,
-                  let webView,
-                  self.isCurrentWebView(webView) else { return }
-            self.captureWebContentFocusSnapshotIfNeeded(reason: "browserFindPreflight")
-        }
-        webView.onRestoredWebContentNativeKeyPreflight = { [weak self, weak webView] in
-            guard let self,
-                  let webView,
-                  self.isCurrentWebView(webView),
-                  webView.window != nil,
-                  !webView.isHiddenOrHasHiddenAncestor else {
-                return false
-            }
-            return self.restoreStoredWebContentFocusSynchronouslyIfNeeded(in: webView)
-        }
         configureNavigationDelegateCallbacks()
         webView.navigationDelegate = navigationDelegate
         webView.uiDelegate = uiDelegate
@@ -3015,9 +2637,6 @@ final class BrowserPanel: Panel, ObservableObject {
         navigationDelegate.didStartNavigation = { [weak self] webView in
             Task { @MainActor [weak self] in
                 guard let self, self.isCurrentWebView(webView, instanceID: boundWebViewInstanceID) else { return }
-                self.lastCapturedWebContentFocusStateJSON = nil
-                self.pendingBrowserFindPreflightFocusStateJSON = nil
-                (webView as? CmuxWebView)?.disarmRestoredWebContentNativeKeyPreflight(reason: "navigationStart")
             }
         }
         navigationDelegate.didFinish = { [weak self] webView in
@@ -4548,7 +4167,6 @@ extension BrowserPanel {
         clearOmnibarAutofocusSuppression(reason: "reset")
         suppressWebViewFocusUntil = nil
         endSuppressWebViewFocusForAddressBar()
-        invalidateWebContentFocusRestoreAttempts()
         searchState = nil
 
         pageTitle = ""
@@ -5369,17 +4987,7 @@ extension BrowserPanel {
 
     // MARK: - Find in Page
 
-    @MainActor
-    func prepareForFindShortcutFromAppCommand() {
-        captureWebContentFocusSnapshotIfNeeded(reason: "appFindPreflight")
-    }
-
     func startFind() {
-        (webView as? CmuxWebView)?.disarmRestoredWebContentNativeKeyPreflight(reason: "startFind")
-        if searchState == nil || preferredFocusIntent != .findField {
-            invalidateWebContentFocusRestoreAttempts()
-            captureWebContentFocusSnapshotIfNeeded(reason: "startFind")
-        }
         let created = searchState == nil
         if created {
             searchState = BrowserSearchState()
@@ -5445,8 +5053,7 @@ extension BrowserPanel {
                !Self.responderChainContains(window.firstResponder, target: webView) {
                 _ = transitionToWebContentFocus(
                     reason: "findOverlayDisappear.\(source)",
-                    yieldFindFieldResponder: false,
-                    restoreStoredDOMFocus: false
+                    yieldFindFieldResponder: false
                 )
             }
         }
@@ -5585,12 +5192,8 @@ extension BrowserPanel {
 #if DEBUG
             dlog("browser.focus.addressBarSuppress.begin panel=\(id.uuidString.prefix(5))")
 #endif
-            invalidateWebContentFocusRestoreAttempts()
         }
         suppressWebViewFocusForAddressBar = true
-        if enteringAddressBar {
-            captureWebContentFocusSnapshotIfNeeded(reason: "addressBarSuppress")
-        }
     }
 
     func endSuppressWebViewFocusForAddressBar() {
@@ -5604,7 +5207,6 @@ extension BrowserPanel {
 
     @discardableResult
     func requestAddressBarFocus() -> UUID {
-        (webView as? CmuxWebView)?.disarmRestoredWebContentNativeKeyPreflight(reason: "addressBarFocus")
         clearPendingWebContentRestore()
         clearFindFieldSubfocus()
         beginSuppressWebViewFocusForAddressBar()
@@ -5884,7 +5486,6 @@ extension BrowserPanel {
     func transitionToWebContentFocus(
         reason: String,
         yieldFindFieldResponder: Bool = false,
-        restoreStoredDOMFocus: Bool = true,
         beforeRestore: (() -> Void)? = nil,
         completion: ((Bool) -> Void)? = nil
     ) -> Bool {
@@ -5925,61 +5526,31 @@ extension BrowserPanel {
 #endif
 
         beforeRestore?()
-        let restoreFocus: (@escaping (Bool) -> Void) -> Void = { [weak self] completion in
-            guard let self else {
-                completion(false)
-                return
-            }
-            guard restoreStoredDOMFocus else {
-                completion(focusedWebView)
-                return
-            }
-            self.restoreStoredWebContentFocusIfNeeded(completion: completion)
+        guard let refreshedWindow = webView.window,
+              !webView.isHiddenOrHasHiddenAncestor else {
+            complete(focusedWebView)
+            return focusedWebView
         }
-        restoreFocus { [weak self] restored in
-            guard let self else {
-                complete(restored)
-                return
-            }
-            guard let window = self.webView.window,
-                  !self.webView.isHiddenOrHasHiddenAncestor else {
-                complete(restored)
-                return
-            }
-            let reacquiredWebContentResponder = self.acquireWebViewFirstResponder(in: window)
-            let hasWebViewResponder =
-                reacquiredWebContentResponder ||
-                Self.responderChainContains(window.firstResponder, target: self.webView)
-            if hasWebViewResponder {
-                self.noteWebViewFocused()
-            }
-            let cmuxWebView = self.webView as? CmuxWebView
-            let hasTrackedWebContentFocusState =
-                Self.validatedWebContentFocusStateJSON(self.lastCapturedWebContentFocusStateJSON) != nil
-            let shouldArmNativeKeyPreflight =
-                hasWebViewResponder &&
-                restoreStoredDOMFocus &&
-                hasTrackedWebContentFocusState
-            if shouldArmNativeKeyPreflight {
-                cmuxWebView?.armRestoredWebContentNativeKeyPreflight(reason: reason)
-            } else {
-                cmuxWebView?.disarmRestoredWebContentNativeKeyPreflight(reason: "restoreNotReady.\(reason)")
-            }
+        let reacquiredWebContentResponder = acquireWebViewFirstResponder(in: refreshedWindow)
+        let hasWebViewResponder =
+            reacquiredWebContentResponder ||
+            Self.responderChainContains(refreshedWindow.firstResponder, target: webView)
+        if hasWebViewResponder {
+            noteWebViewFocused()
+        }
 #if DEBUG
-            dlog(
-                "browser.focus.webContent.return panel=\(self.id.uuidString.prefix(5)) " +
-                "reason=\(reason) restored=\(restored ? 1 : 0) " +
-                "webViewResponder=\(hasWebViewResponder ? 1 : 0) " +
-                "reacquired=\(reacquiredWebContentResponder ? 1 : 0) " +
-                "trackedFocusState=\(hasTrackedWebContentFocusState ? 1 : 0)"
-            )
-            self.debugLogWebContentFocusSnapshot(
-                event: "webContent.return.end",
-                detail: "reason=\(reason) restored=\(restored ? 1 : 0) webViewResponder=\(hasWebViewResponder ? 1 : 0) reacquired=\(reacquiredWebContentResponder ? 1 : 0) trackedFocusState=\(hasTrackedWebContentFocusState ? 1 : 0)"
-            )
+        dlog(
+            "browser.focus.webContent.return panel=\(id.uuidString.prefix(5)) " +
+            "reason=\(reason) focused=\(hasWebViewResponder ? 1 : 0) " +
+            "webViewResponder=\(hasWebViewResponder ? 1 : 0) " +
+            "reacquired=\(reacquiredWebContentResponder ? 1 : 0)"
+        )
+        debugLogWebContentFocusSnapshot(
+            event: "webContent.return.end",
+            detail: "reason=\(reason) focused=\(hasWebViewResponder ? 1 : 0) webViewResponder=\(hasWebViewResponder ? 1 : 0) reacquired=\(reacquiredWebContentResponder ? 1 : 0)"
+        )
 #endif
-            complete(restored)
-        }
+        complete(hasWebViewResponder)
 
         return focusedWebView
     }
@@ -6057,9 +5628,6 @@ extension BrowserPanel {
         let focused = transitionToWebContentFocus(
             reason: pendingRestore.reason,
             yieldFindFieldResponder: true,
-            // Find is browser chrome, like the address bar. Restore the page-owned
-            // editable focus after the native first-responder handoff.
-            restoreStoredDOMFocus: true,
             completion: { [weak self] restored in
                 guard let self else { return }
                 self.findFocusCoordinator.completeWebContentRestore(pendingRestore)
@@ -6121,254 +5689,7 @@ extension BrowserPanel {
             BrowserWindowPortalRegistry.searchOverlayPanelId(for: firstResponder, in: window) == id
     }
 
-    private static func webContentFocusCaptureStatusAndStateJSON(from result: Any?) -> (status: String, stateJSON: String?) {
-        guard let payload = result as? [String: Any] else {
-            return ((result as? String) ?? "unknown", nil)
-        }
-        return ((payload["status"] as? String) ?? "unknown", payload["stateJSON"] as? String)
-    }
-
-    private static func validatedWebContentFocusStateJSON(_ stateJSON: String?) -> String? {
-        guard let stateJSON,
-              let data = stateJSON.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let id = object["id"] as? String,
-              !id.isEmpty else {
-            return nil
-        }
-        return stateJSON
-    }
-
-    private func validatedLastCapturedWebContentFocusStateJSON() -> String? {
-        Self.validatedWebContentFocusStateJSON(lastCapturedWebContentFocusStateJSON)
-    }
-
-    private static func isBrowserFindPreflightCaptureReason(_ reason: String) -> Bool {
-        reason == "browserFindPreflight" || reason == "appFindPreflight"
-    }
-
-    private func updateLastCapturedWebContentFocusState(reason: String, result: Any?, error: Error?) -> String {
-        guard error == nil else { return "error" }
-        let parsed = Self.webContentFocusCaptureStatusAndStateJSON(from: result)
-        if let stateJSON = Self.validatedWebContentFocusStateJSON(parsed.stateJSON) {
-            lastCapturedWebContentFocusStateJSON = stateJSON
-            if Self.isBrowserFindPreflightCaptureReason(reason) {
-                pendingBrowserFindPreflightFocusStateJSON = stateJSON
-            }
-        } else if parsed.status.hasPrefix("cleared") {
-            if reason == "startFind",
-               let preflightStateJSON = pendingBrowserFindPreflightFocusStateJSON {
-                lastCapturedWebContentFocusStateJSON = preflightStateJSON
-            } else {
-                lastCapturedWebContentFocusStateJSON = nil
-            }
-            if Self.isBrowserFindPreflightCaptureReason(reason) {
-                pendingBrowserFindPreflightFocusStateJSON = nil
-            }
-        }
-        if reason == "startFind" {
-            pendingBrowserFindPreflightFocusStateJSON = nil
-        }
-        return parsed.status
-    }
-
-    private func captureWebContentFocusSnapshotIfNeeded(reason: String) {
-        if let cmuxWebView = webView as? CmuxWebView {
-            let evaluation = cmuxWebView.captureWebContentFocusSnapshotSynchronously(
-                script: Self.webContentFocusCaptureScript
-            )
-            let resultValue = updateLastCapturedWebContentFocusState(
-                reason: reason,
-                result: evaluation.result,
-                error: evaluation.error
-            )
 #if DEBUG
-            if let error = evaluation.error {
-                dlog(
-                    "browser.focus.webContent.capture panel=\(id.uuidString.prefix(5)) " +
-                    "reason=\(reason) route=sync result=error message=\(error.localizedDescription)"
-                )
-            } else if evaluation.completed {
-                dlog(
-                    "browser.focus.webContent.capture panel=\(id.uuidString.prefix(5)) " +
-                    "reason=\(reason) route=sync result=\(resultValue)"
-                )
-            } else {
-                dlog(
-                    "browser.focus.webContent.capture panel=\(id.uuidString.prefix(5)) " +
-                    "reason=\(reason) route=sync result=timeout"
-                )
-            }
-#endif
-            if evaluation.completed {
-                return
-            }
-        }
-        webView.evaluateJavaScript(Self.webContentFocusCaptureScript) { [weak self] result, error in
-            let resultValue = self?.updateLastCapturedWebContentFocusState(
-                reason: reason,
-                result: result,
-                error: error
-            ) ?? "unknown"
-#if DEBUG
-            guard let self else { return }
-            if let error {
-                dlog(
-                    "browser.focus.webContent.capture panel=\(self.id.uuidString.prefix(5)) " +
-                    "reason=\(reason) result=error message=\(error.localizedDescription)"
-                )
-                return
-            }
-            dlog(
-                "browser.focus.webContent.capture panel=\(self.id.uuidString.prefix(5)) " +
-                "reason=\(reason) result=\(resultValue)"
-            )
-#else
-            _ = self
-            _ = result
-            _ = error
-#endif
-        }
-    }
-
-    private enum WebContentFocusRestoreStatus: String {
-        case restored
-        case noState = "no_state"
-        case missingTarget = "missing_target"
-        case notFocused = "not_focused"
-        case error
-    }
-
-    private static func webContentFocusRestoreStatus(
-        from result: Any?,
-        error: Error?
-    ) -> WebContentFocusRestoreStatus {
-        if error != nil { return .error }
-        if let raw = result as? String {
-            return WebContentFocusRestoreStatus(rawValue: raw) ?? .error
-        }
-        if let payload = result as? [String: Any],
-           let raw = payload["status"] as? String {
-            return WebContentFocusRestoreStatus(rawValue: raw) ?? .error
-        }
-        if let payload = result as? [String: AnyObject],
-           let raw = payload["status"] as? String {
-            return WebContentFocusRestoreStatus(rawValue: raw) ?? .error
-        }
-        return .error
-    }
-
-    func invalidateWebContentFocusRestoreAttempts() {
-        webContentFocusRestoreGeneration &+= 1
-#if DEBUG
-        dlog(
-            "browser.focus.webContent.restore.invalidate panel=\(id.uuidString.prefix(5)) " +
-            "generation=\(webContentFocusRestoreGeneration)"
-        )
-#endif
-    }
-
-    func restoreStoredWebContentFocusIfNeeded(completion: @escaping (Bool) -> Void) {
-        restoreStoredTrackedWebContentFocusIfNeeded(
-            script: Self.webContentFocusRestoreScript(
-                fallbackStateJSON: validatedLastCapturedWebContentFocusStateJSON()
-            ),
-            logPrefix: "browser.focus.webContent.restore",
-            completion: completion
-        )
-    }
-
-    @discardableResult
-    private func restoreStoredWebContentFocusSynchronouslyIfNeeded(in webView: CmuxWebView) -> Bool {
-        let evaluation = webView.runBrowserFocusJavaScriptSynchronously(
-            script: Self.webContentFocusRestoreScript(
-                fallbackStateJSON: validatedLastCapturedWebContentFocusStateJSON(),
-                returnPayload: true
-            )
-        )
-        let status = Self.webContentFocusRestoreStatus(from: evaluation.result, error: evaluation.error)
-#if DEBUG
-        let payload = evaluation.result as? [String: Any]
-        let selectionStart = (payload?["selectionStart"] as? NSNumber)?.intValue ?? -1
-        let selectionEnd = (payload?["selectionEnd"] as? NSNumber)?.intValue ?? -1
-        if let error = evaluation.error {
-            dlog(
-                "browser.focus.webContent.restore.sync panel=\(id.uuidString.prefix(5)) " +
-                "status=\(status.rawValue) message=\(error.localizedDescription)"
-            )
-        } else {
-            dlog(
-                "browser.focus.webContent.restore.sync panel=\(id.uuidString.prefix(5)) " +
-                "status=\(status.rawValue) selection=\(selectionStart):\(selectionEnd)"
-            )
-        }
-#endif
-        return status == .restored
-    }
-
-    private func restoreStoredTrackedWebContentFocusIfNeeded(
-        script: String,
-        logPrefix: String,
-        completion: @escaping (Bool) -> Void
-    ) {
-        webContentFocusRestoreGeneration &+= 1
-        let generation = webContentFocusRestoreGeneration
-        webView.evaluateJavaScript(script) { [weak self] result, error in
-            guard let self else {
-                completion(false)
-                return
-            }
-            guard generation == self.webContentFocusRestoreGeneration else {
-                completion(false)
-                return
-            }
-
-            let status = Self.webContentFocusRestoreStatus(from: result, error: error)
-
-#if DEBUG
-            if let error {
-                dlog(
-                    "\(logPrefix) panel=\(self.id.uuidString.prefix(5)) " +
-                    "status=\(status.rawValue) " +
-                    "message=\(error.localizedDescription)"
-                )
-            } else {
-                dlog(
-                    "\(logPrefix) panel=\(self.id.uuidString.prefix(5)) " +
-                    "status=\(status.rawValue)"
-                )
-            }
-#endif
-
-            completion(status == .restored)
-        }
-    }
-
-#if DEBUG
-    private static let debugWebContentFocusSnapshotScript = """
-    (() => {
-      try {
-        let state = window.__cmuxAddressBarFocusState;
-        let topState = (window.top && window.top.__cmuxAddressBarFocusState) ? window.top.__cmuxAddressBarFocusState : null;
-        const active = document.activeElement;
-        const tag = (active && active.tagName ? active.tagName : "").toLowerCase();
-        const type = (active && active.type ? active.type : "").toLowerCase();
-        const activeId = active && active.getAttribute ? active.getAttribute("data-cmux-addressbar-focus-id") : null;
-        const editable = !!(active && (active.isContentEditable || tag === "textarea" || (tag === "input" && type !== "hidden")));
-        return JSON.stringify({
-          activeTag: tag || null,
-          activeType: type || null,
-          activeId,
-          editable,
-          stateId: state && state.id ? state.id : null,
-          topStateId: topState && topState.id ? topState.id : null
-        });
-      } catch (error) {
-        return "error:" + String(error);
-      }
-    })();
-    """
-
     func debugLogWebContentFocusSnapshot(event: String, detail: String = "") {
         let panelId = id.uuidString.prefix(5)
         let searchActive = searchState != nil ? 1 : 0
@@ -6376,23 +5697,12 @@ extension BrowserPanel {
         let subfocus = String(reflecting: subfocusState)
         let window = webView.window
         let firstResponder = window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil"
-        let prefix =
+        let detailSuffix = detail.isEmpty ? "" : " \(detail)"
+        dlog(
             "browser.focus.snapshot event=\(event) panel=\(panelId) " +
             "pref=\(preferred) subfocus=\(subfocus) search=\(searchActive) " +
-            "win=\(window?.windowNumber ?? -1) fr=\(firstResponder)"
-        let detailSuffix = detail.isEmpty ? "" : " \(detail)"
-
-        webView.evaluateJavaScript(Self.debugWebContentFocusSnapshotScript) { result, error in
-            let snapshot: String
-            if let error {
-                snapshot = "error:\(error.localizedDescription)"
-            } else if let result = result as? String {
-                snapshot = result
-            } else {
-                snapshot = String(describing: result)
-            }
-            dlog("\(prefix)\(detailSuffix) snapshot=\(snapshot)")
-        }
+            "win=\(window?.windowNumber ?? -1) fr=\(firstResponder)\(detailSuffix)"
+        )
     }
 #endif
 

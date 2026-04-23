@@ -240,8 +240,21 @@ private final class BrowserPanelFakeWebContentResponderView: NSView {
 @MainActor
 final class BrowserPanelFindFocusRequestTests: XCTestCase {
     @MainActor
-    func testAppFindPreflightCapturesPageInputBeforeFindStealsFocus() async throws {
+    func testTransitionToWebContentFocusUsesNativeResponderOnly() async throws {
         let panel = BrowserPanel(workspaceId: UUID())
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        let contentView = try XCTUnwrap(window.contentView)
+        panel.webView.frame = contentView.bounds
+        panel.webView.autoresizingMask = [.width, .height]
+        contentView.addSubview(panel.webView)
+
         let navigation = expectation(description: "test page loaded")
         let delegate = BrowserPanelTestNavigationDelegate {
             navigation.fulfill()
@@ -264,196 +277,29 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         )
         await fulfillment(of: [navigation], timeout: 2.0)
 
-        let activeId = try await panel.webView.evaluateJavaScript(
-            "document.activeElement ? document.activeElement.id : ''"
-        ) as? String
-        XCTAssertEqual(activeId, "target")
-
-        panel.prepareForFindShortcutFromAppCommand()
-        let preflightState = try XCTUnwrap(panel.debugPendingBrowserFindPreflightFocusStateJSON)
-
-        let bodyActiveId = try await panel.webView.evaluateJavaScript(
-            """
-            document.body.focus();
-            document.activeElement ? document.activeElement.id : '';
-            """
-        ) as? String
-        XCTAssertEqual(bodyActiveId, "")
-
-        panel.startFind()
-
-        let retainedState = try XCTUnwrap(panel.debugLastCapturedWebContentFocusStateJSON)
-        XCTAssertEqual(stateID(fromWebContentFocusStateJSON: retainedState), stateID(fromWebContentFocusStateJSON: preflightState))
-        XCTAssertNil(panel.debugPendingBrowserFindPreflightFocusStateJSON)
-        _ = delegate
-    }
-
-    @MainActor
-    func testWebContentFocusRestorePreservesAlreadyFocusedEditable() async throws {
-        let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
-        let navigation = expectation(description: "test page loaded")
-        let delegate = BrowserPanelTestNavigationDelegate {
-            navigation.fulfill()
-        }
-        webView.navigationDelegate = delegate
-
-        webView.loadHTMLString(
-            """
-            <!doctype html>
-            <input id="target" value="abc" data-cmux-addressbar-focus-id="target-id">
-            <script>
-            const input = document.getElementById("target");
-            input.focus();
-            input.setSelectionRange(3, 3);
-            window.__cmuxAddressBarFocusState = {
-              id: "target-id",
-              selectionStart: 3,
-              selectionEnd: 3
-            };
-            window.__cmuxFocusEvents = [];
-            input.addEventListener("blur", () => window.__cmuxFocusEvents.push("blur"), true);
-            input.addEventListener("focus", () => window.__cmuxFocusEvents.push("focus"), true);
-            </script>
-            """,
-            baseURL: nil
-        )
-        await fulfillment(of: [navigation], timeout: 2.0)
-
-        let status = try await webView.evaluateJavaScript(BrowserPanel.webContentFocusRestoreScriptForTesting) as? String
-        XCTAssertEqual(status, "restored")
-
-        let snapshot = try await webView.evaluateJavaScript(
-            """
-            JSON.stringify({
-              activeId: document.activeElement ? document.activeElement.id : "",
-              events: window.__cmuxFocusEvents || [],
-              selectionStart: document.getElementById("target").selectionStart,
-              selectionEnd: document.getElementById("target").selectionEnd
-            })
-            """
-        ) as? String
-
-        XCTAssertEqual(
-            snapshot,
-            #"{"activeId":"target","events":[],"selectionStart":3,"selectionEnd":3}"#
-        )
-        _ = delegate
-    }
-
-    @MainActor
-    func testRestoredNativeKeyPreflightUsesBrowserPanelSnapshotAndDisarms() async throws {
-        let panel = BrowserPanel(workspaceId: UUID())
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        defer { window.orderOut(nil) }
-
-        let contentView = try XCTUnwrap(window.contentView)
-        panel.webView.frame = contentView.bounds
-        panel.webView.autoresizingMask = [.width, .height]
-        contentView.addSubview(panel.webView)
-
-        let navigation = expectation(description: "test page loaded")
-        let delegate = BrowserPanelTestNavigationDelegate {
-            navigation.fulfill()
-        }
-        panel.webView.navigationDelegate = delegate
-        panel.webView.loadHTMLString(
-            """
-            <!doctype html>
-            <input id="target" value="abc" data-cmux-addressbar-focus-id="target-id">
-            <script>
-            const input = document.getElementById("target");
-            input.focus();
-            input.setSelectionRange(3, 3);
-            </script>
-            """,
-            baseURL: nil
-        )
-        await fulfillment(of: [navigation], timeout: 2.0)
-
-        let cmuxWebView = try XCTUnwrap(panel.webView as? CmuxWebView)
         window.makeKeyAndOrderFront(nil)
         contentView.layoutSubtreeIfNeeded()
-        XCTAssertTrue(window.makeFirstResponder(cmuxWebView))
-
-        panel.prepareForFindShortcutFromAppCommand()
-
-        _ = try await panel.webView.evaluateJavaScript(
-            """
-            (() => {
-              const input = document.getElementById("target");
-              input.focus();
-              input.setSelectionRange(0, 0);
-              return true;
-            })()
-            """
-        )
+        let chromeField = NSTextField(frame: NSRect(x: 20, y: 20, width: 180, height: 24))
+        contentView.addSubview(chromeField)
+        XCTAssertTrue(window.makeFirstResponder(chromeField))
 
         let restored = expectation(description: "web content focus restored")
         _ = panel.transitionToWebContentFocus(
             reason: "test",
             yieldFindFieldResponder: false,
-            restoreStoredDOMFocus: true,
-            completion: { _ in restored.fulfill() }
+            completion: { focused in
+                XCTAssertTrue(focused)
+                restored.fulfill()
+            }
         )
         await fulfillment(of: [restored], timeout: 2.0)
 
-        _ = try await panel.webView.evaluateJavaScript(
-            """
-            (() => {
-              const input = document.getElementById("target");
-              input.focus();
-              input.setSelectionRange(0, 0);
-              return true;
-            })()
-            """
+        let responderView = try XCTUnwrap(window.firstResponder as? NSView)
+        XCTAssertTrue(
+            responderView === panel.webView || responderView.isDescendant(of: panel.webView),
+            "Expected native responder to land in the live WKWebView, got \(type(of: responderView))"
         )
-
-        let event = try XCTUnwrap(NSEvent.keyEvent(
-            with: .keyDown,
-            location: .zero,
-            modifierFlags: [],
-            timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: window.windowNumber,
-            context: nil,
-            characters: "a",
-            charactersIgnoringModifiers: "a",
-            isARepeat: false,
-            keyCode: 0
-        ))
-
-        XCTAssertTrue(cmuxWebView.handleRestoredWebContentNativeKeyPreflightBeforeWindowDispatch(event))
-        XCTAssertFalse(cmuxWebView.debugRestoredWebContentNativeKeyPreflightArmed)
-        XCTAssertEqual(cmuxWebView.debugRestoredWebContentNativeKeyPreflightLastReason, "disarm.nativeKeyForwarded")
-        XCTAssertFalse(cmuxWebView.handleRestoredWebContentNativeKeyPreflightBeforeWindowDispatch(event))
-
-        let value = try await panel.webView.evaluateJavaScript(
-            "document.getElementById('target').value"
-        ) as? String
-        XCTAssertEqual(value, "abca")
-        let selection = try await panel.webView.evaluateJavaScript(
-            """
-            (() => {
-              const input = document.getElementById('target');
-              return { start: input.selectionStart, end: input.selectionEnd };
-            })()
-            """
-        ) as? [String: Int]
-        XCTAssertEqual(selection?["start"], 4)
-        XCTAssertEqual(selection?["end"], 4)
         _ = delegate
-    }
-
-    private func stateID(fromWebContentFocusStateJSON stateJSON: String) -> String? {
-        guard let data = stateJSON.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
-        return object["id"] as? String
     }
 
     func testStartFindIssuesDurableRequestUntilAcknowledged() throws {

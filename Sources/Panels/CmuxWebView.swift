@@ -357,8 +357,6 @@ final class CmuxWebView: WKWebView {
     /// Called when "Open Link in New Tab" context menu is selected.
     /// Bypasses createWebViewWith so the link opens as a tab, not a popup.
     var onContextMenuOpenLinkInNewTab: ((URL) -> Void)?
-    var onBrowserFindCommandPreflight: (() -> Void)?
-    var onRestoredWebContentNativeKeyPreflight: (() -> Bool)?
     var contextMenuLinkURLProvider: ((CmuxWebView, NSPoint, @escaping (URL?) -> Void) -> Void)?
     var contextMenuDefaultBrowserOpener: ((URL) -> Bool)?
     /// Guard against background panes stealing first responder (e.g. page autofocus).
@@ -366,8 +364,6 @@ final class CmuxWebView: WKWebView {
     var allowsFirstResponderAcquisition: Bool = true
     private var pointerFocusAllowanceDepth: Int = 0
     private var programmaticFocusAllowanceDepth: Int = 0
-    private var restoredWebContentNativeKeyPreflightArmed = false
-    private var restoredWebContentNativeKeyPreflightLastReason = ""
     private var pasteAsPlainTextTargetAvailable = false
     private var lastPasteAsPlainTextPerformKeyEventTimestamp: TimeInterval?
     var allowsFirstResponderAcquisitionEffective: Bool {
@@ -377,12 +373,6 @@ final class CmuxWebView: WKWebView {
     }
     var debugPointerFocusAllowanceDepth: Int { pointerFocusAllowanceDepth }
     var debugProgrammaticFocusAllowanceDepth: Int { programmaticFocusAllowanceDepth }
-    var debugRestoredWebContentNativeKeyPreflightArmed: Bool {
-        restoredWebContentNativeKeyPreflightArmed
-    }
-    var debugRestoredWebContentNativeKeyPreflightLastReason: String {
-        restoredWebContentNativeKeyPreflightLastReason
-    }
 
     override init(frame: NSRect, configuration: WKWebViewConfiguration) {
         super.init(frame: frame, configuration: configuration)
@@ -532,29 +522,6 @@ final class CmuxWebView: WKWebView {
         }
     }
 
-    func armRestoredWebContentNativeKeyPreflight(reason: String) {
-        restoredWebContentNativeKeyPreflightArmed = true
-        restoredWebContentNativeKeyPreflightLastReason = "arm.\(reason)"
-#if DEBUG
-        dlog(
-            "browser.focus.nativeKeyPreflight.arm web=\(ObjectIdentifier(self)) " +
-            "reason=\(reason)"
-        )
-#endif
-    }
-
-    func disarmRestoredWebContentNativeKeyPreflight(reason: String) {
-        restoredWebContentNativeKeyPreflightLastReason = "disarm.\(reason)"
-        guard restoredWebContentNativeKeyPreflightArmed else { return }
-        restoredWebContentNativeKeyPreflightArmed = false
-#if DEBUG
-        dlog(
-            "browser.focus.nativeKeyPreflight.disarm web=\(ObjectIdentifier(self)) " +
-            "reason=\(reason)"
-        )
-#endif
-    }
-
     private func preferredWebContentFirstResponder(in window: NSWindow) -> NSView? {
         if let firstResponder = window.firstResponder as? NSView,
            firstResponder !== self,
@@ -606,8 +573,8 @@ final class CmuxWebView: WKWebView {
         unsafeBitCast(implementation, to: PasteAsPlainTextFn.self)(self, selector, sender)
     }
 
-    // Key-equivalent handling is synchronous, so this bounded preflight pumps the main run loop.
-    // Keep callers limited to fast page-owned focus/input scripts.
+    // Key-equivalent handling is synchronous, so this bounded helper pumps the main run loop.
+    // Keep callers limited to small page queries such as paste-target introspection.
     private func evaluateJavaScriptSynchronously(
         _ script: String,
         timeout: TimeInterval = 0.25
@@ -635,59 +602,6 @@ final class CmuxWebView: WKWebView {
         }
 
         return (completed, result, error)
-    }
-
-    func captureWebContentFocusSnapshotSynchronously(
-        script: String
-    ) -> (completed: Bool, result: Any?, error: Error?) {
-        runBrowserFocusJavaScriptSynchronously(script: script)
-    }
-
-    func runBrowserFocusJavaScriptSynchronously(
-        script: String
-    ) -> (completed: Bool, result: Any?, error: Error?) {
-        evaluateJavaScriptSynchronously(script)
-    }
-
-    private static func plainTextCharacterForNativeKeyPreflight(_ event: NSEvent) -> String? {
-        let flags = event.modifierFlags
-            .intersection(.deviceIndependentFlagsMask)
-            .subtracting([.numericPad, .function, .capsLock])
-        guard flags.subtracting(.shift).isEmpty else { return nil }
-        guard let text = event.characters, text.count == 1 else { return nil }
-        guard let scalar = text.unicodeScalars.first else { return nil }
-        guard !CharacterSet.controlCharacters.contains(scalar) else { return nil }
-        return text
-    }
-
-    private func performRestoredWebContentNativeKeyPreflightIfNeeded(event: NSEvent) -> String? {
-        guard restoredWebContentNativeKeyPreflightArmed else { return nil }
-        guard Self.plainTextCharacterForNativeKeyPreflight(event) != nil else { return nil }
-        let restored = onRestoredWebContentNativeKeyPreflight?() ?? false
-#if DEBUG
-        dlog(
-            "browser.focus.nativeKeyPreflight.run web=\(ObjectIdentifier(self)) " +
-            "restored=\(restored ? 1 : 0)"
-        )
-#endif
-        // After the DOM focus/caret preflight runs, let WebKit handle the native key exactly once.
-        disarmRestoredWebContentNativeKeyPreflight(reason: "nativeKeyForwarded")
-        super.keyDown(with: event)
-        return restored ? "nativeKeyForwarded.restored" : "nativeKeyForwarded.noRestore"
-    }
-
-    @discardableResult
-    func handleRestoredWebContentNativeKeyPreflightBeforeWindowDispatch(_ event: NSEvent) -> Bool {
-        guard let repairRoute = performRestoredWebContentNativeKeyPreflightIfNeeded(event: event) else {
-            return false
-        }
-#if DEBUG
-        dlog(
-            "browser.focus.nativeKeyPreflight.windowDispatch web=\(ObjectIdentifier(self)) " +
-            "route=\(repairRoute)"
-        )
-#endif
-        return true
     }
 
     private func pageCanAcceptPlainTextPaste() -> Bool {
@@ -811,9 +725,6 @@ final class CmuxWebView: WKWebView {
             responder: window?.firstResponder,
             owningWebView: self
         ) {
-            if shouldCaptureBrowserWebContentFocusBeforeFindCommand(event) {
-                onBrowserFindCommandPreflight?()
-            }
             replayedBrowserFindShortcutIntoWebContent = true
             let result = super.performKeyEquivalent(with: event)
 #if DEBUG
@@ -902,13 +813,6 @@ final class CmuxWebView: WKWebView {
             return
         }
 
-        if let repairRoute = performRestoredWebContentNativeKeyPreflightIfNeeded(event: event) {
-#if DEBUG
-            route = repairRoute
-#endif
-            return
-        }
-
         super.keyDown(with: event)
     }
 
@@ -946,7 +850,6 @@ final class CmuxWebView: WKWebView {
             "pointerDepth=\(pointerFocusAllowanceDepth) win=\(windowNumber) fr=\(firstResponderType)"
         )
 #endif
-        disarmRestoredWebContentNativeKeyPreflight(reason: "mouseDown")
         NotificationCenter.default.post(name: .webViewDidReceiveClick, object: self)
         withPointerFocusAllowance {
             super.mouseDown(with: event)

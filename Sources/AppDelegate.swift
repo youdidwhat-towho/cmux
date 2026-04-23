@@ -2045,11 +2045,6 @@ func shouldRouteBrowserFindCommandEquivalentThroughWebContentFirst(
 
     return true
 }
-
-func shouldCaptureBrowserWebContentFocusBeforeFindCommand(_ event: NSEvent) -> Bool {
-    browserFindCommandEquivalent(for: event) == .find
-}
-
 func cmuxOwningGhosttyView(for responder: NSResponder?) -> GhosttyNSView? {
     guard let responder else { return nil }
     if let ghosttyView = responder as? GhosttyNSView {
@@ -2113,22 +2108,6 @@ private func cmuxOwningGhosttyView(for view: NSView) -> GhosttyNSView? {
     while let candidate = current {
         if let ghosttyView = candidate as? GhosttyNSView {
             return ghosttyView
-        }
-        current = candidate.superview
-    }
-
-    return nil
-}
-
-private func cmuxOwningBrowserWebView(for view: NSView) -> CmuxWebView? {
-    if let webView = view as? CmuxWebView {
-        return webView
-    }
-
-    var current: NSView? = view.superview
-    while let candidate = current {
-        if let webView = candidate as? CmuxWebView {
-            return webView
         }
         current = candidate.superview
     }
@@ -9108,15 +9087,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         updates["browserPageTitle"] = browserPanel.webView.title?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         updates["browserPageURL"] = browserPanel.preferredURLStringForOmnibar() ?? ""
-        if let cmuxWebView = browserPanel.webView as? CmuxWebView {
-            updates["webViewRestoredTextRepairArmed"] =
-                cmuxWebView.debugRestoredWebContentNativeKeyPreflightArmed ? "true" : "false"
-            updates["webViewRestoredTextRepairLastReason"] =
-                cmuxWebView.debugRestoredWebContentNativeKeyPreflightLastReason
-        } else {
-            updates["webViewRestoredTextRepairArmed"] = "false"
-            updates["webViewRestoredTextRepairLastReason"] = ""
-        }
+        updates["webViewRestoredTextRepairArmed"] = "false"
+        updates["webViewRestoredTextRepairLastReason"] = "native-only"
         if let firstResponder = browserPanel.webView.window?.firstResponder {
             updates["webViewFirstResponderType"] = String(describing: type(of: firstResponder))
             if let firstResponderView = firstResponder as? NSView {
@@ -13454,9 +13426,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             responder: shortcutResponder,
             owningWebView: owningWebView
         )
-        if shouldRoute, shouldCaptureBrowserWebContentFocusBeforeFindCommand(event) {
-            focusedBrowserPanel.prepareForFindShortcutFromAppCommand()
-        }
         return shouldRoute
     }
 
@@ -14866,16 +14835,6 @@ private extension NSWindow {
             cmuxFirstResponderGuardCurrentEventContext = previousContextEvent
             cmuxFirstResponderGuardHitViewContext = previousContextHitView
             cmuxFirstResponderGuardContextWindowNumber = previousContextWindowNumber
-        }
-
-        let focusedBrowserWebView =
-            (self.firstResponder as? CmuxWebView) ??
-            (self.firstResponder as? NSView).flatMap(cmuxOwningBrowserWebView(for:))
-
-        if event.type == .keyDown,
-           let webView = focusedBrowserWebView,
-           webView.handleRestoredWebContentNativeKeyPreflightBeforeWindowDispatch(event) {
-            return
         }
 
         if cmux_routeBrowserSearchOverlayCommandKeyDown(event) {
