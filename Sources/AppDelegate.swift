@@ -6126,8 +6126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
         }
 #endif
-        beforeSend?()
-        terminalPanel.sendText(text)
+        terminalPanel.sendText(text, onDispatch: beforeSend)
 #if DEBUG
         if isReactGrabPasteback {
             dlog(
