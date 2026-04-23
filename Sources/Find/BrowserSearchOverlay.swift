@@ -69,6 +69,7 @@ struct BrowserSearchOverlay: View {
     let onClose: () -> Void
     let onFieldMounted: (UUID?) -> Void
     let onFieldDidFocus: (UUID?) -> Void
+    let onFieldDidEndEditing: (UUID?) -> Void
     let onDisappear: () -> Void
     @State private var corner: Corner = .topRight
     @State private var dragOffset: CGSize = .zero
@@ -93,7 +94,8 @@ struct BrowserSearchOverlay: View {
                         } else {
                             onNext()
                         }
-                    }
+                    },
+                    onFieldDidEndEditing: onFieldDidEndEditing
                 )
                     .frame(width: 180)
                     .padding(.leading, 8)
@@ -281,12 +283,14 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
     let onFieldDidFocus: (UUID?) -> Void
     let onEscape: () -> Void
     let onReturn: (_ isShift: Bool) -> Void
+    let onFieldDidEndEditing: (UUID?) -> Void
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var parent: BrowserSearchTextFieldRepresentable
         var isProgrammaticMutation = false
         weak var parentField: BrowserSearchNativeTextField?
         var pendingFocusRequest: Bool?
+        var activeFocusRequestId: UUID?
 
         init(parent: BrowserSearchTextFieldRepresentable) {
             self.parent = parent
@@ -298,8 +302,9 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
             setActiveBrowserSearchOverlayPanelId(parent.panelId, on: editor.window)
         }
 
-        func focusField(_ field: BrowserSearchNativeTextField, in window: NSWindow) {
+        func focusField(_ field: BrowserSearchNativeTextField, in window: NSWindow, requestId: UUID?) {
             guard window.makeFirstResponder(field) else { return }
+            activeFocusRequestId = requestId ?? parent.focusRequestId
             setBrowserSearchOverlayPanelId(parent.panelId, on: field)
             setActiveBrowserSearchOverlayPanelId(parent.panelId, on: window)
             DispatchQueue.main.async { [weak field] in
@@ -337,7 +342,7 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
                     field.currentEditor() != nil ||
                     ((fr as? NSTextView)?.delegate as? NSTextField) === field
                 guard !alreadyFocused else { return }
-                self.focusField(field, in: window)
+                self.focusField(field, in: window, requestId: requestId)
             }
         }
 
@@ -348,15 +353,19 @@ private struct BrowserSearchTextFieldRepresentable: NSViewRepresentable {
         }
 
         func controlTextDidBeginEditing(_ obj: Notification) {
+            activeFocusRequestId = parent.focusRequestId ?? activeFocusRequestId
             if let field = obj.object as? NSTextField {
                 setActiveBrowserSearchOverlayPanelId(parent.panelId, on: field.window)
                 markFieldEditor(field.currentEditor() as? NSTextView)
             }
-            parent.onFieldDidFocus(parent.focusRequestId)
+            parent.onFieldDidFocus(activeFocusRequestId ?? parent.focusRequestId)
         }
 
         func controlTextDidEndEditing(_ obj: Notification) {
+            let requestId = activeFocusRequestId ?? parent.focusRequestId
             clearActiveBrowserSearchOverlayPanelId(parent.panelId, on: (obj.object as? NSView)?.window)
+            parent.onFieldDidEndEditing(requestId)
+            activeFocusRequestId = nil
         }
 
         func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {

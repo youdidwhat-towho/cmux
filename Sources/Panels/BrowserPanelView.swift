@@ -698,6 +698,9 @@ struct BrowserPanelView: View {
                 onFieldDidFocus: { requestId in
                     panel.noteFindFieldFocused(requestId: requestId)
                 },
+                onFieldDidEndEditing: { requestId in
+                    panel.noteFindFieldEndedEditing(requestId: requestId, source: "fieldEndEditing")
+                },
                 onDisappear: {
                     panel.noteFindOverlayDisappeared(source: "overlayDisappear")
                 }
@@ -765,6 +768,7 @@ struct BrowserPanelView: View {
                     onClose: configuration.onClose,
                     onFieldMounted: configuration.onFieldMounted,
                     onFieldDidFocus: configuration.onFieldDidFocus,
+                    onFieldDidEndEditing: configuration.onFieldDidEndEditing,
                     onDisappear: configuration.onDisappear
                 )
             }

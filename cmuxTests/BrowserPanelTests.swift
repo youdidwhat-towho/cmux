@@ -461,6 +461,7 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         XCTAssertEqual(browserSearchOverlayPanelId(for: window.firstResponder), panel.id)
 
         XCTAssertTrue(window.makeFirstResponder(nil))
+        panel.noteFindFieldEndedEditing(requestId: requestId, source: "test")
         findField.removeFromSuperview()
         panel.noteFindOverlayDisappeared(source: "test")
         waitForBrowserPanelCondition {
@@ -512,6 +513,13 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
             "Focused find field editing has not ended yet, so restoring WKWebView focus here can be overwritten by AppKit field-editor teardown."
         )
         XCTAssertEqual(browserSearchOverlayPanelId(for: window.firstResponder), panel.id)
+
+        panel.noteFindFieldEndedEditing(requestId: requestId, source: "test")
+        waitForBrowserPanelCondition {
+            panel.pendingWebContentRestoreRequestId == nil
+        }
+        XCTAssertNil(panel.pendingWebContentRestoreRequestId)
+        XCTAssertEqual(panel.captureFocusIntent(in: window), .browser(.webView))
     }
 
     @MainActor
@@ -667,6 +675,7 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
         XCTAssertNil(panel.searchState)
 
         XCTAssertTrue(window.makeFirstResponder(nil))
+        panel.noteFindFieldEndedEditing(requestId: requestId, source: "test")
         findField.removeFromSuperview()
         panel.noteFindOverlayDisappeared(source: "test")
         waitForBrowserPanelCondition {

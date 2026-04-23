@@ -2004,6 +2004,7 @@ final class BrowserPanel: Panel, ObservableObject {
             let webViewInstanceID: UUID
             var fieldMounted = false
             var fieldFocused = false
+            var fieldEditingEnded = false
         }
 
         struct WebContentRestoreTransaction: Equatable {
@@ -2012,7 +2013,9 @@ final class BrowserPanel: Panel, ObservableObject {
             let webViewInstanceID: UUID
             let sourceFindRequestId: UUID?
             let requiresFindOverlayTeardown: Bool
+            let requiresFindFieldEndEditing: Bool
             var findOverlayTeardownObserved: Bool
+            var findFieldEndEditingObserved: Bool
         }
 
         enum Phase: Equatable {
@@ -2076,6 +2079,7 @@ final class BrowserPanel: Panel, ObservableObject {
                 }
                 transaction.fieldMounted = true
                 transaction.fieldFocused = true
+                transaction.fieldEditingEnded = false
                 phase = .focused(transaction)
                 return true
             case .focused(let transaction):
@@ -2092,6 +2096,38 @@ final class BrowserPanel: Panel, ObservableObject {
             pendingFindFieldFocusRequestId == requestId
         }
 
+        mutating func noteFindFieldEndedEditing(requestId: UUID?) -> Bool {
+            switch phase {
+            case .focusing(var transaction), .focused(var transaction):
+                if let requestId, transaction.requestId != requestId {
+                    return false
+                }
+                transaction.fieldEditingEnded = true
+                phase = transaction.fieldFocused ? .focused(transaction) : .focusing(transaction)
+                return true
+            case .waitingForWebViewFocus(var transaction):
+                if let requestId,
+                   let sourceFindRequestId = transaction.sourceFindRequestId,
+                   sourceFindRequestId != requestId {
+                    return false
+                }
+                transaction.findFieldEndEditingObserved = true
+                phase = .waitingForWebViewFocus(transaction)
+                return true
+            case .restoring(var transaction):
+                if let requestId,
+                   let sourceFindRequestId = transaction.sourceFindRequestId,
+                   sourceFindRequestId != requestId {
+                    return false
+                }
+                transaction.findFieldEndEditingObserved = true
+                phase = .restoring(transaction)
+                return true
+            case .idle:
+                return requestId == nil
+            }
+        }
+
         mutating func beginFindDismiss(
             reason: String,
             shouldRestoreWebContent: Bool,
@@ -2103,13 +2139,16 @@ final class BrowserPanel: Panel, ObservableObject {
             }
             let sourceFindRequestId: UUID?
             let requiresFindOverlayTeardown: Bool
+            let requiresFindFieldEndEditing: Bool
             switch phase {
             case .focusing(let transaction), .focused(let transaction):
                 sourceFindRequestId = transaction.requestId
                 requiresFindOverlayTeardown = transaction.fieldMounted || transaction.fieldFocused
+                requiresFindFieldEndEditing = transaction.fieldFocused && !transaction.fieldEditingEnded
             case .idle, .waitingForWebViewFocus, .restoring:
                 sourceFindRequestId = nil
                 requiresFindOverlayTeardown = false
+                requiresFindFieldEndEditing = false
             }
             let transaction = WebContentRestoreTransaction(
                 requestId: UUID(),
@@ -2117,7 +2156,9 @@ final class BrowserPanel: Panel, ObservableObject {
                 webViewInstanceID: webViewInstanceID,
                 sourceFindRequestId: sourceFindRequestId,
                 requiresFindOverlayTeardown: requiresFindOverlayTeardown,
-                findOverlayTeardownObserved: !requiresFindOverlayTeardown
+                requiresFindFieldEndEditing: requiresFindFieldEndEditing,
+                findOverlayTeardownObserved: !requiresFindOverlayTeardown,
+                findFieldEndEditingObserved: !requiresFindFieldEndEditing
             )
             phase = .waitingForWebViewFocus(transaction)
             return transaction
@@ -5039,9 +5080,11 @@ extension BrowserPanel {
         if searchState != nil, preferredFocusIntent == .findField {
             _ = requestFindFieldFocus(reason: "findOverlayRemount.\(source)")
         } else {
+            let hadPendingRestore = findFocusCoordinator.pendingWebContentRestore != nil
             findFocusCoordinator.noteFindOverlayDisappeared()
             drivePendingWebContentRestoreIfPossible(trigger: "findOverlayDisappear.\(source)")
-            if isPaneFocusedForBrowserRestore,
+            if !hadPendingRestore,
+               isPaneFocusedForBrowserRestore,
                let window = webView.window,
                !webView.isHiddenOrHasHiddenAncestor,
                !Self.responderChainContains(window.firstResponder, target: webView) {
@@ -5285,6 +5328,27 @@ extension BrowserPanel {
         dlog(
             "browser.focus.find.requestAck panel=\(id.uuidString.prefix(5)) " +
             "request=\(requestId?.uuidString.prefix(8) ?? "nil") result=accepted"
+        )
+#endif
+    }
+
+    func noteFindFieldEndedEditing(requestId: UUID? = nil, source: String) {
+        guard findFocusCoordinator.noteFindFieldEndedEditing(requestId: requestId) else {
+#if DEBUG
+            dlog(
+                "browser.focus.find.editEnd panel=\(id.uuidString.prefix(5)) " +
+                "request=\(requestId?.uuidString.prefix(8) ?? "nil") result=ignored " +
+                "pending=\(pendingWebContentRestoreRequestId?.uuidString.prefix(8) ?? "nil") " +
+                "source=\(source)"
+            )
+#endif
+            return
+        }
+        drivePendingWebContentRestoreIfPossible(trigger: "findFieldEndEditing.\(source)")
+#if DEBUG
+        dlog(
+            "browser.focus.find.editEnd panel=\(id.uuidString.prefix(5)) " +
+            "request=\(requestId?.uuidString.prefix(8) ?? "nil") result=accepted source=\(source)"
         )
 #endif
     }
@@ -5566,6 +5630,17 @@ extension BrowserPanel {
                 "request=\(pendingRestore.requestId.uuidString.prefix(8)) " +
                 "reason=\(pendingRestore.reason) source=findDismiss " +
                 "trigger=\(trigger) cause=find_overlay_visible"
+            )
+#endif
+            return false
+        }
+        guard pendingRestore.findFieldEndEditingObserved else {
+#if DEBUG
+            dlog(
+                "browser.focus.webContent.pending.skip panel=\(id.uuidString.prefix(5)) " +
+                "request=\(pendingRestore.requestId.uuidString.prefix(8)) " +
+                "reason=\(pendingRestore.reason) source=findDismiss " +
+                "trigger=\(trigger) cause=find_field_editing"
             )
 #endif
             return false
