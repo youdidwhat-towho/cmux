@@ -5817,6 +5817,32 @@ extension WKWebView {
         }
         return inspectorWebView
     }
+
+    func cmuxWebProcessIdentifier() -> Int32? {
+        let selectors = [
+            NSSelectorFromString("_webProcessIdentifier"),
+            NSSelectorFromString("webProcessIdentifier"),
+        ]
+        for selector in selectors {
+            if let pid = cmuxCallInt(selector: selector), pid > 0, let narrowed = Int32(exactly: pid) {
+                return narrowed
+            }
+        }
+        return nil
+    }
+}
+
+extension BrowserPanel {
+    func resourceUsageRootPIDs() -> Set<Int32> {
+        var pids: Set<Int32> = []
+        if let webProcessPID = webView.cmuxWebProcessIdentifier() {
+            pids.insert(webProcessPID)
+        }
+        if let inspectorPID = webView.cmuxInspectorFrontendWebView()?.cmuxWebProcessIdentifier() {
+            pids.insert(inspectorPID)
+        }
+        return pids
+    }
 }
 
 private extension NSObject {
@@ -5832,6 +5858,13 @@ private extension NSObject {
         typealias Fn = @convention(c) (AnyObject, Selector) -> Void
         let fn = unsafeBitCast(method(for: selector), to: Fn.self)
         fn(self, selector)
+    }
+
+    func cmuxCallInt(selector: Selector) -> Int? {
+        guard responds(to: selector) else { return nil }
+        typealias Fn = @convention(c) (AnyObject, Selector) -> Int
+        let fn = unsafeBitCast(method(for: selector), to: Fn.self)
+        return fn(self, selector)
     }
 }
 

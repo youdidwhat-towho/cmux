@@ -59,6 +59,9 @@ final class CmuxSettingsFileStore {
         "sidebar.showLog",
         "sidebar.showProgress",
         "sidebar.showCustomMetadata",
+        "sidebar.showResourceUsage",
+        "sidebar.resourceUsageSampleIntervalSeconds",
+        "sidebar.sortMode",
         "workspaceColors.indicatorStyle",
         "workspaceColors.selectionColor",
         "workspaceColors.notificationBadgeColor",
@@ -527,6 +530,23 @@ final class CmuxSettingsFileStore {
         }
         if let value = jsonBool(section["showCustomMetadata"]) {
             snapshot.managedUserDefaults["sidebarShowStatusPills"] = .bool(value)
+        }
+        if let value = jsonBool(section["showResourceUsage"]) {
+            snapshot.managedUserDefaults[SidebarWorkspaceResourceUsageSettings.enabledKey] = .bool(value)
+        }
+        if let value = jsonDouble(section["resourceUsageSampleIntervalSeconds"]) {
+            snapshot.managedUserDefaults[SidebarWorkspaceResourceUsageSettings.sampleIntervalKey] = .double(
+                SidebarWorkspaceResourceUsageSettings.clampedSampleInterval(value)
+            )
+        } else if section.keys.contains("resourceUsageSampleIntervalSeconds") {
+            logInvalid("sidebar.resourceUsageSampleIntervalSeconds", sourcePath: sourcePath)
+        }
+        if let raw = jsonString(section["sortMode"]) {
+            if let mode = SidebarWorkspaceResourceSortMode(rawValue: raw) {
+                snapshot.managedUserDefaults[SidebarWorkspaceResourceUsageSettings.sortModeKey] = .string(mode.rawValue)
+            } else {
+                logInvalid("sidebar.sortMode", sourcePath: sourcePath)
+            }
         }
     }
 
@@ -1258,6 +1278,9 @@ final class CmuxSettingsFileStore {
                     "showLog": true,
                     "showProgress": true,
                     "showCustomMetadata": true,
+                    "showResourceUsage": SidebarWorkspaceResourceUsageSettings.defaultEnabled,
+                    "resourceUsageSampleIntervalSeconds": SidebarWorkspaceResourceUsageSettings.defaultSampleInterval,
+                    "sortMode": SidebarWorkspaceResourceUsageSettings.defaultSortMode.rawValue,
                 ],
             ],
             [

@@ -8990,6 +8990,7 @@ private struct SidebarTabItemSettingsSnapshot: Equatable {
     let selectionColorHex: String?
     let notificationBadgeColorHex: String?
     let visibleAuxiliaryDetails: SidebarWorkspaceAuxiliaryDetailVisibility
+    let resourceUsageConfiguration: SidebarWorkspaceResourceUsageConfiguration
 
     init(defaults: UserDefaults = .standard) {
         sidebarShortcutHintXOffset = Self.double(
@@ -9046,6 +9047,7 @@ private struct SidebarTabItemSettingsSnapshot: Equatable {
         activeTabIndicatorStyle = SidebarActiveTabIndicatorSettings.current(defaults: defaults)
         selectionColorHex = defaults.string(forKey: "sidebarSelectionColorHex")
         notificationBadgeColorHex = defaults.string(forKey: "sidebarNotificationBadgeColorHex")
+        resourceUsageConfiguration = .current(defaults: defaults)
     }
 
     private static func bool(
@@ -9121,6 +9123,7 @@ struct VerticalTabsSidebar: View {
     @StateObject private var dragAutoScrollController = SidebarDragAutoScrollController()
     @StateObject private var dragFailsafeMonitor = SidebarDragFailsafeMonitor()
     @StateObject private var tabItemSettingsStore = SidebarTabItemSettingsStore()
+    @StateObject private var resourceUsageStore = SidebarWorkspaceResourceUsageStore()
     @ObservedObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @State private var draggedTabId: UUID?
     @State private var dropIndicator: SidebarDropIndicator?
@@ -9150,14 +9153,32 @@ struct VerticalTabsSidebar: View {
     var body: some View {
         let _ = terminalScrollBarVisibilityGeneration
         let tabs = tabManager.tabs
-        let workspaceCount = tabs.count
+        let tabItemSettings = tabItemSettingsStore.snapshot
+        let resourceUsageConfiguration = tabItemSettings.resourceUsageConfiguration
+        let effectiveResourceSortMode = resourceUsageConfiguration.isEnabled
+            ? resourceUsageConfiguration.sortMode
+            : SidebarWorkspaceResourceUsageSettings.defaultSortMode
+        let resourceUsageByWorkspaceID = resourceUsageStore.snapshot.workspaces
+        let orderedWorkspaceIDs = SidebarWorkspaceOrdering.orderedWorkspaceIDs(
+            items: tabs.enumerated().map { index, tab in
+                SidebarWorkspaceOrdering.Item(
+                    workspaceID: tab.id,
+                    isPinned: tab.isPinned,
+                    baselineIndex: index,
+                    residentBytes: resourceUsageByWorkspaceID[tab.id]?.residentBytes ?? 0
+                )
+            },
+            sortMode: effectiveResourceSortMode
+        )
+        let tabsByID = Dictionary(uniqueKeysWithValues: tabs.map { ($0.id, $0) })
+        let orderedTabs = orderedWorkspaceIDs.compactMap { tabsByID[$0] }
+        let workspaceCount = orderedTabs.count
         let canCloseWorkspace = workspaceCount > 1
         let workspaceNumberShortcut = self.workspaceNumberShortcut
-        let tabItemSettings = tabItemSettingsStore.snapshot
-        let tabIndexById = Dictionary(uniqueKeysWithValues: tabs.enumerated().map {
+        let tabIndexById = Dictionary(uniqueKeysWithValues: orderedTabs.enumerated().map {
             ($0.element.id, $0.offset)
         })
-        let orderedSelectedTabs = tabs.filter { selectedTabIds.contains($0.id) }
+        let orderedSelectedTabs = orderedTabs.filter { selectedTabIds.contains($0.id) }
         let selectedContextTargetIds = orderedSelectedTabs.map(\.id)
         let selectedRemoteContextMenuTargets = orderedSelectedTabs.filter { $0.isRemoteWorkspace }
         let selectedRemoteContextMenuWorkspaceIds = selectedRemoteContextMenuTargets.map(\.id)
@@ -9177,10 +9198,21 @@ struct VerticalTabsSidebar: View {
                         Spacer()
                             .frame(height: trafficLightPadding)
 
+                        if resourceUsageConfiguration.isEnabled,
+                           let totalUsage = resourceUsageStore.snapshot.total {
+                            SidebarResourceUsageSummaryRow(
+                                title: String(localized: "sidebar.resourceUsage.totalRow", defaultValue: "cmux Total"),
+                                usage: totalUsage,
+                                isActive: false
+                            )
+                            .padding(.horizontal, 8)
+                            .padding(.top, 8)
+                        }
+
                         // Workspaces are bounded, so prefer a non-lazy stack here.
                         // LazyVStack + drag-state invalidations can recurse through layout.
                         VStack(spacing: tabRowSpacing) {
-                            ForEach(tabs, id: \.id) { tab in
+                            ForEach(orderedTabs, id: \.id) { tab in
                                 let index = tabIndexById[tab.id] ?? 0
                                 let usesSelectedContextMenuTargets = selectedTabIds.contains(tab.id)
                                 let contextMenuWorkspaceIds = usesSelectedContextMenuTargets
@@ -9238,6 +9270,7 @@ struct VerticalTabsSidebar: View {
                                     setSelectionToTabs: { selection = .tabs },
                                     selectedTabIds: $selectedTabIds,
                                     lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                                    allDisplayedWorkspaceIDs: orderedWorkspaceIDs,
                                     showsModifierShortcutHints: frozenPresentation?.showsModifierShortcutHints ?? liveShowsModifierShortcutHints,
                                     dragAutoScrollController: dragAutoScrollController,
                                     draggedTabId: $draggedTabId,
@@ -9247,6 +9280,8 @@ struct VerticalTabsSidebar: View {
                                     allRemoteContextMenuTargetsConnecting: allRemoteContextMenuTargetsConnecting,
                                     allRemoteContextMenuTargetsDisconnected: allRemoteContextMenuTargetsDisconnected,
                                     allContextMenuWorkspacesHideTerminalScrollBar: allContextMenuWorkspacesHideTerminalScrollBar,
+                                    resourceUsage: resourceUsageByWorkspaceID[tab.id],
+                                    allowsManualReordering: effectiveResourceSortMode == .manual,
                                     settings: tabItemSettings,
                                     livePresentation: livePresentation,
                                     frozenPresentation: $frozenTabItemPresentation
@@ -9262,9 +9297,11 @@ struct VerticalTabsSidebar: View {
                             selection: $selection,
                             selectedTabIds: $selectedTabIds,
                             lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                            allDisplayedWorkspaceIDs: orderedWorkspaceIDs,
                             dragAutoScrollController: dragAutoScrollController,
                             draggedTabId: $draggedTabId,
-                            dropIndicator: $dropIndicator
+                            dropIndicator: $dropIndicator,
+                            allowsManualReordering: effectiveResourceSortMode == .manual
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
@@ -9313,6 +9350,7 @@ struct VerticalTabsSidebar: View {
         )
         .onAppear {
             modifierKeyMonitor.start()
+            resourceUsageStore.bind(tabManager: tabManager, configuration: resourceUsageConfiguration)
             draggedTabId = nil
             dropIndicator = nil
             SidebarDragLifecycleNotification.postStateDidChange(
@@ -9322,6 +9360,7 @@ struct VerticalTabsSidebar: View {
         }
         .onDisappear {
             modifierKeyMonitor.stop()
+            resourceUsageStore.stop()
             dragAutoScrollController.stop()
             dragFailsafeMonitor.stop()
             draggedTabId = nil
@@ -9353,6 +9392,9 @@ struct VerticalTabsSidebar: View {
             guard let frozenTabItemPresentation,
                   !tabIds.contains(frozenTabItemPresentation.tabId) else { return }
             self.frozenTabItemPresentation = nil
+        }
+        .onChange(of: resourceUsageConfiguration) { configuration in
+            resourceUsageStore.bind(tabManager: tabManager, configuration: configuration)
         }
         .onReceive(NotificationCenter.default.publisher(for: SidebarDragLifecycleNotification.requestClear)) { notification in
             guard draggedTabId != nil else { return }
@@ -11507,9 +11549,11 @@ private struct SidebarEmptyArea: View {
     @Binding var selection: SidebarSelection
     @Binding var selectedTabIds: Set<UUID>
     @Binding var lastSidebarSelectionIndex: Int?
+    let allDisplayedWorkspaceIDs: [UUID]
     let dragAutoScrollController: SidebarDragAutoScrollController
     @Binding var draggedTabId: UUID?
     @Binding var dropIndicator: SidebarDropIndicator?
+    let allowsManualReordering: Bool
 
     var body: some View {
         Color.clear
@@ -11519,20 +11563,23 @@ private struct SidebarEmptyArea: View {
                 tabManager.addWorkspace(placementOverride: .end)
                 if let selectedId = tabManager.selectedTabId {
                     selectedTabIds = [selectedId]
-                    lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == selectedId }
+                    lastSidebarSelectionIndex = allDisplayedWorkspaceIDs.firstIndex(of: selectedId)
+                        ?? tabManager.tabs.firstIndex { $0.id == selectedId }
                 }
                 selection = .tabs
             }
-            .onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: SidebarTabDropDelegate(
-                targetTabId: nil,
-                tabManager: tabManager,
-                draggedTabId: $draggedTabId,
-                selectedTabIds: $selectedTabIds,
-                lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
-                targetRowHeight: nil,
-                dragAutoScrollController: dragAutoScrollController,
-                dropIndicator: $dropIndicator
-            ))
+            .applyIf(allowsManualReordering) { content in
+                content.onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: SidebarTabDropDelegate(
+                    targetTabId: nil,
+                    tabManager: tabManager,
+                    draggedTabId: $draggedTabId,
+                    selectedTabIds: $selectedTabIds,
+                    lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                    targetRowHeight: nil,
+                    dragAutoScrollController: dragAutoScrollController,
+                    dropIndicator: $dropIndicator
+                ))
+            }
             .overlay(alignment: .top) {
                 if shouldShowTopDropIndicator {
                     Rectangle()
@@ -11570,6 +11617,17 @@ enum SidebarPathFormatter {
             return "~" + trimmed.dropFirst(homeDirectoryPath.count)
         }
         return trimmed
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func applyIf(_ condition: Bool, transform: (Self) -> some View) -> some View {
+        if condition {
+            transform(self)
+        } else {
+            self
+        }
     }
 }
 
@@ -11683,6 +11741,169 @@ struct SidebarWorkspaceSnapshotBuilder {
     }
 }
 
+private struct SidebarResourceUsageDisplay: Equatable {
+    let summaryText: String
+    let tooltipText: String
+}
+
+private enum SidebarResourceUsageFormatter {
+    private static let byteCountFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB, .useTB]
+        formatter.countStyle = .memory
+        formatter.includesUnit = true
+        formatter.isAdaptive = true
+        return formatter
+    }()
+
+    static func summaryText(for usage: SidebarWorkspaceResourceUsageSnapshot) -> String {
+        let memoryText = formatMemory(usage.residentBytes)
+        guard let cpuText = formatCPU(usage.cpuPercent) else {
+            return memoryText
+        }
+        return localizedFormat(
+            "sidebar.resourceUsage.summary.memoryAndCPU",
+            defaultValue: "%1$@ · %2$@",
+            memoryText,
+            cpuText
+        )
+    }
+
+    static func tooltipText(
+        for usage: SidebarWorkspaceResourceUsageSnapshot,
+        title: String? = nil
+    ) -> String {
+        var lines: [String] = []
+        let summary = summaryText(for: usage)
+        if let title, !title.isEmpty {
+            lines.append(
+                localizedFormat(
+                    "sidebar.resourceUsage.tooltip.titleLine",
+                    defaultValue: "%1$@: %2$@",
+                    title,
+                    summary
+                )
+            )
+        } else {
+            lines.append(summary)
+        }
+
+        let visibleProcesses = usage.processes.prefix(8)
+        if visibleProcesses.isEmpty {
+            lines.append(String(localized: "sidebar.resourceUsage.noProcesses", defaultValue: "No tracked processes"))
+        } else {
+            lines.append(contentsOf: visibleProcesses.map(processLine))
+        }
+
+        let remainingProcessCount = usage.processes.count - visibleProcesses.count
+        if remainingProcessCount > 0 {
+            lines.append(
+                String(
+                    format: String(
+                        localized: "sidebar.resourceUsage.moreProcesses",
+                        defaultValue: "+%lld more processes"
+                    ),
+                    locale: .current,
+                    Int64(remainingProcessCount)
+                )
+            )
+        }
+
+        return lines.joined(separator: "\n")
+    }
+
+    private static func processLine(_ process: SidebarWorkspaceProcessBreakdown) -> String {
+        let memoryText = formatMemory(process.residentBytes)
+        if let cpuText = formatCPU(process.cpuPercent) {
+            return localizedFormat(
+                "sidebar.resourceUsage.processLine.memoryAndCPU",
+                defaultValue: "%1$@ %2$@ (%3$lld) · %4$@ · %5$@",
+                process.kind.localizedLabel,
+                process.name,
+                Int64(process.pid),
+                memoryText,
+                cpuText
+            )
+        }
+        return localizedFormat(
+            "sidebar.resourceUsage.processLine.memoryOnly",
+            defaultValue: "%1$@ %2$@ (%3$lld) · %4$@",
+            process.kind.localizedLabel,
+            process.name,
+            Int64(process.pid),
+            memoryText
+        )
+    }
+
+    private static func formatMemory(_ bytes: UInt64) -> String {
+        byteCountFormatter.string(fromByteCount: Int64(clamping: bytes))
+    }
+
+    private static func formatCPU(_ cpuPercent: Double) -> String? {
+        guard cpuPercent >= 0.1 else { return nil }
+        if cpuPercent >= 10 {
+            return localizedFormat(
+                "sidebar.resourceUsage.cpuPercent.integer",
+                defaultValue: "%1$lld%%",
+                Int64(cpuPercent.rounded())
+            )
+        }
+        return localizedFormat(
+            "sidebar.resourceUsage.cpuPercent.fractional",
+            defaultValue: "%1$.1f%%",
+            cpuPercent
+        )
+    }
+
+    private static func localizedFormat(
+        _ key: String,
+        defaultValue: String,
+        _ arguments: CVarArg...
+    ) -> String {
+        let format = Bundle.main.localizedString(forKey: key, value: defaultValue, table: nil)
+        return String(
+            format: format,
+            locale: .current,
+            arguments: arguments
+        )
+    }
+}
+
+private struct SidebarResourceUsageSummaryRow: View {
+    let title: String
+    let usage: SidebarWorkspaceResourceUsageSnapshot
+    let isActive: Bool
+
+    private var titleColor: Color {
+        isActive ? .white.opacity(0.86) : .secondary
+    }
+
+    private var summaryColor: Color {
+        isActive ? .white.opacity(0.78) : .secondary
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 10.5, weight: .semibold))
+                .foregroundColor(titleColor)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Text(SidebarResourceUsageFormatter.summaryText(for: usage))
+                .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                .foregroundColor(summaryColor)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .safeHelp(SidebarResourceUsageFormatter.tooltipText(for: usage, title: title))
+    }
+}
+
 private final class SidebarTabItemContextMenuState: ObservableObject {
     var isVisible = false
     var hasDeferredWorkspaceObservationInvalidation = false
@@ -11706,11 +11927,14 @@ private struct TabItemView: View, Equatable {
         lhs.latestNotificationText == rhs.latestNotificationText &&
         lhs.rowSpacing == rhs.rowSpacing &&
         lhs.showsModifierShortcutHints == rhs.showsModifierShortcutHints &&
+        lhs.allDisplayedWorkspaceIDs == rhs.allDisplayedWorkspaceIDs &&
         lhs.contextMenuWorkspaceIds == rhs.contextMenuWorkspaceIds &&
         lhs.remoteContextMenuWorkspaceIds == rhs.remoteContextMenuWorkspaceIds &&
         lhs.allRemoteContextMenuTargetsConnecting == rhs.allRemoteContextMenuTargetsConnecting &&
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.allContextMenuWorkspacesHideTerminalScrollBar == rhs.allContextMenuWorkspacesHideTerminalScrollBar &&
+        lhs.resourceUsage == rhs.resourceUsage &&
+        lhs.allowsManualReordering == rhs.allowsManualReordering &&
         lhs.settings == rhs.settings
     }
 
@@ -11733,6 +11957,7 @@ private struct TabItemView: View, Equatable {
     let setSelectionToTabs: () -> Void
     @Binding var selectedTabIds: Set<UUID>
     @Binding var lastSidebarSelectionIndex: Int?
+    let allDisplayedWorkspaceIDs: [UUID]
     let showsModifierShortcutHints: Bool
     let dragAutoScrollController: SidebarDragAutoScrollController
     @Binding var draggedTabId: UUID?
@@ -11742,6 +11967,8 @@ private struct TabItemView: View, Equatable {
     let allRemoteContextMenuTargetsConnecting: Bool
     let allRemoteContextMenuTargetsDisconnected: Bool
     let allContextMenuWorkspacesHideTerminalScrollBar: Bool
+    let resourceUsage: SidebarWorkspaceResourceUsageSnapshot?
+    let allowsManualReordering: Bool
     let settings: SidebarTabItemSettingsSnapshot
     let livePresentation: SidebarTabItemPresentationSnapshot
     @Binding var frozenPresentation: SidebarTabItemPresentationSnapshot?
@@ -11808,6 +12035,17 @@ private struct TabItemView: View, Equatable {
 
     private var openSidebarPortLinksInCmuxBrowser: Bool {
         settings.openPortLinksInCmuxBrowser
+    }
+
+    private var resourceUsageDisplay: SidebarResourceUsageDisplay? {
+        guard let resourceUsage else { return nil }
+        return SidebarResourceUsageDisplay(
+            summaryText: SidebarResourceUsageFormatter.summaryText(for: resourceUsage),
+            tooltipText: SidebarResourceUsageFormatter.tooltipText(
+                for: resourceUsage,
+                title: tab.title
+            )
+        )
     }
 
     private var titleFontWeight: Font.Weight {
@@ -11985,7 +12223,9 @@ private struct TabItemView: View, Equatable {
         let closeButtonTooltip = workspaceSnapshot.isPinned
             ? protectedWorkspaceTooltip
             : KeyboardShortcutSettings.Action.closeWorkspace.tooltip(closeWorkspaceTooltip)
-        let accessibilityHintText = String(localized: "sidebar.workspace.accessibilityHint", defaultValue: "Activate to focus this workspace. Drag to reorder, or use Move Up and Move Down actions.")
+        let accessibilityHintText = allowsManualReordering
+            ? String(localized: "sidebar.workspace.accessibilityHint", defaultValue: "Activate to focus this workspace. Drag to reorder, or use Move Up and Move Down actions.")
+            : String(localized: "sidebar.workspace.accessibilityHint.memorySort", defaultValue: "Activate to focus this workspace. Manual reordering is disabled while sorting by memory.")
         let moveUpActionText = String(localized: "sidebar.workspace.moveUpAction", defaultValue: "Move Up")
         let moveDownActionText = String(localized: "sidebar.workspace.moveDownAction", defaultValue: "Move Down")
         let latestNotificationSubtitle = latestNotificationText
@@ -12018,6 +12258,15 @@ private struct TabItemView: View, Equatable {
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .layoutPriority(1)
+
+                if let resourceUsageDisplay {
+                    Text(resourceUsageDisplay.summaryText)
+                        .font(.system(size: 9.5, weight: .medium, design: .monospaced))
+                        .foregroundColor(activeSecondaryColor(0.78))
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .safeHelp(resourceUsageDisplay.tooltipText)
+                }
 
                 Spacer(minLength: 0)
 
@@ -12330,25 +12579,28 @@ private struct TabItemView: View, Equatable {
         .onChange(of: settings) { _ in
             refreshWorkspaceSnapshot(force: true)
         }
-        .onDrag {
-            #if DEBUG
-            cmuxDebugLog("sidebar.onDrag tab=\(tab.id.uuidString.prefix(5))")
-            #endif
-            draggedTabId = tab.id
-            dropIndicator = nil
-            return SidebarTabDragPayload.provider(for: tab.id)
+        .applyIf(allowsManualReordering) { content in
+            content
+                .onDrag {
+                    #if DEBUG
+                    cmuxDebugLog("sidebar.onDrag tab=\(tab.id.uuidString.prefix(5))")
+                    #endif
+                    draggedTabId = tab.id
+                    dropIndicator = nil
+                    return SidebarTabDragPayload.provider(for: tab.id)
+                }
+                .internalOnlyTabDrag()
+                .onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: SidebarTabDropDelegate(
+                    targetTabId: tab.id,
+                    tabManager: tabManager,
+                    draggedTabId: $draggedTabId,
+                    selectedTabIds: $selectedTabIds,
+                    lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                    targetRowHeight: rowHeight,
+                    dragAutoScrollController: dragAutoScrollController,
+                    dropIndicator: $dropIndicator
+                ))
         }
-        .internalOnlyTabDrag()
-        .onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: SidebarTabDropDelegate(
-            targetTabId: tab.id,
-            tabManager: tabManager,
-            draggedTabId: $draggedTabId,
-            selectedTabIds: $selectedTabIds,
-            lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
-            targetRowHeight: rowHeight,
-            dragAutoScrollController: dragAutoScrollController,
-            dropIndicator: $dropIndicator
-        ))
         .onDrop(of: BonsplitTabDragPayload.dropContentTypes, delegate: SidebarBonsplitTabDropDelegate(
             targetWorkspaceId: tab.id,
             tabManager: tabManager,
@@ -12366,9 +12618,11 @@ private struct TabItemView: View, Equatable {
         .accessibilityLabel(Text(accessibilityTitle))
         .accessibilityHint(Text(accessibilityHintText))
         .accessibilityAction(named: Text(moveUpActionText)) {
+            guard allowsManualReordering else { return }
             moveBy(-1)
         }
         .accessibilityAction(named: Text(moveDownActionText)) {
+            guard allowsManualReordering else { return }
             moveBy(1)
         }
         .contextMenu {
@@ -12600,18 +12854,18 @@ private struct TabItemView: View, Equatable {
         Button(String(localized: "contextMenu.moveUp", defaultValue: "Move Up")) {
             moveBy(-1)
         }
-        .disabled(index == 0)
+        .disabled(!allowsManualReordering || index == 0)
 
         Button(String(localized: "contextMenu.moveDown", defaultValue: "Move Down")) {
             moveBy(1)
         }
-        .disabled(index >= tabManager.tabs.count - 1)
+        .disabled(!allowsManualReordering || index >= tabManager.tabs.count - 1)
 
         Button(String(localized: "contextMenu.moveToTop", defaultValue: "Move to Top")) {
             tabManager.moveTabsToTop(Set(targetIds))
             syncSelectionAfterMutation()
         }
-        .disabled(targetIds.isEmpty)
+        .disabled(!allowsManualReordering || targetIds.isEmpty)
 
         let referenceWindowId = AppDelegate.shared?.windowId(for: tabManager)
         let windowMoveTargets = AppDelegate.shared?.windowMoveTargets(referenceWindowId: referenceWindowId) ?? []
@@ -12660,12 +12914,12 @@ private struct TabItemView: View, Equatable {
         Button(String(localized: "contextMenu.closeWorkspacesBelow", defaultValue: "Close Workspaces Below")) {
             closeTabsBelow(tabId: tab.id)
         }
-        .disabled(index >= tabManager.tabs.count - 1)
+        .disabled(!allowsManualReordering || index >= tabManager.tabs.count - 1)
 
         Button(String(localized: "contextMenu.closeWorkspacesAbove", defaultValue: "Close Workspaces Above")) {
             closeTabsAbove(tabId: tab.id)
         }
-        .disabled(index == 0)
+        .disabled(!allowsManualReordering || index == 0)
 
         Divider()
 
@@ -12741,11 +12995,12 @@ private struct TabItemView: View, Equatable {
     }
 
     private func moveBy(_ delta: Int) {
+        guard allowsManualReordering else { return }
         let targetIndex = index + delta
         guard targetIndex >= 0, targetIndex < tabManager.tabs.count else { return }
         guard tabManager.reorderWorkspace(tabId: tab.id, toIndex: targetIndex) else { return }
         selectedTabIds = [tab.id]
-        lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == tab.id }
+        lastSidebarSelectionIndex = index
         tabManager.selectTab(tab)
         setSelectionToTabs()
     }
@@ -12768,7 +13023,8 @@ private struct TabItemView: View, Equatable {
         if isShift, let lastIndex = lastSidebarSelectionIndex {
             let lower = min(lastIndex, index)
             let upper = max(lastIndex, index)
-            let rangeIds = tabManager.tabs[lower...upper].map { $0.id }
+            let clampedUpper = min(upper, allDisplayedWorkspaceIDs.count - 1)
+            let rangeIds = Array(allDisplayedWorkspaceIDs[lower...clampedUpper])
             if isCommand {
                 selectedTabIds.formUnion(rangeIds)
             } else {
