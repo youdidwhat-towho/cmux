@@ -2300,6 +2300,9 @@ struct CMUXCLI {
                     print(jsonString(response))
                 }
 
+            case "ssh-attach":
+                try runVMSSHAttach(commandArgs: rest, client: client)
+
             case "exec":
                 guard let vmId = rest.first else {
                     throw CLIError(message: "Usage: cmux vm exec <id> -- <command...>")
@@ -2507,6 +2510,8 @@ struct CMUXCLI {
         case "vm-pty-attach":
             try runVMPtyAttach(commandArgs: commandArgs, client: client)
         case "vm-ssh-attach":
+            // Hidden compatibility alias for workspaces created before the split helper was
+            // nested under `cmux vm`.
             try runVMSSHAttach(commandArgs: commandArgs, client: client)
 
         case "new-workspace":
@@ -4763,7 +4768,7 @@ struct CMUXCLI {
         if let vmIDForSplitAttach,
            sshOptions.skipDaemonBootstrap {
             let executablePath = resolvedExecutableURL()?.path ?? (args.first ?? "cmux")
-            let splitAttachCommand = "\(shellQuote(executablePath)) vm-ssh-attach --id \(shellQuote(vmIDForSplitAttach))"
+            let splitAttachCommand = "\(shellQuote(executablePath)) vm ssh-attach --id \(shellQuote(vmIDForSplitAttach))"
             reusableTerminalStartupCommand = buildReusableSSHStartupCommand(
                 sshCommand: splitAttachCommand,
                 shellFeatures: shellFeaturesValue,
@@ -5860,14 +5865,14 @@ struct CMUXCLI {
     private func runVMSSHAttach(commandArgs: [String], client: SocketClient) throws {
         let (vmIDOpt, remaining) = parseOption(commandArgs, name: "--id")
         if let unknown = remaining.first(where: { $0.hasPrefix("--") }) {
-            throw CLIError(message: "vm-ssh-attach: unknown flag '\(unknown)'")
+            throw CLIError(message: "vm ssh-attach: unknown flag '\(unknown)'")
         }
         guard remaining.isEmpty else {
-            throw CLIError(message: "Usage: cmux vm-ssh-attach --id <vm-id>")
+            throw CLIError(message: "Usage: cmux vm ssh-attach --id <vm-id>")
         }
         guard let vmID = vmIDOpt?.trimmingCharacters(in: .whitespacesAndNewlines),
               !vmID.isEmpty else {
-            throw CLIError(message: "Usage: cmux vm-ssh-attach --id <vm-id>")
+            throw CLIError(message: "Usage: cmux vm ssh-attach --id <vm-id>")
         }
 
         let attachInfoStartedAt = Date()
@@ -5881,7 +5886,7 @@ struct CMUXCLI {
         )
         let sshArguments = buildSSHCommandArguments(options)
         guard let launchPath = sshArguments.first else {
-            throw CLIError(message: "vm-ssh-attach: failed to construct ssh command")
+            throw CLIError(message: "vm ssh-attach: failed to construct ssh command")
         }
         client.close()
         try execInteractiveProgram(
