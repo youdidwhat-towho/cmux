@@ -3060,6 +3060,45 @@ final class TerminalWindowPortalLifecycleTests: XCTestCase {
         XCTWaiter().wait(for: [expectation], timeout: 1.0)
     }
 
+    func testHostedTerminalReportsNaturalCapacityWhenContainerGrows() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        defer { window.orderOut(nil) }
+
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        let hosted = GhosttySurfaceScrollView(
+            surfaceView: GhosttyNSView(frame: NSRect(x: 0, y: 0, width: 240, height: 120))
+        )
+        hosted.frame = NSRect(x: 0, y: 0, width: 360, height: 180)
+        contentView.addSubview(hosted)
+        hosted.needsLayout = true
+        hosted.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(
+            hosted.debugNaturalCapacityContainerReportSizes().last,
+            CGSize(width: 360, height: 180),
+            "Initial layout should report the full host container, not only the rendered surface"
+        )
+
+        hosted.frame.size.height = 320
+        hosted.needsLayout = true
+        hosted.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(
+            hosted.debugNaturalCapacityContainerReportSizes().last,
+            CGSize(width: 360, height: 320),
+            "A vertical grow must report the new natural host height even if the rendered terminal frame stayed pinned"
+        )
+    }
+
     func testPortalHostInstallsAboveContentViewForVisibility() {
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),

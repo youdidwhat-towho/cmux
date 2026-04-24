@@ -9846,6 +9846,7 @@ final class GhosttySurfaceScrollView: NSView {
     private var isActive = true
     private var lastFocusRefreshAt: CFTimeInterval = 0
     private var lastRequestedPortalOcclusionVisible: Bool?
+    private var lastNaturalReportContainerSize: CGSize = .zero
     private var activeDropZone: DropZone?
     private var pendingDropZone: DropZone?
     private var dropZoneOverlayAnimationGeneration: UInt64 = 0
@@ -9865,6 +9866,9 @@ final class GhosttySurfaceScrollView: NSView {
     private var lastDropZoneOverlayLogSignature: String?
     private var lastDragGeometryLogSignature: String?
     private var dragLayoutLogSequence: UInt64 = 0
+#if DEBUG
+    private var debugNaturalCapacityContainerReports: [CGSize] = []
+#endif
     private static let tabTransferPasteboardType = NSPasteboard.PasteboardType("com.splittabbar.tabtransfer")
     private static let sidebarTabReorderPasteboardType = NSPasteboard.PasteboardType("com.cmux.sidebar-tab-reorder")
     private static var flashCounts: [UUID: Int] = [:]
@@ -9967,6 +9971,12 @@ final class GhosttySurfaceScrollView: NSView {
         setDropZoneOverlay(zone: nil)
         return (before, after, bounds.size)
     }
+
+#if DEBUG
+    func debugNaturalCapacityContainerReportSizes() -> [CGSize] {
+        debugNaturalCapacityContainerReports
+    }
+#endif
 
     var debugSurfaceId: UUID? {
         surfaceView.terminalSurface?.id
@@ -10567,6 +10577,7 @@ final class GhosttySurfaceScrollView: NSView {
         if didScrollbarAppearanceChange {
             scrollView.tile()
         }
+        reportNaturalCapacityIfContainerChanged(targetSize)
         scrollView.layoutSubtreeIfNeeded()
         updateNotificationRingPath()
         updateFlashPath(style: lastFlashStyle)
@@ -10586,6 +10597,19 @@ final class GhosttySurfaceScrollView: NSView {
 
     private func sizeApproximatelyEqual(_ lhs: CGSize, _ rhs: CGSize, epsilon: CGFloat = 0.0001) -> Bool {
         abs(lhs.width - rhs.width) <= epsilon && abs(lhs.height - rhs.height) <= epsilon
+    }
+
+    private func reportNaturalCapacityIfContainerChanged(_ targetSize: CGSize) {
+        guard targetSize.width > 0, targetSize.height > 0 else { return }
+        guard !sizeApproximatelyEqual(lastNaturalReportContainerSize, targetSize, epsilon: 0.5) else {
+            return
+        }
+#if DEBUG
+        debugNaturalCapacityContainerReports.append(targetSize)
+#endif
+        guard let terminalSurface = surfaceView.terminalSurface else { return }
+        lastNaturalReportContainerSize = targetSize
+        terminalSurface.reportNaturalToDaemon(reason: "containerGeometry")
     }
 
     private func updateConstrainedSizeBorder(surfaceFrame: CGRect, containerSize: CGSize) {
