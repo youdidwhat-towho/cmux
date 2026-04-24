@@ -42,7 +42,7 @@ See `web/.env.example`. The VM-specific vars:
   Produced by `web/scripts/build-cloud-vm-images.ts`.
 - `E2B_SANDBOX_TEMPLATE` — legacy scratch template. Pass explicitly with `--image` if needed.
 - `FREESTYLE_SANDBOX_SNAPSHOT` — Freestyle snapshot id for `vm new` / `vm attach`. Produced by
-  `scratch/vm-experiments/images/build-freestyle.ts`.
+  `web/scripts/build-cloud-vm-images.ts`.
 - `CMUX_VM_DEFAULT_PROVIDER` — `freestyle` (default) or `e2b`.
 
 ## Provider matrix

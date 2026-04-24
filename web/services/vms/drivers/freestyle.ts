@@ -27,9 +27,9 @@ import {
   type ReusableRpcLease,
 } from "./wsLease";
 
-// Default cmux-sandbox snapshot. Produced by scratch/vm-experiments/images/build-freestyle.ts.
-// Override via FREESTYLE_SANDBOX_SNAPSHOT. Image bakes sshd + cmuxd-remote + mutagen-agent.
-export const DEFAULT_FREESTYLE_SNAPSHOT_ID = "sc-5lqx827wp9a2lz0vb364";
+// Default cmux-sandbox snapshot. Produced by web/scripts/build-cloud-vm-images.ts.
+// Override via FREESTYLE_SANDBOX_SNAPSHOT. Image bakes cmuxd-remote and validates Python/OpenSSL.
+export const DEFAULT_FREESTYLE_SNAPSHOT_ID = "sc-mt237w1nd7c7673bd03m";
 
 function defaultSnapshotId(): string {
   return process.env.FREESTYLE_SANDBOX_SNAPSHOT?.trim() || DEFAULT_FREESTYLE_SNAPSHOT_ID;
@@ -495,7 +495,11 @@ async function readFreestyleWebSocketService(vm: FreestyleVmRef): Promise<{
 }> {
   const result = await execFreestyleOrThrow(
     vm,
-    "systemctl cat cmuxd-ws 2>/dev/null || true; ps auxww | grep cmuxd-remote | grep -v grep || true",
+    [
+      "cat /etc/systemd/system/cmuxd-ws.service 2>/dev/null || true",
+      "cat /lib/systemd/system/cmuxd-ws.service 2>/dev/null || true",
+      "ps auxww | grep cmuxd-remote | grep -v grep || true",
+    ].join("; "),
   );
   const stdout = result.stdout ?? "";
   const ptyLeasePath =

@@ -17,7 +17,17 @@ const webRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(webRoot, "..");
 const buildRoot = path.join(webRoot, ".cmux-cloud-build");
 const UTF8_LOCALE = "C.UTF-8";
-const CLOUD_SHELL_PACKAGES = ["bash", "ca-certificates", "curl", "git", "sudo"];
+const CLOUD_SHELL_PACKAGES = [
+  "bash",
+  "ca-certificates",
+  "curl",
+  "git",
+  "libssl3t64",
+  "locales",
+  "openssl",
+  "python3",
+  "sudo",
+];
 const PRIMARY_LINUX_USER = "cmux";
 
 function argValue(name: string): string | undefined {
@@ -83,12 +93,13 @@ async function buildE2BTemplate(tag: string, daemonPath: string, skipCache: bool
   const template = Template({ fileContextPath })
     .fromUbuntuImage("24.04")
     .aptInstall(CLOUD_SHELL_PACKAGES, { noInstallRecommends: true })
-    .setEnvs({ LANG: UTF8_LOCALE })
+    .setEnvs({ LANG: UTF8_LOCALE, LC_ALL: UTF8_LOCALE, LANGUAGE: UTF8_LOCALE })
     .copy(path.basename(daemonPath), "/usr/local/bin/cmuxd-remote", {
       forceUpload: true,
       mode: 0o755,
     })
     .runCmd(cloudRootSetupCommands(), { user: "root" })
+    .runCmd(cloudImageSmokeTestCommands(), { user: "root" })
     .setStartCmd(
       "/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-pty-lease.json --rpc-auth-lease-file /tmp/cmux/attach-rpc-lease.json --shell /bin/bash",
       waitForURL("http://127.0.0.1:7777/healthz", 200),
@@ -131,6 +142,7 @@ async function buildFreestyleSnapshot(tag: string, daemonPath: string, skipCache
 
 function cloudRootSetupCommands(): string[] {
   return [
+    `printf 'LANG=${UTF8_LOCALE}\\nLC_ALL=${UTF8_LOCALE}\\n' > /etc/default/locale`,
     `useradd -m -s /bin/bash ${PRIMARY_LINUX_USER} || true`,
     `printf '${PRIMARY_LINUX_USER} ALL=(ALL) NOPASSWD:ALL\\n' > /etc/sudoers.d/90-${PRIMARY_LINUX_USER}-nopasswd`,
     `chmod 0440 /etc/sudoers.d/90-${PRIMARY_LINUX_USER}-nopasswd`,
@@ -139,13 +151,38 @@ function cloudRootSetupCommands(): string[] {
   ];
 }
 
+function cloudImageSmokeTestCommands(): string[] {
+  return [
+    "openssl version -a >/tmp/cmux-openssl-version.txt",
+    "python3 -X faulthandler -c 'import ssl; print(ssl.OPENSSL_VERSION)'",
+    "python3 -m http.server --help >/dev/null",
+  ];
+}
+
+function freestylePythonOpenSSLCommands(): string[] {
+  return [
+    "apt-get update",
+    "mkdir -p /tmp/cmux-libssl /opt/cmux/openssl/lib",
+    "cd /tmp/cmux-libssl && apt-get download libssl3t64",
+    "dpkg-deb -x /tmp/cmux-libssl/libssl3t64_*.deb /tmp/cmux-libssl/root",
+    "cp /tmp/cmux-libssl/root/usr/lib/x86_64-linux-gnu/libssl.so.3 /opt/cmux/openssl/lib/",
+    "cp /tmp/cmux-libssl/root/usr/lib/x86_64-linux-gnu/libcrypto.so.3 /opt/cmux/openssl/lib/",
+    "cat <<'EOF' >/usr/local/bin/python3\n#!/bin/sh\nexport LD_LIBRARY_PATH=\"/opt/cmux/openssl/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}\"\nexec /usr/bin/python3 \"$@\"\nEOF",
+    "chmod 0755 /usr/local/bin/python3",
+    "ln -sf /usr/local/bin/python3 /usr/local/bin/python",
+    "rm -rf /tmp/cmux-libssl /var/lib/apt/lists/*",
+  ];
+}
+
 function freestyleBaseDockerfileContent(daemonURL: string): string {
   return [
     "FROM ubuntu:24.04",
-    `ENV LANG=${UTF8_LOCALE}`,
+    `ENV LANG=${UTF8_LOCALE} LC_ALL=${UTF8_LOCALE} LANGUAGE=${UTF8_LOCALE}`,
     `RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends ${CLOUD_SHELL_PACKAGES.join(" ")} && rm -rf /var/lib/apt/lists/*`,
+    ...freestylePythonOpenSSLCommands().map((command) => `RUN ${command}`),
     `RUN curl -fsSL ${shellQuote(daemonURL)} -o /usr/local/bin/cmuxd-remote && chmod 0755 /usr/local/bin/cmuxd-remote`,
     ...cloudRootSetupCommands().map((command) => `RUN ${command}`),
+    ...cloudImageSmokeTestCommands().map((command) => `RUN ${command}`),
     "RUN mkdir -p /etc/systemd/system/multi-user.target.wants",
     "RUN cat <<'EOF' >/etc/systemd/system/cmuxd-ws.service\n[Unit]\nDescription=cmuxd websocket daemon\nAfter=network.target\n\n[Service]\nType=simple\nUser=root\nExecStart=/usr/local/bin/cmuxd-remote serve --ws --listen 0.0.0.0:7777 --auth-lease-file /tmp/cmux/attach-pty-lease.json --rpc-auth-lease-file /tmp/cmux/attach-rpc-lease.json --shell /bin/bash\nRestart=always\nRestartSec=1\n\n[Install]\nWantedBy=multi-user.target\nEOF",
     "RUN ln -sf /etc/systemd/system/cmuxd-ws.service /etc/systemd/system/multi-user.target.wants/cmuxd-ws.service",
