@@ -31,17 +31,19 @@ type SessionStatus struct {
 }
 
 type attachmentState struct {
-	cols      int
-	rows      int
-	updatedAt time.Time
+	cols       int
+	rows       int
+	updatedAt  time.Time
+	updatedSeq uint64
 }
 
 type sessionState struct {
-	attachments   map[string]attachmentState
-	effectiveCols int
-	effectiveRows int
-	lastKnownCols int
-	lastKnownRows int
+	attachments             map[string]attachmentState
+	effectiveCols           int
+	effectiveRows           int
+	lastKnownCols           int
+	lastKnownRows           int
+	nextAttachmentUpdateSeq uint64
 }
 
 type Manager struct {
@@ -66,9 +68,10 @@ func (m *Manager) Open(cols, rows int) (sessionID, attachmentID string) {
 	sessionID, state := m.ensureLocked("")
 	attachmentID = m.nextAttachmentIDLocked()
 	state.attachments[attachmentID] = attachmentState{
-		cols:      cols,
-		rows:      rows,
-		updatedAt: time.Now().UTC(),
+		cols:       cols,
+		rows:       rows,
+		updatedAt:  time.Now().UTC(),
+		updatedSeq: nextAttachmentUpdateSeq(state),
 	}
 	recomputeSessionSize(state)
 
@@ -108,9 +111,10 @@ func (m *Manager) Attach(sessionID, attachmentID string, cols, rows int) error {
 	}
 
 	state.attachments[attachmentID] = attachmentState{
-		cols:      cols,
-		rows:      rows,
-		updatedAt: time.Now().UTC(),
+		cols:       cols,
+		rows:       rows,
+		updatedAt:  time.Now().UTC(),
+		updatedSeq: nextAttachmentUpdateSeq(state),
 	}
 	recomputeSessionSize(state)
 	return nil
@@ -133,9 +137,10 @@ func (m *Manager) Resize(sessionID, attachmentID string, cols, rows int) error {
 	}
 
 	state.attachments[attachmentID] = attachmentState{
-		cols:      cols,
-		rows:      rows,
-		updatedAt: time.Now().UTC(),
+		cols:       cols,
+		rows:       rows,
+		updatedAt:  time.Now().UTC(),
+		updatedSeq: nextAttachmentUpdateSeq(state),
 	}
 	recomputeSessionSize(state)
 	return nil
@@ -179,7 +184,8 @@ func (m *Manager) ensureLocked(sessionID string) (string, *sessionState) {
 	state, ok := m.sessions[sessionID]
 	if !ok {
 		state = &sessionState{
-			attachments: map[string]attachmentState{},
+			attachments:             map[string]attachmentState{},
+			nextAttachmentUpdateSeq: 1,
 		}
 		m.sessions[sessionID] = state
 	}
@@ -203,6 +209,9 @@ func recomputeSessionSize(state *sessionState) {
 	minCols := 0
 	minRows := 0
 	for _, attachment := range state.attachments {
+		if attachment.cols <= 0 || attachment.rows <= 0 {
+			continue
+		}
 		if minCols == 0 || attachment.cols < minCols {
 			minCols = attachment.cols
 		}
@@ -210,11 +219,23 @@ func recomputeSessionSize(state *sessionState) {
 			minRows = attachment.rows
 		}
 	}
+	if minCols == 0 {
+		minCols = state.lastKnownCols
+	}
+	if minRows == 0 {
+		minRows = state.lastKnownRows
+	}
 
 	state.effectiveCols = minCols
 	state.effectiveRows = minRows
 	state.lastKnownCols = minCols
 	state.lastKnownRows = minRows
+}
+
+func nextAttachmentUpdateSeq(state *sessionState) uint64 {
+	seq := state.nextAttachmentUpdateSeq
+	state.nextAttachmentUpdateSeq++
+	return seq
 }
 
 func snapshotLocked(sessionID string, state *sessionState) SessionStatus {

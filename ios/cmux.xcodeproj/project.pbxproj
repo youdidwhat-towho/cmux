@@ -82,6 +82,7 @@
 		B0D54FA54A22B339C183AFE8 /* TerminalTextInputPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D639E6992408AFD926D7AD /* TerminalTextInputPipelineTests.swift */; };
 		B2DC2BC8C0D8DFC2241C18A5 /* InputStrategyLabUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C032FB689174A5691978BF3C /* InputStrategyLabUITests.swift */; };
 		BA850F565EACFE5F2A60D7C6 /* LiveTCPDaemonTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAB7649D9BEC661822B7B6 /* LiveTCPDaemonTransportTests.swift */; };
+		C14963B8B1BEEC798E7E424B /* IOSMacWorkspaceSyncUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33EE40660344FE0078509D8 /* IOSMacWorkspaceSyncUITests.swift */; };
 		C17D7E1277E505D749861710 /* LiveAnchormuxConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5272CEA127F60CF7B1B1D0A /* LiveAnchormuxConfigTests.swift */; };
 		C224C1EE2103A018655EA06D /* AppDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CB0909BA2BC2AE35B3437D /* AppDatabase.swift */; };
 		C335C06261DCD7CA24B1D003 /* UITestConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EFD4970FE1D3699CBDB7029 /* UITestConfig.swift */; };
@@ -221,6 +222,7 @@
 		C18818FD4536DFDC6D6FA1D5 /* KeyboardSyncUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardSyncUITests.swift; sourceTree = "<group>"; };
 		C23026BB86D65831DC46C0F9 /* TerminalServerDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalServerDiscovery.swift; sourceTree = "<group>"; };
 		C2CE228A54A779328A936C9A /* TerminalWebSocketDaemonTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWebSocketDaemonTransport.swift; sourceTree = "<group>"; };
+		C33EE40660344FE0078509D8 /* IOSMacWorkspaceSyncUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IOSMacWorkspaceSyncUITests.swift; sourceTree = "<group>"; };
 		CB4B72E3C6B3BD557316FA09 /* cmuxd-remote */ = {isa = PBXFileReference; path = "cmuxd-remote"; sourceTree = "<group>"; };
 		D01F9176DE666BAE97AA807B /* LocalConfig.example.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = LocalConfig.example.plist; sourceTree = "<group>"; };
 		D3FF5B325FC76EBB175EE6CA /* ServerScannerView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ServerScannerView.swift; sourceTree = "<group>"; };
@@ -337,6 +339,7 @@
 				D4D3B3CB64500DDB27D7C781 /* ConversationE2ETests.swift */,
 				FADE32B7A47A43C3608972AC /* InputPillVisibilityAssertions.swift */,
 				C032FB689174A5691978BF3C /* InputStrategyLabUITests.swift */,
+				C33EE40660344FE0078509D8 /* IOSMacWorkspaceSyncUITests.swift */,
 				C18818FD4536DFDC6D6FA1D5 /* KeyboardSyncUITests.swift */,
 				605A8CE9A196BFC7BD787310 /* MessagePositionUITests.swift */,
 				A6673EB0D4EAD00E8605146E /* MultilineInputUITests.swift */,
@@ -764,6 +767,7 @@
 				E53E64DA59BFCB7E396E0865 /* AuthPersistenceUITests.swift in Sources */,
 				5ADD69A102CC3AE5FF533DCC /* ChatFix1MainMockUITests.swift in Sources */,
 				CC62BB48ED0957484E001EFB /* ConversationE2ETests.swift in Sources */,
+				C14963B8B1BEEC798E7E424B /* IOSMacWorkspaceSyncUITests.swift in Sources */,
 				D8A1B4B558D251DE7BF82D4A /* InputPillVisibilityAssertions.swift in Sources */,
 				B2DC2BC8C0D8DFC2241C18A5 /* InputStrategyLabUITests.swift in Sources */,
 				1AB68DA70F76F585B6332F68 /* KeyboardSyncUITests.swift in Sources */,

@@ -15058,14 +15058,15 @@ final class MobileDaemonBridgeInline {
             return tag.isEmpty ? "\(appSupport)/cmuxd.sock" : "\(appSupport)/cmuxd-dev-\(tag).sock"
         }()
 
-        let port = resolvePort(env)
-        let secret = loadOrGenerateSecret()
-
         // Kill any stale daemon still listening on the socket (prior
         // mac app instance that crashed mid-shutdown, etc.) so we always
         // start from a clean slate. The daemon is owned by this app
         // instance and dies with it.
         killDaemonOnSocket(socketPath: daemonSocket)
+
+        let instanceID = Self.resolveInstanceID(tag: tag, socketPath: daemonSocket)
+        let port = resolvePort(env, instanceID: instanceID)
+        let secret = loadOrGenerateSecret()
 
         // Derive the DB path from the socket so multiple tagged builds get
         // independent state. Matches the plan's SSOT direction: daemon owns
@@ -15079,6 +15080,8 @@ final class MobileDaemonBridgeInline {
             "--unix", "--socket", daemonSocket,
             "--ws-port", String(port),
             "--ws-secret", secret,
+            "--instance-id", instanceID,
+            "--parent-pid", String(ProcessInfo.processInfo.processIdentifier),
             "--db-path", dbPath,
         ]
         proc.standardOutput = FileHandle.nullDevice
@@ -15385,11 +15388,14 @@ final class MobileDaemonBridgeInline {
     }
 
     private func killDaemonOnSocket(socketPath: String) {
-        // Use pgrep to find processes with this socket path in their args
+        // Use pgrep to list daemon command lines, then do literal matching
+        // in Swift. Socket paths live under Application Support and can
+        // contain regex metacharacters/spaces, so pgrep -f with an interpolated
+        // pattern can miss the exact stale daemon we need to kill.
         let pipe = Pipe()
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/pgrep")
-        proc.arguments = ["-f", "cmuxd-remote.*--socket.*\(socketPath)"]
+        proc.arguments = ["-af", "cmuxd-remote"]
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
         try? proc.run()
@@ -15397,7 +15403,13 @@ final class MobileDaemonBridgeInline {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         if let output = String(data: data, encoding: .utf8) {
             for line in output.split(separator: "\n") {
-                if let pid = Int32(line.trimmingCharacters(in: .whitespaces)),
+                let commandLine = String(line)
+                guard commandLine.contains("--socket"),
+                      commandLine.contains(socketPath) else {
+                    continue
+                }
+                let pidToken = line.split(separator: " ", maxSplits: 1).first ?? ""
+                if let pid = Int32(pidToken.trimmingCharacters(in: .whitespaces)),
                    pid != ProcessInfo.processInfo.processIdentifier {
                     kill(pid, SIGTERM)
                     NSLog("📱 MobileBridge: killed existing daemon pid=%d on %@", pid, socketPath)
@@ -15424,12 +15436,12 @@ final class MobileDaemonBridgeInline {
         cleanup()
     }
 
-    private func resolvePort(_ env: [String: String]) -> Int {
+    private func resolvePort(_ env: [String: String], instanceID: String) -> Int {
         if let s = env["CMUX_MOBILE_WS_PORT"], let p = Int(s) { return p }
         // Derive a stable port from tag or bundle ID to avoid collisions.
         // Uses FNV-1a (not hashValue, which is randomized per process).
         if let tag = env["CMUX_TAG"] ?? env["CMUX_LAUNCH_TAG"], !tag.isEmpty {
-            return 52100 + 1 + (Self.stableHash(tag) % 99)
+            return Self.firstAvailablePort(seed: tag)
         }
         let bundleId = Bundle.main.bundleIdentifier ?? ""
         let basePrefixes = ["com.cmuxterm.app.debug", "dev.cmux.app.dev"]
@@ -15437,11 +15449,50 @@ final class MobileDaemonBridgeInline {
             if bundleId.count > prefix.count, bundleId.hasPrefix(prefix) {
                 let suffix = String(bundleId.dropFirst(prefix.count + 1))
                 if !suffix.isEmpty {
-                    return 52100 + 1 + (Self.stableHash(suffix) % 99)
+                    return Self.firstAvailablePort(seed: suffix)
                 }
             }
         }
-        return 52100
+        return Self.firstAvailablePort(seed: instanceID)
+    }
+
+    private static func resolveInstanceID(tag: String, socketPath: String) -> String {
+        if !tag.isEmpty { return tag }
+        return URL(fileURLWithPath: socketPath).deletingPathExtension().lastPathComponent
+    }
+
+    private static func firstAvailablePort(seed: String) -> Int {
+        let candidates = portCandidates(seed: seed)
+        return candidates.first(where: isTCPPortAvailable) ?? candidates.first ?? 52100
+    }
+
+    private static func portCandidates(seed: String) -> [Int] {
+        let count = 99
+        let start = stableHash(seed) % count
+        var ports: [Int] = []
+        ports.reserveCapacity(count + 1)
+        for offset in 0..<count {
+            ports.append(52101 + ((start + offset) % count))
+        }
+        ports.append(52100)
+        return ports
+    }
+
+    private static func isTCPPortAvailable(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        addr.sin_addr = in_addr(s_addr: 0)
+        return withUnsafePointer(to: &addr) { ptr in
+            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        } == 0
     }
 
     private static func stableHash(_ string: String) -> Int {

@@ -897,22 +897,16 @@ extension Workspace {
         var createdPanelIds: [UUID] = []
         for oldPanelId in desiredOldPanelIds {
             guard let panelSnapshot = panelSnapshotsById[oldPanelId] else { continue }
-            // Option A invariant (first cut): a restored terminal panel must
-            // have a persisted daemon session id. If it doesn't, the only
-            // recovery is `workspace.open_pane` to mint a fresh one, which
-            // races the daemon's knowledge of this workspace during restore
-            // and fails — leaving a permanently-pending ghost pane. Drop the
-            // panel instead. Sessions the user actually cares about have a
-            // stored id; panels without one were save-path orphans.
-            if panelSnapshot.type == .terminal {
-                let sid = panelSnapshot.daemonSessionID?.trimmingCharacters(in: .whitespacesAndNewlines)
-                if sid == nil || sid?.isEmpty == true {
-                    #if DEBUG
-                    dlog("session.restore.drop reason=no_daemon_session_id panel=\(oldPanelId.uuidString.prefix(8)) workspace=\(id.uuidString.prefix(8))")
-                    #endif
-                    continue
-                }
-            }
+            // Restore every persisted panel. If `daemonSessionID` is
+            // absent (legacy snapshots written before the daemon SSOT
+            // landed, or mid-flight panels whose `workspace.open_pane`
+            // hadn't completed at save time), `createPanel` opens a
+            // fresh daemon session via the normal open-pane path. An
+            // earlier version of this loop `continue`d to drop these
+            // panels because open_pane was suspected to race workspace
+            // restore; that fix caused user-visible data loss and the
+            // race is handled by the bridge's deferred-subscribe path
+            // now, so honor the saved panel list as-is.
             guard let createdPanelId = createPanel(from: panelSnapshot, inPane: paneId) else { continue }
             createdPanelIds.append(createdPanelId)
             oldToNewPanelIds[oldPanelId] = createdPanelId
@@ -7025,7 +7019,7 @@ enum LocalTerminalDaemonBridge {
             }
             if let tag = environment["CMUX_TAG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
                !tag.isEmpty {
-                return 52101 + (Self.stableFNV1a(tag) % 99)
+                return firstAvailablePort(seed: tag)
             }
             if let bundleId = bundle.bundleIdentifier {
                 let basePrefixes = ["com.cmuxterm.app.debug", "dev.cmux.app.dev"]
@@ -7033,12 +7027,12 @@ enum LocalTerminalDaemonBridge {
                     if bundleId.count > prefix.count, bundleId.hasPrefix(prefix) {
                         let suffix = String(bundleId.dropFirst(prefix.count + 1))
                         if !suffix.isEmpty {
-                            return 52101 + (Self.stableFNV1a(suffix) % 99)
+                            return firstAvailablePort(seed: suffix)
                         }
                     }
                 }
             }
-            return 52100
+            return firstAvailablePort(seed: URL(fileURLWithPath: rawSocketPath).deletingPathExtension().lastPathComponent)
         }()
         config?.wsPort = wsPort
         config?.wsSecret = resolveWebSocketSecret(environment: environment)
@@ -7063,6 +7057,40 @@ enum LocalTerminalDaemonBridge {
             hash &*= 16_777_619
         }
         return Int(hash)
+    }
+
+    private static func firstAvailablePort(seed: String) -> Int {
+        let candidates = portCandidates(seed: seed)
+        return candidates.first(where: isTCPPortAvailable) ?? candidates.first ?? 52100
+    }
+
+    private static func portCandidates(seed: String) -> [Int] {
+        let count = 99
+        let start = stableFNV1a(seed) % count
+        var ports: [Int] = []
+        ports.reserveCapacity(count + 1)
+        for offset in 0..<count {
+            ports.append(52101 + ((start + offset) % count))
+        }
+        ports.append(52100)
+        return ports
+    }
+
+    private static func isTCPPortAvailable(_ port: Int) -> Bool {
+        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
+        guard fd >= 0 else { return false }
+        defer { Darwin.close(fd) }
+
+        var addr = sockaddr_in()
+        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        addr.sin_addr = in_addr(s_addr: 0)
+        return withUnsafePointer(to: &addr) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        } == 0
     }
 
     private static func persistedWebSocketSecret() -> String {
@@ -7101,10 +7129,33 @@ enum LocalTerminalDaemonBridge {
         ) else {
             return nil
         }
+        if shouldDeferToMobileDaemonSupervisor(environment: environment, bundle: bundle),
+           !isReachableUnixSocket(atPath: candidate.socketPath) {
+            return nil
+        }
         guard ensureDaemonListening(candidate, fileManager: fileManager) else {
             return nil
         }
         return candidate
+    }
+
+    private static func shouldDeferToMobileDaemonSupervisor(
+        environment: [String: String],
+        bundle: Bundle
+    ) -> Bool {
+        if let tag = environment["CMUX_TAG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tag.isEmpty {
+            return true
+        }
+        if let tag = environment["CMUX_LAUNCH_TAG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tag.isEmpty {
+            return true
+        }
+        if let bundleID = bundle.bundleIdentifier,
+           bundleID.hasPrefix("com.cmuxterm.app.debug.") {
+            return true
+        }
+        return false
     }
 
     private static func isReachableUnixSocket(atPath path: String) -> Bool {
@@ -7183,6 +7234,12 @@ enum LocalTerminalDaemonBridge {
         if let wsSecret = configuration.wsSecret, !wsSecret.isEmpty {
             args += ["--ws-secret", wsSecret]
         }
+        args += [
+            "--instance-id",
+            URL(fileURLWithPath: configuration.socketPath).deletingPathExtension().lastPathComponent,
+            "--parent-pid",
+            String(ProcessInfo.processInfo.processIdentifier),
+        ]
         process.arguments = args
         process.standardInput = FileHandle.nullDevice
 

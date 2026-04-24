@@ -55,6 +55,16 @@ enum TerminalRemoteDaemonSessionTransportError: LocalizedError {
 final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalTransport {
     var eventHandler: (@Sendable (TerminalTransportEvent) -> Void)?
 
+    private enum SubscriptionStart {
+        case storedOffset
+        case exactOffset(UInt64)
+        case currentTail
+    }
+
+    private struct FreshSurfaceBootstrap {
+        let sessionID: String
+    }
+
     private let client: any TerminalRemoteDaemonSessionClient
     private let command: String
     private let sharedSessionID: String?
@@ -96,16 +106,19 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             throw TerminalRemoteDaemonSessionTransportError.missingCapability("terminal.stream")
         }
 
-        try await openOrAttachTerminal(initialSize: initialSize)
+        let bootstrap = try await openOrAttachTerminal(initialSize: initialSize)
         log.debug("Terminal opened, sessionID=\(self.lockedSessionID() ?? "nil", privacy: .public)")
 
         eventHandler?(.connected)
 
+        let subscriptionStart = try await prepareInitialReplayIfNeeded(bootstrap)
+
         if hello.capabilities.contains("terminal.subscribe"),
            let pushClient = client as? any TerminalRemoteDaemonPushSubscribing {
-            try await startPushSubscription(pushClient: pushClient)
+            try await startPushSubscription(pushClient: pushClient, start: subscriptionStart)
             log.debug("Push subscription active")
         } else {
+            try await preparePollingOffset(start: subscriptionStart)
             startReadLoop()
             log.debug("Fallback polling read loop started")
         }
@@ -113,6 +126,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
 
     func send(_ data: Data) async throws {
         guard let sessionID = lockedSessionID() else { return }
+        TerminalInputDebugLog.log("transport.send session=\(sessionID.prefix(8)) data=\(TerminalInputDebugLog.dataSummary(data))")
         try await client.terminalWrite(sessionID: sessionID, data: data)
     }
 
@@ -168,7 +182,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         clearSessionState()
     }
 
-    private func openOrAttachTerminal(initialSize: TerminalGridSize) async throws {
+    private func openOrAttachTerminal(initialSize: TerminalGridSize) async throws -> FreshSurfaceBootstrap? {
         let cols = max(1, initialSize.columns)
         let rows = max(1, initialSize.rows)
 
@@ -183,14 +197,18 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
                     rows: rows
                 )
                 log.debug("Attached to shared session \(sharedSessionID, privacy: .public) as \(self.stableAttachmentID, privacy: .public)")
+                let resumeOffset = resumeState?.sessionID == sharedSessionID ? resumeState?.readOffset : nil
                 withLockedState {
                     sessionID = sharedSessionID
                     attachmentID = stableAttachmentID
-                    nextOffset = 0
+                    nextOffset = resumeOffset ?? 0
                     closed = false
                 }
                 emitEffectiveSize(cols: status.effectiveCols, rows: status.effectiveRows)
-                return
+                if resumeOffset == nil || resumeOffset == 0 {
+                    return FreshSurfaceBootstrap(sessionID: sharedSessionID)
+                }
+                return nil
             } catch let error as TerminalRemoteDaemonClientError {
                 if case .rpc(let code, _) = error, code == "not_found" {
                     log.debug("Shared session \(sharedSessionID, privacy: .public) not found, creating")
@@ -223,7 +241,10 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
                     closed = false
                 }
                 emitEffectiveSize(cols: status.effectiveCols, rows: status.effectiveRows)
-                return
+                if resumeState.readOffset == 0 {
+                    return FreshSurfaceBootstrap(sessionID: resumeState.sessionID)
+                }
+                return nil
             } catch let error as TerminalRemoteDaemonClientError {
                 if case .rpc(let code, _) = error, code == "not_found" {
                     if let adopted = try? await attemptAdoptPeerSessionFromWorkspaceList(
@@ -238,7 +259,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
                             closed = false
                         }
                         emitEffectiveSize(cols: adopted.effectiveCols, rows: adopted.effectiveRows)
-                        return
+                        return FreshSurfaceBootstrap(sessionID: adopted.sessionID)
                     }
                     // No peer session found. Clear saved state and fall
                     // through — for a shared-session world we'd surface
@@ -266,6 +287,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             closed = false
         }
         emitEffectiveSize(cols: openResult.effectiveCols, rows: openResult.effectiveRows)
+        return nil
     }
 
     /// Forward the daemon's authoritative view size to the event
@@ -321,7 +343,31 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         }
     }
 
-    private func startPushSubscription(pushClient: any TerminalRemoteDaemonPushSubscribing) async throws {
+    private func prepareInitialReplayIfNeeded(_ bootstrap: FreshSurfaceBootstrap?) async throws -> SubscriptionStart {
+        guard let bootstrap else { return .storedOffset }
+
+        let result = try await client.sessionHistory(sessionID: bootstrap.sessionID, format: "vt")
+        if !result.history.isEmpty {
+            eventHandler?(.output(Data(result.history.utf8)))
+        }
+
+        if let nextOffset = result.nextOffset {
+            withLockedState {
+                if sessionID == bootstrap.sessionID {
+                    self.nextOffset = nextOffset
+                }
+            }
+            return .exactOffset(nextOffset)
+        }
+
+        log.warning("session.history for \(bootstrap.sessionID, privacy: .public) did not include next_offset; falling back to tail-only subscribe")
+        return .currentTail
+    }
+
+    private func startPushSubscription(
+        pushClient: any TerminalRemoteDaemonPushSubscribing,
+        start: SubscriptionStart
+    ) async throws {
         guard let state = lockedSessionStateWithOffset() else { return }
 
         await pushClient.setPushHandler(sessionID: state.sessionID) { [weak self] event in
@@ -329,12 +375,11 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         }
         withLockedState { pushSubscribed = true }
 
-        let initialOffset: UInt64? = state.offset > 0 ? state.offset : nil
         let result: TerminalRemoteDaemonTerminalReadResult
         do {
             result = try await pushClient.terminalSubscribe(
                 sessionID: state.sessionID,
-                offset: initialOffset
+                offset: subscriptionOffset(for: start, storedOffset: state.offset)
             )
         } catch {
             await pushClient.removePushHandler(sessionID: state.sessionID)
@@ -348,6 +393,35 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             truncated: result.truncated,
             eof: result.eof
         )
+    }
+
+    private func preparePollingOffset(start: SubscriptionStart) async throws {
+        switch start {
+        case .storedOffset:
+            return
+        case .exactOffset(let offset):
+            withLockedState { nextOffset = offset }
+        case .currentTail:
+            guard let state = lockedSessionStateWithOffset() else { return }
+            let result = try await client.terminalRead(
+                sessionID: state.sessionID,
+                offset: UInt64.max,
+                maxBytes: 1,
+                timeoutMilliseconds: 0
+            )
+            withLockedState { nextOffset = result.offset }
+        }
+    }
+
+    private func subscriptionOffset(for start: SubscriptionStart, storedOffset: UInt64) -> UInt64? {
+        switch start {
+        case .storedOffset:
+            return storedOffset
+        case .exactOffset(let offset):
+            return offset
+        case .currentTail:
+            return nil
+        }
     }
 
     private func handlePushEvent(_ event: TerminalPushEvent) {
@@ -377,25 +451,52 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         truncated: Bool,
         eof: Bool
     ) {
-        if truncated {
+        let filtered = takeNewSubscriptionData(data: data, offset: offset)
+
+        if truncated, filtered.didAdvance {
             log.debug("Push payload truncated, resetting emulator buffer")
             eventHandler?(.notice("Terminal output truncated; buffer reset."))
-            // RIS (ESC c) — reset to initial state. Clears emulator screen/scrollback
-            // before we feed the post-truncation snapshot.
+            // RIS (ESC c) clears the emulator before the post-truncation tail.
             eventHandler?(.output(Data([0x1B, 0x63])))
         }
 
-        let newOffset = offset &+ UInt64(data.count)
-        withLockedState { nextOffset = newOffset }
-
-        if !data.isEmpty {
-            eventHandler?(.output(data))
+        if !filtered.data.isEmpty {
+            eventHandler?(.output(filtered.data))
         }
 
         if eof {
             log.debug("EOF via push for session")
             clearSessionState()
             finishDisconnect(error: nil)
+        }
+    }
+
+    private func takeNewSubscriptionData(data: Data, offset: UInt64) -> (data: Data, didAdvance: Bool) {
+        // The daemon's existing terminal.subscribe / terminal.output contract
+        // reports `offset` as the byte position after this payload. Derive the
+        // start from the payload length so de-dupe can discard stale overlap
+        // without skipping the next real PTY bytes.
+        let payloadLength = UInt64(data.count)
+        let payloadEnd = offset
+        let payloadStart = offset >= payloadLength ? offset - payloadLength : 0
+        return withLockedState {
+            let currentOffset = nextOffset
+            guard payloadEnd > currentOffset else {
+                return (Data(), false)
+            }
+
+            let dropCount: Int
+            if currentOffset > payloadStart {
+                dropCount = Int(min(payloadLength, currentOffset - payloadStart))
+            } else {
+                dropCount = 0
+            }
+
+            nextOffset = payloadEnd
+            if dropCount == 0 {
+                return (data, true)
+            }
+            return (Data(data.dropFirst(dropCount)), true)
         }
     }
 

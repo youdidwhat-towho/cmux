@@ -700,7 +700,10 @@ test "integration: view_size broadcasts unconditionally on every size-affecting 
     defer opened.status.deinit(alloc);
     defer alloc.free(opened.attachment_id);
     defer fx.service.closeSession("s-size") catch {};
-    _ = fx.service.detachSession("s-size", opened.attachment_id) catch {};
+    var bootstrap_detach_status = fx.service.detachSession("s-size", opened.attachment_id) catch null;
+    if (bootstrap_detach_status) |*status| {
+        status.deinit(alloc);
+    }
 
     // Client A attaches at 100x30 and subscribes. Observer of broadcasts.
     var client_a = try test_util.Client.connect(alloc, fx.socket_path);
@@ -727,8 +730,9 @@ test "integration: view_size broadcasts unconditionally on every size-affecting 
         defer resp.deinit();
     }
 
-    // Client B attaches at a smaller grid. This should shrink effective size
-    // and produce a session.view_size push that lands on A's socket.
+    // Client B attaches at a smaller grid. The smaller live attachment
+    // constrains the effective size and produces a session.view_size push
+    // that lands on A's socket.
     var client_b = try test_util.Client.connect(alloc, fx.socket_path);
     defer client_b.deinit();
     {
@@ -748,12 +752,12 @@ test "integration: view_size broadcasts unconditionally on every size-affecting 
 
     // Poll A for the view_size push (may be interleaved with unrelated
     // terminal.output frames from the `sleep 60` process). We expect the
-    // daemon to have broadcast the new min on B's attach.
+    // daemon to have broadcast the smaller effective size.
     const shrink_cols: i64 = try expectViewSize(alloc, &client_a, deadlineIn(2000));
     try std.testing.expectEqual(@as(i64, 40), shrink_cols);
 
-    // Now detach B. Effective size should grow back to A's 100x30 and both
-    // A and a fresh subscriber C should observe the grow event.
+    // Now detach B. Effective size should fall back to A's last reported
+    // 100x30 and both A and a fresh subscriber C should observe the change.
     var client_c = try test_util.Client.connect(alloc, fx.socket_path);
     defer client_c.deinit();
     {
@@ -780,6 +784,55 @@ test "integration: view_size broadcasts unconditionally on every size-affecting 
     try std.testing.expectEqual(@as(i64, 100), grow_a);
     const grow_c: i64 = try expectViewSize(alloc, &client_c, deadlineIn(2000));
     try std.testing.expectEqual(@as(i64, 100), grow_c);
+}
+
+test "integration: socket disconnect detaches session attachments" {
+    if (!pty_pump.supported) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    var fx = try Fixture.init(alloc, "attachcleanup");
+    defer fx.deinit();
+
+    var opened = try fx.service.openTerminal("s-cleanup", "sleep 60", 100, 30);
+    defer opened.status.deinit(alloc);
+    defer alloc.free(opened.attachment_id);
+    defer fx.service.closeSession("s-cleanup") catch {};
+    var bootstrap_detach_status = fx.service.detachSession("s-cleanup", opened.attachment_id) catch null;
+    if (bootstrap_detach_status) |*status| {
+        status.deinit(alloc);
+    }
+
+    {
+        var client = try test_util.Client.connect(alloc, fx.socket_path);
+        const id = client.allocId();
+        try client.sendRequest(id, "session.attach", .{
+            .session_id = "s-cleanup",
+            .attachment_id = "ios-deadbeef",
+            .cols = @as(u16, 49),
+            .rows = @as(u16, 48),
+        });
+        var resp = try client.awaitResponse(id, deadlineIn(2000));
+        defer resp.deinit();
+        try std.testing.expect(resp.value.object.get("ok").?.bool);
+
+        var status = try fx.service.sessionStatus("s-cleanup");
+        defer status.deinit(alloc);
+        try std.testing.expectEqual(@as(usize, 1), status.attachments.len);
+
+        client.deinit();
+    }
+
+    const deadline = deadlineIn(2000);
+    while (true) {
+        var status = try fx.service.sessionStatus("s-cleanup");
+        const attachment_count = status.attachments.len;
+        status.deinit(alloc);
+        if (attachment_count == 0) break;
+        if (std.time.milliTimestamp() >= deadline) {
+            try std.testing.expectEqual(@as(usize, 0), attachment_count);
+        }
+        std.Thread.sleep(10 * std.time.ns_per_ms);
+    }
 }
 
 /// Read frames from `client` until a `session.view_size` event arrives;

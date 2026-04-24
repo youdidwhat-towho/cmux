@@ -8,6 +8,7 @@
 //! nothing more. This file is NOT used by the production daemon binary.
 
 pub const json_rpc = @import("json_rpc.zig");
+pub const connection_attachments = @import("connection_attachments.zig");
 pub const outbound_queue = @import("outbound_queue.zig");
 pub const pty_pump = @import("pty_pump.zig");
 pub const server_core = @import("server_core.zig");

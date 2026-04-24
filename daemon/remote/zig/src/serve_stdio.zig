@@ -11,7 +11,6 @@ pub fn serve() !void {
     defer service.deinit();
     service.on_workspace_changed = &server_core.notifyWorkspaceSubscribers;
     service.ensurePumpStarted();
-    service.ensureResizeDebouncerStarted();
     service.ensureWriterStarted();
 
     const stdin = std.fs.File.stdin();

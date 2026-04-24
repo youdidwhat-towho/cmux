@@ -13,6 +13,37 @@ import UserNotifications
 @testable import cmux
 #endif
 
+final class TerminalGridCellCountTests: XCTestCase {
+    func testMeasuredGhosttyCellHeightDoesNotDropExactFullRow() {
+        let cellHeight = CGFloat(1796) / CGFloat(63)
+
+        XCTAssertEqual(
+            cmuxTerminalGridCellCount(containerPixels: 1796, cellPixels: cellHeight),
+            63
+        )
+    }
+
+    func testRealPartialCellStillFloors() {
+        let cellHeight = CGFloat(1796) / CGFloat(63)
+
+        XCTAssertEqual(
+            cmuxTerminalGridCellCount(containerPixels: 1795.9, cellPixels: cellHeight),
+            62
+        )
+    }
+
+    func testGhosttyWindowPaddingIsSubtractedBeforeDividing() {
+        XCTAssertEqual(
+            cmuxTerminalGridCellCount(containerPixels: 2040, cellPixels: 14, paddingPixels: 8),
+            145
+        )
+        XCTAssertEqual(
+            cmuxTerminalGridCellCount(containerPixels: 1476, cellPixels: 28, paddingPixels: 8),
+            52
+        )
+    }
+}
+
 @MainActor
 final class GhosttyPasteboardHelperTests: XCTestCase {
     private func make1x1PNG(color: NSColor) throws -> Data {

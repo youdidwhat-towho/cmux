@@ -1,4 +1,6 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const connection_attachments = @import("connection_attachments.zig");
 const json_rpc = @import("json_rpc.zig");
 const local_peer_auth = @import("local_peer_auth.zig");
 const outbound_queue = @import("outbound_queue.zig");
@@ -11,6 +13,8 @@ pub const Config = struct {
     socket_path: []const u8,
     ws_port: ?u16 = null,
     ws_secret: []const u8 = "",
+    instance_id: []const u8 = "",
+    parent_pid: ?std.posix.pid_t = null,
     /// Optional path to the sqlite persistence DB. When set, workspace state
     /// survives daemon restarts. Caller is responsible for ensuring the
     /// parent directory exists.
@@ -30,6 +34,9 @@ pub fn serve(cfg: Config) !void {
     // and exhaust the system PTY limit (kern.tty.ptmx_max).
     std.posix.setpgid(0, 0) catch {};
     installCleanupSignalHandlers();
+    if (cfg.parent_pid) |parent_pid| {
+        startParentExitMonitor(parent_pid);
+    }
 
     var gpa: std.heap.DebugAllocator(.{}) = .init;
     defer _ = gpa.deinit();
@@ -38,6 +45,7 @@ pub fn serve(cfg: Config) !void {
     var shared = SharedService{
         .service = session_service.Service.init(alloc),
     };
+    shared.service.instance_id = cfg.instance_id;
     defer shared.service.deinit();
     shared.service.on_workspace_changed = &server_core.notifyWorkspaceSubscribers;
     // Attach persistence before pump startup so hydration completes while the
@@ -51,7 +59,6 @@ pub fn serve(cfg: Config) !void {
     // Service is now at its final stable address inside `shared`; start the
     // kqueue pump thread so it captures the correct `&shared.service`.
     shared.service.ensurePumpStarted();
-    shared.service.ensureResizeDebouncerStarted();
     shared.service.ensureWriterStarted();
 
     // Start WebSocket listener on a separate thread if configured
@@ -61,6 +68,7 @@ pub fn serve(cfg: Config) !void {
                 &shared.service,
                 ws_port,
                 cfg.ws_secret,
+                cfg.instance_id,
             });
             ws_thread.detach();
         }
@@ -77,6 +85,34 @@ pub fn serve(cfg: Config) !void {
         const thread = try std.Thread.spawn(.{}, handleClientThread, .{ &shared, client_fd });
         thread.detach();
     }
+}
+
+fn startParentExitMonitor(parent_pid: std.posix.pid_t) void {
+    if (parent_pid <= 1) return;
+    if (!builtin.os.tag.isDarwin()) return;
+    const thread = std.Thread.spawn(.{}, parentExitMonitorThread, .{parent_pid}) catch return;
+    thread.detach();
+}
+
+fn parentExitMonitorThread(parent_pid: std.posix.pid_t) void {
+    const kq = std.posix.kqueue() catch return;
+    defer std.posix.close(kq);
+
+    const FlagsT = @TypeOf(@as(std.posix.Kevent, undefined).flags);
+    const FilterT = @TypeOf(@as(std.posix.Kevent, undefined).filter);
+    var changes = [_]std.posix.Kevent{.{
+        .ident = @intCast(parent_pid),
+        .filter = @as(FilterT, @intCast(std.c.EVFILT.PROC)),
+        .flags = @as(FlagsT, @intCast(0x0001)),
+        .fflags = std.c.NOTE.EXIT,
+        .data = 0,
+        .udata = 0,
+    }};
+    _ = std.posix.kevent(kq, &changes, &.{}, null) catch return;
+
+    var events: [1]std.posix.Kevent = undefined;
+    _ = std.posix.kevent(kq, &.{}, &events, null) catch return;
+    cleanupAndExit(std.posix.SIG.TERM);
 }
 
 const SharedService = struct {
@@ -106,6 +142,9 @@ fn handleClient(shared: *SharedService, client_fd: std.posix.fd_t) !void {
 
     // Subscription cleanup on disconnect.
     var workspace_subscribed = false;
+    var attachments = connection_attachments.Tracker.init(alloc);
+    defer attachments.deinit();
+    defer attachments.detachAll(service);
     defer if (workspace_subscribed) service.subscriptions.remove(&stream);
     defer service.unsubscribeAllForStream(&stream);
 
@@ -131,6 +170,7 @@ fn handleClient(shared: *SharedService, client_fd: std.posix.fd_t) !void {
                 &stream,
                 &write_mutex,
                 &workspace_subscribed,
+                &attachments,
                 pending.items[0..newline_index],
             );
 
@@ -147,6 +187,7 @@ fn handleLine(
     stream: *std.net.Stream,
     write_mutex: *std.Thread.Mutex,
     workspace_subscribed: *bool,
+    attachments: *connection_attachments.Tracker,
     raw_line: []const u8,
 ) !void {
     const alloc = service.alloc;
@@ -177,6 +218,7 @@ fn handleLine(
     }
 
     const response = try server_core.dispatch(service, &req);
+    attachments.recordResponse(&req, response);
     return enqueueResponse(queue, alloc, response);
 }
 

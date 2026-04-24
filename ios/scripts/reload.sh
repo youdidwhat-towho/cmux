@@ -40,12 +40,9 @@ if [ -n "$TAG" ]; then
     APP_NAME="${TAG}"
 fi
 
-# Discover wsPort from macOS daemon's .wsport file.
-#
-# This is now a *hint* only — `TailscaleServerDiscovery` dynamically scans
-# the 52100-52199 port range at runtime, so a missing or stale hint can't
-# silently produce a discovery-less build. We still embed it when available
-# because probing a known port is faster than a 100-port sweep on launch.
+# Discover the active wsPort from the matching macOS daemon's .wsport file.
+# Tagged iOS builds embed this as the authoritative default endpoint for the
+# main sidebar; the in-app Find Servers sheet remains the broad scanner.
 WS_PORT=""
 if [ -n "$TAG" ]; then
     TAG_SLUG=$(echo "$TAG" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//; s/-+/-/g')
@@ -154,6 +151,9 @@ copy_local_config_if_present "$SIM_APP_PATH" "$LOCAL_CONFIG_SOURCE"
 if [ -n "$WS_PORT" ] && [ -d "$SIM_APP_PATH" ]; then
     printf '%s' "$WS_PORT" > "$SIM_APP_PATH/debug-ws-port"
 fi
+if [ -n "$TAG" ] && [ -d "$SIM_APP_PATH" ]; then
+    printf 'cmuxd-dev-%s' "$TAG_SLUG" > "$SIM_APP_PATH/debug-ws-instance"
+fi
 
 echo "📲 Installing on simulator(s)..."
 # Install and launch on ALL booted simulators
@@ -201,6 +201,9 @@ if [ -n "$DEVICE_ID" ]; then
     # Embed wsPort if discovered
     if [ -n "$WS_PORT" ] && [ -d "$DEVICE_APP_PATH" ]; then
         printf '%s' "$WS_PORT" > "$DEVICE_APP_PATH/debug-ws-port"
+    fi
+    if [ -n "$TAG" ] && [ -d "$DEVICE_APP_PATH" ]; then
+        printf 'cmuxd-dev-%s' "$TAG_SLUG" > "$DEVICE_APP_PATH/debug-ws-instance"
     fi
 
     echo "📲 Installing on device..."

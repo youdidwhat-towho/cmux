@@ -1143,6 +1143,58 @@ private func terminalKeyboardCopyModeChars(
     return String(scalar).lowercased()
 }
 
+private struct CmuxGhosttyWindowPaddingConfig {
+    var top_left: UInt32 = 0
+    var bottom_right: UInt32 = 0
+}
+
+private func cmuxGhosttyWindowPaddingPixels(key: String, scale: CGFloat) -> CGFloat {
+    let defaultPaddingPoints: UInt32 = 2
+    var padding = CmuxGhosttyWindowPaddingConfig(
+        top_left: defaultPaddingPoints,
+        bottom_right: defaultPaddingPoints
+    )
+
+    if let config = GhosttyApp.shared.config {
+        var configuredPadding = CmuxGhosttyWindowPaddingConfig()
+        let found = key.withCString { keyPtr in
+            ghostty_config_get(
+                config,
+                &configuredPadding,
+                keyPtr,
+                UInt(key.lengthOfBytes(using: .utf8))
+            )
+        }
+        if found {
+            padding = configuredPadding
+        }
+    }
+
+    return (CGFloat(padding.top_left) * scale).rounded(.down) +
+        (CGFloat(padding.bottom_right) * scale).rounded(.down)
+}
+
+func cmuxTerminalGridCellCount(
+    containerPixels: CGFloat,
+    cellPixels: CGFloat,
+    paddingPixels: CGFloat = 0
+) -> Int {
+    guard containerPixels.isFinite,
+          cellPixels.isFinite,
+          containerPixels > 0,
+          cellPixels > 0 else {
+        return 0
+    }
+
+    let usablePixels = max(0, containerPixels - max(0, paddingPixels))
+    let raw = usablePixels / cellPixels
+    let nearest = raw.rounded()
+    if abs(raw - nearest) < 0.000001 {
+        return max(1, Int(nearest))
+    }
+    return max(1, Int(raw.rounded(.down)))
+}
+
 func terminalKeyboardCopyModeShouldBypassForShortcut(modifierFlags: NSEvent.ModifierFlags) -> Bool {
     let normalized = terminalKeyboardCopyModeNormalizedModifiers(modifierFlags)
     return normalized.contains(.command)
@@ -3735,45 +3787,22 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// an async dispatch, subsequent calls in the same tick update
     /// `pendingReport` without scheduling a new dispatch. The scheduled
     /// dispatch flushes the latest `pendingReport` value exactly once.
-    private var pendingReport: (cols: Int, rows: Int, reason: String)?
+    private var pendingReport: (
+        cols: Int,
+        rows: Int,
+        reason: String,
+        containerWpx: Int,
+        containerHpx: Int,
+        cellWpx: CGFloat,
+        cellHpx: CGFloat
+    )?
     private var reportFlushScheduled: Bool = false
-    /// Mach-time (CACurrentMediaTime) when `flushPendingReport` last actually
-    /// shipped an RPC to the daemon. Used to enforce a minimum interval
-    /// between session.resize sends, so fast window/split drags don't
-    /// bombard the shell with ~10 SIGWINCH/s (which interrupts prompt
-    /// redraws mid-stream and leaves the terminal visually empty). A
-    /// trailing-edge flush guarantees the final drag size still lands.
-    private var lastSentNaturalAt: CFTimeInterval = 0
-    /// Minimum seconds between outgoing session.resize RPCs per surface.
-    /// Matches the old daemon-side MIN_IOCTL_INTERVAL_MS (150ms) but
-    /// implemented mac-side where the main runloop makes concurrency
-    /// trivial (no threads). Trailing-edge: the last pending value fires
-    /// when the window elapses; no resize is dropped, only delayed.
-    private static let resizeMinIntervalSeconds: CFTimeInterval = 0.15
-    /// Last pixel dims passed to `ghostty_surface_set_size` from
-    /// `applyCurrentViewSize`. Layout fires ~400×/s during a fast drag
-    /// and every tick called `ghostty_surface_set_size`, which reflows
-    /// the mac-side VT. The prompt text gets continuously re-reflowed
-    /// and ends up visually blank. Skipping redundant set_size calls
-    /// drops the rate to ~the number of genuine dim changes (tens per
-    /// drag). Zero means "nothing applied yet — always call".
-    private var lastAppliedSetSizePx: (w: UInt32, h: UInt32) = (0, 0)
-    /// Running alt-screen state for this surface, derived by watching
-    /// `\e[?1049h/l` (xterm save-cursor + alt-screen) and `\e[?47h/l` /
-    /// `\e[?1047h/l` in the byte stream the daemon pushes. Post-reshape
-    /// cursor-pin is only sent on primary (shells with relative prompt
-    /// redraw), skipped on alt-screen (full-screen apps like vim/less
-    /// that always redraw with absolute positioning).
-    private var onAltScreen: Bool = false
-    /// Trailing-edge debounce for the post-reshape cursor-pin. Firing
-    /// a synthetic CUP after every reshape during a drag produces visible
-    /// jank because each intermediate reshape yanks the cursor to the
-    /// bottom mid-frame. Instead, schedule a single pin 200ms after the
-    /// last reshape; if another reshape lands within the window, cancel
-    /// and reschedule. The shell's final prompt-redraw bytes then land
-    /// at (rows, 1) once the drag settles.
-    private var cursorPinScheduled: Bool = false
-    private static let cursorPinDebounceSeconds: CFTimeInterval = 0.2
+    // Post-resize cursor positioning is handled at its source in the
+    // ghostty fork (`Screen.zig` resize anchors cursor at `(rows-1, 0)`
+    // when a prompt was cleared with the cursor on the last row). The
+    // mac doesn't need rate-limits, set_size dedup, ordering fixups, or
+    // byte-stream alt-screen tracking — every Ghostty instance
+    // self-corrects post-resize.
     /// Cell pixel metrics cached from the most recent natural layout
     /// measurement. Used to convert the daemon's (cols, rows) into a
     /// pixel rect for `ghostty_surface_set_size` and the surrounding
@@ -4899,40 +4928,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
             let probeSurfaceID = self.id
             var loggedFirstOutput = false
             bridge.onOutput = { [weak self] data in
-                // Dispatch to main queue so output bytes and view_size
-                // reshapes apply in wire-arrival order. The daemon's reader
-                // thread receives them in correct order; viewSize is already
-                // dispatched to main via `applyViewSize`; previously output
-                // was applied synchronously on reader thread, which let
-                // bytes written by the shell at the NEW PTY size land in a
-                // mac VT still at the OLD size — wrap/cursor misplacement
-                // pushed the prompt row into scrollback during rapid
-                // resize. Main-queue serialization eliminates the race.
-                DispatchQueue.main.async { [weak self] in
-                    guard let self, let surface = self.surface else { return }
-                    if !loggedFirstOutput {
-                        loggedFirstOutput = true
-                        dlog("blank.bridge.onOutput.first surface=\(probeSurfaceID.uuidString.prefix(8)) bytes=\(data.count)")
-                    }
-                    #if DEBUG
-                    let applySeq = OrderProbe.next()
-                    let preSize = ghostty_surface_size(surface)
-                    dlog("probe.order.output.apply seq=\(applySeq) surface=\(probeSurfaceID.uuidString.prefix(8)) bytes=\(data.count) preGrid=\(preSize.columns)x\(preSize.rows)")
-                    #endif
-                    // Track alt-screen state by watching for the standard
-                    // enter/exit sequences. Primary screen = shells that
-                    // redraw prompts relative to current cursor row after
-                    // SIGWINCH (bash/zsh/fish). Alt screen = full-screen
-                    // apps that absolute-position everything on redraw
-                    // (vim, less, htop). We only pin cursor-to-bottom
-                    // after reshape on primary; alt-screen apps don't
-                    // need (and can be corrupted by) forced cursor moves.
-                    self.updateAltScreenTracking(data: data)
-                    data.withUnsafeBytes { buffer in
-                        guard let baseAddress = buffer.baseAddress else { return }
-                        let pointer = baseAddress.assumingMemoryBound(to: CChar.self)
-                        ghostty_surface_process_output(surface, pointer, UInt(buffer.count))
-                    }
+                guard let self, let surface = self.surface else { return }
+                if !loggedFirstOutput {
+                    loggedFirstOutput = true
+                    dlog("blank.bridge.onOutput.first surface=\(probeSurfaceID.uuidString.prefix(8)) bytes=\(data.count)")
+                }
+                data.withUnsafeBytes { buffer in
+                    guard let baseAddress = buffer.baseAddress else { return }
+                    let pointer = baseAddress.assumingMemoryBound(to: CChar.self)
+                    ghostty_surface_process_output(surface, pointer, UInt(buffer.count))
                 }
             }
             bridge.onDisconnect = { [weak self] error in
@@ -5181,9 +5185,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 measured = ghostty_surface_size(surface)
                 if measured.columns > 0, measured.rows > 0,
                    measured.width_px > 0, measured.height_px > 0 {
+                    let measuredCellWidth = measured.cell_width_px > 0
+                        ? CGFloat(measured.cell_width_px)
+                        : CGFloat(measured.width_px) / CGFloat(measured.columns)
+                    let measuredCellHeight = measured.cell_height_px > 0
+                        ? CGFloat(measured.cell_height_px)
+                        : CGFloat(measured.height_px) / CGFloat(measured.rows)
                     cachedCellPixelSize = CGSize(
-                        width: CGFloat(measured.width_px) / CGFloat(measured.columns),
-                        height: CGFloat(measured.height_px) / CGFloat(measured.rows)
+                        width: measuredCellWidth,
+                        height: measuredCellHeight
                     )
                 }
             } else {
@@ -5233,15 +5243,23 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// thresholding, no comparison to our local container. If the
     /// daemon is wrong, the next `bridge.resize` we send will cause
     /// the daemon to recompute and push back a correct value.
+    ///
+    /// `cursorRow` / `cursorCol` (1-based) are the daemon's authoritative
+    /// VT cursor at the moment it broadcast this view_size. If present,
+    /// we absolutely position our local Ghostty VT cursor to match via
+    /// a synthetic `\e[<row>;<col>H` so the shell's relative prompt
+    /// redraw (`\r\e[J<prompt>`) lands at the row the shell actually
+    /// wrote from. `onAltScreen` suppresses the cursor move — full-screen
+    /// apps always redraw with absolute positioning after SIGWINCH so
+    /// overriding their cursor would corrupt a mid-frame render.
+    /// RPC-response paths that lack cursor info pass nil.
     func applyViewSize(cols: Int, rows: Int) {
         guard cols > 0, rows > 0 else { return }
         if let current = daemonViewSize,
            current.cols == cols, current.rows == rows { return }
         daemonViewSize = (cols, rows)
         #if DEBUG
-        let applySeq = OrderProbe.next()
-        let preGrid = surface.map { ghostty_surface_size($0) }
-        dlog("viewSize.apply surface=\(id.uuidString.prefix(8)) cols=\(cols) rows=\(rows) seq=\(applySeq) preGrid=\(preGrid.map { "\($0.columns)x\($0.rows)" } ?? "nil")")
+        dlog("viewSize.apply surface=\(id.uuidString.prefix(8)) cols=\(cols) rows=\(rows)")
         #endif
         applyCurrentViewSize()
         // If applyCurrentViewSize bailed because cachedCellPixelSize is
@@ -5252,12 +5270,46 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
     }
 
+    private func setSurfaceSizeAtLeastGrid(
+        _ surface: ghostty_surface_t,
+        cols: Int,
+        rows: Int,
+        cellPixelSize: CGSize
+    ) -> (requestedW: UInt32, requestedH: UInt32, actual: ghostty_surface_size_s) {
+        var requestedW = UInt32(max(1, Int((CGFloat(cols) * cellPixelSize.width).rounded(.down))))
+        var requestedH = UInt32(max(1, Int((CGFloat(rows) * cellPixelSize.height).rounded(.down))))
+
+        ghostty_surface_set_size(surface, requestedW, requestedH)
+        var actual = ghostty_surface_size(surface)
+
+        // The inverse of Ghostty's screen-pixels -> grid calculation is not
+        // exactly `cols * averageCellWidth`: padding and sub-cell remainder are
+        // discarded when Ghostty computes columns. Walk upward until Ghostty
+        // confirms the requested grid, so the local mirror cannot be one cell
+        // narrower than the daemon's authoritative PTY.
+        var steps = 0
+        while steps < 128,
+              Int(actual.columns) < cols || Int(actual.rows) < rows {
+            if Int(actual.columns) < cols {
+                requestedW += 1
+            }
+            if Int(actual.rows) < rows {
+                requestedH += 1
+            }
+            ghostty_surface_set_size(surface, requestedW, requestedH)
+            actual = ghostty_surface_size(surface)
+            steps += 1
+        }
+
+        return (requestedW, requestedH, actual)
+    }
+
     /// Execute the currently-known daemon view size on the Ghostty
     /// surface: resize the C surface to the view's pixel rect, snap
     /// `surfaceView.frame` to match (so the CAMetalLayer clears any
     /// ghost pixels from a larger prior grid), and hand the rect to
-    /// `GhosttyNSView.letterboxRect` which draws the border and
-    /// triggers a scroll-view re-layout. Safe to call repeatedly; if
+    /// `GhosttyNSView.letterboxRect` which triggers a scroll-view
+    /// re-layout. Safe to call repeatedly; if
     /// the resulting frame matches the existing one, nothing changes.
     private func applyCurrentViewSize() {
         guard let surface,
@@ -5279,49 +5331,90 @@ final class TerminalSurface: Identifiable, ObservableObject {
             return
         }
         let scale = max(view.window?.backingScaleFactor ?? 2.0, 1.0)
-        // The Ghostty VT grid is sized to exactly the daemon pin, always.
-        // No fill-vs-letterbox branching: the pin is the single source of
-        // truth for grid dims. Container pixels only drive where the
-        // pinned surface lands inside the scroll view (letterbox rect).
+        // Container in pixels — `hostedView` always reports the full (non-
+        // letterboxed) rect, even after a prior small pin shrank the
+        // surface view.
+        let containerWpx = hostedView.bounds.width * scale
+        let containerHpx = hostedView.bounds.height * scale
+        let paddingWpx = cmuxGhosttyWindowPaddingPixels(key: "window-padding-x", scale: scale)
+        let paddingHpx = cmuxGhosttyWindowPaddingPixels(key: "window-padding-y", scale: scale)
+        // What the mac can naturally fit at the current cell size. If the
+        // daemon pin is at least this big, there's no external client
+        // smaller than us — letterboxing would only produce a sub-cell
+        // sliver of unused space between the last column and the right
+        // edge (cols × cellW rarely divides the container evenly). Skip
+        // the letterbox and hand the surface the full container size, so
+        // ghostty lays out the same cell count but fills edge-to-edge.
         //
-        // Why a single branch: the previous fill mode sized Ghostty to
-        // container pixels, which rounded to natural cells. When
-        // `pin > natural` (stale pin lagging during a drag) that produced
-        // a mac VT at natural cols/rows while the daemon PTY was still at
-        // pin cols/rows. The shell wrote at pin width; the mac wrapped at
-        // natural width; cursor drifted; reflow scrolled the prompt into
-        // scrollback. One source of truth eliminates that class by
-        // construction.
-        let pinnedPxW = UInt32(max(1, Int((CGFloat(pin.cols) * cachedCellPixelSize.width).rounded(.down))))
-        let pinnedPxH = UInt32(max(1, Int((CGFloat(pin.rows) * cachedCellPixelSize.height).rounded(.down))))
-        let isInitialReshape = (lastAppliedSetSizePx == (0, 0))
-        if lastAppliedSetSizePx != (pinnedPxW, pinnedPxH) {
-            ghostty_surface_set_size(surface, pinnedPxW, pinnedPxH)
-            lastAppliedSetSizePx = (pinnedPxW, pinnedPxH)
+        // Pin-vs-natural grid divergence (shell writes at pin cols, mac
+        // VT wraps at natural cols for one RPC round-trip) is handled at
+        // its source in the ghostty fork: after a resize that cleared
+        // the prompt with the cursor on the last row, `Screen.resize`
+        // anchors the cursor at `(rows-1, 0)` of the new active area.
+        // The shell's relative redraw (`\r\e[J<prompt>`) then lands at
+        // the visible bottom regardless of which Ghostty instance (mac,
+        // daemon, iOS) ran the resize.
+        let naturalCols = cmuxTerminalGridCellCount(
+            containerPixels: containerWpx,
+            cellPixels: cachedCellPixelSize.width,
+            paddingPixels: paddingWpx
+        )
+        let naturalRows = cmuxTerminalGridCellCount(
+            containerPixels: containerHpx,
+            cellPixels: cachedCellPixelSize.height,
+            paddingPixels: paddingHpx
+        )
+        let columnSlack = naturalCols - pin.cols
+        let rowSlack = naturalRows - pin.rows
+        let isAtNaturalSize = pin.cols >= naturalCols && pin.rows >= naturalRows
+        let isOnlyOneCellBehind = columnSlack <= 1 && rowSlack <= 1
+        #if DEBUG
+        let debugContainerPx = "\(Int(containerWpx.rounded(.down)))x\(Int(containerHpx.rounded(.down)))"
+        let debugHostPt = String(format: "%.1fx%.1f", hostedView.bounds.width, hostedView.bounds.height)
+        let debugCellPx = String(format: "%.2fx%.2f", cachedCellPixelSize.width, cachedCellPixelSize.height)
+        let debugPaddingPx = String(format: "%.0fx%.0f", paddingWpx, paddingHpx)
+        let debugReportState = "lastReport=\(lastReportedNatural.map { "\($0.cols)x\($0.rows)" } ?? "nil") pending=\(pendingReport.map { "\($0.cols)x\($0.rows):\($0.reason)" } ?? "nil") scheduled=\(reportFlushScheduled ? 1 : 0)"
+        let debugRegistryState = TerminalSessionRegistry.shared.debugResizeSummary(
+            sessionID: daemonBridge?.sessionID,
+            surfaceID: id,
+            effectiveCols: pin.cols,
+            effectiveRows: pin.rows,
+            naturalCols: naturalCols,
+            naturalRows: naturalRows
+        )
+        #endif
+        if containerWpx > 0, containerHpx > 0,
+           isAtNaturalSize || isOnlyOneCellBehind {
+            let fullW = UInt32(max(1, Int(containerWpx.rounded(.down))))
+            let fullH = UInt32(max(1, Int(containerHpx.rounded(.down))))
+            ghostty_surface_set_size(surface, fullW, fullH)
             #if DEBUG
             let postSetSize = ghostty_surface_size(surface)
-            dlog("viewSize.setSize surface=\(id.uuidString.prefix(8)) requestedPin=\(pin.cols)x\(pin.rows) actualGrid=\(postSetSize.columns)x\(postSetSize.rows) actualPx=\(postSetSize.width_px)x\(postSetSize.height_px)")
+            let reason = isAtNaturalSize ? "at_or_above_natural" : "one_cell_tolerance"
+            dlog(
+                "resize.render surface=\(id.uuidString.prefix(8)) mode=fill reason=\(reason) " +
+                "containerPx=\(debugContainerPx) hostPt=\(debugHostPt) scale=\(String(format: "%.2f", scale)) " +
+                "cellPx=\(debugCellPx) paddingPx=\(debugPaddingPx) natural=\(naturalCols)x\(naturalRows) effective=\(pin.cols)x\(pin.rows) " +
+                "slack=\(columnSlack)x\(rowSlack) requestedPx=\(fullW)x\(fullH) " +
+                "actualGrid=\(postSetSize.columns)x\(postSetSize.rows) actualPx=\(postSetSize.width_px)x\(postSetSize.height_px) " +
+                "letterboxRect=nil showOutline=0 \(debugReportState) \(debugRegistryState)"
+            )
             #endif
-            // Schedule a trailing-edge cursor-pin (NOT firing synchronously
-            // every reshape — that produces jank during rapid drag because
-            // each intermediate reshape yanks the cursor to the bottom
-            // mid-frame). The pin fires once 200ms after the last reshape
-            // settles, which pulls the prompt row back into the visible
-            // viewport for shells whose post-SIGWINCH redraw is relative
-            // (`\r\e[J<prompt>`).
-            //
-            // Skip on initial reshape: fresh terminal starts at (0, 0);
-            // pinning would glue the first prompt to the bottom row.
-            // Skip on alt-screen: vim/less/htop redraw with absolute CUP
-            // after SIGWINCH; pinning is pointless and could corrupt a
-            // mid-frame render.
-            if !onAltScreen, !isInitialReshape {
-                scheduleCursorPin()
-            }
             ghostty_surface_refresh(surface)
+            view.letterboxRect = nil
+            return
         }
-        let widthPts = CGFloat(pinnedPxW) / scale
-        let heightPts = CGFloat(pinnedPxH) / scale
+        let fittedSize = setSurfaceSizeAtLeastGrid(
+            surface,
+            cols: pin.cols,
+            rows: pin.rows,
+            cellPixelSize: cachedCellPixelSize
+        )
+        ghostty_surface_refresh(surface)
+        let actualWidthPx = fittedSize.actual.width_px > 0 ? fittedSize.actual.width_px : fittedSize.requestedW
+        let actualHeightPx = fittedSize.actual.height_px > 0 ? fittedSize.actual.height_px : fittedSize.requestedH
+        let widthPts = CGFloat(actualWidthPx) / scale
+        let heightPts = CGFloat(actualHeightPx) / scale
         let clampBounds: CGRect = {
             if let scroll = view.enclosingScrollView {
                 return scroll.bounds
@@ -5336,7 +5429,15 @@ final class TerminalSurface: Identifiable, ObservableObject {
         )
         view.letterboxRect = rect
         #if DEBUG
-        dlog("viewSize.snap surface=\(id.uuidString.prefix(8)) containerPx=\(lastPixelWidth)x\(lastPixelHeight) pinnedPx=\(pinnedPxW)x\(pinnedPxH) pinnedPt=\(widthPts)x\(heightPts)")
+        let debugRectPt = String(format: "%.1fx%.1f", rect.width, rect.height)
+        dlog(
+            "resize.render surface=\(id.uuidString.prefix(8)) mode=letterbox reason=effective_smaller " +
+            "containerPx=\(debugContainerPx) hostPt=\(debugHostPt) scale=\(String(format: "%.2f", scale)) " +
+            "cellPx=\(debugCellPx) paddingPx=\(debugPaddingPx) natural=\(naturalCols)x\(naturalRows) effective=\(pin.cols)x\(pin.rows) " +
+            "slack=\(columnSlack)x\(rowSlack) requestedPx=\(fittedSize.requestedW)x\(fittedSize.requestedH) " +
+            "actualGrid=\(fittedSize.actual.columns)x\(fittedSize.actual.rows) actualPx=\(fittedSize.actual.width_px)x\(fittedSize.actual.height_px) " +
+            "letterboxRect=\(debugRectPt) showOutline=1 \(debugReportState) \(debugRegistryState)"
+        )
         #endif
     }
 
@@ -5360,7 +5461,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     /// idempotent, and dropping updates risks skipping the corrective
     /// resize on reconnect or after openPane's initial 80x24 attach.
     func reportNaturalToDaemon(reason: String) {
-        guard let bridge = daemonBridge else { return }
+        guard daemonBridge != nil else { return }
         guard cachedCellPixelSize.width > 0, cachedCellPixelSize.height > 0 else {
             #if DEBUG
             dlog("resize.report.skip surface=\(id.uuidString.prefix(8)) reason=\(reason) cause=cell_not_measured")
@@ -5377,8 +5478,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
         let scale = max(hostedView.window?.backingScaleFactor ?? 2.0, 1.0)
         let wpx = containerBounds.width * scale
         let hpx = containerBounds.height * scale
-        let cols = max(1, Int((wpx / cachedCellPixelSize.width).rounded(.down)))
-        let rows = max(1, Int((hpx / cachedCellPixelSize.height).rounded(.down)))
+        let paddingWpx = cmuxGhosttyWindowPaddingPixels(key: "window-padding-x", scale: scale)
+        let paddingHpx = cmuxGhosttyWindowPaddingPixels(key: "window-padding-y", scale: scale)
+        let cols = cmuxTerminalGridCellCount(
+            containerPixels: wpx,
+            cellPixels: cachedCellPixelSize.width,
+            paddingPixels: paddingWpx
+        )
+        let rows = cmuxTerminalGridCellCount(
+            containerPixels: hpx,
+            cellPixels: cachedCellPixelSize.height,
+            paddingPixels: paddingHpx
+        )
         // Coalesce and dedupe. Container animations (sidebar slide, window
         // resize, split drag, workspace open) fire updateSize many times
         // per frame — up to 30+ intermediate values within 500ms,
@@ -5389,23 +5500,19 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // the same runloop tick just update pendingReport without a new
         // schedule. When the flush fires, it sends the last-seen value
         // (and dedupes against lastReportedNatural).
-        pendingReport = (cols, rows, reason)
+        pendingReport = (
+            cols,
+            rows,
+            reason,
+            Int(wpx.rounded(.down)),
+            Int(hpx.rounded(.down)),
+            cachedCellPixelSize.width,
+            cachedCellPixelSize.height
+        )
         guard !reportFlushScheduled else { return }
         reportFlushScheduled = true
-        // Rate-limited trailing edge: if we shipped a resize less than
-        // resizeMinIntervalSeconds ago, delay the flush to the window
-        // boundary. Otherwise flush at the next runloop tick. Either
-        // way, the final pending value lands.
-        let elapsed = CACurrentMediaTime() - lastSentNaturalAt
-        let delay = max(0, Self.resizeMinIntervalSeconds - elapsed)
-        if delay == 0 {
-            DispatchQueue.main.async { [weak self] in
-                self?.flushPendingReport()
-            }
-        } else {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.flushPendingReport()
-            }
+        DispatchQueue.main.async { [weak self] in
+            self?.flushPendingReport()
         }
     }
 
@@ -5414,86 +5521,30 @@ final class TerminalSurface: Identifiable, ObservableObject {
         guard let pending = pendingReport else { return }
         pendingReport = nil
         guard let bridge = daemonBridge else { return }
-        // Dedupe: if the final coalesced value matches the last shipped
-        // size, drop it — common at the end of animations where the
-        // user's target happens to equal the pre-animation size.
-        if let last = lastReportedNatural, last.cols == pending.cols, last.rows == pending.rows {
+        // Dedupe only when the daemon already agrees. With latest-owner
+        // resize semantics, a different client can temporarily own the
+        // PTY size. A focused surface must be allowed to re-send the same
+        // natural size it sent earlier so it can reclaim all available
+        // space without waiting for another geometry delta.
+        let daemonAlreadyMatchesPending = daemonViewSize?.cols == pending.cols &&
+            daemonViewSize?.rows == pending.rows
+        if let last = lastReportedNatural,
+           last.cols == pending.cols,
+           last.rows == pending.rows,
+           daemonAlreadyMatchesPending {
             return
         }
         lastReportedNatural = (pending.cols, pending.rows)
-        lastSentNaturalAt = CACurrentMediaTime()
         #if DEBUG
-        dlog("resize.report surface=\(id.uuidString.prefix(8)) reason=\(pending.reason) session=\(bridge.sessionID ?? "pending") natural=\(pending.cols)x\(pending.rows) daemonViewSize=\(daemonViewSize.map { "\($0.cols)x\($0.rows)" } ?? "nil") coalesced=1")
+        dlog(
+            "resize.report surface=\(id.uuidString.prefix(8)) reason=\(pending.reason) " +
+            "session=\(bridge.sessionID ?? "pending") natural=\(pending.cols)x\(pending.rows) " +
+            "containerPx=\(pending.containerWpx)x\(pending.containerHpx) " +
+            "cellPx=\(String(format: "%.2f", pending.cellWpx))x\(String(format: "%.2f", pending.cellHpx)) " +
+            "daemonViewSize=\(daemonViewSize.map { "\($0.cols)x\($0.rows)" } ?? "nil") coalesced=1"
+        )
         #endif
         bridge.resize(cols: pending.cols, rows: pending.rows)
-    }
-
-    /// Schedule a trailing-edge cursor-to-bottom synthesis. Called from
-    /// `applyCurrentViewSize` on every non-initial, non-alt-screen reshape.
-    /// Multiple calls within `cursorPinDebounceSeconds` coalesce into one
-    /// fire at the end of the window.
-    private func scheduleCursorPin() {
-        guard !cursorPinScheduled else { return }
-        cursorPinScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.cursorPinDebounceSeconds) { [weak self] in
-            self?.firePendingCursorPin()
-        }
-    }
-
-    private func firePendingCursorPin() {
-        cursorPinScheduled = false
-        guard !onAltScreen, let surface else { return }
-        let postSetSize = ghostty_surface_size(surface)
-        let rows = Int(postSetSize.rows)
-        guard rows > 0 else { return }
-        let cup = "\u{1B}[\(rows);1H"
-        cup.withCString { c in
-            ghostty_surface_process_output(surface, c, UInt(strlen(c)))
-        }
-        ghostty_surface_refresh(surface)
-        #if DEBUG
-        dlog("viewSize.cursorPin surface=\(id.uuidString.prefix(8)) row=\(rows) col=1 debounced")
-        #endif
-    }
-
-    /// Watch byte stream from daemon for xterm alt-screen enter/exit
-    /// sequences so we know whether the surface is currently rendering a
-    /// full-screen app (vim/less/htop) or a primary-screen shell prompt.
-    /// The `applyCurrentViewSize` cursor-pin logic only fires on primary.
-    /// Sequences recognized (CSI ? {47|1047|1049} {h|l}):
-    ///   - `\e[?47h` / `\e[?1047h` / `\e[?1049h` → enter alt-screen
-    ///   - `\e[?47l` / `\e[?1047l` / `\e[?1049l` → exit alt-screen
-    /// Matches only explicit occurrences; we don't emulate full VT state.
-    /// False negatives (alt-screen active but we missed the enter) just
-    /// result in a harmless cursor-pin at bottom which any alt-screen app
-    /// will overwrite on its next redraw.
-    private func updateAltScreenTracking(data: Data) {
-        // Fast path: the sequences we look for all start with `\e[?`.
-        // Skip the scan entirely when data is plain text with no ESC.
-        guard data.contains(0x1B) else { return }
-        data.withUnsafeBytes { buf in
-            guard let base = buf.baseAddress?.assumingMemoryBound(to: UInt8.self) else { return }
-            var i = 0
-            let n = buf.count
-            while i < n {
-                if base[i] == 0x1B, i + 2 < n, base[i+1] == 0x5B, base[i+2] == 0x3F {
-                    // Parse the digits after `\e[?`
-                    var j = i + 3
-                    var code = 0
-                    while j < n, base[j] >= 0x30, base[j] <= 0x39 {
-                        code = code * 10 + Int(base[j] - 0x30)
-                        j += 1
-                    }
-                    if j < n, code == 47 || code == 1047 || code == 1049 {
-                        if base[j] == 0x68 { onAltScreen = true }      // 'h'
-                        else if base[j] == 0x6C { onAltScreen = false } // 'l'
-                    }
-                    i = j + 1
-                } else {
-                    i += 1
-                }
-            }
-        }
     }
 
     /// Invalidate the cached cell pixel metrics so the next `updateSize`
@@ -5513,9 +5564,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // forcing re-measurement via ghostty_surface_size.
         lastPixelWidth = 0
         lastPixelHeight = 0
-        // Font change invalidates the pixel dims we dedupe against —
-        // the same (cols, rows) now maps to different px totals.
-        lastAppliedSetSizePx = (0, 0)
         _ = hostedView.reconcileGeometryNow()
     }
 
@@ -5576,6 +5624,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
     }
 
     func setFocus(_ focused: Bool) {
+        if focused {
+            reportNaturalToDaemon(reason: "focus")
+        }
         // Only send focus events when the state changes to avoid redundant
         // prompt redraws with zsh themes like Powerlevel10k.
         guard focused != desiredFocusState else { return }
@@ -6312,10 +6363,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     /// Pinned region (in this view's coordinate space, points) where the
     /// daemon-effective grid is being rendered. When set, the enclosing
     /// scroll view shrinks this view's frame to match, so AppKit
-    /// re-sizes the CAMetalLayer cleanly (no stale-pixel ghosting), and
-    /// draws a 1 pt `NSColor.separatorColor` stroke just outside the
-    /// frame. Set to nil to restore full-bounds rendering (we are the
-    /// smallest attached device, or the only one).
+    /// re-sizes the CAMetalLayer cleanly (no stale-pixel ghosting). Set
+    /// to nil to restore full-bounds rendering (we are the smallest
+    /// attached device, or the only one).
     var letterboxRect: CGRect? {
         didSet {
             guard letterboxRect != oldValue else { return }
@@ -6323,7 +6373,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             // `synchronizeGeometryAndContent`, which reads this rect
             // and resizes our frame (so AppKit also resizes the
             // CAMetalLayer — critical to avoid stale-pixel ghosting
-            // from the previous larger grid) and repaints the border.
+            // from the previous larger grid).
             if let host = enclosingScrollView?.superview as? GhosttySurfaceScrollView {
                 host.needsLayout = true
                 host.layoutSubtreeIfNeeded()
@@ -9733,6 +9783,12 @@ final class GhosttySurfaceScrollView: NSView {
         static let lineWidth = PanelOverlayRingMetrics.lineWidth
     }
 
+    private enum ConstrainedSizeBorderMetrics {
+        static let lineWidth: CGFloat = 1
+        static let pathInset: CGFloat = 0.5
+        static let frameOutset: CGFloat = 1
+    }
+
     private let backgroundView: NSView
     private let scrollView: GhosttyScrollView
     /// Flipped-coordinate document view. See the comment in `init` where
@@ -9746,50 +9802,9 @@ final class GhosttySurfaceScrollView: NSView {
     }
 
     private let documentView: NSView
-    /// Shape layer drawn on documentView to outline the pinned terminal
-    /// rect when the daemon has asked us to letterbox. Hidden when no
-    /// pin is active. Mouse / key events pass through (no hit testing).
-    private let letterboxBorderLayer: CAShapeLayer = {
-        let layer = CAShapeLayer()
-        layer.fillColor = NSColor.clear.cgColor
-        layer.lineWidth = 1.0
-        layer.zPosition = 1000
-        layer.isHidden = true
-        layer.actions = ["path": NSNull(), "frame": NSNull()]
-        return layer
-    }()
-
-    /// Refresh the letterbox border around `surfaceView`. Called by
-    /// `GhosttyNSView` when its `letterboxRect` changes, and by our own
-    /// `synchronizeGeometryAndContent` after every layout pass so the
-    /// stroke follows window resizes.
-    func updateLetterboxBorderLayer(around view: NSView) {
-        guard let docLayer = documentView.layer else { return }
-        // Hide the border when surfaceView fills the document view — the
-        // smallest-device case: no letterboxing, no visual chrome.
-        let doc = documentView.bounds
-        let s = view.frame
-        let isPinned = s.width + 0.5 < doc.width || s.height + 0.5 < doc.height
-        letterboxBorderLayer.isHidden = !isPinned
-        letterboxBorderLayer.strokeColor = NSColor.separatorColor.cgColor
-        letterboxBorderLayer.contentsScale = docLayer.contentsScale
-        // Ghostty draws the cell grid inset by its `window-padding-x` /
-        // `window-padding-y` config (default 2pt per side) within the
-        // surface view. The letterbox is meant to outline the grid, not
-        // the surface view's frame, so inset to match the padding before
-        // outsetting by the stroke's half-width.
-        let ghosttyPad: CGFloat = 2
-        let gridRect = s.insetBy(dx: ghosttyPad, dy: ghosttyPad)
-        let outline = gridRect.insetBy(dx: -1, dy: -1)
-        let path = CGPath(rect: outline, transform: nil)
-        if letterboxBorderLayer.path != path {
-            letterboxBorderLayer.path = path
-        }
-        if letterboxBorderLayer.frame != doc {
-            letterboxBorderLayer.frame = doc
-        }
-    }
     private let surfaceView: GhosttyNSView
+    private let constrainedSizeBorderView: GhosttyFlashOverlayView
+    private let constrainedSizeBorderLayer: CAShapeLayer
     private let inactiveOverlayView: GhosttyFlashOverlayView
     private let dropZoneOverlayView: GhosttyFlashOverlayView
     private let notificationRingOverlayView: GhosttyFlashOverlayView
@@ -10022,6 +10037,8 @@ final class GhosttySurfaceScrollView: NSView {
         self.surfaceView = surfaceView
         backgroundView = NSView(frame: .zero)
         scrollView = GhosttyScrollView()
+        constrainedSizeBorderView = GhosttyFlashOverlayView(frame: .zero)
+        constrainedSizeBorderLayer = CAShapeLayer()
         inactiveOverlayView = GhosttyFlashOverlayView(frame: .zero)
         dropZoneOverlayView = GhosttyFlashOverlayView(frame: .zero)
         notificationRingOverlayView = GhosttyFlashOverlayView(frame: .zero)
@@ -10067,10 +10084,6 @@ final class GhosttySurfaceScrollView: NSView {
         wantsLayer = true
         layer?.masksToBounds = true
 
-        // documentView.layer is materialized after wantsLayer=true; attach
-        // the letterbox border sublayer now that self is fully set up.
-        documentView.layer?.addSublayer(letterboxBorderLayer)
-
         backgroundView.wantsLayer = true
         let initialTerminalBackground = GhosttyApp.shared.defaultBackgroundColor
             .withAlphaComponent(GhosttyApp.shared.defaultBackgroundOpacity)
@@ -10079,6 +10092,18 @@ final class GhosttySurfaceScrollView: NSView {
         addSubview(backgroundView)
         addSubview(scrollView)
         synchronizeScrollbarAppearance()
+        constrainedSizeBorderView.wantsLayer = true
+        constrainedSizeBorderView.layer?.backgroundColor = NSColor.clear.cgColor
+        constrainedSizeBorderView.layer?.masksToBounds = false
+        constrainedSizeBorderLayer.fillColor = NSColor.clear.cgColor
+        constrainedSizeBorderLayer.strokeColor = cmuxTerminalChromeSeparatorNSColor().cgColor
+        constrainedSizeBorderLayer.lineWidth = ConstrainedSizeBorderMetrics.lineWidth
+        constrainedSizeBorderLayer.lineJoin = .miter
+        constrainedSizeBorderLayer.lineCap = .butt
+        constrainedSizeBorderLayer.opacity = 0
+        constrainedSizeBorderView.layer?.addSublayer(constrainedSizeBorderLayer)
+        constrainedSizeBorderView.isHidden = true
+        addSubview(constrainedSizeBorderView)
         inactiveOverlayView.wantsLayer = true
         inactiveOverlayView.layer?.backgroundColor = NSColor.clear.cgColor
         inactiveOverlayView.isHidden = true
@@ -10498,7 +10523,6 @@ final class GhosttySurfaceScrollView: NSView {
         #if DEBUG
         dlog("geom.sync surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(8) ?? "nil") target=\(String(format: "%.1fx%.1f@(%.1f,%.1f)", targetSurfaceFrame.width, targetSurfaceFrame.height, targetSurfaceFrame.minX, targetSurfaceFrame.minY)) newFrame=\(String(format: "%.1fx%.1f@(%.1f,%.1f)", surfaceView.frame.width, surfaceView.frame.height, surfaceView.frame.minX, surfaceView.frame.minY)) prevFrame=\(String(format: "%.1fx%.1f@(%.1f,%.1f)", prevFrame.width, prevFrame.height, prevFrame.minX, prevFrame.minY)) pin=\(surfaceView.letterboxRect.map { "\($0.width)x\($0.height)" } ?? "nil") scrollBounds=\(String(format: "%.1fx%.1f", targetSize.width, targetSize.height)) hostBounds=\(String(format: "%.1fx%.1f", bounds.width, bounds.height))")
         #endif
-        updateLetterboxBorderLayer(around: surfaceView)
         // Preserve the original documentView sizing rule — width follows the
         // container, height stays where it was. An earlier attempt to force
         // documentView to fill scrollView both ways caused the Metal layer
@@ -10512,6 +10536,7 @@ final class GhosttySurfaceScrollView: NSView {
             size: CGSize(width: scrollView.bounds.width, height: documentView.frame.height)
         )
         _ = setFrameIfNeeded(documentView, to: targetDocumentFrame)
+        updateConstrainedSizeBorder(surfaceFrame: targetSurfaceFrame, containerSize: targetSize)
         _ = setFrameIfNeeded(inactiveOverlayView, to: bounds)
         if let zone = activeDropZone {
             attachDropZoneOverlayIfNeeded()
@@ -10561,6 +10586,52 @@ final class GhosttySurfaceScrollView: NSView {
 
     private func sizeApproximatelyEqual(_ lhs: CGSize, _ rhs: CGSize, epsilon: CGFloat = 0.0001) -> Bool {
         abs(lhs.width - rhs.width) <= epsilon && abs(lhs.height - rhs.height) <= epsilon
+    }
+
+    private func updateConstrainedSizeBorder(surfaceFrame: CGRect, containerSize: CGSize) {
+        let isConstrained = surfaceView.letterboxRect != nil &&
+            (surfaceFrame.width + 0.5 < containerSize.width || surfaceFrame.height + 0.5 < containerSize.height)
+
+        guard isConstrained else {
+            constrainedSizeBorderView.isHidden = true
+            constrainedSizeBorderLayer.opacity = 0
+            constrainedSizeBorderLayer.path = nil
+            return
+        }
+
+        let scale = max(window?.backingScaleFactor ?? 2.0, 1.0)
+        let surfaceFrameInHost = surfaceView.convert(surfaceView.bounds, to: self)
+        let alignedFrame = CGRect(
+            x: floor(surfaceFrameInHost.minX * scale) / scale,
+            y: floor(surfaceFrameInHost.minY * scale) / scale,
+            width: ceil(surfaceFrameInHost.width * scale) / scale,
+            height: ceil(surfaceFrameInHost.height * scale) / scale
+        )
+
+        guard alignedFrame.width > 2, alignedFrame.height > 2 else {
+            constrainedSizeBorderView.isHidden = true
+            constrainedSizeBorderLayer.opacity = 0
+            constrainedSizeBorderLayer.path = nil
+            return
+        }
+
+        let borderFrame = alignedFrame.insetBy(
+            dx: -ConstrainedSizeBorderMetrics.frameOutset,
+            dy: -ConstrainedSizeBorderMetrics.frameOutset
+        )
+        _ = setFrameIfNeeded(constrainedSizeBorderView, to: borderFrame)
+        constrainedSizeBorderLayer.frame = constrainedSizeBorderView.bounds
+        constrainedSizeBorderLayer.lineWidth = ConstrainedSizeBorderMetrics.lineWidth
+        constrainedSizeBorderLayer.strokeColor = cmuxTerminalChromeSeparatorNSColor().cgColor
+        constrainedSizeBorderLayer.path = CGPath(
+            rect: constrainedSizeBorderView.bounds.insetBy(
+                dx: ConstrainedSizeBorderMetrics.pathInset,
+                dy: ConstrainedSizeBorderMetrics.pathInset
+            ),
+            transform: nil
+        )
+        constrainedSizeBorderLayer.opacity = 1
+        constrainedSizeBorderView.isHidden = false
     }
 
     private func pointApproximatelyEqual(_ lhs: CGPoint, _ rhs: CGPoint, epsilon: CGFloat = 0.5) -> Bool {
@@ -11406,6 +11477,7 @@ final class GhosttySurfaceScrollView: NSView {
                 window.makeFirstResponder(nil)
             }
         } else {
+            surfaceView.terminalSurface?.reportNaturalToDaemon(reason: "visible")
             if !wasVisible {
                 // Workspace/sidebar selection can make an already-sized terminal visible again
                 // without a portal frame delta or a focus handoff. Reuse the portal refresh
@@ -11443,6 +11515,7 @@ final class GhosttySurfaceScrollView: NSView {
         }
 #endif
         if active {
+            surfaceView.terminalSurface?.reportNaturalToDaemon(reason: "active")
             scheduleAutomaticFirstResponderApply(reason: "setActive")
         } else {
             resignOwnedFirstResponderIfNeeded(reason: "setActive(false)")

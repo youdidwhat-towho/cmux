@@ -3,6 +3,35 @@ import UIKit
 
 private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "ghostty.surface")
 
+enum TerminalInputDebugLog {
+    private static let isEnabled = ProcessInfo.processInfo.environment["CMUX_INPUT_DEBUG"] == "1"
+
+    static func log(_ message: String) {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil {
+            return
+        }
+        #endif
+        guard isEnabled else { return }
+        TerminalSidebarStore.debugLog("input: \(message)")
+    }
+
+    static func textSummary(_ text: String) -> String {
+        let summary = String(reflecting: text)
+        guard summary.count > 96 else { return summary }
+        return "\(summary.prefix(96))..."
+    }
+
+    static func dataSummary(_ data: Data) -> String {
+        let prefix = data.prefix(32)
+        let prefixData = Data(prefix)
+        let hex = prefix.map { String(format: "%02X", $0) }.joined(separator: " ")
+        let utf8 = String(data: prefixData, encoding: .utf8) ?? "<non-utf8>"
+        let suffix = data.count > prefix.count ? " ..." : ""
+        return "len=\(data.count) hex=\(hex)\(suffix) utf8=\(textSummary(utf8))"
+    }
+}
+
 @MainActor
 protocol GhosttySurfaceViewDelegate: AnyObject {
     func ghosttySurfaceView(_ surfaceView: GhosttySurfaceView, didProduceInput data: Data)
@@ -21,12 +50,18 @@ protocol TerminalSurfaceHosting: AnyObject {
     /// attach/resize/detach/open, plus inlined in RPC responses, so
     /// every attached device converges on the same grid.
     func applyViewSize(cols: Int, rows: Int)
+    #if DEBUG
+    func accessibilityRenderedTextForTesting() -> String?
+    #endif
 }
 
 extension TerminalSurfaceHosting {
     func focusInput() {}
     func updateRemotePlatform(_ platform: RemotePlatform) {}
     func applyViewSize(cols _: Int, rows _: Int) {}
+    #if DEBUG
+    func accessibilityRenderedTextForTesting() -> String? { nil }
+    #endif
 }
 
 final class GhosttySurfaceBridge {
@@ -427,6 +462,41 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     /// second set_size round-trip.
     private var lastRenderRect: CGRect = .zero
 
+    #if DEBUG
+    struct DebugGeometrySnapshot {
+        let boundsSize: CGSize
+        let renderRect: CGRect
+        let screenScale: CGFloat
+        let reportedSize: TerminalGridSize?
+        let renderedSize: TerminalGridSize?
+    }
+
+    func debugGeometrySnapshotForTesting() -> DebugGeometrySnapshot {
+        let renderedSize: TerminalGridSize? = {
+            guard let surface else { return nil }
+            let size = ghostty_surface_size(surface)
+            return TerminalGridSize(
+                columns: Int(size.columns),
+                rows: Int(size.rows),
+                pixelWidth: Int(size.width_px),
+                pixelHeight: Int(size.height_px)
+            )
+        }()
+        return DebugGeometrySnapshot(
+            boundsSize: bounds.size,
+            renderRect: lastRenderRect,
+            screenScale: preferredScreenScale,
+            reportedSize: lastReportedSize,
+            renderedSize: renderedSize
+        )
+    }
+
+    func setKeyboardHeightForTesting(_ height: CGFloat) {
+        keyboardHeight = max(0, height)
+        syncSurfaceGeometry()
+    }
+    #endif
+
     var currentGridSize: TerminalGridSize {
         lastReportedSize ?? TerminalGridSize(columns: 100, rows: 32, pixelWidth: 900, pixelHeight: 650)
     }
@@ -443,17 +513,22 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             // Ghostty is display-only; the remote server handles echo.
             // Replace \n with \r (terminals expect CR for Return).
             let normalized = text.replacingOccurrences(of: "\n", with: "\r")
-            self.delegate?.ghosttySurfaceView(self, didProduceInput: Data(normalized.utf8))
+            let data = Data(normalized.utf8)
+            TerminalInputDebugLog.log("surface.onText text=\(TerminalInputDebugLog.textSummary(text)) data=\(TerminalInputDebugLog.dataSummary(data))")
+            self.delegate?.ghosttySurfaceView(self, didProduceInput: data)
         }
         inputProxy.onBackspace = { [weak self] in
             guard let self else { return }
             self.resetCursorBlink()
             // Send DEL (0x7F) directly to transport as raw byte.
-            self.delegate?.ghosttySurfaceView(self, didProduceInput: Data([0x7F]))
+            let data = Data([0x7F])
+            TerminalInputDebugLog.log("surface.onBackspace data=\(TerminalInputDebugLog.dataSummary(data))")
+            self.delegate?.ghosttySurfaceView(self, didProduceInput: data)
         }
         inputProxy.onEscapeSequence = { [weak self] data in
             guard let self else { return }
             self.resetCursorBlink()
+            TerminalInputDebugLog.log("surface.onEscape data=\(TerminalInputDebugLog.dataSummary(data))")
             self.delegate?.ghosttySurfaceView(self, didProduceInput: data)
         }
         inputProxy.onHideKeyboard = { [weak self] in
@@ -637,19 +712,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             }
         }
         #endif
-        // The daemon normalizes line endings (\r\n → \n) in its read buffer.
-        // Ghostty's VT parser needs \r\n, so restore the carriage returns.
-        let restored: Data
-        if data.contains(0x0a) {
-            var out = Data(capacity: data.count + data.count / 10)
-            for byte in data {
-                if byte == 0x0a { out.append(0x0d) }
-                out.append(byte)
-            }
-            restored = out
-        } else {
-            restored = data
-        }
+        let forwarded = Self.forwardDaemonOutputBytes(data)
 
         // Dispatch the actual Ghostty call to a serial background queue.
         // ghostty_surface_process_output can block on Ghostty's internal
@@ -657,7 +720,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         // (see TerminalSidebarStore deadlock notes). Ordering is preserved
         // because the queue is serial.
         Self.outputQueue.async { [weak self] in
-            restored.withUnsafeBytes { buffer in
+            forwarded.withUnsafeBytes { buffer in
                 guard let baseAddress = buffer.baseAddress else { return }
                 let pointer = baseAddress.assumingMemoryBound(to: CChar.self)
                 ghostty_surface_process_output(surface, pointer, UInt(buffer.count))
@@ -681,9 +744,17 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         }
     }
 
+    static func forwardDaemonOutputBytes(_ data: Data) -> Data {
+        // The daemon owns terminal byte semantics. iOS must feed Ghostty the
+        // exact VT stream it received so desktop and mobile render the same
+        // session history and prompt state.
+        data
+    }
+
     @objc
     func focusInput() {
         onFocusInputRequestedForTesting?()
+        syncSurfaceGeometry()
         inputProxy.becomeFirstResponder()
     }
 
@@ -746,27 +817,23 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         return String(decoding: data, as: UTF8.self)
     }
 
+    #if DEBUG
+    func accessibilityRenderedTextForTesting() -> String? {
+        let candidates = [
+            renderedTextForTesting(pointTag: GHOSTTY_POINT_SURFACE),
+            renderedTextForTesting(pointTag: GHOSTTY_POINT_SCREEN),
+            renderedTextForTesting(pointTag: GHOSTTY_POINT_ACTIVE),
+            renderedTextForTesting(pointTag: GHOSTTY_POINT_VIEWPORT),
+        ].compactMap { $0 }
+
+        return candidates.max { lhs, rhs in
+            lhs.utf8.count < rhs.utf8.count
+        }
+    }
+    #endif
+
     func renderedHTMLForTesting(pointTag: ghostty_point_tag_e = GHOSTTY_POINT_VIEWPORT) -> String? {
-        guard let surface else { return nil }
-
-        let topLeft = ghostty_point_s(
-            tag: pointTag,
-            coord: GHOSTTY_POINT_COORD_TOP_LEFT,
-            x: 0,
-            y: 0
-        )
-        let bottomRight = ghostty_point_s(
-            tag: pointTag,
-            coord: GHOSTTY_POINT_COORD_BOTTOM_RIGHT,
-            x: 0,
-            y: 0
-        )
-        let selection = ghostty_selection_s(
-            top_left: topLeft,
-            bottom_right: bottomRight,
-            rectangle: false
-        )
-
+        _ = pointTag
         // ghostty_surface_read_text_html not available in this build
         return nil
     }
@@ -912,28 +979,58 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         guard cols > 0, rows > 0 else { return }
         if effectiveGrid?.cols == cols && effectiveGrid?.rows == rows { return }
         effectiveGrid = (cols, rows)
-        setNeedsLayout()
         if window != nil {
-            syncSurfaceGeometry()
+            syncSurfaceGeometry(shouldReassertNaturalSize: false)
+        } else {
+            setNeedsLayout()
         }
     }
 
-    private func syncSurfaceGeometry() {
+    private func setSurfaceSizeAtLeastGrid(
+        _ surface: ghostty_surface_t,
+        cols: Int,
+        rows: Int,
+        cellPixelSize: CGSize
+    ) -> (requestedW: UInt32, requestedH: UInt32, actual: ghostty_surface_size_s) {
+        var requestedW = UInt32(max(1, Int((CGFloat(cols) * cellPixelSize.width).rounded(.down))))
+        var requestedH = UInt32(max(1, Int((CGFloat(rows) * cellPixelSize.height).rounded(.down))))
+
+        ghostty_surface_set_size(surface, requestedW, requestedH)
+        var actual = ghostty_surface_size(surface)
+
+        // Ghostty's grid calculation subtracts padding and floors partial cells,
+        // so the reverse mapping has to be confirmed against Ghostty itself.
+        // This keeps the iOS mirror on the exact daemon grid instead of
+        // occasionally rendering one column short.
+        var steps = 0
+        while steps < 128,
+              Int(actual.columns) < cols || Int(actual.rows) < rows {
+            if Int(actual.columns) < cols {
+                requestedW += 1
+            }
+            if Int(actual.rows) < rows {
+                requestedH += 1
+            }
+            ghostty_surface_set_size(surface, requestedW, requestedH)
+            actual = ghostty_surface_size(surface)
+            steps += 1
+        }
+
+        return (requestedW, requestedH, actual)
+    }
+
+    private func syncSurfaceGeometry(shouldReassertNaturalSize: Bool = true) {
         guard let surface else { return }
 
         let scale = preferredScreenScale
         ghostty_surface_set_content_scale(surface, scale, scale)
 
-        // The container's natural device-preferred pixel box. Keyboard
-        // visibility is INTENTIONALLY not factored into the reported grid —
-        // the keyboard is a local overlay, not a change in this device's
-        // session capacity. Letting it shrink the reported rows would
-        // propagate through `session.resize` and drag the shared min-
-        // across-attachments effective grid smaller for every attached
-        // device, which caused rendering flicker on iPad whenever anyone
-        // typed on iPhone. See multi-device sharing plan.
-        let accessory: CGFloat = 44
-        let bottomInset = accessory + safeAreaInsets.bottom
+        // The container's visible device-preferred pixel box. The iOS
+        // keyboard and input accessory cover the bottom of this UIView, so
+        // they must reduce the render/report height while visible. When
+        // the keyboard hides, layout re-expands and reports the full host
+        // capacity again.
+        let bottomInset = min(max(0, keyboardHeight), max(0, bounds.height - 1))
         let containerW = max(1, bounds.width)
         let containerH = max(1, bounds.height - bottomInset)
         let containerPxW = UInt32(max(1, Int((containerW * scale).rounded(.down))))
@@ -941,8 +1038,8 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
 
         // Measure the container's natural cell capacity by sizing Ghostty
         // to the full container box and reading back cols/rows. This is
-        // what we report via `session.resize`; the daemon aggregates
-        // min-across-attachments from these reports.
+        // what we report via `session.resize`; the daemon uses the
+        // smallest live attachment as the effective PTY size.
         ghostty_surface_set_size(surface, containerPxW, containerPxH)
         let measured = ghostty_surface_size(surface)
         if measured.columns > 0 && measured.rows > 0 && measured.width_px > 0 && measured.height_px > 0 {
@@ -964,34 +1061,39 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         // would exceed the container (stale push mid-resize, or we are
         // actually the smallest device) fall back to natural fill.
         let renderRect: CGRect
-        let renderPxW: UInt32
-        let renderPxH: UInt32
         if let eff = effectiveGrid,
            eff.cols > 0, eff.rows > 0,
            cellPixelSize.width > 0, cellPixelSize.height > 0 {
+            let columnSlack = Int(measured.columns) - eff.cols
+            let rowSlack = Int(measured.rows) - eff.rows
+            let fillsNaturalGrid = eff.cols >= Int(measured.columns) && eff.rows >= Int(measured.rows)
+            let withinOneCell = columnSlack <= 1 && rowSlack <= 1
             let pinnedW = CGFloat(eff.cols) * cellPixelSize.width / scale
             let pinnedH = CGFloat(eff.rows) * cellPixelSize.height / scale
-            if pinnedW + 0.5 < containerW || pinnedH + 0.5 < containerH {
-                let clampedW = min(pinnedW, containerW)
-                let clampedH = min(pinnedH, containerH)
+            if fillsNaturalGrid || withinOneCell {
+                renderRect = CGRect(x: 0, y: 0, width: containerW, height: containerH)
+            } else if pinnedW + 0.5 < containerW || pinnedH + 0.5 < containerH {
+                let fittedSize = setSurfaceSizeAtLeastGrid(
+                    surface,
+                    cols: eff.cols,
+                    rows: eff.rows,
+                    cellPixelSize: cellPixelSize
+                )
+                let actualWidthPx = fittedSize.actual.width_px > 0 ? fittedSize.actual.width_px : fittedSize.requestedW
+                let actualHeightPx = fittedSize.actual.height_px > 0 ? fittedSize.actual.height_px : fittedSize.requestedH
+                let clampedW = min(CGFloat(actualWidthPx) / scale, containerW)
+                let clampedH = min(CGFloat(actualHeightPx) / scale, containerH)
                 // Left-align + top-anchor the pinned surface so cells line
                 // up at the same screen column every render, regardless of
                 // container width. Users scanning text expect a fixed left
                 // margin; centering would make the prompt jitter horizontally
                 // when another device attaches or detaches.
                 renderRect = CGRect(x: 0, y: 0, width: clampedW, height: clampedH)
-                renderPxW = UInt32(max(1, Int((clampedW * scale).rounded(.down))))
-                renderPxH = UInt32(max(1, Int((clampedH * scale).rounded(.down))))
-                ghostty_surface_set_size(surface, renderPxW, renderPxH)
             } else {
                 renderRect = CGRect(x: 0, y: 0, width: containerW, height: containerH)
-                renderPxW = containerPxW
-                renderPxH = containerPxH
             }
         } else {
             renderRect = CGRect(x: 0, y: 0, width: containerW, height: containerH)
-            renderPxW = containerPxW
-            renderPxH = containerPxH
         }
 
         lastRenderRect = renderRect
@@ -1006,7 +1108,12 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         if window != nil {
             logLayerTree(reason: "geometry")
         }
-        guard naturalSize != lastReportedSize else { return }
+        let effectiveMatchesNatural = effectiveGrid.map { grid in
+            grid.cols == naturalSize.columns && grid.rows == naturalSize.rows
+        } ?? true
+        let shouldReportNaturalSize = naturalSize != lastReportedSize ||
+            (shouldReassertNaturalSize && !effectiveMatchesNatural)
+        guard shouldReportNaturalSize else { return }
         lastReportedSize = naturalSize
         delegate?.ghosttySurfaceView(self, didResize: naturalSize)
     }
@@ -1348,6 +1455,8 @@ final class TerminalInputTextView: UITextView {
     private var lastAlternateTapTime: Date?
     private var lastCommandTapTime: Date?
     private var lastShiftTapTime: Date?
+    private var pendingDirectInsertMirrorText = ""
+    private static let directInsertMirrorTextLimit = 128
 
     override var canBecomeFirstResponder: Bool { true }
 
@@ -1360,6 +1469,7 @@ final class TerminalInputTextView: UITextView {
     }
 
     private static let monokaiBarColor = UIColor(red: 0x27/255.0, green: 0x28/255.0, blue: 0x22/255.0, alpha: 1)
+    private static let accessoryHorizontalInset: CGFloat = 16
 
     private lazy var terminalAccessoryToolbar: UIView = {
         let container = UIView()
@@ -1422,7 +1532,10 @@ final class TerminalInputTextView: UITextView {
         container.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            dismissButton.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 8),
+            dismissButton.leadingAnchor.constraint(
+                equalTo: container.safeAreaLayoutGuide.leadingAnchor,
+                constant: Self.accessoryHorizontalInset
+            ),
             dismissButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             dismissButton.widthAnchor.constraint(equalToConstant: 32),
 
@@ -1432,7 +1545,10 @@ final class TerminalInputTextView: UITextView {
             nub.heightAnchor.constraint(equalToConstant: 34),
 
             scrollView.leadingAnchor.constraint(equalTo: nub.trailingAnchor, constant: 6),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.trailingAnchor.constraint(
+                equalTo: container.safeAreaLayoutGuide.trailingAnchor,
+                constant: -Self.accessoryHorizontalInset
+            ),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
@@ -1515,11 +1631,14 @@ final class TerminalInputTextView: UITextView {
 
     override func insertText(_ text: String) {
         guard !text.isEmpty else { return }
+        TerminalInputDebugLog.log("proxy.insertText text=\(TerminalInputDebugLog.textSummary(text)) composing=\(markedTextRange != nil)")
         if markedTextRange != nil {
+            pendingDirectInsertMirrorText = ""
             super.insertText(text)
             return
         }
-        emitCommittedText(text)
+        rememberDirectInsertMirror(text)
+        emitCommittedText(text, source: "insertText")
     }
 
     override func deleteBackward() {
@@ -1744,16 +1863,41 @@ final class TerminalInputTextView: UITextView {
     }
 
     private func handleTextChange(currentText: String, isComposing: Bool) {
+        TerminalInputDebugLog.log("proxy.textChange text=\(TerminalInputDebugLog.textSummary(currentText)) composing=\(isComposing) pendingDirect=\(TerminalInputDebugLog.textSummary(pendingDirectInsertMirrorText))")
+        if isComposing {
+            pendingDirectInsertMirrorText = ""
+        } else if !pendingDirectInsertMirrorText.isEmpty {
+            if currentText == pendingDirectInsertMirrorText {
+                TerminalInputDebugLog.log("proxy.textChange suppressed direct insert mirror text=\(TerminalInputDebugLog.textSummary(currentText))")
+                pendingDirectInsertMirrorText = ""
+                if text != "" {
+                    text = ""
+                }
+                return
+            }
+            pendingDirectInsertMirrorText = ""
+        }
+
         let result = TerminalTextInputPipeline.process(text: currentText, isComposing: isComposing)
         if let committedText = result.committedText {
-            emitCommittedText(committedText)
+            emitCommittedText(committedText, source: "textChange")
         }
         if text != result.nextBufferText {
             text = result.nextBufferText
         }
     }
 
-    private func emitCommittedText(_ committedText: String) {
+    private func rememberDirectInsertMirror(_ insertedText: String) {
+        pendingDirectInsertMirrorText.append(insertedText)
+        if pendingDirectInsertMirrorText.count > Self.directInsertMirrorTextLimit {
+            pendingDirectInsertMirrorText = String(
+                pendingDirectInsertMirrorText.suffix(Self.directInsertMirrorTextLimit)
+            )
+        }
+    }
+
+    private func emitCommittedText(_ committedText: String, source: String) {
+        TerminalInputDebugLog.log("proxy.emit source=\(source) text=\(TerminalInputDebugLog.textSummary(committedText))")
         if controlAccessoryArmed {
             if !controlAccessorySticky {
                 setControlAccessoryArmed(false)
@@ -1932,7 +2076,8 @@ final class TerminalInputTextView: UITextView {
 
 extension TerminalInputTextView: UITextViewDelegate {
     func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
-        true
+        TerminalInputDebugLog.log("proxy.shouldChange replacement=\(TerminalInputDebugLog.textSummary(text)) marked=\(textView.markedTextRange != nil) range=\(range.location):\(range.length)")
+        return true
     }
 
     func textViewDidChange(_ textView: UITextView) {

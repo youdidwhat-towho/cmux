@@ -10,8 +10,9 @@ import Bonsplit
 /// in tabs, across workspaces, and eventually mac + iOS concurrently).
 ///
 /// Each per-surface `Binding` has its own `attachmentID`. The daemon
-/// aggregates size across all attachments (`effective = min(attach)`);
-/// mac fans output / view-size locally so we only need one daemon
+/// computes the effective PTY size from the smallest live attachment so
+/// every attached renderer can display the same shared grid; mac fans
+/// output / view-size locally so we only need one daemon
 /// `terminal.subscribe` per session id (first binding opens it, last
 /// binding closes it). Writes are ungated at this layer — they flow
 /// through whatever bridge the user's keystroke reached via AppKit
@@ -51,6 +52,12 @@ final class TerminalSessionRegistry: @unchecked Sendable {
         var lastGridGeneration: UInt64
     }
 
+    struct AttachmentStatusSnapshot {
+        let attachmentID: String
+        let cols: Int
+        let rows: Int
+    }
+
     /// Result of a register call. Callers need `isFirstForSession` to
     /// decide whether to issue `terminal.subscribe` on the daemon
     /// (subsequent bindings ride the existing subscription).
@@ -68,6 +75,7 @@ final class TerminalSessionRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var bindingsBySession: [String: [Binding]] = [:]
+    private var attachmentSnapshotsBySession: [String: [AttachmentStatusSnapshot]] = [:]
 
     /// Register a new binding. Appends to the session's binding list —
     /// never replaces. A re-registration from the same `surfaceID`
@@ -173,6 +181,62 @@ final class TerminalSessionRegistry: @unchecked Sendable {
         bindingsBySession[sessionID] = list
         lock.unlock()
     }
+
+    func updateAttachmentSnapshot(sessionID: String, attachments: [AttachmentStatusSnapshot]) {
+        lock.lock()
+        attachmentSnapshotsBySession[sessionID] = attachments
+        lock.unlock()
+    }
+
+    #if DEBUG
+    func shouldRefreshAttachmentSnapshot(sessionID: String, effectiveCols: Int, effectiveRows: Int) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let attachments = attachmentSnapshotsBySession[sessionID], !attachments.isEmpty else {
+            return true
+        }
+        return !attachments.contains { $0.cols == effectiveCols && $0.rows == effectiveRows }
+    }
+
+    func debugAttachmentSummary(sessionID: String) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return Self.attachmentSummary(attachmentSnapshotsBySession[sessionID] ?? [])
+    }
+
+    func debugResizeSummary(
+        sessionID: String?,
+        surfaceID: UUID,
+        effectiveCols: Int,
+        effectiveRows: Int,
+        naturalCols: Int,
+        naturalRows: Int
+    ) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let sessionID else {
+            return "session=nil localAttachment=nil localReported=nil attachments=unknown remoteWidthLimiter=unknown remoteHeightLimiter=unknown"
+        }
+
+        let local = bindingsBySession[sessionID]?.first(where: { $0.surfaceID == surfaceID })
+        let localAttachmentID = local?.attachmentID ?? "nil"
+        let localReported = local.map { "\($0.cols)x\($0.rows)" } ?? "nil"
+        let attachments = attachmentSnapshotsBySession[sessionID] ?? []
+        let remoteWidthLimiter = attachments.first {
+            $0.attachmentID != localAttachmentID && $0.cols == effectiveCols
+        }?.attachmentID ?? "none"
+        let remoteHeightLimiter = attachments.first {
+            $0.attachmentID != localAttachmentID && $0.rows == effectiveRows
+        }?.attachmentID ?? "none"
+
+        return "session=\(String(sessionID.prefix(12))) localAttachment=\(localAttachmentID) localReported=\(localReported) attachments=\(Self.attachmentSummary(attachments)) remoteWidthLimiter=\(remoteWidthLimiter) remoteHeightLimiter=\(remoteHeightLimiter) natural=\(naturalCols)x\(naturalRows) effective=\(effectiveCols)x\(effectiveRows)"
+    }
+
+    private static func attachmentSummary(_ attachments: [AttachmentStatusSnapshot]) -> String {
+        guard !attachments.isEmpty else { return "unknown" }
+        return "[" + attachments.map { "\($0.attachmentID):\($0.cols)x\($0.rows)" }.joined(separator: ",") + "]"
+    }
+    #endif
 
     /// Look up the first binding for a session id. Used by the transport
     /// layer's reconnect path, which issues subscribe on the first

@@ -7,6 +7,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             openResult: .init(
@@ -65,6 +66,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: nil,
@@ -110,6 +112,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: nil,
@@ -139,7 +142,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         XCTAssertEqual(detachCalls.count, 1)
         XCTAssertEqual(detachCalls.first?.sessionID, "sess-park")
         XCTAssertEqual(detachCalls.first?.attachmentID, "att-park")
-        XCTAssertEqual(closedSessions, [])
+        XCTAssertEqual(closedSessions, [String]())
     }
 
     func testDefaultTransportFactoryUsesInjectedRemoteDaemonBuilder() {
@@ -171,6 +174,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: .success(
@@ -235,7 +239,7 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         XCTAssertEqual(attachCalls.count, 1)
         XCTAssertEqual(attachCalls.first?.sessionID, "sess-existing")
         XCTAssertEqual(attachCalls.first?.attachmentID, "att-existing")
-        XCTAssertEqual(openedCommands, [])
+        XCTAssertEqual(openedCommands, [String]())
         XCTAssertEqual(
             transport.remoteDaemonResumeStateSnapshot(),
             TerminalRemoteDaemonResumeState(
@@ -249,11 +253,186 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         XCTAssertNil(transport.remoteDaemonResumeStateSnapshot())
     }
 
+    func testFreshSharedAttachBootstrapsVTHistoryAndSubscribesFromSnapshotOffset() async throws {
+        let client = StubDaemonSessionClient(
+            hello: .init(
+                name: "cmuxd-remote",
+                version: "dev",
+                instanceID: nil,
+                capabilities: ["terminal.stream", "terminal.subscribe"]
+            ),
+            attachResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    attachments: [],
+                    effectiveCols: 100,
+                    effectiveRows: 30,
+                    lastKnownCols: 100,
+                    lastKnownRows: 30,
+                    gridGeneration: nil
+                )
+            ),
+            openResult: .init(
+                sessionID: "sess-opened",
+                attachmentID: "att-opened",
+                attachments: [],
+                effectiveCols: 100,
+                effectiveRows: 30,
+                lastKnownCols: 100,
+                lastKnownRows: 30,
+                offset: 0,
+                gridGeneration: nil
+            ),
+            readResults: [],
+            historyResult: .init(
+                sessionID: "sess-shared",
+                history: "\u{001B}[?25lcmux welcome\r\nlawrence in / λ ",
+                nextOffset: 42
+            ),
+            subscribeResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    offset: 42,
+                    baseOffset: 0,
+                    truncated: false,
+                    eof: false,
+                    data: Data()
+                )
+            )
+        )
+        let transport = TerminalRemoteDaemonSessionTransport(
+            client: client,
+            command: "tmux new-session -A -s demo",
+            sharedSessionID: "sess-shared"
+        )
+
+        let connectedExpectation = expectation(description: "connected")
+        let historyExpectation = expectation(description: "history")
+        transport.eventHandler = { (event: TerminalTransportEvent) in
+            switch event {
+            case .connected:
+                connectedExpectation.fulfill()
+            case .output(let data) where data == Data("\u{001B}[?25lcmux welcome\r\nlawrence in / λ ".utf8):
+                historyExpectation.fulfill()
+            default:
+                break
+            }
+        }
+
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 100, rows: 30))
+
+        await fulfillment(of: [connectedExpectation, historyExpectation], timeout: 1.0)
+
+        let historyRequests = await client.recordedHistoryRequests()
+        XCTAssertEqual(historyRequests.count, 1)
+        XCTAssertEqual(historyRequests.first?.sessionID, "sess-shared")
+        XCTAssertEqual(historyRequests.first?.format, "vt")
+
+        let subscribeCalls = await client.recordedSubscriptions()
+        XCTAssertEqual(subscribeCalls.count, 1)
+        XCTAssertEqual(subscribeCalls.first?.sessionID, "sess-shared")
+        let subscribeOffset = subscribeCalls.first?.offset ?? nil
+        XCTAssertEqual(subscribeOffset, 42)
+
+        let openedCommands = await client.openedCommands()
+        XCTAssertEqual(openedCommands, [String]())
+
+        await transport.disconnect()
+    }
+
+    func testDuplicateAndOverlappingPushPayloadsOnlyEmitNewBytes() async throws {
+        let client = StubDaemonSessionClient(
+            hello: .init(
+                name: "cmuxd-remote",
+                version: "dev",
+                instanceID: nil,
+                capabilities: ["terminal.stream", "terminal.subscribe"]
+            ),
+            attachResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    attachments: [],
+                    effectiveCols: 100,
+                    effectiveRows: 30,
+                    lastKnownCols: 100,
+                    lastKnownRows: 30,
+                    gridGeneration: nil
+                )
+            ),
+            openResult: .init(
+                sessionID: "sess-opened",
+                attachmentID: "att-opened",
+                attachments: [],
+                effectiveCols: 100,
+                effectiveRows: 30,
+                lastKnownCols: 100,
+                lastKnownRows: 30,
+                offset: 0,
+                gridGeneration: nil
+            ),
+            readResults: [],
+            historyResult: .init(
+                sessionID: "sess-shared",
+                history: "prompt ",
+                nextOffset: 10
+            ),
+            subscribeResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    offset: 10,
+                    baseOffset: 0,
+                    truncated: false,
+                    eof: false,
+                    data: Data()
+                )
+            )
+        )
+        let transport = TerminalRemoteDaemonSessionTransport(
+            client: client,
+            command: "tmux new-session -A -s demo",
+            sharedSessionID: "sess-shared"
+        )
+        let outputs = LockedOutputs()
+
+        transport.eventHandler = { event in
+            if case .output(let data) = event {
+                outputs.append(data)
+            }
+        }
+
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 100, rows: 30))
+
+        await client.emitPush(
+            sessionID: "sess-shared",
+            data: Data("abc".utf8),
+            offset: 13
+        )
+        await client.emitPush(
+            sessionID: "sess-shared",
+            data: Data("abc".utf8),
+            offset: 13
+        )
+        await client.emitPush(
+            sessionID: "sess-shared",
+            data: Data("bcd".utf8),
+            offset: 14
+        )
+
+        XCTAssertEqual(outputs.values(), [
+            Data("prompt ".utf8),
+            Data("abc".utf8),
+            Data("d".utf8),
+        ])
+
+        await transport.disconnect()
+    }
+
     func testConnectOpensFreshTerminalWhenStoredSessionIsGone() async throws {
         let client = StubDaemonSessionClient(
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: .failure(
@@ -298,10 +477,12 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
     }
 }
 
-private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
+private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient, TerminalRemoteDaemonPushSubscribing {
     private let hello: TerminalRemoteDaemonHello
     private let attachResult: Result<TerminalRemoteDaemonSessionStatus, Error>?
     private let openResult: TerminalRemoteDaemonTerminalOpenResult
+    private let historyResult: TerminalRemoteDaemonSessionHistoryResult
+    private let subscribeResult: Result<TerminalRemoteDaemonTerminalReadResult, Error>?
     private var readResults: [Result<TerminalRemoteDaemonTerminalReadResult, Error>]
     private var openedCommandValues: [String] = []
     private var openedSessionIDs: [String?] = []
@@ -310,17 +491,24 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
     private var writeValues: [Data] = []
     private var resizeValues: [(sessionID: String, attachmentID: String, cols: Int, rows: Int)] = []
     private var closedSessionValues: [String] = []
+    private var historyValues: [(sessionID: String, format: String)] = []
+    private var subscribeValues: [(sessionID: String, offset: UInt64?)] = []
+    private var pushHandlers: [String: @Sendable (TerminalPushEvent) -> Void] = [:]
 
     init(
         hello: TerminalRemoteDaemonHello,
         attachResult: Result<TerminalRemoteDaemonSessionStatus, Error>? = nil,
         openResult: TerminalRemoteDaemonTerminalOpenResult,
-        readResults: [Result<TerminalRemoteDaemonTerminalReadResult, Error>]
+        readResults: [Result<TerminalRemoteDaemonTerminalReadResult, Error>],
+        historyResult: TerminalRemoteDaemonSessionHistoryResult = .init(sessionID: "sess", history: ""),
+        subscribeResult: Result<TerminalRemoteDaemonTerminalReadResult, Error>? = nil
     ) {
         self.hello = hello
         self.attachResult = attachResult
         self.openResult = openResult
         self.readResults = readResults
+        self.historyResult = historyResult
+        self.subscribeResult = subscribeResult
     }
 
     func sendHello() async throws -> TerminalRemoteDaemonHello {
@@ -406,7 +594,8 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
     }
 
     func sessionHistory(sessionID: String, format: String) async throws -> TerminalRemoteDaemonSessionHistoryResult {
-        TerminalRemoteDaemonSessionHistoryResult(sessionID: sessionID, history: "")
+        historyValues.append((sessionID, format))
+        return historyResult
     }
 
     func workspaceList() async throws -> TerminalRemoteDaemonWorkspaceListResult {
@@ -440,6 +629,47 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient {
     func closedSessions() -> [String] {
         closedSessionValues
     }
+
+    func recordedHistoryRequests() -> [(sessionID: String, format: String)] {
+        historyValues
+    }
+
+    func setPushHandler(sessionID: String, handler: @escaping @Sendable (TerminalPushEvent) -> Void) async {
+        pushHandlers[sessionID] = handler
+    }
+
+    func removePushHandler(sessionID: String) async {
+        pushHandlers.removeValue(forKey: sessionID)
+    }
+
+    func terminalSubscribe(sessionID: String, offset: UInt64?) async throws -> TerminalRemoteDaemonTerminalReadResult {
+        subscribeValues.append((sessionID, offset))
+        guard let subscribeResult else {
+            throw TerminalRemoteDaemonClientError.rpc(
+                code: "missing_subscribe_result",
+                message: "terminal subscribe was not stubbed"
+            )
+        }
+        return try subscribeResult.get()
+    }
+
+    func recordedSubscriptions() -> [(sessionID: String, offset: UInt64?)] {
+        subscribeValues
+    }
+
+    func emitPush(sessionID: String, data: Data, offset: UInt64) {
+        pushHandlers[sessionID]?(
+            .output(
+                data: data,
+                offset: offset,
+                baseOffset: 0,
+                truncated: false,
+                eof: false,
+                seq: offset,
+                notifications: nil
+            )
+        )
+    }
 }
 
 private final class StubTerminalTransport: TerminalTransport {
@@ -454,5 +684,22 @@ private final class StubTerminalTransport: TerminalTransport {
 private extension TerminalGridSize {
     static func fixture(columns: Int, rows: Int) -> Self {
         .init(columns: columns, rows: rows, pixelWidth: columns * 10, pixelHeight: rows * 20)
+    }
+}
+
+private final class LockedOutputs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data: [Data] = []
+
+    func append(_ value: Data) {
+        lock.lock()
+        data.append(value)
+        lock.unlock()
+    }
+
+    func values() -> [Data] {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }

@@ -15951,12 +15951,28 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
     }
 }
 
-/// 1px trailing border on the sidebar, derived from the terminal chrome background
-/// using the same logic as bonsplit's TabBarColors.nsColorSeparator:
-/// dark bg → lighten RGB by 0.16 at 0.36 alpha; light bg → darken by 0.12 at 0.26 alpha.
+/// Replicates bonsplit TabBarColors.nsColorSeparator derivation from chrome background.
+func cmuxTerminalChromeSeparatorNSColor() -> NSColor {
+    let chrome = GhosttyBackgroundTheme.currentColor()
+    let srgb = chrome.usingColorSpace(.sRGB) ?? chrome
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+    let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+    let isLight = luminance > 0.5
+    let amount: CGFloat = isLight ? -0.12 : 0.16
+    let alpha: CGFloat = isLight ? 0.26 : 0.36
+    return NSColor(
+        red: min(1.0, max(0.0, r + amount)),
+        green: min(1.0, max(0.0, g + amount)),
+        blue: min(1.0, max(0.0, b + amount)),
+        alpha: alpha
+    )
+}
+
+/// 1px trailing border on the sidebar, derived from the terminal chrome background.
 private struct SidebarTrailingBorder: View {
     @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @State private var separatorColor: NSColor = chromeSeparatorColor()
+    @State private var separatorColor: NSColor = cmuxTerminalChromeSeparatorNSColor()
 
     var body: some View {
         if matchTerminalBackground {
@@ -15965,30 +15981,12 @@ private struct SidebarTrailingBorder: View {
                 .frame(width: 1)
                 .ignoresSafeArea()
                 .onAppear {
-                    separatorColor = Self.chromeSeparatorColor()
+                    separatorColor = cmuxTerminalChromeSeparatorNSColor()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                    separatorColor = Self.chromeSeparatorColor()
+                    separatorColor = cmuxTerminalChromeSeparatorNSColor()
                 }
         }
-    }
-
-    /// Replicates bonsplit TabBarColors.nsColorSeparator derivation from chrome background.
-    private static func chromeSeparatorColor() -> NSColor {
-        let chrome = GhosttyBackgroundTheme.currentColor()
-        let srgb = chrome.usingColorSpace(.sRGB) ?? chrome
-        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
-        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-        let isLight = luminance > 0.5
-        let amount: CGFloat = isLight ? -0.12 : 0.16
-        let alpha: CGFloat = isLight ? 0.26 : 0.36
-        return NSColor(
-            red: min(1.0, max(0.0, r + amount)),
-            green: min(1.0, max(0.0, g + amount)),
-            blue: min(1.0, max(0.0, b + amount)),
-            alpha: alpha
-        )
     }
 }
 

@@ -2,7 +2,7 @@ package session
 
 import "testing"
 
-func TestSessionManagerReattachKeepsExistingSessionState(t *testing.T) {
+func TestSessionManagerReattachUsesSmallestLiveSize(t *testing.T) {
 	t.Parallel()
 
 	mgr := NewManager()
@@ -27,5 +27,20 @@ func TestSessionManagerReattachKeepsExistingSessionState(t *testing.T) {
 	}
 	if status.EffectiveRows != 24 {
 		t.Fatalf("effective rows = %d, want 24", status.EffectiveRows)
+	}
+
+	if err := mgr.Resize(sessionID, attachmentID, 100, 30); err != nil {
+		t.Fatalf("resize original attachment: %v", err)
+	}
+
+	status, err = mgr.Status(sessionID)
+	if err != nil {
+		t.Fatalf("status after larger resize: %v", err)
+	}
+	if status.EffectiveCols != 80 {
+		t.Fatalf("effective cols after larger resize = %d, want 80", status.EffectiveCols)
+	}
+	if status.EffectiveRows != 24 {
+		t.Fatalf("effective rows after larger resize = %d, want 24", status.EffectiveRows)
 	}
 }

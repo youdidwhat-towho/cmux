@@ -12,6 +12,7 @@
 const std = @import("std");
 
 const cmuxd = @import("cmuxd_src");
+const connection_attachments = cmuxd.connection_attachments;
 const json_rpc = cmuxd.json_rpc;
 const outbound_queue = cmuxd.outbound_queue;
 const server_core = cmuxd.server_core;
@@ -153,6 +154,9 @@ pub const Worker = struct {
         defer queue.shutdown();
 
         var workspace_subscribed = false;
+        var attachments = connection_attachments.Tracker.init(self.alloc);
+        defer attachments.deinit();
+        defer attachments.detachAll(self.service);
         defer if (workspace_subscribed) self.service.subscriptions.remove(&stream);
         defer self.service.unsubscribeAllForStream(&stream);
 
@@ -174,6 +178,7 @@ pub const Worker = struct {
                     &stream,
                     &write_mutex,
                     &workspace_subscribed,
+                    &attachments,
                     pending.items[0..newline_index],
                 ) catch return;
 
@@ -190,6 +195,7 @@ pub const Worker = struct {
         stream: *std.net.Stream,
         write_mutex: *std.Thread.Mutex,
         workspace_subscribed: *bool,
+        attachments: *connection_attachments.Tracker,
         raw_line: []const u8,
     ) !void {
         const trimmed = std.mem.trimRight(u8, raw_line, "\r");
@@ -218,6 +224,7 @@ pub const Worker = struct {
         }
 
         const response = try server_core.dispatch(self.service, &req);
+        attachments.recordResponse(&req, response);
         return enqueueResponse(queue, self.alloc, response);
     }
 

@@ -11,7 +11,15 @@ protocol TerminalRemoteDaemonTransport: Sendable {
 struct TerminalRemoteDaemonHello: Decodable, Equatable, Sendable {
     let name: String
     let version: String
+    let instanceID: String?
     let capabilities: [String]
+
+    private enum CodingKeys: String, CodingKey {
+        case name
+        case version
+        case instanceID = "instance_id"
+        case capabilities
+    }
 }
 
 struct TerminalRemoteDaemonAttachmentStatus: Decodable, Equatable, Sendable {
@@ -246,10 +254,25 @@ struct TerminalRemoteDaemonSessionListResult: Decodable, Equatable, Sendable {
 struct TerminalRemoteDaemonSessionHistoryResult: Decodable, Equatable, Sendable {
     let sessionID: String
     let history: String
+    let nextOffset: UInt64?
 
     private enum CodingKeys: String, CodingKey {
         case sessionID = "session_id"
         case history
+        case nextOffset = "next_offset"
+    }
+
+    init(sessionID: String, history: String, nextOffset: UInt64? = nil) {
+        self.sessionID = sessionID
+        self.history = history
+        self.nextOffset = nextOffset
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        history = try container.decode(String.self, forKey: .history)
+        nextOffset = try container.decodeIfPresent(UInt64.self, forKey: .nextOffset)
     }
 }
 

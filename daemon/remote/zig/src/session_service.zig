@@ -110,17 +110,25 @@ const RuntimeSession = struct {
     last_remote_bell_count: u64 = 0,
     last_remote_command_seq: u64 = 0,
     last_remote_notification_seq: u64 = 0,
-    /// Last wall-clock time (ms since epoch) we fired `pty.resize` for
-    /// this runtime. Used to rate-limit SIGWINCH delivery during fast
-    /// window drags so the shell's prompt-redraw cycle doesn't get
-    /// interrupted mid-write (→ visually empty prompt until the next
-    /// key). Per-runtime atomics: no shared map, no concurrency hazard
-    /// class. Replaces the previous daemon-wide debouncer.
-    last_resize_ms: std.atomic.Value(i64) = .init(0),
     /// Last cols/rows we actually fired. Packed into a single u32 so
     /// both halves can be read/written atomically without a second
     /// lock. Lets us skip identical back-to-back resizes cheaply.
     last_resize_dims: std.atomic.Value(u32) = .init(0),
+    /// Transport-thread refcount. Incremented by `Service.acquireRuntime`
+    /// under the runtimes-map shared lock; decremented by
+    /// `RuntimeSession.release` when the caller is done dereferencing
+    /// the pointer. `Service.removeRuntime` spin-waits for this to hit
+    /// zero after `fetchRemove` so no transport thread can touch freed
+    /// memory. Writer-thread paths (actor-routed methods) do not use
+    /// the refcount — the writer is single-threaded against removal so
+    /// the pointer stays valid for the duration of the command handler.
+    users: std.atomic.Value(u32) = .init(0),
+
+    /// Decrement the transport refcount. Call exactly once per successful
+    /// `Service.acquireRuntime`.
+    fn release(self: *RuntimeSession) void {
+        _ = self.users.fetchSub(1, .seq_cst);
+    }
 
     fn init(alloc: std.mem.Allocator, command: []const u8, cols: u16, rows: u16) !RuntimeSession {
         return .{
@@ -200,11 +208,15 @@ const RuntimeSession = struct {
         try self.pty.writeDraining(&self.terminal, data);
     }
 
-    fn historyDump(self: *RuntimeSession, alloc: std.mem.Allocator, format: serialize.HistoryFormat) ![]u8 {
+    fn historyDump(self: *RuntimeSession, alloc: std.mem.Allocator, format: serialize.HistoryFormat) !TerminalHistorySnapshot {
         self.lock.lock();
         defer self.lock.unlock();
         try self.pty.pump(&self.terminal);
-        return self.terminal.history(alloc, format);
+        const window = self.terminal.offsetWindow();
+        return .{
+            .history = try self.terminal.history(alloc, format),
+            .next_offset = window.next_offset,
+        };
     }
 };
 
@@ -216,6 +228,11 @@ pub const RemoteNotificationConfig = struct {
     endpoint: []const u8 = "",
     bearer_token: []const u8 = "",
     device_tokens: [][]const u8 = &.{},
+};
+
+pub const TerminalHistorySnapshot = struct {
+    history: []u8,
+    next_offset: u64,
 };
 
 /// Snapshot of notification state for an unread session, handed off to the
@@ -236,30 +253,9 @@ const PushJob = struct {
     notif_body: ?[]u8,
 };
 
-/// Trailing-edge debounce: how long after the last resize RPC before we
-/// flush a pending ioctl. Catches burst coalescing (many RPCs in quick
-/// succession collapse to one).
-const DEBOUNCE_MS: i64 = 50;
-/// Minimum interval between ioctls for the same session, enforced even
-/// when resize RPCs arrive slower than the debounce window. A fast drag
-/// generates ~10-15 distinct grids per second (genuine cell-boundary
-/// crossings); without this floor, each crossing ioctls the PTY and
-/// SIGWINCHes the shell, producing a visible prompt-redraw flicker. At
-/// 150ms we cap ioctls at ~6.7/s — matches the subjective feel of local
-/// terminals during fast resize.
-const MIN_IOCTL_INTERVAL_MS: i64 = 150;
-
-const PendingResize = struct {
-    cols: u16,
-    rows: u16,
-    /// Wall-clock time (ms since epoch) at which this resize may be flushed.
-    /// On schedule: max(now + DEBOUNCE_MS, last_flush_ms + MIN_IOCTL_INTERVAL_MS).
-    /// Flushing a fresh resize resets last_flush_ms.
-    ready_at_ms: i64,
-};
-
 pub const Service = struct {
     alloc: std.mem.Allocator,
+    instance_id: []const u8 = "",
     proxies: proxy_streams.Manager,
     registry: session_registry.Registry,
     runtimes: RuntimeMap,
@@ -301,36 +297,6 @@ pub const Service = struct {
     // the map itself. No separate `runtimes_mutex` field: that pattern
     // was "forget to lock at site N" bait.
 
-    /// PTY-resize trailing-edge debouncer. session.resize RPCs update the
-    /// registry + broadcast the new effective grid to clients immediately
-    /// (so UI reflects the user's intent right away via the generation-
-    /// counted view_size event), but the actual kernel TIOCSWINSZ ioctl
-    /// is deferred through this debouncer so a fast sidebar/window drag
-    /// doesn't fire 30+ SIGWINCHes/second at the shell (→ prompt redraw
-    /// flood → visible blinking). Per-session rate-limit: at most one
-    /// ioctl per DEBOUNCE_MS (50ms), trailing-edge (the final size in
-    /// a burst always lands).
-    resize_debounce_mutex: std.Thread.Mutex = .{},
-    resize_debounce_cond: std.Thread.Condition = .{},
-    /// Pending resize-per-session. Constructed in `Service.init`, mutated
-    /// only while holding `resize_debounce_mutex`. Initialized eagerly
-    /// (previously `undefined` + lazy construction inside
-    /// `ensureResizeDebouncerStarted`, which had a publication-ordering
-    /// hazard: the `started` flag could flip true before the map was
-    /// live, so a concurrent `queueResizeIoctl` walked uninitialized
-    /// bucket memory into `HashMap.grow → unreachable`).
-    resize_debounce_pending: std.StringHashMap(PendingResize),
-    /// Per-session wall-clock time (ms since epoch) of the last ioctl fire.
-    /// Used to enforce MIN_IOCTL_INTERVAL_MS so drag sequences that exceed
-    /// the debounce window still get rate-limited.
-    resize_debounce_last_flush: std.StringHashMap(i64),
-    resize_debounce_thread: ?std.Thread = null,
-    resize_debounce_shutdown: std.atomic.Value(bool) = .init(false),
-    resize_debounce_started: std.atomic.Value(bool) = .init(false),
-    /// Serializes `ensureResizeDebouncerStarted`. See the comment on that
-    /// function for why init must be atomic with flag publication.
-    resize_debounce_init_mutex: std.Thread.Mutex = .{},
-
     /// Single-writer command queue. Starting with openTerminal/closeSession
     /// migrated through the queue; other Service methods still use the
     /// legacy locked-by-convention pattern until subsequent cuts migrate
@@ -365,13 +331,6 @@ pub const Service = struct {
             .registry = session_registry.Registry.init(alloc),
             .runtimes = RuntimeMap.init(alloc),
             .workspace_reg = workspace_registry.Registry.init(alloc),
-            // Eagerly construct the debouncer maps so every reader can
-            // assume they exist. The worker thread is still started
-            // lazily (via `ensureResizeDebouncerStarted`) because zig's
-            // result-location semantics keep us from spawning threads
-            // that capture `&self` from inside `init`.
-            .resize_debounce_pending = std.StringHashMap(PendingResize).init(alloc),
-            .resize_debounce_last_flush = std.StringHashMap(i64).init(alloc),
             .command_queue = service_command.Queue.init(alloc),
         };
     }
@@ -482,142 +441,12 @@ pub const Service = struct {
         return persistence.clearHistory(db_ref);
     }
 
-    /// Start the PTY-resize debouncer worker thread. Safe to call multiple
-    /// times; subsequent calls are no-ops. MUST be called with `self` at
-    /// its final memory location — the worker captures `self` by pointer.
-    pub fn ensureResizeDebouncerStarted(self: *Service) void {
-        // Debouncer disabled: the worker thread is not started and the
-        // debounce maps stay empty. See `resizeSession` for context —
-        // three repro'd crashes localized to this subsystem's shared
-        // hashmap. Keeping the API intact so transports still call it;
-        // deinit still deinits the (empty) maps unconditionally.
-        _ = self;
-    }
-
-    /// Queue a PTY resize for `session_id`, trailing-edge debounced. Caller
-    /// must have already updated the registry's effective size for the
-    /// session before calling. No-op if the debouncer thread isn't up
-    /// (falls back to synchronous ioctl via `resizeRuntimeIfPresent`).
-    fn queueResizeIoctl(self: *Service, session_id: []const u8, cols: u16, rows: u16) void {
-        if (!self.resize_debounce_started.load(.seq_cst)) return;
-        self.resize_debounce_mutex.lock();
-        defer self.resize_debounce_mutex.unlock();
-        const now = std.time.milliTimestamp();
-
-        // Compute the ready-at time:
-        //   max(now + DEBOUNCE_MS, last_flush + MIN_IOCTL_INTERVAL_MS)
-        // If a pending entry already exists, keep the earliest scheduled
-        // time (the burst debounce) but still honor the min-interval floor.
-        const debounced = now + DEBOUNCE_MS;
-        const floor_from_last_flush: i64 = blk: {
-            if (self.resize_debounce_last_flush.get(session_id)) |last| {
-                break :blk last + MIN_IOCTL_INTERVAL_MS;
-            }
-            break :blk 0;
-        };
-        var ready_at = if (debounced > floor_from_last_flush) debounced else floor_from_last_flush;
-        if (self.resize_debounce_pending.getPtr(session_id)) |prev| {
-            if (prev.ready_at_ms < ready_at) ready_at = prev.ready_at_ms;
-        }
-
-        // Duplicate the key so the hashmap owns it (session_id may be a
-        // borrowed pointer from the RPC path that's freed on return).
-        const owned_key = self.alloc.dupe(u8, session_id) catch return;
-        const pending = PendingResize{ .cols = cols, .rows = rows, .ready_at_ms = ready_at };
-        if (self.resize_debounce_pending.fetchPut(owned_key, pending) catch null) |prev_entry| {
-            self.alloc.free(prev_entry.key); // replaced; free the old key
-        }
-        self.resize_debounce_cond.signal();
-    }
-
-    fn resizeDebouncerRun(self: *Service) void {
-        while (!self.resize_debounce_shutdown.load(.seq_cst)) {
-            self.resize_debounce_mutex.lock();
-
-            // Find the soonest scheduled flush time.
-            var soonest_ms: ?i64 = null;
-            var iter = self.resize_debounce_pending.iterator();
-            while (iter.next()) |entry| {
-                const t = entry.value_ptr.ready_at_ms;
-                if (soonest_ms == null or t < soonest_ms.?) soonest_ms = t;
-            }
-
-            const now = std.time.milliTimestamp();
-            if (soonest_ms) |target| {
-                if (target > now) {
-                    const wait_ns: u64 = @intCast((target - now) * std.time.ns_per_ms);
-                    _ = self.resize_debounce_cond.timedWait(&self.resize_debounce_mutex, wait_ns) catch {};
-                }
-            } else {
-                self.resize_debounce_cond.wait(&self.resize_debounce_mutex);
-            }
-
-            if (self.resize_debounce_shutdown.load(.seq_cst)) {
-                self.resize_debounce_mutex.unlock();
-                break;
-            }
-
-            // Collect everything ready to flush, under the lock.
-            const FlushEntry = struct { session_id: []const u8, cols: u16, rows: u16 };
-            var to_flush: std.ArrayListUnmanaged(FlushEntry) = .empty;
-            defer to_flush.deinit(self.alloc);
-
-            const current_ms = std.time.milliTimestamp();
-            var expired: std.ArrayListUnmanaged([]const u8) = .empty;
-            defer expired.deinit(self.alloc);
-            var iter2 = self.resize_debounce_pending.iterator();
-            while (iter2.next()) |entry| {
-                if (entry.value_ptr.ready_at_ms <= current_ms) {
-                    to_flush.append(self.alloc, .{
-                        .session_id = entry.key_ptr.*,
-                        .cols = entry.value_ptr.cols,
-                        .rows = entry.value_ptr.rows,
-                    }) catch {};
-                    expired.append(self.alloc, entry.key_ptr.*) catch {};
-                }
-            }
-            for (expired.items) |key| {
-                _ = self.resize_debounce_pending.remove(key);
-                // key is now owned by `to_flush` entries; they'll free.
-            }
-            // Record last-flush times under the lock so the next schedule
-            // call sees a monotonically-updated floor.
-            const flush_time = current_ms;
-            for (to_flush.items) |entry| {
-                // Duplicate the key so last_flush owns its own lifetime
-                // (to_flush keys are freed below).
-                const lf_key = self.alloc.dupe(u8, entry.session_id) catch continue;
-                if (self.resize_debounce_last_flush.fetchPut(lf_key, flush_time) catch null) |prev| {
-                    self.alloc.free(prev.key);
-                }
-            }
-            self.resize_debounce_mutex.unlock();
-
-            // Fire ioctls outside the lock.
-            for (to_flush.items) |entry| {
-                defer self.alloc.free(entry.session_id);
-                self.flushResizeIoctl(entry.session_id, entry.cols, entry.rows);
-            }
-        }
-    }
-
-    /// Perform the actual PTY ioctl + in-memory Ghostty terminal resize
-    /// on a RuntimeSession. Called from the debouncer worker thread.
-    fn flushResizeIoctl(self: *Service, session_id: []const u8, cols: u16, rows: u16) void {
-        if (cols == 0 or rows == 0) return;
-        const runtime = self.runtimes.get(session_id) orelse return;
-        runtime.resize(cols, rows) catch |err| {
-            std.log.warn("session_service: debounced PTY resize failed: {s}", .{@errorName(err)});
-        };
-    }
-
     // ========================================================================
     // Single-writer actor: scaffolding + first migrated methods.
     // ========================================================================
 
     /// Start the writer thread. Idempotent. Same pattern as
-    /// `ensureResizeDebouncerStarted` + `ensurePumpStarted` (called
-    /// once per transport at daemon startup).
+    /// `ensurePumpStarted` — called once per transport at daemon startup.
     pub fn ensureWriterStarted(self: *Service) void {
         self.writer_init_mutex.lock();
         defer self.writer_init_mutex.unlock();
@@ -780,25 +609,6 @@ pub const Service = struct {
         // remote-push jobs.
         if (self.pump) |*pump| pump.deinit();
         self.pump = null;
-
-        // Stop the resize debouncer worker so it doesn't ioctl a runtime
-        // we're about to tear down.
-        if (self.resize_debounce_started.load(.seq_cst)) {
-            self.resize_debounce_shutdown.store(true, .seq_cst);
-            self.resize_debounce_mutex.lock();
-            self.resize_debounce_cond.broadcast();
-            self.resize_debounce_mutex.unlock();
-            if (self.resize_debounce_thread) |t| t.join();
-            self.resize_debounce_thread = null;
-            self.resize_debounce_started.store(false, .seq_cst);
-        }
-        // Maps are eagerly-constructed, so deinit unconditionally.
-        var iter_pending = self.resize_debounce_pending.iterator();
-        while (iter_pending.next()) |entry| self.alloc.free(entry.key_ptr.*);
-        self.resize_debounce_pending.deinit();
-        var iter_last = self.resize_debounce_last_flush.iterator();
-        while (iter_last.next()) |entry| self.alloc.free(entry.key_ptr.*);
-        self.resize_debounce_last_flush.deinit();
 
         // Wait for any in-flight remote-push dispatcher threads to finish
         // so they never read the config/allocator after we free them.
@@ -1012,6 +822,11 @@ pub const Service = struct {
         return reply.wait();
     }
 
+    pub fn detachSessionIfPresent(self: *Service, session_id: []const u8, attachment_id: []const u8) void {
+        var status = self.detachSession(session_id, attachment_id) catch return;
+        status.deinit(self.alloc);
+    }
+
     fn detachSessionImpl(self: *Service, session_id: []const u8, attachment_id: []const u8) !session_registry.SessionStatus {
         try self.registry.detach(session_id, attachment_id);
         var status = try self.registry.status(session_id);
@@ -1117,19 +932,49 @@ pub const Service = struct {
         };
     }
 
+    /// Transport-safe runtime lookup. Increments the runtime's `users`
+    /// refcount atomically with the map lookup (under the map's shared
+    /// lock) so a concurrent `removeRuntime` on the writer thread cannot
+    /// free the pointee between lookup and use. Caller MUST call
+    /// `runtime.release()` exactly once when done. Returns null if the
+    /// session does not exist.
+    ///
+    /// Writer-thread paths (actor-routed methods) should keep using
+    /// `runtimes.get` directly; they are serialized against removal so
+    /// the refcount is unnecessary.
+    fn acquireRuntime(self: *Service, session_id: []const u8) ?*RuntimeSession {
+        const Ctx = struct {
+            sid: []const u8,
+            result: ?*RuntimeSession = null,
+        };
+        var ctx = Ctx{ .sid = session_id };
+        self.runtimes.withSharedLock(&ctx, struct {
+            fn run(inner: *RuntimeMap.Inner, c: *Ctx) void {
+                if (inner.get(c.sid)) |rt| {
+                    _ = rt.users.fetchAdd(1, .seq_cst);
+                    c.result = rt;
+                }
+            }
+        }.run);
+        return ctx.result;
+    }
+
     pub fn readTerminal(self: *Service, session_id: []const u8, offset: u64, max_bytes: usize, timeout_ms: i32) !ReadTerminalResult {
-        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+        const runtime = self.acquireRuntime(session_id) orelse return error.TerminalSessionNotFound;
+        defer runtime.release();
         return runtime.read(self.alloc, offset, max_bytes, timeout_ms);
     }
 
     pub fn writeTerminal(self: *Service, session_id: []const u8, data: []const u8) !usize {
-        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+        const runtime = self.acquireRuntime(session_id) orelse return error.TerminalSessionNotFound;
+        defer runtime.release();
         try runtime.writeDraining(data);
         return data.len;
     }
 
-    pub fn history(self: *Service, session_id: []const u8, format: serialize.HistoryFormat) ![]u8 {
-        const runtime = self.runtimes.get(session_id) orelse return error.TerminalSessionNotFound;
+    pub fn history(self: *Service, session_id: []const u8, format: serialize.HistoryFormat) !TerminalHistorySnapshot {
+        const runtime = self.acquireRuntime(session_id) orelse return error.TerminalSessionNotFound;
+        defer runtime.release();
         return runtime.historyDump(self.alloc, format);
     }
 
@@ -1151,7 +996,6 @@ pub const Service = struct {
 
         try runtime.resize(status.effective_cols, status.effective_rows);
         runtime.last_resize_dims.store(packed_dims, .seq_cst);
-        runtime.last_resize_ms.store(std.time.milliTimestamp(), .seq_cst);
     }
 
     fn removeRuntime(self: *Service, session_id: []const u8) void {
@@ -1160,6 +1004,18 @@ pub const Service = struct {
         // Drop any subscriptions pointing at this session_id so their
         // borrowed `session_id` pointer doesn't outlive the hashmap key.
         self.removeSubscriptionsBySessionId(entry.key);
+        // Spin-wait for any transport thread that acquired this runtime
+        // via `acquireRuntime` before the map removal committed to
+        // release its refcount. The map's RwLock guarantees that
+        // acquireRuntime either ran entirely before fetchRemove
+        // (incremented users; we wait) or entirely after (lookup
+        // returned null; no ref taken). Yield rather than busy-loop;
+        // the hold time is bounded by the longest active read/write
+        // call — typically microseconds, bounded worst-case by the
+        // read timeout.
+        while (entry.value.users.load(.seq_cst) != 0) {
+            std.Thread.yield() catch {};
+        }
         self.alloc.free(entry.key);
         entry.value.deinit();
         self.alloc.destroy(entry.value);
@@ -1254,7 +1110,8 @@ pub const Service = struct {
     /// the session exists. Fires on_workspace_changed when the flag
     /// transitioned from true to false so subscribers see the update.
     pub fn markRead(self: *Service, session_id: []const u8) bool {
-        const runtime = self.runtimes.get(session_id) orelse return false;
+        const runtime = self.acquireRuntime(session_id) orelse return false;
+        defer runtime.release();
         const was = runtime.has_unread_output.swap(false, .seq_cst);
         if (was) self.fireWorkspaceChanged();
         return true;
@@ -1263,7 +1120,8 @@ pub const Service = struct {
     /// Lock-free read of a session's has_unread_output flag. Returns false
     /// when the session is unknown.
     pub fn hasUnread(self: *Service, session_id: []const u8) bool {
-        const runtime = self.runtimes.get(session_id) orelse return false;
+        const runtime = self.acquireRuntime(session_id) orelse return false;
+        defer runtime.release();
         return runtime.has_unread_output.load(.seq_cst);
     }
 
@@ -2833,4 +2691,3 @@ test "https remote push spawns curl, fails fast on unreachable, releases push_in
     try std.testing.expectEqual(@as(usize, 0), service.push_inflight.load(.seq_cst));
     return error.SanityTempFailure; // SANITY-temp
 }
-

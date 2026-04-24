@@ -146,6 +146,7 @@ func (s *daemonServer) handleRequest(req rpc.Request) rpc.Response {
 				"capabilities": []string{
 					"session.basic",
 					"session.resize.min",
+					"session.resize.owner",
 					"terminal.stream",
 					"proxy.http_connect",
 					"proxy.socks5",

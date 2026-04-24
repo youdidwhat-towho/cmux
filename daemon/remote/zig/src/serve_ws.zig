@@ -1,4 +1,5 @@
 const std = @import("std");
+const connection_attachments = @import("connection_attachments.zig");
 const json_rpc = @import("json_rpc.zig");
 const server_core = @import("server_core.zig");
 const session_service = @import("session_service.zig");
@@ -6,6 +7,7 @@ const session_service = @import("session_service.zig");
 pub const Config = struct {
     listen_addr: []const u8,
     secret: []const u8,
+    instance_id: []const u8 = "",
 };
 
 pub fn serve(cfg: Config) !void {
@@ -19,18 +21,18 @@ pub fn serve(cfg: Config) !void {
     defer service.deinit();
     service.on_workspace_changed = &server_core.notifyWorkspaceSubscribers;
     service.ensurePumpStarted();
-    service.ensureResizeDebouncerStarted();
     service.ensureWriterStarted();
 
     serveShared(&service, try std.fmt.parseInt(u16, blk: {
         const colon = std.mem.lastIndexOfScalar(u8, cfg.listen_addr, ':') orelse break :blk cfg.listen_addr;
         break :blk cfg.listen_addr[colon + 1 ..];
-    }, 10), cfg.secret) catch {};
+    }, 10), cfg.secret, cfg.instance_id) catch {};
 }
 
 /// Serve WebSocket on the given port, sharing an existing session service.
 /// Intended to be called from a spawned thread alongside serve_unix.
-pub fn serveShared(service: *session_service.Service, port: u16, secret: []const u8) !void {
+pub fn serveShared(service: *session_service.Service, port: u16, secret: []const u8, instance_id: []const u8) !void {
+    service.instance_id = instance_id;
     const address = try std.net.Address.parseIp("0.0.0.0", port);
     var server = try address.listen(.{ .reuse_address = true });
     defer server.deinit();
@@ -90,6 +92,9 @@ fn handleClient(service: *session_service.Service, secret: []const u8, stream: s
 
     var subscribed = false;
     var write_mutex: std.Thread.Mutex = .{};
+    var attachments = connection_attachments.Tracker.init(service.alloc);
+    defer attachments.deinit();
+    defer attachments.detachAll(service);
     defer if (subscribed) {
         service.subscriptions.remove(&mutable_stream);
     };
@@ -142,6 +147,7 @@ fn handleClient(service: *session_service.Service, secret: []const u8, stream: s
 
         const response = try server_core.dispatch(service, &req);
         defer alloc.free(response);
+        attachments.recordResponse(&req, response);
         try sendWsTextMessageLocked(&write_mutex, stream, response);
     }
 }

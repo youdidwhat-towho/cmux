@@ -45,6 +45,7 @@ pub const SessionListEntry = struct {
 const AttachmentState = struct {
     cols: u16,
     rows: u16,
+    updated_seq: u64 = 0,
 };
 
 const SessionState = struct {
@@ -56,6 +57,10 @@ const SessionState = struct {
     /// See SessionStatus.grid_generation. Bumped in `recomputeEffective`
     /// whenever the computed (cols, rows) change.
     grid_generation: u64 = 0,
+    /// Monotonic per-session attachment update clock. Effective PTY size is
+    /// still computed from the smallest live attachment so every renderer can
+    /// display the shared grid.
+    next_attachment_update_seq: u64 = 1,
 };
 
 pub const Registry = struct {
@@ -96,9 +101,8 @@ pub const Registry = struct {
         /// client-minted `session.attach`) should pass false: the session
         /// and PTY are sized via `last_known_cols/rows` from the requested
         /// size, but no `attachments` entry is created. Without this,
-        /// `effective = min(bootstrap, client_attach)` permanently caps
-        /// the PTY at the `open_pane` size — the exact bug this option
-        /// is here to kill.
+        /// the bootstrap can become an invisible size constraint and keep
+        /// the PTY smaller than real clients need after they attach.
         create_bootstrap_attachment: bool = true,
     };
 
@@ -162,7 +166,11 @@ pub const Registry = struct {
         if (options.create_bootstrap_attachment) {
             const attachment_id = try std.fmt.allocPrint(self.alloc, "att-{d}", .{self.next_attachment_id});
             self.next_attachment_id += 1;
-            try session.attachments.put(attachment_id, .{ .cols = size.cols, .rows = size.rows });
+            try session.attachments.put(attachment_id, .{
+                .cols = size.cols,
+                .rows = size.rows,
+                .updated_seq = nextAttachmentUpdateSeq(&session),
+            });
             bootstrap_attachment_id = attachment_id;
         }
         recompute(&session);
@@ -203,7 +211,11 @@ pub const Registry = struct {
             try self.alloc.dupe(u8, attachment_id);
         errdefer if (owned_attachment) |value| self.alloc.free(value);
 
-        try session.attachments.put(owned_attachment orelse attachment_id, .{ .cols = size.cols, .rows = size.rows });
+        try session.attachments.put(owned_attachment orelse attachment_id, .{
+            .cols = size.cols,
+            .rows = size.rows,
+            .updated_seq = nextAttachmentUpdateSeq(session),
+        });
         recompute(session);
     }
 
@@ -211,7 +223,11 @@ pub const Registry = struct {
         const size = normalizeSize(cols, rows);
         const session = self.sessions.getPtr(session_id) orelse return error.SessionNotFound;
         const attachment = session.attachments.getPtr(attachment_id) orelse return error.AttachmentNotFound;
-        attachment.* = .{ .cols = size.cols, .rows = size.rows };
+        attachment.* = .{
+            .cols = size.cols,
+            .rows = size.rows,
+            .updated_seq = nextAttachmentUpdateSeq(session),
+        };
         recompute(session);
     }
 
@@ -314,18 +330,24 @@ fn recompute(session: *SessionState) void {
         return;
     }
 
-    // Compute the min over attachments that have reported a real size.
+    // Compute the shared size every live attachment can display.
     // Attachments with cols==0/rows==0 (e.g. the bootstrap attachment from
     // terminal.open, or legacy attachments that never got a size) are
     // ignored so they don't drag effective_cols/rows to zero and trip the
-    // PTY resize ioctl.
+    // PTY resize ioctl. A larger desktop client letterboxes around a phone-
+    // sized PTY rather than forcing an impossible desktop-sized grid onto iOS.
     var iter = session.attachments.iterator();
     var min_cols: u16 = 0;
     var min_rows: u16 = 0;
     while (iter.next()) |entry| {
         const value = entry.value_ptr.*;
-        if (value.cols > 0 and (min_cols == 0 or value.cols < min_cols)) min_cols = value.cols;
-        if (value.rows > 0 and (min_rows == 0 or value.rows < min_rows)) min_rows = value.rows;
+        if (value.cols == 0 or value.rows == 0) continue;
+        if (min_cols == 0 or value.cols < min_cols) {
+            min_cols = value.cols;
+        }
+        if (min_rows == 0 or value.rows < min_rows) {
+            min_rows = value.rows;
+        }
     }
 
     // Fall back to the last known size if no attachment has a real size yet.
@@ -342,6 +364,12 @@ fn recompute(session: *SessionState) void {
     if (session.effective_cols != prev_cols or session.effective_rows != prev_rows) {
         session.grid_generation += 1;
     }
+}
+
+fn nextAttachmentUpdateSeq(session: *SessionState) u64 {
+    const seq = session.next_attachment_update_seq;
+    session.next_attachment_update_seq += 1;
+    return seq;
 }
 
 fn normalizeSize(cols: u16, rows: u16) AttachmentState {
@@ -377,7 +405,7 @@ test "open allocates session and attachment ids" {
     try std.testing.expectEqualStrings("att-1", opened.attachment_id);
 }
 
-test "attach and resize recompute smallest screen wins" {
+test "attach and resize keep the smallest live attachment as the effective size" {
     var registry = Registry.init(std.testing.allocator);
     defer registry.deinit();
 
@@ -388,11 +416,19 @@ test "attach and resize recompute smallest screen wins" {
     try registry.resize(opened.session_id, opened.attachment_id, 100, 30);
     try registry.attach(opened.session_id, "att-2", 80, 24);
 
-    var status = try registry.status(opened.session_id);
-    defer status.deinit(std.testing.allocator);
+    var after_attach = try registry.status(opened.session_id);
+    defer after_attach.deinit(std.testing.allocator);
 
-    try std.testing.expectEqual(@as(u16, 80), status.effective_cols);
-    try std.testing.expectEqual(@as(u16, 24), status.effective_rows);
+    try std.testing.expectEqual(@as(u16, 80), after_attach.effective_cols);
+    try std.testing.expectEqual(@as(u16, 24), after_attach.effective_rows);
+
+    try registry.resize(opened.session_id, opened.attachment_id, 100, 30);
+
+    var after_owner_resize = try registry.status(opened.session_id);
+    defer after_owner_resize.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(@as(u16, 80), after_owner_resize.effective_cols);
+    try std.testing.expectEqual(@as(u16, 24), after_owner_resize.effective_rows);
 }
 
 test "tiny attachment widths are clamped for effective dimensions" {
@@ -482,11 +518,10 @@ test "open with create_bootstrap_attachment=false skips phantom attachment cap" 
     // Regression: previously `workspace.open_pane` created a session-scoped
     // bootstrap attachment at the requested cols/rows. When a real client
     // later attached via `session.attach` with its own id, the session had
-    // TWO attachments and `effective = min(all)` capped the PTY at the
-    // smaller of the two. Users saw terminals letterboxed forever because
-    // the open_pane dimensions were frozen. The fix: allow open to skip
-    // creating the bootstrap; size the PTY via `last_known_cols/rows` so
-    // the first real client's attach drives `effective` cleanly.
+    // TWO attachments and the invisible bootstrap could keep steering the
+    // PTY. The fix: allow open to skip creating the bootstrap; size the PTY
+    // via `last_known_cols/rows` so the first real client's attach drives
+    // `effective` cleanly.
     var registry = Registry.init(std.testing.allocator);
     defer registry.deinit();
 
@@ -505,7 +540,6 @@ test "open with create_bootstrap_attachment=false skips phantom attachment cap" 
     try std.testing.expectEqual(@as(u16, 30), initial.effective_rows);
 
     // Client attaches at 150x50. With no phantom attachment, effective = 150x50.
-    // (Before this fix, effective would have stayed at min(100, 150) = 100.)
     try registry.attach(opened.session_id, "bridge-xyz", 150, 50);
     var after_attach = try registry.status(opened.session_id);
     defer after_attach.deinit(std.testing.allocator);

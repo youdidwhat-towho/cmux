@@ -4,25 +4,24 @@
 - Files under `ios/**` are proprietary and governed by `ios/LICENSE`.
 - Repository-wide license scope is documented in `../LICENSE_SCOPE.md`.
 
-## Sync from a manaflow checkout
-From the `ios/` directory:
+## Local development
 
 ```bash
-./scripts/sync-public-convex-vars.sh --source-root ~/fun/manaflow
-./scripts/sync-convex-types.sh --source-root ~/fun/manaflow
+./scripts/reload.sh
+./scripts/device.sh
+./scripts/testflight.sh
 ```
 
-- `sync-public-convex-vars.sh` copies only whitelisted public env keys into
-  `Sources/Config/LocalConfig.plist` (gitignored).
-- `sync-convex-types.sh` regenerates
-  `Sources/Generated/ConvexApiTypes.swift` using Convex schema from
-  the selected `manaflow` checkout or worktree.
+- `reload.sh` builds and installs the dev app to the simulator and a connected iPhone when available.
+- `device.sh` installs to a connected iPhone only.
+- `testflight.sh` archives and uploads Nightly/Release builds.
+
+Public environment overrides live in `Sources/Config/LocalConfig.plist`, which is gitignored. Use `Sources/Config/LocalConfig.example.plist` as the template.
 
 ## Mobile workspace architecture
 - GRDB is the mandatory local read model for the workspace and inbox surface. The app boots from cache first, then reconciles live data.
-- Convex is the current operational source of truth for machine presence, workspace rows, unread state, push registration, and daemon metadata.
-- iOS side effects go through the mobile HTTP boundary. The app should not call Convex mutations directly for mark-read, push, machine-session, heartbeat, or daemon-ticket flows.
-- Live workspace rows still come from a dedicated Convex sync seam, not directly from view models.
+- Workspace state comes from the desktop daemon over WebSocket. `WorkspaceLiveSyncing` remains a seam for future backend-backed workspace rows, but the default implementation is no-op.
+- iOS side effects that need app backend state go through authenticated HTTP route clients.
 - PostHog is analytics only. It is not an operational database and should never receive terminal content, TLS pins, or ticket secrets.
 
 ## Living Spec

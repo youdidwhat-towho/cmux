@@ -8,6 +8,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: nil,
@@ -106,6 +107,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: nil,
@@ -172,6 +174,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: .success(
@@ -258,6 +261,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
             hello: .init(
                 name: "cmuxd-remote",
                 version: "dev",
+                instanceID: nil,
                 capabilities: ["terminal.stream"]
             ),
             attachResult: nil,
@@ -353,6 +357,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
                     hello: .init(
                         name: "cmuxd-remote",
                         version: "dev",
+                        instanceID: nil,
                         capabilities: ["terminal.stream"]
                     ),
                     attachResult: nil,

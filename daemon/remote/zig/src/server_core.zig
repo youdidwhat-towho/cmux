@@ -53,10 +53,12 @@ fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request
             .result = .{
                 .name = "cmuxd-remote",
                 .version = build_options.version,
+                .instance_id = service.instance_id,
                 .workspace_count = service.workspace_reg.order.items.len,
                 .capabilities = .{
                     "session.basic",
                     "session.resize.min",
+                    "session.resize.owner",
                     "terminal.stream",
                     "terminal.subscribe",
                     "workspace.subscribe",
@@ -385,14 +387,15 @@ fn handleSessionHistory(service: *session_service.Service, req: *const json_rpc.
         error.TerminalSessionNotFound => return terminalNotFound(service.alloc, req.id),
         else => return internalError(service.alloc, req.id, err),
     };
-    defer service.alloc.free(history);
+    defer service.alloc.free(history.history);
 
     return try json_rpc.encodeResponse(service.alloc, .{
         .id = req.id,
         .ok = true,
         .result = .{
             .session_id = session_id,
-            .history = history,
+            .history = history.history,
+            .next_offset = history.next_offset,
         },
     });
 }

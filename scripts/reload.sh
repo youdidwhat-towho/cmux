@@ -582,8 +582,6 @@ fi
 # supervisor respawn with the freshly built cmuxd-remote binary — a
 # reload of the zig daemon, not just the Swift app.
 if [[ -n "$TAG" ]]; then
-  /usr/bin/osascript -e "tell application id \"${BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
-  sleep 0.3
   pkill -f "${APP_NAME}.app/Contents/MacOS/${BASE_APP_NAME}" || true
   if pkill -f "cmuxd-remote.*--socket.*cmuxd-dev-${TAG_SLUG}" >/dev/null 2>&1; then
     echo "Killed tagged cmuxd-remote; mac supervisor will respawn with the new binary."
@@ -595,8 +593,6 @@ fi
 if [[ "$LAUNCH" -eq 1 ]]; then
   if [[ -z "$TAG" ]]; then
     # Non-tag mode: kill any running instance (across any DerivedData path) to avoid socket conflicts.
-    /usr/bin/osascript -e "tell application id \"${BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
-    sleep 0.3
     pkill -f "/${BASE_APP_NAME}.app/Contents/MacOS/${BASE_APP_NAME}" || true
     sleep 0.3
   fi

@@ -1,5 +1,6 @@
 import OSLog
 import SwiftUI
+import UIKit
 
 private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "terminal.sidebar-view")
 
@@ -267,9 +268,11 @@ struct TerminalSidebarRootView: View {
                                     navigationPath.append(workspaceID)
                                 } label: {
                                     row
+                                        .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityElement(children: .ignore)
+                                .accessibilityAddTraits(.isButton)
                                 .accessibilityIdentifier("terminal.workspace.\(workspace.id.uuidString)")
                                 .accessibilityLabel(row.accessibilityTitle)
                                 .accessibilityValue(row.accessibilitySummary)
@@ -361,7 +364,7 @@ struct TerminalSidebarRootView: View {
                 }
             }
             .navigationDestination(for: TerminalWorkspace.ID.self) { workspaceID in
-                if let workspace = store.workspace(with: workspaceID),
+                if let workspace = store.workspaceResolvingReplacement(with: workspaceID),
                    let host = store.server(for: workspace.hostID) {
                     TerminalWorkspaceScreen(
                         workspace: workspace,
@@ -504,7 +507,7 @@ struct TerminalSidebarRootView: View {
 
     private func addServerFromScan(_ server: DiscoveredServer) {
         let host = TerminalHost(
-            stableID: "\(server.hostname)-\(server.port)",
+            stableID: server.instanceID ?? "\(server.hostname)-\(server.port)",
             name: server.hostname == "127.0.0.1"
                 ? "Local Dev (:\(server.port))"
                 : "\(server.hostname) (:\(server.port))",
@@ -515,6 +518,7 @@ struct TerminalSidebarRootView: View {
             palette: .sky,
             source: .discovered,
             transportPreference: .remoteDaemon,
+            serverID: server.instanceID,
             wsPort: server.port,
             wsSecret: server.wsSecret
         )
@@ -522,7 +526,12 @@ struct TerminalSidebarRootView: View {
     }
 
     private func removeServerFromScan(_ server: DiscoveredServer) {
-        if let host = store.hosts.first(where: { $0.wsPort == server.port && $0.hostname == server.hostname }) {
+        if let host = store.hosts.first(where: {
+            if let instanceID = server.instanceID, $0.stableID == instanceID {
+                return true
+            }
+            return $0.wsPort == server.port && $0.hostname == server.hostname
+        }) {
             store.deleteHost(host)
         }
     }
@@ -963,7 +972,7 @@ struct TerminalWorkspaceDestinationView: View {
     let workspaceID: TerminalWorkspace.ID
 
     var body: some View {
-        if let workspace = store.workspace(with: workspaceID),
+        if let workspace = store.workspaceResolvingReplacement(with: workspaceID),
            let host = store.server(for: workspace.hostID) {
             TerminalWorkspaceScreen(
                 workspace: workspace,
@@ -1030,8 +1039,17 @@ struct TerminalWorkspaceScreen: View {
                 ProgressView(TerminalHomeStrings.terminalOpening)
                     .tint(.white)
             }
+
+            #if DEBUG
+            TerminalRenderedTextAccessibilityProbe(text: controller.accessibilityTerminalText)
+                .frame(width: 1, height: 1)
+                .allowsHitTesting(false)
+            #endif
         }
         .accessibilityIdentifier("terminal.workspace.detail")
+        #if DEBUG
+        .accessibilityValue(controller.accessibilityTerminalText)
+        #endif
         .safeAreaInset(edge: .top, spacing: 0) {
             if controller.phase != .connected || controller.errorMessage != nil || controller.statusMessage != nil {
                 TerminalStatusBanner(
@@ -1059,6 +1077,7 @@ struct TerminalWorkspaceScreen: View {
                                     systemImage: index == selectedPaneIndex ? "checkmark.circle.fill" : "terminal"
                                 )
                             }
+                            .accessibilityIdentifier("terminal.workspace.pane.\(workspace.id.uuidString).\(index)")
                         }
                     } label: {
                         HStack(spacing: 4) {
@@ -1075,6 +1094,7 @@ struct TerminalWorkspaceScreen: View {
                         }
                         .foregroundStyle(.white)
                     }
+                    .accessibilityIdentifier("terminal.workspace.paneMenu.\(workspace.id.uuidString)")
                 } else {
                     Text(workspace.title)
                         .font(.headline)
@@ -1112,6 +1132,25 @@ struct TerminalWorkspaceScreen: View {
         controller.switchSession(to: sessionID)
     }
 }
+
+#if DEBUG
+private struct TerminalRenderedTextAccessibilityProbe: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context _: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isAccessibilityElement = true
+        view.accessibilityIdentifier = "terminal.workspace.renderedText"
+        view.accessibilityLabel = "Rendered terminal text"
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context _: Context) {
+        uiView.accessibilityValue = text
+    }
+}
+#endif
 
 private struct TerminalStatusBanner: View {
     let host: TerminalHost

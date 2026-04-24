@@ -225,7 +225,7 @@ final class TerminalSessionControllerTests: XCTestCase {
         await fulfillment(of: [bellExpectation], timeout: 1.0)
     }
 
-    func testSuspendPreservingStateDisconnectsTransportAndReconnectsWithSavedResumeState() async throws {
+    func testSuspendPreservingStateDisconnectsTransportAndReconnectsWithFreshSurfaceReplay() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -262,6 +262,7 @@ final class TerminalSessionControllerTests: XCTestCase {
         let initialConnectedExpectation = expectation(description: "controller connected initially")
         let resumedConnectedExpectation = expectation(description: "controller connected after suspend")
         let savedResumeStateExpectation = expectation(description: "resume state saved on suspend")
+        let clearedResumeStateExpectation = expectation(description: "resume state cleared after surface teardown")
         var connectedEventCount = 0
         var savedResumeStates: [TerminalRemoteDaemonResumeState?] = []
 
@@ -288,6 +289,8 @@ final class TerminalSessionControllerTests: XCTestCase {
                 savedResumeStates.append(state)
                 if state?.sessionID == "sess-1" {
                     savedResumeStateExpectation.fulfill()
+                } else if state == nil, savedResumeStates.contains(where: { $0?.sessionID == "sess-1" }) {
+                    clearedResumeStateExpectation.fulfill()
                 }
             default:
                 break
@@ -298,7 +301,7 @@ final class TerminalSessionControllerTests: XCTestCase {
         await fulfillment(of: [initialConnectedExpectation], timeout: 1.0)
 
         controller.suspendPreservingState()
-        await fulfillment(of: [savedResumeStateExpectation], timeout: 1.0)
+        await fulfillment(of: [savedResumeStateExpectation, clearedResumeStateExpectation], timeout: 1.0)
         await Task.yield()
 
         controller.resumeIfNeeded()
@@ -311,9 +314,10 @@ final class TerminalSessionControllerTests: XCTestCase {
         XCTAssertEqual(surfaceFactory.attemptCount, 2)
         XCTAssertEqual(
             transportFactory.resumeStates.map { $0?.sessionID },
-            [nil, "sess-1"]
+            [nil, nil]
         )
         XCTAssertTrue(savedResumeStates.contains(where: { $0?.attachmentID == "att-1" }))
+        XCTAssertNil(savedResumeStates.last!)
         XCTAssertEqual(controller.phase, .connected)
         XCTAssertNil(controller.errorMessage)
     }
@@ -577,7 +581,57 @@ final class TerminalSessionControllerTests: XCTestCase {
         XCTAssertEqual(firstTransport.parkCallCount, 1)
         XCTAssertEqual(firstTransport.disconnectCallCount, 0)
         XCTAssertEqual(replacementTransport.connectCallCount, 1)
-        XCTAssertEqual(transportFactory.resumeStates.map { $0?.sessionID }, [nil, "sess-1"])
+        XCTAssertEqual(
+            transportFactory.resumeStates,
+            [
+                nil,
+                .init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 42),
+            ]
+        )
+    }
+
+    func testConnectUsesFullReplayOffsetWhenCreatingFreshSurface() async throws {
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon,
+            teamID: "team-1",
+            serverID: "cmux-macmini"
+        )
+        let workspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Mac Mini",
+            tmuxSessionName: "cmux-mac-mini",
+            remoteDaemonResumeState: .init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 42)
+        )
+        let credentialsStore = InMemoryTerminalCredentialsStore(passwords: [host.id: "secret"])
+        let transport = ConnectedStubTerminalTransport()
+        let transportFactory = TrackingSequencedTerminalTransportFactory(transports: [transport])
+        let connectedExpectation = expectation(description: "controller connected")
+
+        let controller = TerminalSessionController(
+            workspace: workspace,
+            host: host,
+            credentialsStore: credentialsStore,
+            transportFactory: transportFactory,
+            surfaceFactory: { _ in StubTerminalSurface() }
+        )
+        controller.onUpdate = { update in
+            if case .phase(.connected, nil) = update {
+                connectedExpectation.fulfill()
+            }
+        }
+
+        controller.connectIfNeeded()
+        await fulfillment(of: [connectedExpectation], timeout: 1.0)
+
+        XCTAssertEqual(
+            transportFactory.resumeStates,
+            [.init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 0)]
+        )
     }
 
     func testConnectFailureDoesNotAutoReconnectOnDirectTLSRejection() async throws {

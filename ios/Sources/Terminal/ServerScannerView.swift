@@ -9,14 +9,16 @@ struct DiscoveredServer: Identifiable {
     let port: Int
     let name: String
     let version: String
+    let instanceID: String?
     let workspaceCount: Int
     let wsSecret: String
 
-    init(hostname: String, port: Int, name: String, version: String, workspaceCount: Int, wsSecret: String) {
+    init(hostname: String, port: Int, name: String, version: String, instanceID: String?, workspaceCount: Int, wsSecret: String) {
         self.hostname = hostname
         self.port = port
         self.name = name
         self.version = version
+        self.instanceID = instanceID
         self.workspaceCount = workspaceCount
         self.wsSecret = wsSecret
     }
@@ -161,16 +163,21 @@ final class ServerScanner {
         return found
     }
 
-    static func probeAndIdentify(hostname: String, port: Int, secret: String) async -> DiscoveredServer? {
+    static func probeAndIdentify(hostname: String, port: Int, secret: String, expectedInstanceID: String? = nil) async -> DiscoveredServer? {
         await withCheckedContinuation { continuation in
             DispatchQueue.global(qos: .utility).async {
-                let result = Self.probeSync(hostname: hostname, port: port, secret: secret)
+                let result = Self.probeSync(
+                    hostname: hostname,
+                    port: port,
+                    secret: secret,
+                    expectedInstanceID: expectedInstanceID
+                )
                 continuation.resume(returning: result)
             }
         }
     }
 
-    static func probeSync(hostname: String, port: Int, secret: String) -> DiscoveredServer? {
+    static func probeSync(hostname: String, port: Int, secret: String, expectedInstanceID: String? = nil) -> DiscoveredServer? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
@@ -246,15 +253,40 @@ final class ServerScanner {
         }
 
         let workspaceCount = result["workspace_count"] as? Int ?? 0
+        let instanceID = result["instance_id"] as? String
+        if let expectedInstanceID,
+           !instanceMatches(actual: instanceID, expected: expectedInstanceID) {
+            ScannerLog.shared.log("probe.instance.reject host=\(hostname):\(port) expected=\(expectedInstanceID) got=\(instanceID ?? "nil")")
+            return nil
+        }
 
         return DiscoveredServer(
             hostname: hostname,
             port: port,
             name: name,
             version: version,
+            instanceID: instanceID,
             workspaceCount: workspaceCount,
             wsSecret: secret
         )
+    }
+
+    private static func instanceMatches(actual: String?, expected: String) -> Bool {
+        let expected = expected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !expected.isEmpty else { return true }
+        guard let actual = actual?.trimmingCharacters(in: .whitespacesAndNewlines), !actual.isEmpty else {
+            return false
+        }
+        if actual == expected {
+            return true
+        }
+        if !expected.hasPrefix("cmuxd-dev-"), actual == "cmuxd-dev-\(expected)" {
+            return true
+        }
+        if actual.hasPrefix("cmuxd-dev-"), String(actual.dropFirst("cmuxd-dev-".count)) == expected {
+            return true
+        }
+        return false
     }
 
     // MARK: - WebSocket helpers

@@ -57,7 +57,7 @@ Event payload:
 }
 ```
 
-`offset` is the byte position of the FIRST byte of `data`. `offset + len(decoded data)` is the position the client should save for next reconnect. `eof: true` means the PTY closed; no more output will arrive for this session.
+`offset` is the byte position immediately after `data`, also called the end offset. The first byte of `data` is at `offset - len(decoded data)`. Clients should save `offset` for the next reconnect. `eof: true` means the PTY closed; no more output will arrive for this session.
 
 ## 0.3 Backpressure
 
@@ -84,6 +84,7 @@ The `hello` response lists the capabilities this daemon supports. Clients check 
     "capabilities": [
       "session.basic",
       "session.resize.min",
+      "session.resize.owner",
       "terminal.stream",
       "terminal.subscribe",
       "workspace.subscribe",

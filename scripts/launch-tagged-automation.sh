@@ -136,7 +136,6 @@ if [[ -d "$PWD/daemon/remote/zig" ]]; then
   (cd "$PWD/daemon/remote/zig" && cmux_run_zig build -Doptimize=ReleaseFast)
 fi
 
-/usr/bin/osascript -e "tell application id \"${BID}\" to quit" >/dev/null 2>&1 || true
 pkill -f "cmux DEV ${TAG}.app/Contents/MacOS/cmux DEV" || true
 wait_for_process_pattern_exit "cmux DEV ${TAG}.app/Contents/MacOS/cmux DEV" 10 || true
 pkill -f "cmuxd-remote serve --unix --socket ${DSOCK}" || true

@@ -174,6 +174,8 @@ final class TerminalSidebarStore {
     private var attachAttemptStartedAt: [TerminalWorkspace.ID: Date] = [:]
     private var reportedAttachResults: [TerminalWorkspace.ID: String] = [:]
     private var activeWorkspaceSubscriptionKeys: [String: String] = [:]
+    private var workspaceIDReplacements: [TerminalWorkspace.ID: TerminalWorkspace.ID] = [:]
+    private var lastKnownWorkspacesByID: [TerminalWorkspace.ID: TerminalWorkspace] = [:]
 
     init(
         snapshotStore: TerminalSnapshotPersisting = TerminalSnapshotStore(),
@@ -211,6 +213,7 @@ final class TerminalSidebarStore {
         self.hosts = snapshot.hosts.sorted(by: { $0.sortIndex < $1.sortIndex })
         self.workspaces = snapshot.workspaces.sorted(by: { $0.lastActivity > $1.lastActivity })
         self.selectedWorkspaceID = snapshot.selectedWorkspaceID ?? self.workspaces.first?.id
+        rememberWorkspaces(self.workspaces)
 
         observeServerDiscovery()
         observeNetworkPath()
@@ -236,6 +239,30 @@ final class TerminalSidebarStore {
 
     func workspace(with id: TerminalWorkspace.ID) -> TerminalWorkspace? {
         workspaces.first(where: { $0.id == id })
+    }
+
+    func workspaceResolvingReplacement(with id: TerminalWorkspace.ID) -> TerminalWorkspace? {
+        if let workspace = workspace(with: id) {
+            return workspace
+        }
+        let resolvedID = resolvedWorkspaceID(for: id)
+        if let workspace = workspace(with: resolvedID) {
+            return workspace
+        }
+        guard let previous = lastKnownWorkspacesByID[id] else {
+            return nil
+        }
+        return replacementWorkspace(for: previous)
+    }
+
+    private func resolvedWorkspaceID(for id: TerminalWorkspace.ID) -> TerminalWorkspace.ID {
+        var current = id
+        var seen = Set<TerminalWorkspace.ID>()
+        while let next = workspaceIDReplacements[current], !seen.contains(next) {
+            seen.insert(current)
+            current = next
+        }
+        return current
     }
 
     func workspaceCount(for host: TerminalHost) -> Int {
@@ -477,6 +504,11 @@ final class TerminalSidebarStore {
 
     func controller(for workspace: TerminalWorkspace) -> TerminalSessionController {
         if let existing = controllers[workspace.id] {
+            if var host = server(for: workspace.hostID) {
+                applyDebugWebSocketConfig(&host)
+                existing.refreshHost(host)
+            }
+            existing.refreshWorkspace(workspace)
             return existing
         }
 
@@ -602,10 +634,33 @@ final class TerminalSidebarStore {
         let mergedHostIDs = Set(mergedHosts.map(\.id))
         let workspaceHostIDs = Set(workspaces.map(\.hostID))
         let missingWorkspaceHostIDs = workspaceHostIDs.subtracting(mergedHostIDs)
+        let removedWorkspaceIDs = Set<TerminalWorkspace.ID>()
 
         for hostID in missingWorkspaceHostIDs {
             guard let preservedHost = existingHostsByID[hostID] else { continue }
-            mergedHosts.append(preservedHost)
+            if preservedHost.source == .discovered {
+                var offlineHost = preservedHost
+                offlineHost.machineStatus = .offline
+                mergedHosts.append(offlineHost)
+                for index in workspaces.indices where workspaces[index].hostID == hostID {
+                    workspaces[index].phase = .disconnected
+                }
+            } else {
+                mergedHosts.append(preservedHost)
+            }
+        }
+
+        if !removedWorkspaceIDs.isEmpty {
+            for workspaceID in removedWorkspaceIDs {
+                cancelWorkspaceIdentityReservation(for: workspaceID)
+                cancelWorkspaceMetadataObservation(for: workspaceID)
+                controllers[workspaceID]?.disconnect()
+                controllers.removeValue(forKey: workspaceID)
+            }
+            workspaces.removeAll { removedWorkspaceIDs.contains($0.id) }
+            if let selectedWorkspaceID, removedWorkspaceIDs.contains(selectedWorkspaceID) {
+                self.selectedWorkspaceID = workspaces.first?.id
+            }
         }
 
         for index in mergedHosts.indices {
@@ -796,6 +851,32 @@ final class TerminalSidebarStore {
 
     func applyRemoteWorkspaces(_ data: [[String: Any]], hostID: UUID, host: TerminalHost) {
         let remoteIds = data.compactMap { $0["id"] as? String }
+        let previousIDBySession = Dictionary(
+            workspaces
+                .filter { $0.hostID == hostID }
+                .compactMap { workspace -> (String, TerminalWorkspace.ID)? in
+                    guard let sessionID = Self.stableDaemonSessionID(workspace.tmuxSessionName) else {
+                        return nil
+                    }
+                    return (sessionID, workspace.id)
+                },
+            uniquingKeysWith: { first, _ in first }
+        )
+        rememberWorkspaces(workspaces)
+        let previousHostWorkspaces = workspaces.filter { $0.hostID == hostID }
+        let previousTitleCounts = previousHostWorkspaces.reduce(into: [String: Int]()) { counts, workspace in
+            let title = Self.normalizedWorkspaceTitle(workspace.title)
+            guard !title.isEmpty else { return }
+            counts[title, default: 0] += 1
+        }
+        let previousIDByUniqueTitle = Dictionary(
+            previousHostWorkspaces.compactMap { workspace -> (String, TerminalWorkspace.ID)? in
+                let title = Self.normalizedWorkspaceTitle(workspace.title)
+                guard previousTitleCounts[title] == 1 else { return nil }
+                return (title, workspace.id)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
 
         // Remove stale workspaces for this host. Two flavors to prune:
         //   1. remoteWorkspaceID set but not in the snapshot -> bound to a
@@ -829,9 +910,6 @@ final class TerminalSidebarStore {
             let unreadCount = wsData["unread_count"] as? Int ?? 0
             let lastActivityMs = wsData["last_activity_at"] as? Int64 ?? Int64(Date().timeIntervalSince1970 * 1000)
             let lastActivity = Date(timeIntervalSince1970: Double(lastActivityMs) / 1000)
-            // Use the daemon session ID from the macOS bridge if available.
-            // This ensures iOS attaches to the same session the desktop is using.
-            let daemonSessionID = wsData["session_id"] as? String
             let pinned = wsData["pinned"] as? Bool ?? false
             let panesData = wsData["panes"] as? [[String: Any]] ?? []
             let panes: [TerminalPane] = panesData.compactMap { pane in
@@ -843,9 +921,43 @@ final class TerminalSidebarStore {
                     directory: pane["directory"] as? String ?? ""
                 )
             }
+            // Prefer the daemon's top-level session_id. macOS publishes the
+            // focused terminal there, so opening a split workspace on iOS lands
+            // on the same pane. Older daemons may omit it; fall back to the
+            // first live pane instead of leaving the workspace stuck pending.
+            let daemonSessionID = (wsData["session_id"] as? String) ?? panes.first?.sessionID
 
             if let existing = workspaces.first(where: { $0.remoteWorkspaceID == remoteId && $0.hostID == hostID }) {
-                var updated = existing
+                let localID = Self.localWorkspaceID(forRemoteWorkspaceID: remoteId, fallback: existing.id)
+                var updated: TerminalWorkspace
+                if localID == existing.id {
+                    updated = existing
+                } else {
+                    cancelWorkspaceIdentityReservation(for: existing.id)
+                    cancelWorkspaceMetadataObservation(for: existing.id)
+                    controllers[existing.id]?.disconnect()
+                    controllers.removeValue(forKey: existing.id)
+                    if selectedWorkspaceID == existing.id {
+                        selectedWorkspaceID = localID
+                    }
+                    updated = TerminalWorkspace(
+                        id: localID,
+                        hostID: existing.hostID,
+                        title: existing.title,
+                        tmuxSessionName: existing.tmuxSessionName,
+                        preview: existing.preview,
+                        lastActivity: existing.lastActivity,
+                        unread: existing.unread,
+                        pinned: existing.pinned,
+                        phase: existing.phase,
+                        lastError: existing.lastError,
+                        remoteWorkspaceID: existing.remoteWorkspaceID,
+                        backendIdentity: existing.backendIdentity,
+                        backendMetadata: existing.backendMetadata,
+                        remoteDaemonResumeState: existing.remoteDaemonResumeState
+                    )
+                    updated.panes = existing.panes
+                }
                 updated.title = title
                 updated.lastActivity = lastActivity
                 if !preview.isEmpty { updated.preview = preview }
@@ -877,6 +989,7 @@ final class TerminalSidebarStore {
                 // shell on a fake session name.
                 let placeholderSession = "pending-\(remoteId)"
                 var workspace = TerminalWorkspace(
+                    id: Self.localWorkspaceID(forRemoteWorkspaceID: remoteId),
                     hostID: hostID,
                     title: title,
                     tmuxSessionName: daemonSessionID ?? placeholderSession,
@@ -892,17 +1005,104 @@ final class TerminalSidebarStore {
             }
         }
 
+        for workspace in updatedWorkspaces {
+            let sessionID = Self.stableDaemonSessionID(workspace.tmuxSessionName)
+            let title = Self.normalizedWorkspaceTitle(workspace.title)
+            guard let previousID = sessionID.flatMap({ previousIDBySession[$0] }) ?? previousIDByUniqueTitle[title],
+                  previousID != workspace.id else {
+                continue
+            }
+            workspaceIDReplacements[previousID] = workspace.id
+            if selectedWorkspaceID == previousID {
+                selectedWorkspaceID = workspace.id
+            }
+        }
+
         // Replace remote workspaces for this host with the server-ordered list,
         // preserving any non-remote workspaces
         let nonRemoteWorkspaces = workspaces.filter { $0.hostID != hostID || $0.remoteWorkspaceID == nil }
         workspaces = nonRemoteWorkspaces + updatedWorkspaces
-        if let selectedWorkspaceID,
-           !workspaces.contains(where: { $0.id == selectedWorkspaceID }) {
-            self.selectedWorkspaceID = workspaces.first?.id
+        rememberWorkspaces(workspaces)
+        let validWorkspaceIDs = Set(workspaces.map(\.id))
+        for staleID in controllers.keys where !validWorkspaceIDs.contains(staleID) {
+            controllers[staleID]?.disconnect()
+            controllers.removeValue(forKey: staleID)
         }
 
+        for workspace in workspaces {
+            guard let controller = controllers[workspace.id] else { continue }
+            if var refreshedHost = hosts.first(where: { $0.id == workspace.hostID }) {
+                applyDebugWebSocketConfig(&refreshedHost)
+                controller.refreshHost(refreshedHost)
+            }
+            controller.refreshWorkspace(workspace)
+        }
+
+        if let selectedWorkspaceID,
+           !workspaces.contains(where: { $0.id == selectedWorkspaceID }) {
+            let replacementID = resolvedWorkspaceID(for: selectedWorkspaceID)
+            self.selectedWorkspaceID = workspaces.contains(where: { $0.id == replacementID }) ? replacementID : workspaces.first?.id
+        }
+        pruneWorkspaceIDReplacements()
+
         Self.debugLog("applyRemoteWorkspaces: \(data.count) workspaces from host \(host.name)")
+        if let selectedWorkspaceID,
+           let selectedWorkspace = workspaces.first(where: { $0.id == selectedWorkspaceID }) {
+            controller(for: selectedWorkspace).resumeIfNeeded()
+        }
         persist()
+    }
+
+    private static func localWorkspaceID(forRemoteWorkspaceID remoteWorkspaceID: String, fallback: UUID? = nil) -> UUID {
+        UUID(uuidString: remoteWorkspaceID) ?? fallback ?? UUID()
+    }
+
+    private static func stableDaemonSessionID(_ sessionID: String) -> String? {
+        let trimmed = sessionID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              !trimmed.hasPrefix("pending-"),
+              !trimmed.hasPrefix("local-") else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func normalizedWorkspaceTitle(_ title: String) -> String {
+        title.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func pruneWorkspaceIDReplacements() {
+        let validIDs = Set(workspaces.map(\.id))
+        workspaceIDReplacements = workspaceIDReplacements.filter { key, value in
+            !validIDs.contains(key) && validIDs.contains(value)
+        }
+    }
+
+    private func rememberWorkspaces(_ workspaces: [TerminalWorkspace]) {
+        for workspace in workspaces {
+            lastKnownWorkspacesByID[workspace.id] = workspace
+        }
+        if lastKnownWorkspacesByID.count > 200 {
+            let validIDs = Set(self.workspaces.map(\.id)).union(Set(workspaceIDReplacements.keys))
+            lastKnownWorkspacesByID = lastKnownWorkspacesByID.filter { id, _ in validIDs.contains(id) }
+        }
+    }
+
+    private func replacementWorkspace(for previous: TerminalWorkspace) -> TerminalWorkspace? {
+        if let sessionID = Self.stableDaemonSessionID(previous.tmuxSessionName),
+           let sessionMatch = workspaces.first(where: { workspace in
+               workspace.hostID == previous.hostID
+                   && (workspace.tmuxSessionName == sessionID || workspace.panes.contains(where: { $0.sessionID == sessionID }))
+           }) {
+            return sessionMatch
+        }
+
+        let title = Self.normalizedWorkspaceTitle(previous.title)
+        guard !title.isEmpty else { return nil }
+        let titleMatches = workspaces.filter {
+            $0.hostID == previous.hostID && Self.normalizedWorkspaceTitle($0.title) == title
+        }
+        return titleMatches.count == 1 ? titleMatches[0] : nil
     }
 
 
@@ -1357,9 +1557,12 @@ final class TerminalSessionController {
     private(set) var errorMessage: String?
     private(set) var statusMessage: String?
     private(set) var surfaceView: GhosttySurfaceView?
+    #if DEBUG
+    private(set) var accessibilityTerminalText: String = ""
+    #endif
 
     private var host: TerminalHost
-    private let workspace: TerminalWorkspace
+    private var workspace: TerminalWorkspace
     private let credentialsStore: TerminalCredentialsStoring
     private let transportFactory: TerminalTransportFactory
     private let surfaceFactory: @MainActor (GhosttySurfaceViewDelegate) throws -> any TerminalSurfaceHosting
@@ -1442,6 +1645,20 @@ final class TerminalSessionController {
         }
     }
 
+    func refreshWorkspace(_ workspace: TerminalWorkspace) {
+        let previousWorkspace = self.workspace
+        self.workspace = workspace
+        remoteDaemonResumeState = workspace.remoteDaemonResumeState
+
+        guard sessionOverride == nil else { return }
+        guard previousWorkspace.tmuxSessionName != workspace.tmuxSessionName else { return }
+        guard !workspace.tmuxSessionName.isEmpty, !workspace.tmuxSessionName.hasPrefix("pending-") else { return }
+
+        if transport != nil || transportConnectTask != nil || phase == .connected || phase == .connecting || phase == .reconnecting {
+            reconnectForAuthoritativeSessionChange()
+        }
+    }
+
     func connectIfNeeded(reconnecting: Bool = false) {
         if isLiveAnchormuxSession {
             liveAnchormuxLog("controller.connectIfNeeded reconnecting=\(reconnecting) phase=\(phase) transport=\(transport != nil)")
@@ -1451,6 +1668,7 @@ final class TerminalSessionController {
             queueReconnectAfterPendingTransportWork(reconnecting: reconnecting)
             return
         }
+        let createdFreshSurface = terminalSurface == nil
         guard ensureTerminalSurface(), let terminalSurface else {
             setPhase(.failed, error: errorMessage ?? TerminalStoreStrings.surfaceUnavailableError)
             return
@@ -1498,11 +1716,12 @@ final class TerminalSessionController {
             host: host,
             credentials: credentials,
             sessionName: effectiveSessionName,
-            resumeState: remoteDaemonResumeState
+            resumeState: resumeStateForConnect(createdFreshSurface: createdFreshSurface)
         )
-        transport.eventHandler = { [weak self] event in
+        transport.eventHandler = { [weak self, weak transport] event in
             Task { @MainActor in
-                self?.handle(event: event)
+                guard let self, let transport, self.isCurrentTransport(transport) else { return }
+                self.handle(event: event)
             }
         }
         self.transport = transport
@@ -1606,6 +1825,21 @@ final class TerminalSessionController {
         connectIfNeeded(reconnecting: true)
     }
 
+    private func reconnectForAuthoritativeSessionChange() {
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        clearStatusMessage()
+        sessionOverride = nil
+        updateRemoteDaemonResumeState(nil)
+        clearPendingReconnectAfterTransportWork()
+        cancelTransportConnectTask()
+        clearTerminalSurface()
+        setPhase(.reconnecting, error: nil)
+        let transport = releaseTransport()
+        scheduleTransportDisconnect(transport, preserveSession: true)
+        connectIfNeeded(reconnecting: true)
+    }
+
     func disconnect() {
         if isLiveAnchormuxSession {
             liveAnchormuxLog("controller.disconnect phase=\(phase)")
@@ -1674,6 +1908,9 @@ final class TerminalSessionController {
             }
         case .output(let data):
             terminalSurface?.processOutput(data)
+            #if DEBUG
+            refreshAccessibilityTerminalText()
+            #endif
             if let preview = TerminalPreviewExtractor.preview(from: data) {
                 onUpdate?(.preview(preview, .now))
             }
@@ -1699,6 +1936,9 @@ final class TerminalSessionController {
             // Daemon is authoritative for the rendering grid. Apply
             // unconditionally; surface lets-boxes if container bigger.
             terminalSurface?.applyViewSize(cols: cols, rows: rows)
+            #if DEBUG
+            refreshAccessibilityTerminalText()
+            #endif
         }
     }
 
@@ -1813,6 +2053,18 @@ final class TerminalSessionController {
         statusMessage = nil
     }
 
+    private func resumeStateForConnect(createdFreshSurface: Bool) -> TerminalRemoteDaemonResumeState? {
+        guard var state = remoteDaemonResumeState else { return nil }
+        // A fresh Ghostty surface starts with an empty local emulator. Reusing
+        // a persisted readOffset would only replay the unread tail into that
+        // empty renderer, which drops older scrollback like the initial prompt.
+        // Keep session/attachment identity, but bootstrap from offset 0.
+        if createdFreshSurface {
+            state.readOffset = 0
+        }
+        return state
+    }
+
     private func scheduleStatusMessageClear(after seconds: Double) {
         statusMessageTask?.cancel()
         statusMessageTask = Task { [weak self] in
@@ -1884,7 +2136,17 @@ final class TerminalSessionController {
         surfaceView?.disposeSurface()
         terminalSurface = nil
         surfaceView = nil
+        updateRemoteDaemonResumeState(nil)
+        #if DEBUG
+        accessibilityTerminalText = ""
+        #endif
     }
+
+    #if DEBUG
+    private func refreshAccessibilityTerminalText() {
+        accessibilityTerminalText = terminalSurface?.accessibilityRenderedTextForTesting() ?? ""
+    }
+    #endif
 
     private func observeSurfaceClose(for surface: any TerminalSurfaceHosting) {
         if let surfaceCloseObserver {
@@ -2420,6 +2682,7 @@ private final class TerminalUITestInputTransport: TerminalTransport, @unchecked 
 
 extension TerminalSessionController: GhosttySurfaceViewDelegate {
     func ghosttySurfaceView(_ surfaceView: GhosttySurfaceView, didProduceInput data: Data) {
+        TerminalInputDebugLog.log("controller.didProduceInput data=\(TerminalInputDebugLog.dataSummary(data))")
         Task { [weak self] in
             try? await self?.transport?.send(data)
         }

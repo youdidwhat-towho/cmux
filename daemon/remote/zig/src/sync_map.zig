@@ -115,6 +115,24 @@ pub fn SyncStringHashMap(comptime V: type) type {
             callback(&self.inner, ctx);
         }
 
+        /// Scoped shared-lock critical section. Use when a caller needs
+        /// to read a value AND perform side effects on it (e.g. bump a
+        /// refcount) atomically with the lookup, so the value cannot be
+        /// removed between lookup and refcount increment. The callback
+        /// receives the underlying map under the shared (read) lock; it
+        /// must not mutate the map. Multiple shared-lock callbacks can
+        /// run concurrently with each other; they are mutually exclusive
+        /// with any write-lock operation.
+        pub fn withSharedLock(
+            self: *Self,
+            ctx: anytype,
+            comptime callback: fn (*Inner, @TypeOf(ctx)) void,
+        ) void {
+            self.lock.lockShared();
+            defer self.lock.unlockShared();
+            callback(&self.inner, ctx);
+        }
+
         /// Snapshot of all values, allocated with `alloc`. Useful for
         /// iteration-after-release patterns where the caller needs to
         /// process every entry without holding the lock (e.g. deliver

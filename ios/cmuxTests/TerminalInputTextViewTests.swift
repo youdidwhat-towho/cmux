@@ -39,6 +39,39 @@ final class TerminalInputTextViewTests: XCTestCase {
         XCTAssertEqual(textView.text, "")
     }
 
+    func testAccessoryToolbarKeepsEdgeControlsInsideRoundedScreenMargins() {
+        let textView = TerminalInputTextView()
+        guard let toolbar = textView.inputAccessoryView else {
+            return XCTFail("Expected terminal input accessory toolbar")
+        }
+
+        toolbar.frame = CGRect(x: 0, y: 0, width: 393, height: 44)
+        toolbar.setNeedsLayout()
+        toolbar.layoutIfNeeded()
+
+        let hideKeyboardButton = toolbar.subviewsRecursive().first {
+            $0.accessibilityIdentifier == "terminal.inputAccessory.hideKeyboard"
+        }
+        let scrollView = toolbar.subviewsRecursive().compactMap { $0 as? UIScrollView }.first
+
+        XCTAssertNotNil(hideKeyboardButton)
+        XCTAssertNotNil(scrollView)
+        XCTAssertGreaterThanOrEqual(hideKeyboardButton?.frame.minX ?? 0, 16)
+        XCTAssertLessThanOrEqual(scrollView?.frame.maxX ?? .greatestFiniteMagnitude, toolbar.bounds.maxX - 16)
+    }
+
+    func testInsertTextSuppressesMirroredTextViewChange() {
+        let textView = TerminalInputTextView()
+        var outputs: [String] = []
+        textView.onText = { outputs.append($0) }
+
+        textView.insertText("xy")
+        textView.simulateTextChangeForTesting("xy", isComposing: false)
+
+        XCTAssertEqual(outputs, ["xy"])
+        XCTAssertEqual(textView.text, "")
+    }
+
     func testComposingTextStaysBufferedWithoutEmitting() {
         let textView = TerminalInputTextView()
         var outputs: [String] = []
@@ -610,5 +643,11 @@ final class TerminalInputTextViewTests: XCTestCase {
 
         XCTAssertEqual(escapeOutputs, [Data([0x1B, 0x7F])])
         XCTAssertEqual(textOutputs, ["b"])
+    }
+}
+
+private extension UIView {
+    func subviewsRecursive() -> [UIView] {
+        subviews + subviews.flatMap { $0.subviewsRecursive() }
     }
 }

@@ -309,11 +309,17 @@ final class WorkspaceDaemonBridge {
         }
         #endif
 
-        // PR 7 SSOT refactor: mac no longer ships `workspace.sync`. Every
-        // field it previously pushed has an incremental RPC equivalent;
-        // emit them directly per workspace. The daemon also broadcasts
-        // workspace.changed on every mutation, so other clients (iOS,
-        // additional mac windows) still see changes propagate.
+        // PR 7 SSOT intent: mac ships incremental RPCs for fields that
+        // have them wired (preview/phase/directory/unread/color), AND
+        // still ships `workspace.sync` as the fallback for everything
+        // else — pane lists, splits, titles, pinned, tab ordering. The
+        // incremental RPCs for pane mutations exist on the wire but
+        // have no mac call sites yet (see DaemonConnection.sendPane*);
+        // until they do, the full sync is the only path that keeps
+        // mac↔daemon pane/layout state in agreement. Removing the full
+        // sync entirely caused silent divergence where pane closes,
+        // split layout changes, focus changes, and pane-title updates
+        // never reached the daemon until reconnect.
         if let workspaces = params["workspaces"] as? [[String: Any]] {
             for ws in workspaces {
                 guard let idStr = ws["id"] as? String,
@@ -332,6 +338,7 @@ final class WorkspaceDaemonBridge {
                 }
             }
         }
+        connection.sendWorkspaceSync(params)
 
         lastSyncTime = Date()
         syncCount += 1
@@ -380,6 +387,7 @@ final class WorkspaceDaemonBridge {
             let sessionIDs: [String] = terminalPanels.compactMap { panel in
                 panel.surface.savedDaemonSessionID
             }
+            let focusedSessionID = workspace.focusedTerminalPanel?.surface.savedDaemonSessionID
             let paneInfos: [[String: Any]] = terminalPanels.compactMap { panel in
                 guard let paneSID = panel.surface.savedDaemonSessionID else { return nil }
                 let customTitle = workspace.panelCustomTitles[panel.id]?
@@ -409,7 +417,7 @@ final class WorkspaceDaemonBridge {
             if !Self.pinnedOwnedByDaemon {
                 entry["pinned"] = workspace.isPinned
             }
-            if let primarySessionID = sessionIDs.first {
+            if let primarySessionID = focusedSessionID ?? sessionIDs.first {
                 entry["session_id"] = primarySessionID
             }
             if sessionIDs.count > 1 {

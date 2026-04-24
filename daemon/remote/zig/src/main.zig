@@ -116,7 +116,7 @@ fn usage(stderr: anytype) !void {
     try stderr.print("Usage:\n", .{});
     try stderr.print("  cmuxd-remote version\n", .{});
     try stderr.print("  cmuxd-remote serve --stdio\n", .{});
-    try stderr.print("  cmuxd-remote serve --unix --socket <path> [--ws-port <port> --ws-secret <secret>]\n", .{});
+    try stderr.print("  cmuxd-remote serve --unix --socket <path> [--ws-port <port> --ws-secret <secret>] [--instance-id <id>] [--parent-pid <pid>]\n", .{});
     try stderr.print("  cmuxd-remote serve --tls --listen <addr> --server-id <id> --ticket-secret <secret> --cert-file <path> --key-file <path>\n", .{});
     try stderr.print("  cmuxd-remote serve --ws --listen <addr> --secret <secret>\n", .{});
     try stderr.print("  cmuxd-remote cli <command> [args...]\n", .{});
@@ -145,6 +145,10 @@ fn parseServeUnixArgs(args: []const []const u8) !serve_unix.Config {
             cfg.ws_port = try std.fmt.parseInt(u16, value, 10);
         } else if (std.mem.eql(u8, flag, "--ws-secret")) {
             cfg.ws_secret = value;
+        } else if (std.mem.eql(u8, flag, "--instance-id")) {
+            cfg.instance_id = value;
+        } else if (std.mem.eql(u8, flag, "--parent-pid")) {
+            cfg.parent_pid = try std.fmt.parseInt(std.posix.pid_t, value, 10);
         } else if (std.mem.eql(u8, flag, "--db-path")) {
             cfg.db_path = value;
         } else {

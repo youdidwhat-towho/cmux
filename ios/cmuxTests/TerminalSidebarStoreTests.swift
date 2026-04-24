@@ -668,6 +668,58 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testApplyRemoteWorkspacesUsesDaemonUUIDAsLocalWorkspaceID() throws {
+        let host = TerminalHost(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000031")!,
+            stableID: "127.0.0.1-52190",
+            name: "Local Dev (:52190)",
+            hostname: "127.0.0.1",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            source: .discovered,
+            transportPreference: .remoteDaemon
+        )
+        let remoteID = "11111111-1111-1111-1111-111111111111"
+        let oldLocalID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+        let existing = TerminalWorkspace(
+            id: oldLocalID,
+            hostID: host.id,
+            title: "Local ID",
+            tmuxSessionName: "sess-old",
+            remoteWorkspaceID: remoteID
+        )
+        let fixture = makeStore(
+            snapshot: TerminalStoreSnapshot(
+                hosts: [host],
+                workspaces: [existing],
+                selectedWorkspaceID: oldLocalID
+            )
+        )
+
+        fixture.store.applyRemoteWorkspaces(
+            [
+                [
+                    "id": remoteID,
+                    "title": "Remote ID",
+                    "session_id": "sess-remote",
+                    "last_activity_at": Int64(1_800_000_000_000),
+                ],
+            ],
+            hostID: host.id,
+            host: host
+        )
+
+        let daemonUUID = try XCTUnwrap(UUID(uuidString: remoteID))
+        let workspace = try XCTUnwrap(fixture.store.workspaces.first)
+        XCTAssertEqual(workspace.id, daemonUUID)
+        XCTAssertEqual(workspace.remoteWorkspaceID, remoteID)
+        XCTAssertEqual(fixture.store.selectedWorkspaceID, daemonUUID)
+        XCTAssertEqual(fixture.snapshotStore.load().workspaces.first?.id, daemonUUID)
+        XCTAssertEqual(fixture.snapshotStore.load().selectedWorkspaceID, daemonUUID)
+    }
+
+    @MainActor
     func testApplyDiscoveredHostsReplacesPlaceholderCustomHostWithLiveMachine() throws {
         let placeholderHost = TerminalHost(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
@@ -1359,6 +1411,81 @@ final class TerminalSidebarStoreTests: XCTestCase {
 
         XCTAssertEqual(transports[0].disconnectCallCount, 1)
         XCTAssertEqual(transports[1].connectCallCount, 1)
+    }
+
+    @MainActor
+    func testApplyRemoteWorkspacesReconnectsSelectedWorkspaceWhenDaemonSessionIDChanges() async throws {
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon,
+            teamID: "team-1",
+            serverID: "cmux-macmini"
+        )
+        let workspace = TerminalWorkspace(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000024")!,
+            hostID: host.id,
+            title: "Main",
+            tmuxSessionName: "sess-stale",
+            remoteWorkspaceID: "remote-1"
+        )
+        let snapshot = TerminalStoreSnapshot(
+            hosts: [host],
+            workspaces: [workspace],
+            selectedWorkspaceID: nil
+        )
+
+        let firstConnectExpectation = expectation(description: "initial transport connected")
+        let firstDisconnectExpectation = expectation(description: "stale transport disconnected")
+        let replacementConnectExpectation = expectation(description: "replacement transport connected")
+        let transports = [
+            ConnectedStubTerminalTransport(
+                onConnect: {
+                    firstConnectExpectation.fulfill()
+                },
+                onDisconnect: {
+                    firstDisconnectExpectation.fulfill()
+                }
+            ),
+            ConnectedStubTerminalTransport(
+                onConnect: {
+                    replacementConnectExpectation.fulfill()
+                }
+            ),
+        ]
+        let transportFactory = TrackingSequencedTerminalTransportFactory(transports: transports)
+        let fixture = makeStore(
+            snapshot: snapshot,
+            passwords: [host.id: "secret"],
+            transportFactory: transportFactory
+        )
+
+        _ = fixture.store.openWorkspace(workspace)
+        await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
+
+        fixture.store.applyRemoteWorkspaces(
+            [[
+                "id": "remote-1",
+                "title": "Main",
+                "preview": "",
+                "unread_count": 0,
+                "last_activity_at": Int64(Date().timeIntervalSince1970 * 1000),
+                "session_id": "sess-fresh",
+                "pinned": false,
+                "panes": [],
+            ]],
+            hostID: host.id,
+            host: host
+        )
+
+        await fulfillment(of: [firstDisconnectExpectation, replacementConnectExpectation], timeout: 1.0)
+
+        XCTAssertEqual(transports[0].disconnectCallCount, 1)
+        XCTAssertEqual(transports[1].connectCallCount, 1)
+        XCTAssertEqual(fixture.store.workspaces.first?.tmuxSessionName, "sess-fresh")
     }
 
     @MainActor

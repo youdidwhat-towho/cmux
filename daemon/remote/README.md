@@ -34,12 +34,12 @@ Current integration in cmux:
 1. `workspace.remote.configure` now bootstraps this binary over SSH when missing.
 2. Client sends `hello` before enabling remote proxy transport.
 3. Local workspace proxy broker serves SOCKS5 + HTTP CONNECT and tunnels stream traffic through `proxy.*` RPC over `serve --stdio`.
-4. Daemon status/capabilities are exposed in `workspace.remote.status -> remote.daemon` (including `session.resize.min`).
+4. Daemon status/capabilities are exposed in `workspace.remote.status -> remote.daemon` (including `session.resize.owner`).
 
 Internal Zig modules:
 1. `zig/src/json_rpc.zig` owns newline-delimited JSON-RPC framing.
 2. `zig/src/terminal_session.zig` owns PTY state, `ghostty-vt`, replay, and raw byte offsets.
-3. `zig/src/session_registry.zig` owns session IDs, attachment IDs, and `smallest screen wins` sizing.
+3. `zig/src/session_registry.zig` owns session IDs, attachment IDs, and active-client sizing.
 4. `zig/src/serve_stdio.zig` and `zig/src/serve_tls.zig` expose the public daemon API.
 5. `zig/src/ticket_auth.zig` owns short-lived daemon ticket verification for direct transport.
 
