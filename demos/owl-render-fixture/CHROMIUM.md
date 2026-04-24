@@ -29,9 +29,10 @@ The verified gate now includes input. `run-layer-host-verifier-gui.sh` can run
 the real Chromium compositor input fixtures with `OWL_LAYER_HOST_INPUT_CHECK=1`;
 the passing output shows `OWL_INPUT_READY` turning into `OWL_INPUT_CLICKED`,
 then proves form input by typing `hello owl`, checking a checkbox, clicking
-submit, and asserting the post-input DOM state through Mojo. Mouse events use
-Chromium's routed input path so controls activate normally. The gate still
-rejects DevTools and remote debugging paths.
+submit, and asserting the post-input DOM state through Mojo. It also verifies
+Command, Option, Control, and Shift modifier delivery while a text input is
+focused. Mouse events use Chromium's routed input path so controls activate
+normally. The gate still rejects DevTools and remote debugging paths.
 
 The AWS build used for the current screenshots was rebuilt with:
 

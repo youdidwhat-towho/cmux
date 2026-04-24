@@ -36,6 +36,7 @@ private struct MouseClick {
 private struct KeyStroke {
     let keyCode: UInt32
     let text: String
+    let modifiers: UInt32
 }
 
 private enum InputAction {
@@ -52,6 +53,13 @@ private struct JavaScriptExpectation {
 private enum ExpectedJavaScriptValue {
     case string(String)
     case bool(Bool)
+}
+
+private enum KeyModifiers {
+    static let command = UInt32(truncatingIfNeeded: NSEvent.ModifierFlags.command.rawValue)
+    static let control = UInt32(truncatingIfNeeded: NSEvent.ModifierFlags.control.rawValue)
+    static let option = UInt32(truncatingIfNeeded: NSEvent.ModifierFlags.option.rawValue)
+    static let shift = UInt32(truncatingIfNeeded: NSEvent.ModifierFlags.shift.rawValue)
 }
 
 private struct PixelStats: Codable {
@@ -372,6 +380,11 @@ private final class LayerHostRunner {
             html: Fixtures.formFixture,
             directory: fixtureDirectory
         )
+        let modifierFixture = try writeFixture(
+            name: "modifier-fixture",
+            html: Fixtures.modifierFixture,
+            directory: fixtureDirectory
+        )
         var targets: [RenderTarget] = []
         if options.includeCanvas {
             targets.append(RenderTarget(
@@ -412,7 +425,7 @@ private final class LayerHostRunner {
                     preInputExpected: [.red, .dark],
                     inputActions: [
                         .mouseClick(MouseClick(x: 170, y: 180)),
-                        .key(KeyStroke(keyCode: 88, text: "x")),
+                        .key(KeyStroke(keyCode: 88, text: "x", modifiers: 0)),
                     ],
                     postInputDiagnosticScript: "({className: document.body.className, status: document.getElementById('status')?.textContent || ''})",
                     postInputExpectations: [
@@ -448,6 +461,42 @@ private final class LayerHostRunner {
                         JavaScriptExpectation(key: "status", value: .string("HELLO_OWL_SUBMITTED")),
                         JavaScriptExpectation(key: "submitted", value: .bool(true)),
                         JavaScriptExpectation(key: "typed", value: .string("hello owl")),
+                    ]
+                )
+            )
+            targets.append(
+                RenderTarget(
+                    name: "modifier-fixture",
+                    url: modifierFixture.absoluteString,
+                    screenshotName: "modifier-fixture-after-input.png",
+                    expected: [.green, .yellow, .dark],
+                    preInputScreenshotName: "modifier-fixture-before-input.png",
+                    preInputExpected: [.blue, .dark, .light],
+                    inputActions: [
+                        .mouseClick(MouseClick(x: 180, y: 152)),
+                        .text("plain"),
+                        .key(KeyStroke(keyCode: 77, text: "", modifiers: KeyModifiers.command)),
+                        .key(KeyStroke(keyCode: 79, text: "", modifiers: KeyModifiers.option)),
+                        .key(KeyStroke(keyCode: 67, text: "", modifiers: KeyModifiers.control)),
+                        .key(KeyStroke(keyCode: 83, text: "S", modifiers: KeyModifiers.shift)),
+                    ],
+                    postInputDiagnosticScript: """
+                    ({
+                      commandSeen: window.owlModifierState?.commandSeen === true,
+                      controlSeen: window.owlModifierState?.controlSeen === true,
+                      optionSeen: window.owlModifierState?.optionSeen === true,
+                      shiftSeen: window.owlModifierState?.shiftSeen === true,
+                      status: document.getElementById("status")?.textContent || "",
+                      typed: document.getElementById("modInput")?.value || ""
+                    })
+                    """,
+                    postInputExpectations: [
+                        JavaScriptExpectation(key: "commandSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "controlSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "optionSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "shiftSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "status", value: .string("OWL_MODIFIERS_OK")),
+                        JavaScriptExpectation(key: "typed", value: .string("plainS")),
                     ]
                 )
             )
@@ -785,9 +834,21 @@ private final class LayerHostRunner {
         bridge: OwlFreshBridge,
         session: OpaquePointer
     ) {
-        bridge.sendKey(session, keyDown: true, keyCode: stroke.keyCode, text: stroke.text)
+        bridge.sendKey(
+            session,
+            keyDown: true,
+            keyCode: stroke.keyCode,
+            text: stroke.text,
+            modifiers: stroke.modifiers
+        )
         bridge.pollEvents(milliseconds: 10)
-        bridge.sendKey(session, keyDown: false, keyCode: stroke.keyCode, text: "")
+        bridge.sendKey(
+            session,
+            keyDown: false,
+            keyCode: stroke.keyCode,
+            text: "",
+            modifiers: stroke.modifiers
+        )
         bridge.pollEvents(milliseconds: 10)
     }
 
@@ -871,13 +932,13 @@ private extension KeyStroke {
         }
         switch scalar.value {
         case 32:
-            return KeyStroke(keyCode: 32, text: " ")
+            return KeyStroke(keyCode: 32, text: " ", modifiers: 0)
         case 48...57, 65...90:
-            return KeyStroke(keyCode: scalar.value, text: String(character))
+            return KeyStroke(keyCode: scalar.value, text: String(character), modifiers: 0)
         case 97...122:
-            return KeyStroke(keyCode: scalar.value - 32, text: String(character))
+            return KeyStroke(keyCode: scalar.value - 32, text: String(character), modifiers: 0)
         default:
-            return KeyStroke(keyCode: scalar.value, text: String(character))
+            return KeyStroke(keyCode: scalar.value, text: String(character), modifiers: 0)
         }
     }
 }
@@ -1157,9 +1218,15 @@ private final class OwlFreshBridge {
         sessionSendMouse(session, kind, x, y, button, clickCount, 0, 0, 0)
     }
 
-    func sendKey(_ session: OpaquePointer?, keyDown: Bool, keyCode: UInt32, text: String) {
+    func sendKey(
+        _ session: OpaquePointer?,
+        keyDown: Bool,
+        keyCode: UInt32,
+        text: String,
+        modifiers: UInt32 = 0
+    ) {
         text.withCString { textPointer in
-            sessionSendKey(session, keyDown, keyCode, textPointer, 0)
+            sessionSendKey(session, keyDown, keyCode, textPointer, modifiers)
         }
     }
 
@@ -1758,6 +1825,179 @@ private enum Fixtures {
         submit.addEventListener("click", submitForm);
         input.focus();
         updateTyped();
+      </script>
+    </body>
+    </html>
+    """
+
+    static let modifierFixture = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>OWL LayerHost modifier fixture</title>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgb(248,248,248); }
+        body { font: 30px -apple-system, BlinkMacSystemFont, sans-serif; color: rgb(20,20,20); }
+        #banner {
+          position: absolute;
+          left: 48px;
+          top: 40px;
+          width: 864px;
+          height: 58px;
+          background: rgb(0, 89, 255);
+          color: white;
+          display: flex;
+          align-items: center;
+          padding-left: 22px;
+          box-sizing: border-box;
+          font-weight: 700;
+        }
+        #modInput {
+          position: absolute;
+          left: 48px;
+          top: 116px;
+          width: 380px;
+          height: 64px;
+          box-sizing: border-box;
+          border: 4px solid rgb(20,20,20);
+          border-radius: 0;
+          font: 30px -apple-system, BlinkMacSystemFont, sans-serif;
+          padding: 0 16px;
+          color: rgb(20,20,20);
+          background: white;
+        }
+        #typed {
+          position: absolute;
+          left: 456px;
+          top: 127px;
+          width: 420px;
+          height: 48px;
+          font-weight: 700;
+        }
+        #modifiers {
+          position: absolute;
+          left: 48px;
+          top: 218px;
+          width: 864px;
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 12px;
+        }
+        .chip {
+          height: 70px;
+          box-sizing: border-box;
+          border: 4px solid rgb(20,20,20);
+          background: rgb(238,238,238);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-weight: 900;
+        }
+        .chip.ok {
+          background: rgb(255, 210, 0);
+        }
+        #status {
+          position: absolute;
+          left: 48px;
+          top: 340px;
+          width: 864px;
+          height: 72px;
+          display: flex;
+          align-items: center;
+          box-sizing: border-box;
+          padding-left: 28px;
+          background: rgb(238,238,238);
+          border: 4px solid rgb(20,20,20);
+          font-size: 42px;
+          font-weight: 900;
+        }
+        body.done #status {
+          background: rgb(0, 204, 82);
+        }
+        #result {
+          position: absolute;
+          left: 48px;
+          top: 452px;
+          width: 864px;
+          height: 96px;
+          box-sizing: border-box;
+          border: 4px solid rgb(20,20,20);
+          background: white;
+          display: flex;
+          align-items: center;
+          padding-left: 28px;
+          font-size: 38px;
+          font-weight: 900;
+        }
+      </style>
+    </head>
+    <body class="ready">
+      <div id="banner">OWL_MODIFIER_FORM_READY</div>
+      <input id="modInput" aria-label="OWL modifier input" autocomplete="off" spellcheck="false" autofocus>
+      <div id="typed">typed: EMPTY</div>
+      <div id="modifiers">
+        <div id="cmd" class="chip">CMD</div>
+        <div id="opt" class="chip">OPT</div>
+        <div id="ctrl" class="chip">CTRL</div>
+        <div id="shift" class="chip">SHIFT</div>
+      </div>
+      <div id="status">OWL_MODIFIERS_WAITING</div>
+      <div id="result">value: EMPTY</div>
+      <script>
+        const input = document.getElementById("modInput");
+        const typed = document.getElementById("typed");
+        const status = document.getElementById("status");
+        const result = document.getElementById("result");
+        const state = {
+          commandSeen: false,
+          optionSeen: false,
+          controlSeen: false,
+          shiftSeen: false
+        };
+        window.owlModifierState = state;
+
+        const setChip = (id, ok) => {
+          document.getElementById(id).classList.toggle("ok", ok);
+        };
+        const render = () => {
+          typed.textContent = "typed: " + (input.value || "EMPTY");
+          result.textContent = "value: " + (input.value || "EMPTY");
+          setChip("cmd", state.commandSeen);
+          setChip("opt", state.optionSeen);
+          setChip("ctrl", state.controlSeen);
+          setChip("shift", state.shiftSeen);
+          if (
+            input.value === "plainS" &&
+            state.commandSeen &&
+            state.optionSeen &&
+            state.controlSeen &&
+            state.shiftSeen
+          ) {
+            input.blur();
+            document.body.classList.add("done");
+            status.textContent = "OWL_MODIFIERS_OK";
+          }
+        };
+
+        input.addEventListener("input", render);
+        document.addEventListener("keydown", (event) => {
+          if (event.metaKey) {
+            state.commandSeen = true;
+          }
+          if (event.altKey) {
+            state.optionSeen = true;
+          }
+          if (event.ctrlKey) {
+            state.controlSeen = true;
+          }
+          if (event.shiftKey) {
+            state.shiftSeen = true;
+          }
+          render();
+        });
+        input.focus();
+        render();
       </script>
     </body>
     </html>
