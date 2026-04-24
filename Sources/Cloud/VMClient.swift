@@ -83,6 +83,7 @@ enum VMAttachEndpoint {
 /// All methods are `async throws` and run off the main actor.
 actor VMClient {
     static let shared = VMClient()
+    private static let createTimeoutSeconds: TimeInterval = 300
 
     private let session: URLSession
 
@@ -115,7 +116,13 @@ actor VMClient {
         // The CLI owns key stability across command retries. VMClient only forwards the
         // key so the backend can short-circuit duplicate paid provider creates.
         let headers = ["Idempotency-Key": idempotencyKey]
-        let (data, http) = try await request("POST", path: "/api/vm", jsonBody: body, extraHeaders: headers)
+        let (data, http) = try await request(
+            "POST",
+            path: "/api/vm",
+            jsonBody: body,
+            extraHeaders: headers,
+            timeoutSeconds: Self.createTimeoutSeconds
+        )
         try ensureOK(http, data: data)
         let obj = try decodeJSONObject(data)
         guard let id = obj["id"] as? String,

@@ -1454,22 +1454,17 @@ private final class WorkspaceRemoteDaemonRPCClient {
     }
 
     func start() throws {
+        pendingCalls.reset()
+
         if configuration.transport == .websocket {
             try startViaWebSocket()
         } else if Self.usesSocketForwardTransport(configuration: configuration) {
             try startViaBakedVMSocketForward()
+            markTransportOpen()
         } else {
             try startViaSSHExec()
+            markTransportOpen()
         }
-
-        stateQueue.sync {
-            self.isClosed = false
-            self.shouldReportTermination = true
-            self.stdoutBuffer = Data()
-            self.stderrBuffer = ""
-            self.streamSubscriptions.removeAll(keepingCapacity: false)
-        }
-        pendingCalls.reset()
 
         do {
             let hello = try call(method: "hello", params: [:], timeout: 8.0)
@@ -1483,6 +1478,20 @@ private final class WorkspaceRemoteDaemonRPCClient {
             stop(suppressTerminationCallback: true)
             throw error
         }
+    }
+
+    private func markTransportOpen() {
+        stateQueue.sync {
+            self.markTransportOpenLocked()
+        }
+    }
+
+    private func markTransportOpenLocked() {
+        isClosed = false
+        shouldReportTermination = true
+        stdoutBuffer = Data()
+        stderrBuffer = ""
+        streamSubscriptions.removeAll(keepingCapacity: false)
     }
 
     private func startViaSSHExec() throws {
@@ -1653,6 +1662,7 @@ private final class WorkspaceRemoteDaemonRPCClient {
             self.webSocketSession = session
             self.webSocketTask = task
             self.webSocketDelegate = delegate
+            self.markTransportOpenLocked()
         }
 
         stateQueue.async {
