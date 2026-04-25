@@ -27,12 +27,15 @@ type config struct {
 	name        string
 	prompt      string
 	placement   string
+	isolation   string
+	command     string
 	imagePaths  []string
 	jsonOutput  bool
 	useAIName   bool
 	claudeCount int
 	codexCount  int
 	openCount   int
+	customCount int
 }
 
 type stringList []string
@@ -69,6 +72,23 @@ type placementOption struct {
 	help  string
 }
 
+type isolationOption struct {
+	value string
+	label string
+	help  string
+}
+
+type layoutMetrics struct {
+	contentX int
+	contentY int
+	width    int
+	logoH    int
+	inputY   int
+	inputH   int
+	configY  int
+	helpY    int
+}
+
 type launchDoneMsg struct {
 	output string
 	err    error
@@ -102,27 +122,37 @@ var placementOptions = []placementOption{
 	{value: "workspaces", label: "Workspaces", help: "one workspace per agent"},
 }
 
+var isolationOptions = []isolationOption{
+	{value: "auto", label: "Auto", help: "worktrees in git, cwd elsewhere"},
+	{value: "shared", label: "Shared", help: "all agents use current directory"},
+	{value: "worktrees", label: "Worktrees", help: "require git worktrees"},
+}
+
 var (
-	blue      = lipgloss.Color("#7AA7FF")
+	cmuxC1    = lipgloss.Color("#00D4FF")
+	cmuxC2    = lipgloss.Color("#18B5FA")
+	cmuxC3    = lipgloss.Color("#3096F5")
+	cmuxC4    = lipgloss.Color("#4877F1")
+	cmuxC5    = lipgloss.Color("#6058EF")
+	cmuxC6    = lipgloss.Color("#6E49EE")
+	cmuxC7    = lipgloss.Color("#7C3AED")
+	blue      = cmuxC3
 	text      = lipgloss.Color("#D7DCE5")
 	muted     = lipgloss.Color("#8B93A3")
 	dim       = lipgloss.Color("#5D6572")
 	red       = lipgloss.Color("#F87171")
-	screenBG  = lipgloss.Color("#090B10")
 	inputBG   = lipgloss.Color("#20242C")
-	configBG  = lipgloss.Color("#11151D")
-	rowBG     = lipgloss.Color("#1A2130")
 	subtle    = lipgloss.NewStyle().Foreground(muted)
 	dimText   = lipgloss.NewStyle().Foreground(dim)
 	hot       = lipgloss.NewStyle().Foreground(blue)
 	errorText = lipgloss.NewStyle().Foreground(red)
-	selected  = lipgloss.NewStyle().Foreground(text).Background(rowBG)
+	selected  = lipgloss.NewStyle().Foreground(cmuxC2)
 )
 
 func main() {
 	cfg := parseConfig()
 	m := initialModel(cfg)
-	if _, err := tea.NewProgram(m, tea.WithAltScreen()).Run(); err != nil {
+	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "cmux-agent-launcher-tui: %v\n", err)
 		os.Exit(1)
 	}
@@ -132,10 +162,12 @@ func parseConfig() config {
 	cfg := config{
 		cmuxPath:    "cmux",
 		placement:   "splits",
+		isolation:   "auto",
 		useAIName:   true,
 		claudeCount: 1,
 		codexCount:  1,
 		openCount:   0,
+		customCount: 0,
 	}
 	var imagePaths stringList
 	flag.StringVar(&cfg.cmuxPath, "cmux", cfg.cmuxPath, "cmux executable path")
@@ -145,18 +177,31 @@ func parseConfig() config {
 	flag.StringVar(&cfg.name, "name", "", "workspace name")
 	flag.StringVar(&cfg.prompt, "prompt", "", "initial prompt")
 	flag.StringVar(&cfg.placement, "placement", cfg.placement, "splits, tabs, or workspaces")
+	flag.StringVar(&cfg.isolation, "isolation", cfg.isolation, "auto, shared, or worktrees")
+	flag.StringVar(&cfg.command, "command", "", "custom bash command")
 	flag.Var(&imagePaths, "image", "initial image path")
 	flag.IntVar(&cfg.claudeCount, "claude", cfg.claudeCount, "Claude pane count")
 	flag.IntVar(&cfg.codexCount, "codex", cfg.codexCount, "Codex pane count")
 	flag.IntVar(&cfg.openCount, "opencode", cfg.openCount, "OpenCode pane count")
+	flag.IntVar(&cfg.customCount, "custom", cfg.customCount, "custom bash pane count")
 	flag.BoolVar(&cfg.jsonOutput, "json", false, "request JSON backend output")
 	noAIName := flag.Bool("no-ai-name", false, "disable AI workspace name generation")
+	noWorktrees := flag.Bool("no-worktrees", false, "use the current directory without git worktrees")
+	worktrees := flag.Bool("worktrees", false, "require git worktrees")
 	flag.Parse()
 	cfg.useAIName = !*noAIName
 	cfg.claudeCount = clampInt(cfg.claudeCount, 0, 8)
 	cfg.codexCount = clampInt(cfg.codexCount, 0, 8)
 	cfg.openCount = clampInt(cfg.openCount, 0, 8)
+	cfg.customCount = clampInt(cfg.customCount, 0, 8)
 	cfg.placement = normalizePlacement(cfg.placement)
+	cfg.isolation = normalizeIsolation(cfg.isolation)
+	if *noWorktrees {
+		cfg.isolation = "shared"
+	}
+	if *worktrees {
+		cfg.isolation = "worktrees"
+	}
 	cfg.imagePaths = append([]string(nil), imagePaths...)
 	return cfg
 }
@@ -181,11 +226,12 @@ func initialModel(cfg config) model {
 	ta.CharLimit = 20000
 	ta.SetWidth(68)
 	ta.SetHeight(8)
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(inputBG)
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(blue).Background(inputBG)
 	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(text).Background(inputBG)
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(dim).Background(inputBG)
 	ta.FocusedStyle.Base = lipgloss.NewStyle().Foreground(text).Background(inputBG)
+	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle().Foreground(inputBG).Background(inputBG)
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.Focus()
 
@@ -242,12 +288,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.textarea.Reset()
 		m.images = nil
 		return m, nil
+	case tea.MouseMsg:
+		if msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
+		return m.handleMouse(msg)
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			return m, tea.Quit
-		case "ctrl+r":
+		case "ctrl+r", "enter":
 			return m.startLaunch()
+		case "shift+enter", "alt+enter", "ctrl+j":
+			if m.focus != focusPrompt {
+				m.focus = focusPrompt
+				cmd = m.textarea.Focus()
+			}
+			m.textarea.InsertString("\n")
+			return m, cmd
 		case "tab":
 			m.toggleFocus()
 			return m, nil
@@ -269,7 +327,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.adjustSelectedConfig(1)
 			case " ":
 				m.chooseSelectedPlacement()
-			case "enter", "esc":
+			case "esc":
 				m.focus = focusPrompt
 				cmd = m.textarea.Focus()
 			}
@@ -304,10 +362,75 @@ func (m *model) resize(width, height int) {
 	m.width = width
 	m.height = height
 	boxWidth := clampInt(width-8, 68, 104)
-	textWidth := clampInt(boxWidth-12, 50, 88)
+	textWidth := clampInt(boxWidth-10, 52, 90)
 	textHeight := clampInt(height/5, 5, 8)
 	m.textarea.SetWidth(textWidth)
 	m.textarea.SetHeight(textHeight)
+}
+
+func (m model) metrics() layoutMetrics {
+	boxWidth := clampInt(m.width-8, 68, 104)
+	contentWidth := clampInt(boxWidth-6, 56, 94)
+	inputHeight := m.textarea.Height() + 2
+	logoHeight := 7
+	configHeight := configLineCount()
+	bodyHeight := logoHeight + 1 + inputHeight + 1 + configHeight + 1 + 3
+	contentX := maxInt(0, (m.width-contentWidth)/2)
+	contentY := maxInt(0, (m.height-bodyHeight)/2)
+	inputY := contentY + logoHeight + 1
+	configY := inputY + inputHeight + 1
+	helpY := configY + configHeight + 3
+	return layoutMetrics{
+		contentX: contentX,
+		contentY: contentY,
+		width:    contentWidth,
+		logoH:    logoHeight,
+		inputY:   inputY,
+		inputH:   inputHeight,
+		configY:  configY,
+		helpY:    helpY,
+	}
+}
+
+func (m model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.launching {
+		return m, nil
+	}
+	metrics := m.metrics()
+	if msg.X < metrics.contentX || msg.X >= metrics.contentX+metrics.width {
+		return m, nil
+	}
+
+	if msg.Y >= metrics.inputY && msg.Y < metrics.inputY+metrics.inputH {
+		m.focus = focusPrompt
+		return m, m.textarea.Focus()
+	}
+
+	if msg.Y >= metrics.configY && msg.Y < metrics.configY+configLineCount() {
+		if selected, ok := configSelectionForLine(msg.Y - metrics.configY); ok {
+			m.focus = focusConfig
+			m.textarea.Blur()
+			m.selectedConfig = selected
+			relX := msg.X - metrics.contentX
+			if selected < agentRowCount() {
+				switch {
+				case relX >= 21 && relX <= 25:
+					m.adjustSelectedConfig(-1)
+				case relX >= 28 && relX <= 33:
+					m.adjustSelectedConfig(1)
+				}
+			} else {
+				m.chooseSelectedPlacement()
+			}
+		}
+		return m, nil
+	}
+
+	if msg.Y == metrics.helpY {
+		return m.startLaunch()
+	}
+
+	return m, nil
 }
 
 func (m *model) toggleFocus() {
@@ -320,8 +443,63 @@ func (m *model) toggleFocus() {
 	m.textarea.Focus()
 }
 
+func agentRowCount() int {
+	return 4
+}
+
+func placementRowStart() int {
+	return agentRowCount()
+}
+
+func isolationRowStart() int {
+	return placementRowStart() + len(placementOptions)
+}
+
+func configRowCount() int {
+	return isolationRowStart() + len(isolationOptions)
+}
+
+func configLineCount() int {
+	return agentRowCount() + len(placementOptions) + len(isolationOptions) + 5
+}
+
+func selectedPlacementOptionIndex(selected int) (int, bool) {
+	index := selected - placementRowStart()
+	return index, index >= 0 && index < len(placementOptions)
+}
+
+func selectedIsolationOptionIndex(selected int) (int, bool) {
+	index := selected - isolationRowStart()
+	return index, index >= 0 && index < len(isolationOptions)
+}
+
+func isPlacementConfigRow(selected int) bool {
+	_, ok := selectedPlacementOptionIndex(selected)
+	return ok
+}
+
+func isIsolationConfigRow(selected int) bool {
+	_, ok := selectedIsolationOptionIndex(selected)
+	return ok
+}
+
+func configSelectionForLine(line int) (int, bool) {
+	placementLine := agentRowCount() + 3
+	isolationLine := placementLine + len(placementOptions) + 2
+	switch {
+	case line >= 1 && line < 1+agentRowCount():
+		return line - 1, true
+	case line >= placementLine && line < placementLine+len(placementOptions):
+		return placementRowStart() + line - placementLine, true
+	case line >= isolationLine && line < isolationLine+len(isolationOptions):
+		return isolationRowStart() + line - isolationLine, true
+	default:
+		return 0, false
+	}
+}
+
 func (m *model) moveSelectedConfig(delta int) {
-	count := 3 + len(placementOptions)
+	count := configRowCount()
 	m.selectedConfig = (m.selectedConfig + delta + count) % count
 }
 
@@ -333,18 +511,32 @@ func (m *model) adjustSelectedConfig(delta int) {
 		m.cfg.codexCount = clampInt(m.cfg.codexCount+delta, 0, 8)
 	case 2:
 		m.cfg.openCount = clampInt(m.cfg.openCount+delta, 0, 8)
+	case 3:
+		m.cfg.customCount = clampInt(m.cfg.customCount+delta, 0, 8)
 	default:
-		index := placementIndex(m.cfg.placement)
-		index = (index + delta + len(placementOptions)) % len(placementOptions)
-		m.cfg.placement = placementOptions[index].value
-		m.selectedConfig = 3 + index
+		if _, ok := selectedPlacementOptionIndex(m.selectedConfig); ok {
+			index := placementIndex(m.cfg.placement)
+			index = (index + delta + len(placementOptions)) % len(placementOptions)
+			m.cfg.placement = placementOptions[index].value
+			m.selectedConfig = placementRowStart() + index
+			return
+		}
+		if _, ok := selectedIsolationOptionIndex(m.selectedConfig); ok {
+			index := isolationIndex(m.cfg.isolation)
+			index = (index + delta + len(isolationOptions)) % len(isolationOptions)
+			m.cfg.isolation = isolationOptions[index].value
+			m.selectedConfig = isolationRowStart() + index
+		}
 	}
 }
 
 func (m *model) chooseSelectedPlacement() {
-	index := m.selectedConfig - 3
-	if index >= 0 && index < len(placementOptions) {
+	if index, ok := selectedPlacementOptionIndex(m.selectedConfig); ok {
 		m.cfg.placement = placementOptions[index].value
+		return
+	}
+	if index, ok := selectedIsolationOptionIndex(m.selectedConfig); ok {
+		m.cfg.isolation = isolationOptions[index].value
 	}
 }
 
@@ -355,13 +547,13 @@ func (m model) startLaunch() (tea.Model, tea.Cmd) {
 		m.status = "write a prompt or attach an image first"
 		return m, nil
 	}
-	if m.cfg.claudeCount+m.cfg.codexCount+m.cfg.openCount == 0 {
+	if m.cfg.claudeCount+m.cfg.codexCount+m.cfg.openCount+m.cfg.customCount == 0 {
 		m.cfg.claudeCount = 1
 		m.cfg.codexCount = 1
 	}
 	m.launching = true
 	m.statusKind = ""
-	m.status = "creating worktrees and cmux layout..."
+	m.status = "creating cmux layout..."
 	cfg := m.cfg
 	images := append([]imageAttachment(nil), m.images...)
 	return m, func() tea.Msg {
@@ -381,8 +573,13 @@ func (m model) startLaunch() (tea.Model, tea.Cmd) {
 			"--claude", strconv.Itoa(cfg.claudeCount),
 			"--codex", strconv.Itoa(cfg.codexCount),
 			"--opencode", strconv.Itoa(cfg.openCount),
+			"--custom", strconv.Itoa(cfg.customCount),
 			"--placement", cfg.placement,
+			"--isolation", cfg.isolation,
 		)
+		if cfg.command != "" {
+			args = append(args, "--command", cfg.command)
+		}
 		if cfg.basePath != "" {
 			args = append(args, "--base", cfg.basePath)
 		}
@@ -409,25 +606,22 @@ func (m model) View() string {
 		return ""
 	}
 
-	boxWidth := clampInt(m.width-8, 68, 104)
-	promptWidth := clampInt(boxWidth-10, 54, 90)
-	label := subtle.Width(promptWidth + 4).Align(lipgloss.Left).Render("cmux agent launcher")
-	if m.focus == focusPrompt {
-		label = hot.Width(promptWidth + 4).Align(lipgloss.Left).Render("cmux agent launcher")
-	}
+	metrics := m.metrics()
 	inputBox := lipgloss.NewStyle().
-		Width(promptWidth+4).
+		Width(metrics.width).
 		Background(inputBG).
 		Padding(1, 2).
 		Render(m.textarea.View())
-	config := m.configPanel(promptWidth + 4)
-	images := m.imageLine(promptWidth + 4)
-	status := m.statusLine(promptWidth + 4)
-	help := dimText.Width(promptWidth + 4).Align(lipgloss.Center).Render("ctrl+r launch   tab config   arrows adjust   space choose   ctrl+c quit")
+	logo := cmuxLogo(metrics.width)
+	config := m.configPanel(metrics.width)
+	images := m.imageLine(metrics.width)
+	status := m.statusLine(metrics.width)
+	help := dimText.Width(metrics.width).Align(lipgloss.Center).Render("enter launch   shift+enter newline   tab config   click controls   ctrl+c quit")
 
 	body := lipgloss.JoinVertical(
 		lipgloss.Center,
-		label,
+		logo,
+		"",
 		inputBox,
 		"",
 		config,
@@ -436,11 +630,25 @@ func (m model) View() string {
 		status,
 		help,
 	)
-	rendered := lipgloss.NewStyle().
-		Foreground(text).
-		Background(screenBG).
-		Render(body)
+	rendered := lipgloss.NewStyle().Foreground(text).Render(body)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, rendered)
+}
+
+func cmuxLogo(width int) string {
+	lines := []string{
+		lipgloss.NewStyle().Foreground(cmuxC1).Render("  ::"),
+		lipgloss.NewStyle().Foreground(cmuxC2).Render("    ::::") + "              " +
+			lipgloss.NewStyle().Foreground(cmuxC1).Render("c") +
+			lipgloss.NewStyle().Foreground(cmuxC2).Render("m") +
+			lipgloss.NewStyle().Foreground(cmuxC3).Render("u") +
+			lipgloss.NewStyle().Foreground(cmuxC7).Render("x"),
+		lipgloss.NewStyle().Foreground(cmuxC3).Render("      ::::::"),
+		lipgloss.NewStyle().Foreground(cmuxC4).Render("        ::::::") + "        " + subtle.Render("the open source terminal"),
+		lipgloss.NewStyle().Foreground(cmuxC5).Render("      ::::::") + "          " + subtle.Render("built for coding agents"),
+		lipgloss.NewStyle().Foreground(cmuxC6).Render("    ::::"),
+		lipgloss.NewStyle().Foreground(cmuxC7).Render("  ::"),
+	}
+	return lipgloss.NewStyle().Width(width).Align(lipgloss.Left).Render(strings.Join(lines, "\n"))
 }
 
 func (m model) sectionTitle(label string, active bool, width int) string {
@@ -453,20 +661,23 @@ func (m model) sectionTitle(label string, active bool, width int) string {
 
 func (m model) configPanel(width int) string {
 	lines := []string{
-		m.sectionTitle("Agents", m.focus == focusConfig && m.selectedConfig < 3, width),
+		m.sectionTitle("Agents", m.focus == focusConfig && m.selectedConfig < agentRowCount(), width),
 		m.agentRow(0, "Claude Code", m.cfg.claudeCount),
 		m.agentRow(1, "Codex", m.cfg.codexCount),
 		m.agentRow(2, "OpenCode Kimi", m.cfg.openCount),
+		m.agentRow(3, "Custom bash", m.cfg.customCount),
 		"",
-		m.sectionTitle("Placement", m.focus == focusConfig && m.selectedConfig >= 3, width),
+		m.sectionTitle("Placement", m.focus == focusConfig && isPlacementConfigRow(m.selectedConfig), width),
 	}
 	for index, option := range placementOptions {
 		lines = append(lines, m.placementRow(index, option))
 	}
+	lines = append(lines, "", m.sectionTitle("Isolation", m.focus == focusConfig && isIsolationConfigRow(m.selectedConfig), width))
+	for index, option := range isolationOptions {
+		lines = append(lines, m.isolationRow(index, option))
+	}
 	return lipgloss.NewStyle().
 		Width(width).
-		Background(configBG).
-		Padding(1, 2).
 		Render(strings.Join(lines, "\n"))
 }
 
@@ -484,9 +695,31 @@ func (m model) agentRow(index int, label string, count int) string {
 }
 
 func (m model) placementRow(index int, option placementOption) string {
-	rowIndex := index + 3
+	rowIndex := placementRowStart() + index
 	active := m.focus == focusConfig && m.selectedConfig == rowIndex
 	chosen := m.cfg.placement == option.value
+	prefix := " "
+	if active {
+		prefix = ">"
+	}
+	mark := "( )"
+	if chosen {
+		mark = "(*)"
+	}
+	line := fmt.Sprintf("%s %s %-11s %s", prefix, mark, option.label, option.help)
+	if active {
+		return selected.Render(line)
+	}
+	if chosen {
+		return hot.Render(line)
+	}
+	return subtle.Render(line)
+}
+
+func (m model) isolationRow(index int, option isolationOption) string {
+	rowIndex := isolationRowStart() + index
+	active := m.focus == focusConfig && m.selectedConfig == rowIndex
+	chosen := m.cfg.isolation == option.value
 	prefix := " "
 	if active {
 		prefix = ">"
@@ -519,7 +752,7 @@ func (m model) imageLine(width int) string {
 func (m model) statusLine(width int) string {
 	text := m.status
 	if m.launching {
-		text = "creating worktrees and cmux layout..."
+		text = "creating cmux layout..."
 	}
 	style := subtle
 	if m.statusKind == "error" {
@@ -756,6 +989,13 @@ func clampInt(value, minValue, maxValue int) int {
 	return value
 }
 
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
 func normalizePlacement(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "tab", "tabs":
@@ -770,6 +1010,27 @@ func normalizePlacement(value string) string {
 func placementIndex(value string) int {
 	normalized := normalizePlacement(value)
 	for index, option := range placementOptions {
+		if option.value == normalized {
+			return index
+		}
+	}
+	return 0
+}
+
+func normalizeIsolation(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "shared", "cwd", "none", "off", "no-worktrees":
+		return "shared"
+	case "worktree", "worktrees", "required", "git":
+		return "worktrees"
+	default:
+		return "auto"
+	}
+}
+
+func isolationIndex(value string) int {
+	normalized := normalizeIsolation(value)
+	for index, option := range isolationOptions {
 		if option.value == normalized {
 			return index
 		}

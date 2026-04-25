@@ -3203,12 +3203,14 @@ struct CMUXCLI {
         case claude
         case codex
         case opencode
+        case custom
 
         var shortName: String {
             switch self {
             case .claude: return "cl"
             case .codex: return "cx"
             case .opencode: return "oc"
+            case .custom: return "sh"
             }
         }
 
@@ -3217,6 +3219,7 @@ struct CMUXCLI {
             case .claude: return "Claude"
             case .codex: return "Codex"
             case .opencode: return "OpenCode"
+            case .custom: return "Custom"
             }
         }
     }
@@ -3227,10 +3230,13 @@ struct CMUXCLI {
         var claudeCount: Int
         var codexCount: Int
         var opencodeCount: Int
+        var customCount: Int
+        var customCommand: String?
         var workspaceName: String?
         var baseDirectory: String?
         var useAIName: Bool
         var placement: AgentLauncherPlacement
+        var isolation: AgentLauncherIsolation
     }
 
     private enum AgentLauncherPlacement: String {
@@ -3247,14 +3253,34 @@ struct CMUXCLI {
         }
     }
 
+    private enum AgentLauncherIsolation: String {
+        case auto
+        case shared
+        case worktrees
+
+        var displayName: String {
+            switch self {
+            case .auto: return "auto"
+            case .shared: return "shared"
+            case .worktrees: return "worktrees"
+            }
+        }
+    }
+
     private struct AgentLauncherRepoRoot {
         let repoPath: String
         let worktreesPath: String
     }
 
-    private struct AgentLauncherWorktree {
-        let branchName: String
+    private struct AgentLauncherLaunchRoot {
+        let basePath: String
+        let repoRoot: AgentLauncherRepoRoot?
+    }
+
+    private struct AgentLauncherLaunchDirectory {
+        let branchName: String?
         let path: String
+        let usesWorktree: Bool
     }
 
     private struct AgentLauncherSurface {
@@ -3262,7 +3288,7 @@ struct CMUXCLI {
         let ordinal: Int
         let title: String
         let command: String
-        let worktree: AgentLauncherWorktree
+        let launchDirectory: AgentLauncherLaunchDirectory
     }
 
     private struct AgentLauncherCreatedWorkspace {
@@ -3276,6 +3302,11 @@ struct CMUXCLI {
         let workspaces: [AgentLauncherCreatedWorkspace]
         let placement: AgentLauncherPlacement
         let surfaces: [AgentLauncherSurface]
+    }
+
+    private struct AgentLauncherContextFiles {
+        let promptPath: String
+        let imagesPath: String
     }
 
     private enum AgentLauncherTUICommand {
@@ -3410,8 +3441,9 @@ struct CMUXCLI {
         Paste a prompt, paste or drag image files, then type /run.
 
         Commands:
-          /claude <n>    /codex <n>    /opencode <n>
-          /placement <splits|tabs|workspaces>
+          /claude <n>    /codex <n>    /opencode <n>    /custom <n>
+          /placement <splits|tabs|workspaces>    /isolation <auto|shared|worktrees>
+          /command <bash command>
           /image <path>  /name <short name>  /base <repo or hq path>
           /run           /quit
         """)
@@ -3500,18 +3532,18 @@ struct CMUXCLI {
         }
 
         let title = normalizedAgentLauncherWorkspaceName(nameOpt) ?? "hq homepage"
-        let repoRoot = try? resolveAgentLauncherRepoRoot(baseDirectory: nil)
+        let launchRoot = resolveAgentLauncherLaunchRoot(baseDirectory: nil)
         let launcherCommandParts = [
             shellQuote(currentCmuxExecutableForLauncher()),
             "agent-launcher"
-        ] + (repoRoot.map { ["--base", shellQuote($0.repoPath)] } ?? [])
+        ] + ["--base", shellQuote(launchRoot.basePath)]
         let launcherCommand = launcherCommandParts.joined(separator: " ")
         let layout: [String: Any] = [
             "pane": [
                 "surfaces": [[
                     "type": "terminal",
                     "name": "launcher",
-                    "cwd": repoRoot?.repoPath ?? FileManager.default.currentDirectoryPath,
+                    "cwd": launchRoot.basePath,
                     "command": launcherCommand,
                     "focus": true
                 ]]
@@ -3560,21 +3592,32 @@ struct CMUXCLI {
         let (claudeOpt, rem3) = parseOption(rem2, name: "--claude")
         let (codexOpt, rem4) = parseOption(rem3, name: "--codex")
         let (opencodeOpt, rem5) = parseOption(rem4, name: "--opencode")
-        let (placementOpt, rem6) = parseOption(rem5, name: "--placement")
-        let (layoutOpt, rem7) = parseOption(rem6, name: "--layout")
-        let (imageOpts, rem8) = parseRepeatedOption(rem7, name: "--image")
-        let (noAIName, rem9) = parseFlag(rem8, name: "--no-ai-name")
-        let remaining = rem9.filter { $0 != "--" }
+        let (customOpt, rem6) = parseOption(rem5, name: "--custom")
+        let (commandOpt, rem7) = parseOption(rem6, name: "--command")
+        let (placementOpt, rem8) = parseOption(rem7, name: "--placement")
+        let (layoutOpt, rem9) = parseOption(rem8, name: "--layout")
+        let (isolationOpt, rem10) = parseOption(rem9, name: "--isolation")
+        let (imageOpts, rem11) = parseRepeatedOption(rem10, name: "--image")
+        let (noAIName, rem12) = parseFlag(rem11, name: "--no-ai-name")
+        let (noWorktrees, rem13) = parseFlag(rem12, name: "--no-worktrees")
+        let (worktrees, rem14) = parseFlag(rem13, name: "--worktrees")
+        let remaining = rem14.filter { $0 != "--" }
         if let unknown = remaining.first {
             throw CLIError(
-                message: "agent-launcher: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --placement, --layout, --image, --no-ai-name"
+                message: "agent-launcher: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --custom, --command, --placement, --layout, --isolation, --worktrees, --no-worktrees, --image, --no-ai-name"
             )
         }
 
         let claudeCount = try parseAgentLauncherCount(claudeOpt, fallback: 1, flag: "--claude")
         let codexCount = try parseAgentLauncherCount(codexOpt, fallback: 1, flag: "--codex")
         let opencodeCount = try parseAgentLauncherCount(opencodeOpt, fallback: 0, flag: "--opencode")
+        let customCount = try parseAgentLauncherCount(customOpt, fallback: 0, flag: "--custom")
         let placement = try parseAgentLauncherPlacement(placementOpt ?? layoutOpt)
+        let isolation = try parseAgentLauncherIsolation(
+            isolationOpt,
+            forceShared: noWorktrees,
+            forceWorktrees: worktrees
+        )
 
         let images = imageOpts.compactMap { normalizedAgentLauncherImagePath($0) }
         return AgentLauncherRequest(
@@ -3583,10 +3626,13 @@ struct CMUXCLI {
             claudeCount: claudeCount,
             codexCount: codexCount,
             opencodeCount: opencodeCount,
+            customCount: customCount,
+            customCommand: normalizedAgentLauncherCustomCommand(commandOpt),
             workspaceName: normalizedAgentLauncherWorkspaceName(nameOpt),
             baseDirectory: baseOpt,
             useAIName: !noAIName,
-            placement: placement
+            placement: placement,
+            isolation: isolation
         )
     }
 
@@ -3613,6 +3659,36 @@ struct CMUXCLI {
         }
     }
 
+    private func parseAgentLauncherIsolation(
+        _ raw: String?,
+        forceShared: Bool,
+        forceWorktrees: Bool
+    ) throws -> AgentLauncherIsolation {
+        if forceShared, forceWorktrees {
+            throw CLIError(message: "agent-launcher: use only one of --worktrees or --no-worktrees")
+        }
+        if forceShared { return .shared }
+        if forceWorktrees { return .worktrees }
+        guard let raw else { return .auto }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "", "auto":
+            return .auto
+        case "shared", "cwd", "none", "off", "no-worktrees":
+            return .shared
+        case "worktree", "worktrees", "required", "git":
+            return .worktrees
+        default:
+            throw CLIError(message: "agent-launcher: --isolation must be auto, shared, or worktrees")
+        }
+    }
+
+    private func normalizedAgentLauncherCustomCommand(_ raw: String?) -> String? {
+        guard let raw else { return nil }
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     private func parseFlag(_ args: [String], name: String) -> (Bool, [String]) {
         var found = false
         var remaining: [String] = []
@@ -3636,7 +3712,7 @@ struct CMUXCLI {
         let imageCount = request.imagePaths.count
         let name = request.workspaceName ?? "auto"
         print("")
-        print("agents: claude \(request.claudeCount), codex \(request.codexCount), opencode \(request.opencodeCount)  placement: \(request.placement.displayName)  name: \(name)  images: \(imageCount)")
+        print("agents: claude \(request.claudeCount), codex \(request.codexCount), opencode \(request.opencodeCount), custom \(request.customCount)  placement: \(request.placement.displayName)  isolation: \(request.isolation.displayName)  name: \(name)  images: \(imageCount)")
         if !promptLines.isEmpty {
             let preview = promptLines.joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3665,8 +3741,14 @@ struct CMUXCLI {
             request.codexCount = try parseAgentLauncherCount(value.isEmpty ? nil : value, fallback: request.codexCount, flag: "/codex")
         case "/opencode":
             request.opencodeCount = try parseAgentLauncherCount(value.isEmpty ? nil : value, fallback: request.opencodeCount, flag: "/opencode")
+        case "/custom":
+            request.customCount = try parseAgentLauncherCount(value.isEmpty ? nil : value, fallback: request.customCount, flag: "/custom")
+        case "/command":
+            request.customCommand = normalizedAgentLauncherCustomCommand(value)
         case "/placement", "/layout":
             request.placement = try parseAgentLauncherPlacement(value.isEmpty ? nil : value)
+        case "/isolation":
+            request.isolation = try parseAgentLauncherIsolation(value.isEmpty ? nil : value, forceShared: false, forceWorktrees: false)
         case "/name":
             request.workspaceName = normalizedAgentLauncherWorkspaceName(value)
         case "/base":
@@ -3693,13 +3775,15 @@ struct CMUXCLI {
         explicitPassword: String?
     ) throws -> AgentLauncherResult {
         var effectiveRequest = request
-        if effectiveRequest.claudeCount + effectiveRequest.codexCount + effectiveRequest.opencodeCount == 0 {
+        if effectiveRequest.claudeCount + effectiveRequest.codexCount + effectiveRequest.opencodeCount + effectiveRequest.customCount == 0 {
             effectiveRequest.claudeCount = 1
             effectiveRequest.codexCount = 1
         }
 
-        let repoRoot = try resolveAgentLauncherRepoRoot(baseDirectory: effectiveRequest.baseDirectory)
-        refreshAgentLauncherRepoIfPossible(repoRoot.repoPath)
+        let launchRoot = resolveAgentLauncherLaunchRoot(baseDirectory: effectiveRequest.baseDirectory)
+        if effectiveRequest.isolation != .shared, let repoRoot = launchRoot.repoRoot {
+            refreshAgentLauncherRepoIfPossible(repoRoot.repoPath)
+        }
 
         let workspaceName = effectiveRequest.workspaceName
             ?? generatedAgentLauncherWorkspaceName(for: effectiveRequest.prompt, useAI: effectiveRequest.useAIName)
@@ -3708,14 +3792,19 @@ struct CMUXCLI {
             prompt: effectiveRequest.prompt,
             imagePaths: effectiveRequest.imagePaths
         )
+        let files = try createAgentLauncherContextFiles(
+            prompt: prompt,
+            imagePaths: effectiveRequest.imagePaths
+        )
 
         var surfaces: [AgentLauncherSurface] = []
         var perKindOrdinal: [AgentLauncherKind: Int] = [:]
         for kind in agentKinds(for: effectiveRequest) {
             let ordinal = (perKindOrdinal[kind] ?? 0) + 1
             perKindOrdinal[kind] = ordinal
-            let worktree = try createAgentLauncherWorktree(
-                repoRoot: repoRoot,
+            let launchDirectory = try agentLauncherLaunchDirectory(
+                launchRoot: launchRoot,
+                isolation: effectiveRequest.isolation,
                 workspaceSlug: slug,
                 kind: kind,
                 ordinal: ordinal
@@ -3731,14 +3820,18 @@ struct CMUXCLI {
                 title: title,
                 prompt: prompt,
                 imagePaths: effectiveRequest.imagePaths,
-                worktreePath: worktree.path
+                launchDirectoryPath: launchDirectory.path,
+                customCommand: effectiveRequest.customCommand,
+                promptFilePath: files.promptPath,
+                imagesFilePath: files.imagesPath,
+                ordinal: ordinal
             )
             surfaces.append(AgentLauncherSurface(
                 kind: kind,
                 ordinal: ordinal,
                 title: title,
                 command: command,
-                worktree: worktree
+                launchDirectory: launchDirectory
             ))
         }
 
@@ -3756,7 +3849,7 @@ struct CMUXCLI {
             let response = try client.sendV2(method: "workspace.create", params: [
                 "title": workspaceName,
                 "description": agentLauncherDescription(from: effectiveRequest.prompt),
-                "cwd": repoRoot.repoPath,
+                "cwd": launchRoot.basePath,
                 "layout": layout
             ])
             guard let workspaceId = response["workspace_id"] as? String else {
@@ -3776,7 +3869,7 @@ struct CMUXCLI {
                 let response = try client.sendV2(method: "workspace.create", params: [
                     "title": title,
                     "description": agentLauncherDescription(from: effectiveRequest.prompt),
-                    "cwd": repoRoot.repoPath,
+                    "cwd": surface.launchDirectory.path,
                     "layout": agentLauncherSinglePaneLayout(surface, focused: true)
                 ])
                 guard let workspaceId = response["workspace_id"] as? String else {
@@ -3807,6 +3900,7 @@ struct CMUXCLI {
         kinds.append(contentsOf: Array(repeating: .claude, count: request.claudeCount))
         kinds.append(contentsOf: Array(repeating: .codex, count: request.codexCount))
         kinds.append(contentsOf: Array(repeating: .opencode, count: request.opencodeCount))
+        kinds.append(contentsOf: Array(repeating: .custom, count: request.customCount))
         return kinds
     }
 
@@ -3815,6 +3909,7 @@ struct CMUXCLI {
         case .claude: return request.claudeCount
         case .codex: return request.codexCount
         case .opencode: return request.opencodeCount
+        case .custom: return request.customCount
         }
     }
 
@@ -3841,6 +3936,24 @@ struct CMUXCLI {
         return parts.isEmpty ? "Inspect the attached image files and propose the next steps." : parts.joined(separator: "\n\n")
     }
 
+    private func createAgentLauncherContextFiles(
+        prompt: String,
+        imagePaths: [String]
+    ) throws -> AgentLauncherContextFiles {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let directory = home
+            .appendingPathComponent(".cmuxterm", isDirectory: true)
+            .appendingPathComponent("agent-launcher", isDirectory: true)
+            .appendingPathComponent(UUID().uuidString.lowercased(), isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        let promptURL = directory.appendingPathComponent("prompt.txt", isDirectory: false)
+        let imagesURL = directory.appendingPathComponent("images.txt", isDirectory: false)
+        try prompt.write(to: promptURL, atomically: true, encoding: .utf8)
+        try imagePaths.joined(separator: "\n").write(to: imagesURL, atomically: true, encoding: .utf8)
+        return AgentLauncherContextFiles(promptPath: promptURL.path, imagesPath: imagesURL.path)
+    }
+
     private func agentLauncherDescription(from prompt: String) -> String {
         let line = prompt
             .split(whereSeparator: \.isNewline)
@@ -3856,7 +3969,11 @@ struct CMUXCLI {
         title: String,
         prompt: String,
         imagePaths: [String],
-        worktreePath: String
+        launchDirectoryPath: String,
+        customCommand: String?,
+        promptFilePath: String,
+        imagesFilePath: String,
+        ordinal: Int
     ) -> String {
         switch kind {
         case .claude:
@@ -3866,7 +3983,7 @@ struct CMUXCLI {
                 shellQuote(prompt)
             ].joined(separator: " ")
         case .codex:
-            var parts = ["codex", "-C", shellQuote(worktreePath)]
+            var parts = ["codex", "-C", shellQuote(launchDirectoryPath)]
             for imagePath in imagePaths {
                 parts.append("--image")
                 parts.append(shellQuote(imagePath))
@@ -3879,9 +3996,40 @@ struct CMUXCLI {
                 "omo",
                 "--model", "kimi-for-coding/k2p6",
                 "--prompt", shellQuote(prompt),
-                shellQuote(worktreePath)
+                shellQuote(launchDirectoryPath)
             ].joined(separator: " ")
+        case .custom:
+            let command = customCommand ?? "exec ${SHELL:-/bin/zsh} -l"
+            let environment = agentLauncherCustomCommandEnvironment(
+                kind: kind,
+                title: title,
+                launchDirectoryPath: launchDirectoryPath,
+                promptFilePath: promptFilePath,
+                imagesFilePath: imagesFilePath,
+                ordinal: ordinal
+            )
+            return "\(environment) /bin/bash -lc \(shellQuote(command))"
         }
+    }
+
+    private func agentLauncherCustomCommandEnvironment(
+        kind: AgentLauncherKind,
+        title: String,
+        launchDirectoryPath: String,
+        promptFilePath: String,
+        imagesFilePath: String,
+        ordinal: Int
+    ) -> String {
+        [
+            ("CMUX_AGENT_KIND", kind.rawValue),
+            ("CMUX_AGENT_TITLE", title),
+            ("CMUX_AGENT_WORKDIR", launchDirectoryPath),
+            ("CMUX_AGENT_PROMPT_FILE", promptFilePath),
+            ("CMUX_AGENT_IMAGES_FILE", imagesFilePath),
+            ("CMUX_AGENT_ORDINAL", String(ordinal))
+        ]
+        .map { key, value in "\(key)=\(shellQuote(value))" }
+        .joined(separator: " ")
     }
 
     private func agentLauncherLayout(for surfaces: [AgentLauncherSurface], placement: AgentLauncherPlacement) -> [String: Any] {
@@ -3917,7 +4065,7 @@ struct CMUXCLI {
                 "surfaces": [[
                     "type": "terminal",
                     "name": surface.title,
-                    "cwd": surface.worktree.path,
+                    "cwd": surface.launchDirectory.path,
                     "command": surface.command,
                     "focus": focused
                 ]]
@@ -3932,7 +4080,7 @@ struct CMUXCLI {
                     [
                         "type": "terminal",
                         "name": surface.title,
-                        "cwd": surface.worktree.path,
+                        "cwd": surface.launchDirectory.path,
                         "command": surface.command,
                         "focus": index == 0
                     ]
@@ -3941,7 +4089,7 @@ struct CMUXCLI {
         ]
     }
 
-    private func resolveAgentLauncherRepoRoot(baseDirectory: String?) throws -> AgentLauncherRepoRoot {
+    private func resolveAgentLauncherLaunchRoot(baseDirectory: String?) -> AgentLauncherLaunchRoot {
         let fm = FileManager.default
         let rawBase = baseDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
         let basePath = rawBase?.isEmpty == false ? resolvePath(rawBase!) : fm.currentDirectoryPath
@@ -3952,64 +4100,78 @@ struct CMUXCLI {
         } else {
             baseURL = URL(fileURLWithPath: basePath, isDirectory: true)
         }
+        let standardizedBase = baseURL.standardizedFileURL
 
-        let hqRepo = baseURL.appendingPathComponent("repo", isDirectory: true)
-        if fm.fileExists(atPath: hqRepo.appendingPathComponent(".git").path) {
-            return AgentLauncherRepoRoot(
-                repoPath: hqRepo.standardizedFileURL.path,
-                worktreesPath: baseURL.appendingPathComponent("worktrees", isDirectory: true).standardizedFileURL.path
+        let hqRepo = standardizedBase.appendingPathComponent("repo", isDirectory: true)
+        if let gitRoot = gitTopLevelDirectoryIfPresent(startingAt: hqRepo.path) {
+            return AgentLauncherLaunchRoot(
+                basePath: gitRoot,
+                repoRoot: AgentLauncherRepoRoot(
+                    repoPath: gitRoot,
+                    worktreesPath: standardizedBase.appendingPathComponent("worktrees", isDirectory: true).standardizedFileURL.path
+                )
             )
         }
 
-        let gitRoot = try gitTopLevelDirectory(startingAt: baseURL.path)
+        guard let gitRoot = gitTopLevelDirectoryIfPresent(startingAt: standardizedBase.path) else {
+            return AgentLauncherLaunchRoot(basePath: standardizedBase.path, repoRoot: nil)
+        }
+
         if let range = gitRoot.range(of: "/worktrees/") {
             let hqRoot = String(gitRoot[..<range.lowerBound])
             let repoPath = URL(fileURLWithPath: hqRoot, isDirectory: true)
                 .appendingPathComponent("repo", isDirectory: true)
                 .standardizedFileURL
                 .path
-            if fm.fileExists(atPath: repoPath) {
-                return AgentLauncherRepoRoot(
-                    repoPath: repoPath,
-                    worktreesPath: URL(fileURLWithPath: hqRoot, isDirectory: true)
-                        .appendingPathComponent("worktrees", isDirectory: true)
-                        .standardizedFileURL
-                        .path
+            if gitTopLevelDirectoryIfPresent(startingAt: repoPath) != nil {
+                return AgentLauncherLaunchRoot(
+                    basePath: gitRoot,
+                    repoRoot: AgentLauncherRepoRoot(
+                        repoPath: repoPath,
+                        worktreesPath: URL(fileURLWithPath: hqRoot, isDirectory: true)
+                            .appendingPathComponent("worktrees", isDirectory: true)
+                            .standardizedFileURL
+                            .path
+                    )
                 )
             }
         }
 
         let rootURL = URL(fileURLWithPath: gitRoot, isDirectory: true).standardizedFileURL
         if rootURL.lastPathComponent == "repo" {
-            return AgentLauncherRepoRoot(
+            return AgentLauncherLaunchRoot(
+                basePath: rootURL.path,
+                repoRoot: AgentLauncherRepoRoot(
+                    repoPath: rootURL.path,
+                    worktreesPath: rootURL.deletingLastPathComponent()
+                        .appendingPathComponent("worktrees", isDirectory: true)
+                        .standardizedFileURL
+                        .path
+                )
+            )
+        }
+
+        return AgentLauncherLaunchRoot(
+            basePath: rootURL.path,
+            repoRoot: AgentLauncherRepoRoot(
                 repoPath: rootURL.path,
                 worktreesPath: rootURL.deletingLastPathComponent()
                     .appendingPathComponent("worktrees", isDirectory: true)
                     .standardizedFileURL
                     .path
             )
-        }
-
-        return AgentLauncherRepoRoot(
-            repoPath: rootURL.path,
-            worktreesPath: rootURL.deletingLastPathComponent()
-                .appendingPathComponent("worktrees", isDirectory: true)
-                .standardizedFileURL
-                .path
         )
     }
 
-    private func gitTopLevelDirectory(startingAt path: String) throws -> String {
+    private func gitTopLevelDirectoryIfPresent(startingAt path: String) -> String? {
         let result = runProcess(
             executablePath: "/usr/bin/env",
             arguments: ["git", "-C", path, "rev-parse", "--show-toplevel"],
             timeout: 10
         )
-        guard result.status == 0 else {
-            let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            throw CLIError(message: "agent-launcher: not inside a git repository (\(message))")
-        }
-        return result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard result.status == 0 else { return nil }
+        let root = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return root.isEmpty ? nil : root
     }
 
     private func refreshAgentLauncherRepoIfPossible(_ repoPath: String) {
@@ -4024,12 +4186,45 @@ struct CMUXCLI {
         }
     }
 
+    private func agentLauncherLaunchDirectory(
+        launchRoot: AgentLauncherLaunchRoot,
+        isolation: AgentLauncherIsolation,
+        workspaceSlug: String,
+        kind: AgentLauncherKind,
+        ordinal: Int
+    ) throws -> AgentLauncherLaunchDirectory {
+        switch isolation {
+        case .shared:
+            return AgentLauncherLaunchDirectory(branchName: nil, path: launchRoot.basePath, usesWorktree: false)
+        case .auto:
+            guard let repoRoot = launchRoot.repoRoot else {
+                return AgentLauncherLaunchDirectory(branchName: nil, path: launchRoot.basePath, usesWorktree: false)
+            }
+            return try createAgentLauncherWorktree(
+                repoRoot: repoRoot,
+                workspaceSlug: workspaceSlug,
+                kind: kind,
+                ordinal: ordinal
+            )
+        case .worktrees:
+            guard let repoRoot = launchRoot.repoRoot else {
+                throw CLIError(message: "agent-launcher: --isolation worktrees requires a git repository")
+            }
+            return try createAgentLauncherWorktree(
+                repoRoot: repoRoot,
+                workspaceSlug: workspaceSlug,
+                kind: kind,
+                ordinal: ordinal
+            )
+        }
+    }
+
     private func createAgentLauncherWorktree(
         repoRoot: AgentLauncherRepoRoot,
         workspaceSlug: String,
         kind: AgentLauncherKind,
         ordinal: Int
-    ) throws -> AgentLauncherWorktree {
+    ) throws -> AgentLauncherLaunchDirectory {
         let fm = FileManager.default
         try fm.createDirectory(
             at: URL(fileURLWithPath: repoRoot.worktreesPath, isDirectory: true),
@@ -4066,7 +4261,7 @@ struct CMUXCLI {
                     let message = submoduleResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
                     throw CLIError(message: "agent-launcher: failed to initialize submodules for \(branch): \(message)")
                 }
-                return AgentLauncherWorktree(branchName: branch, path: path)
+                return AgentLauncherLaunchDirectory(branchName: branch, path: path, usesWorktree: true)
             }
             suffix += 1
         }
@@ -4300,8 +4495,9 @@ struct CMUXCLI {
                     [
                         "kind": surface.kind.rawValue,
                         "title": surface.title,
-                        "branch": surface.worktree.branchName,
-                        "path": surface.worktree.path
+                        "branch": surface.launchDirectory.branchName ?? "",
+                        "path": surface.launchDirectory.path,
+                        "worktree": surface.launchDirectory.usesWorktree
                     ]
                 }
             ]))
@@ -4315,7 +4511,8 @@ struct CMUXCLI {
             }
         }
         for surface in result.surfaces {
-            print("\(surface.kind.displayName): \(surface.worktree.branchName)  \(surface.worktree.path)")
+            let prefix = surface.launchDirectory.branchName ?? "shared"
+            print("\(surface.kind.displayName): \(prefix)  \(surface.launchDirectory.path)")
         }
     }
 
@@ -8166,11 +8363,12 @@ struct CMUXCLI {
             return """
             Usage: cmux agent-launcher [tui]
                    cmux agent-launcher install [--name <title>]
-                   cmux agent-launcher run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--placement splits|tabs|workspaces] [--name <title>] [--base <path>] [--no-ai-name]
+                   cmux agent-launcher run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--custom <n>] [--command <bash>] [--placement splits|tabs|workspaces] [--isolation auto|shared|worktrees] [--name <title>] [--base <path>] [--no-ai-name]
 
             Start the Charm TUI for creating agent workspaces.
 
-            The launcher creates git worktrees, then opens cmux agents in splits, tabs, or separate workspaces.
+            The launcher opens cmux agents in splits, tabs, or separate workspaces.
+            Worktrees are optional: auto uses them inside git repos and falls back to the current directory elsewhere.
             Defaults to one Claude pane on the left and one Codex pane on the right.
 
             Images pasted or dropped into a cmux terminal are inserted as file paths. The launcher
@@ -8178,6 +8376,7 @@ struct CMUXCLI {
             lists them in the prompt for Claude and OpenCode.
 
             OpenCode uses Kimi with --model kimi-for-coding/k2p6.
+            Custom bash commands receive CMUX_AGENT_PROMPT_FILE, CMUX_AGENT_IMAGES_FILE, CMUX_AGENT_TITLE, and CMUX_AGENT_WORKDIR.
             """
         case "feedback":
             return """

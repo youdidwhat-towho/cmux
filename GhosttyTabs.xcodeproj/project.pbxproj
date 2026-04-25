@@ -873,6 +873,11 @@
 			inputFileListPaths = (
 			);
 			inputPaths = (
+				"$(SRCROOT)/Tools/agent-launcher-tui/go.mod",
+				"$(SRCROOT)/Tools/agent-launcher-tui/go.sum",
+				"$(SRCROOT)/Tools/agent-launcher-tui/main.go",
+				"$(SRCROOT)/Tools/agent-launcher-tui/main_test.go",
+				"$(SRCROOT)/scripts/build-agent-launcher-tui.sh",
 			);
 			outputFileListPaths = (
 			);
