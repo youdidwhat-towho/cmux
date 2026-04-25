@@ -3230,6 +3230,21 @@ struct CMUXCLI {
         var workspaceName: String?
         var baseDirectory: String?
         var useAIName: Bool
+        var placement: AgentLauncherPlacement
+    }
+
+    private enum AgentLauncherPlacement: String {
+        case splits
+        case tabs
+        case workspaces
+
+        var displayName: String {
+            switch self {
+            case .splits: return "splits"
+            case .tabs: return "tabs"
+            case .workspaces: return "workspaces"
+            }
+        }
     }
 
     private struct AgentLauncherRepoRoot {
@@ -3250,9 +3265,16 @@ struct CMUXCLI {
         let worktree: AgentLauncherWorktree
     }
 
+    private struct AgentLauncherCreatedWorkspace {
+        let name: String
+        let ref: String
+    }
+
     private struct AgentLauncherResult {
         let workspaceName: String
         let workspaceRef: String
+        let workspaces: [AgentLauncherCreatedWorkspace]
+        let placement: AgentLauncherPlacement
         let surfaces: [AgentLauncherSurface]
     }
 
@@ -3389,6 +3411,7 @@ struct CMUXCLI {
 
         Commands:
           /claude <n>    /codex <n>    /opencode <n>
+          /placement <splits|tabs|workspaces>
           /image <path>  /name <short name>  /base <repo or hq path>
           /run           /quit
         """)
@@ -3537,18 +3560,21 @@ struct CMUXCLI {
         let (claudeOpt, rem3) = parseOption(rem2, name: "--claude")
         let (codexOpt, rem4) = parseOption(rem3, name: "--codex")
         let (opencodeOpt, rem5) = parseOption(rem4, name: "--opencode")
-        let (imageOpts, rem6) = parseRepeatedOption(rem5, name: "--image")
-        let (noAIName, rem7) = parseFlag(rem6, name: "--no-ai-name")
-        let remaining = rem7.filter { $0 != "--" }
+        let (placementOpt, rem6) = parseOption(rem5, name: "--placement")
+        let (layoutOpt, rem7) = parseOption(rem6, name: "--layout")
+        let (imageOpts, rem8) = parseRepeatedOption(rem7, name: "--image")
+        let (noAIName, rem9) = parseFlag(rem8, name: "--no-ai-name")
+        let remaining = rem9.filter { $0 != "--" }
         if let unknown = remaining.first {
             throw CLIError(
-                message: "agent-launcher: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --image, --no-ai-name"
+                message: "agent-launcher: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --placement, --layout, --image, --no-ai-name"
             )
         }
 
         let claudeCount = try parseAgentLauncherCount(claudeOpt, fallback: 1, flag: "--claude")
         let codexCount = try parseAgentLauncherCount(codexOpt, fallback: 1, flag: "--codex")
         let opencodeCount = try parseAgentLauncherCount(opencodeOpt, fallback: 0, flag: "--opencode")
+        let placement = try parseAgentLauncherPlacement(placementOpt ?? layoutOpt)
 
         let images = imageOpts.compactMap { normalizedAgentLauncherImagePath($0) }
         return AgentLauncherRequest(
@@ -3559,7 +3585,8 @@ struct CMUXCLI {
             opencodeCount: opencodeCount,
             workspaceName: normalizedAgentLauncherWorkspaceName(nameOpt),
             baseDirectory: baseOpt,
-            useAIName: !noAIName
+            useAIName: !noAIName,
+            placement: placement
         )
     }
 
@@ -3569,6 +3596,21 @@ struct CMUXCLI {
             throw CLIError(message: "agent-launcher: \(flag) must be an integer from 0 through 8")
         }
         return value
+    }
+
+    private func parseAgentLauncherPlacement(_ raw: String?) throws -> AgentLauncherPlacement {
+        guard let raw else { return .splits }
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch normalized {
+        case "", "split", "splits", "pane", "panes":
+            return .splits
+        case "tab", "tabs":
+            return .tabs
+        case "workspace", "workspaces", "separate":
+            return .workspaces
+        default:
+            throw CLIError(message: "agent-launcher: --placement must be splits, tabs, or workspaces")
+        }
     }
 
     private func parseFlag(_ args: [String], name: String) -> (Bool, [String]) {
@@ -3594,7 +3636,7 @@ struct CMUXCLI {
         let imageCount = request.imagePaths.count
         let name = request.workspaceName ?? "auto"
         print("")
-        print("agents: claude \(request.claudeCount), codex \(request.codexCount), opencode \(request.opencodeCount)  name: \(name)  images: \(imageCount)")
+        print("agents: claude \(request.claudeCount), codex \(request.codexCount), opencode \(request.opencodeCount)  placement: \(request.placement.displayName)  name: \(name)  images: \(imageCount)")
         if !promptLines.isEmpty {
             let preview = promptLines.joined(separator: " ")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3623,6 +3665,8 @@ struct CMUXCLI {
             request.codexCount = try parseAgentLauncherCount(value.isEmpty ? nil : value, fallback: request.codexCount, flag: "/codex")
         case "/opencode":
             request.opencodeCount = try parseAgentLauncherCount(value.isEmpty ? nil : value, fallback: request.opencodeCount, flag: "/opencode")
+        case "/placement", "/layout":
+            request.placement = try parseAgentLauncherPlacement(value.isEmpty ? nil : value)
         case "/name":
             request.workspaceName = normalizedAgentLauncherWorkspaceName(value)
         case "/base":
@@ -3698,7 +3742,6 @@ struct CMUXCLI {
             ))
         }
 
-        let layout = agentLauncherLayout(for: surfaces)
         let client = try connectClient(
             socketPath: socketPath,
             explicitPassword: explicitPassword,
@@ -3706,20 +3749,55 @@ struct CMUXCLI {
         )
         defer { client.close() }
 
-        let response = try client.sendV2(method: "workspace.create", params: [
-            "title": workspaceName,
-            "description": agentLauncherDescription(from: effectiveRequest.prompt),
-            "cwd": repoRoot.repoPath,
-            "layout": layout
-        ])
-        guard let workspaceId = response["workspace_id"] as? String else {
-            throw CLIError(message: "agent-launcher: workspace.create did not return workspace_id")
+        let createdWorkspaces: [AgentLauncherCreatedWorkspace]
+        switch effectiveRequest.placement {
+        case .splits, .tabs:
+            let layout = agentLauncherLayout(for: surfaces, placement: effectiveRequest.placement)
+            let response = try client.sendV2(method: "workspace.create", params: [
+                "title": workspaceName,
+                "description": agentLauncherDescription(from: effectiveRequest.prompt),
+                "cwd": repoRoot.repoPath,
+                "layout": layout
+            ])
+            guard let workspaceId = response["workspace_id"] as? String else {
+                throw CLIError(message: "agent-launcher: workspace.create did not return workspace_id")
+            }
+            _ = try client.sendV2(method: "workspace.select", params: ["workspace_id": workspaceId])
+            createdWorkspaces = [
+                AgentLauncherCreatedWorkspace(
+                    name: workspaceName,
+                    ref: (response["workspace_ref"] as? String) ?? workspaceId
+                )
+            ]
+        case .workspaces:
+            var created: [AgentLauncherCreatedWorkspace] = []
+            for (index, surface) in surfaces.enumerated() {
+                let title = surfaces.count == 1 ? workspaceName : surface.title
+                let response = try client.sendV2(method: "workspace.create", params: [
+                    "title": title,
+                    "description": agentLauncherDescription(from: effectiveRequest.prompt),
+                    "cwd": repoRoot.repoPath,
+                    "layout": agentLauncherSinglePaneLayout(surface, focused: true)
+                ])
+                guard let workspaceId = response["workspace_id"] as? String else {
+                    throw CLIError(message: "agent-launcher: workspace.create did not return workspace_id")
+                }
+                if index == 0 {
+                    _ = try client.sendV2(method: "workspace.select", params: ["workspace_id": workspaceId])
+                }
+                created.append(AgentLauncherCreatedWorkspace(
+                    name: title,
+                    ref: (response["workspace_ref"] as? String) ?? workspaceId
+                ))
+            }
+            createdWorkspaces = created
         }
-        _ = try client.sendV2(method: "workspace.select", params: ["workspace_id": workspaceId])
 
         return AgentLauncherResult(
             workspaceName: workspaceName,
-            workspaceRef: (response["workspace_ref"] as? String) ?? workspaceId,
+            workspaceRef: createdWorkspaces.first?.ref ?? "",
+            workspaces: createdWorkspaces,
+            placement: effectiveRequest.placement,
             surfaces: surfaces
         )
     }
@@ -3806,24 +3884,13 @@ struct CMUXCLI {
         }
     }
 
-    private func agentLauncherLayout(for surfaces: [AgentLauncherSurface]) -> [String: Any] {
-        func pane(_ surface: AgentLauncherSurface, focused: Bool) -> [String: Any] {
-            [
-                "pane": [
-                    "surfaces": [[
-                        "type": "terminal",
-                        "name": surface.title,
-                        "cwd": surface.worktree.path,
-                        "command": surface.command,
-                        "focus": focused
-                    ]]
-                ]
-            ]
+    private func agentLauncherLayout(for surfaces: [AgentLauncherSurface], placement: AgentLauncherPlacement) -> [String: Any] {
+        if placement == .tabs {
+            return agentLauncherTabbedLayout(for: surfaces)
         }
-
         func build(_ slice: ArraySlice<AgentLauncherSurface>, focusedSurfaceId: String?) -> [String: Any] {
             if slice.count == 1, let only = slice.first {
-                return pane(only, focused: only.title == focusedSurfaceId)
+                return agentLauncherSinglePaneLayout(only, focused: only.title == focusedSurfaceId)
             }
 
             let leftCount = max(1, slice.count / 2)
@@ -3842,6 +3909,36 @@ struct CMUXCLI {
 
         let firstTitle = surfaces.first?.title
         return build(ArraySlice(surfaces), focusedSurfaceId: firstTitle)
+    }
+
+    private func agentLauncherSinglePaneLayout(_ surface: AgentLauncherSurface, focused: Bool) -> [String: Any] {
+        [
+            "pane": [
+                "surfaces": [[
+                    "type": "terminal",
+                    "name": surface.title,
+                    "cwd": surface.worktree.path,
+                    "command": surface.command,
+                    "focus": focused
+                ]]
+            ]
+        ]
+    }
+
+    private func agentLauncherTabbedLayout(for surfaces: [AgentLauncherSurface]) -> [String: Any] {
+        [
+            "pane": [
+                "surfaces": surfaces.enumerated().map { index, surface in
+                    [
+                        "type": "terminal",
+                        "name": surface.title,
+                        "cwd": surface.worktree.path,
+                        "command": surface.command,
+                        "focus": index == 0
+                    ]
+                }
+            ]
+        ]
     }
 
     private func resolveAgentLauncherRepoRoot(baseDirectory: String?) throws -> AgentLauncherRepoRoot {
@@ -4192,6 +4289,13 @@ struct CMUXCLI {
                     "name": result.workspaceName,
                     "ref": result.workspaceRef
                 ],
+                "workspaces": result.workspaces.map { workspace in
+                    [
+                        "name": workspace.name,
+                        "ref": workspace.ref
+                    ]
+                },
+                "placement": result.placement.rawValue,
                 "agents": result.surfaces.map { surface in
                     [
                         "kind": surface.kind.rawValue,
@@ -4204,7 +4308,12 @@ struct CMUXCLI {
             return
         }
 
-        print("OK \(result.workspaceRef) \(result.workspaceName)")
+        print("OK \(result.workspaceRef) \(result.workspaceName) \(result.placement.displayName)")
+        if result.workspaces.count > 1 {
+            for workspace in result.workspaces {
+                print("Workspace: \(workspace.ref)  \(workspace.name)")
+            }
+        }
         for surface in result.surfaces {
             print("\(surface.kind.displayName): \(surface.worktree.branchName)  \(surface.worktree.path)")
         }
@@ -8057,11 +8166,11 @@ struct CMUXCLI {
             return """
             Usage: cmux agent-launcher [tui]
                    cmux agent-launcher install [--name <title>]
-                   cmux agent-launcher run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--name <title>] [--base <path>] [--no-ai-name]
+                   cmux agent-launcher run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--placement splits|tabs|workspaces] [--name <title>] [--base <path>] [--no-ai-name]
 
             Start the Charm TUI for creating agent workspaces.
 
-            The launcher creates git worktrees, then opens a cmux workspace with one pane per agent.
+            The launcher creates git worktrees, then opens cmux agents in splits, tabs, or separate workspaces.
             Defaults to one Claude pane on the left and one Codex pane on the right.
 
             Images pasted or dropped into a cmux terminal are inserted as file paths. The launcher

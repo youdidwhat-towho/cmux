@@ -26,6 +26,7 @@ type config struct {
 	basePath    string
 	name        string
 	prompt      string
+	placement   string
 	imagePaths  []string
 	jsonOutput  bool
 	useAIName   bool
@@ -46,20 +47,26 @@ type focusMode int
 
 const (
 	focusPrompt focusMode = iota
-	focusAgents
+	focusConfig
 )
 
 type model struct {
-	cfg           config
-	textarea      textarea.Model
-	width         int
-	height        int
-	focus         focusMode
-	selectedAgent int
-	images        []imageAttachment
-	status        string
-	statusKind    string
-	launching     bool
+	cfg            config
+	textarea       textarea.Model
+	width          int
+	height         int
+	focus          focusMode
+	selectedConfig int
+	images         []imageAttachment
+	status         string
+	statusKind     string
+	launching      bool
+}
+
+type placementOption struct {
+	value string
+	label string
+	help  string
 }
 
 type launchDoneMsg struct {
@@ -89,17 +96,35 @@ var imageExtensions = map[string]bool{
 	".webp": true,
 }
 
+var placementOptions = []placementOption{
+	{value: "splits", label: "Splits", help: "one workspace, split panes"},
+	{value: "tabs", label: "Tabs", help: "one workspace, surface tabs"},
+	{value: "workspaces", label: "Workspaces", help: "one workspace per agent"},
+}
+
 var (
-	green     = lipgloss.Color("46")
-	dimGreen  = lipgloss.Color("29")
-	amber     = lipgloss.Color("214")
-	red       = lipgloss.Color("203")
-	screenBG  = lipgloss.Color("0")
-	frame     = lipgloss.NewStyle().Foreground(green).Background(screenBG).Border(lipgloss.NormalBorder()).BorderForeground(green).Padding(1, 3)
-	title     = lipgloss.NewStyle().Foreground(green).Bold(true).Align(lipgloss.Center)
-	subtle    = lipgloss.NewStyle().Foreground(dimGreen)
-	hot       = lipgloss.NewStyle().Foreground(amber).Bold(true)
+	cyan      = lipgloss.Color("#00D4FF")
+	sky       = lipgloss.Color("#18B5FA")
+	blue      = lipgloss.Color("#3096F5")
+	indigo    = lipgloss.Color("#4877F1")
+	violet    = lipgloss.Color("#6058EF")
+	purple    = lipgloss.Color("#7C3AED")
+	text      = lipgloss.Color("#E5E7EB")
+	muted     = lipgloss.Color("#8A8F98")
+	dim       = lipgloss.Color("#4B5563")
+	amber     = lipgloss.Color("#F59E0B")
+	red       = lipgloss.Color("#FB7185")
+	screenBG  = lipgloss.Color("#080A0F")
+	panelBG   = lipgloss.Color("#0D1117")
+	frame     = lipgloss.NewStyle().Foreground(text).Background(screenBG).Border(lipgloss.NormalBorder()).BorderForeground(indigo).Padding(1, 3)
+	title     = lipgloss.NewStyle().Foreground(text).Bold(true).Align(lipgloss.Center)
+	subtle    = lipgloss.NewStyle().Foreground(muted)
+	dimText   = lipgloss.NewStyle().Foreground(dim)
+	hot       = lipgloss.NewStyle().Foreground(cyan).Bold(true)
+	purpleHot = lipgloss.NewStyle().Foreground(purple).Bold(true)
 	errorText = lipgloss.NewStyle().Foreground(red)
+	panel     = lipgloss.NewStyle().Background(panelBG).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("#273244")).Padding(0, 2)
+	selected  = lipgloss.NewStyle().Foreground(text).Background(lipgloss.Color("#172033")).Bold(true)
 )
 
 func main() {
@@ -114,6 +139,7 @@ func main() {
 func parseConfig() config {
 	cfg := config{
 		cmuxPath:    "cmux",
+		placement:   "splits",
 		useAIName:   true,
 		claudeCount: 1,
 		codexCount:  1,
@@ -126,6 +152,7 @@ func parseConfig() config {
 	flag.StringVar(&cfg.basePath, "base", "", "repo or hq path")
 	flag.StringVar(&cfg.name, "name", "", "workspace name")
 	flag.StringVar(&cfg.prompt, "prompt", "", "initial prompt")
+	flag.StringVar(&cfg.placement, "placement", cfg.placement, "splits, tabs, or workspaces")
 	flag.Var(&imagePaths, "image", "initial image path")
 	flag.IntVar(&cfg.claudeCount, "claude", cfg.claudeCount, "Claude pane count")
 	flag.IntVar(&cfg.codexCount, "codex", cfg.codexCount, "Codex pane count")
@@ -137,6 +164,7 @@ func parseConfig() config {
 	cfg.claudeCount = clampInt(cfg.claudeCount, 0, 8)
 	cfg.codexCount = clampInt(cfg.codexCount, 0, 8)
 	cfg.openCount = clampInt(cfg.openCount, 0, 8)
+	cfg.placement = normalizePlacement(cfg.placement)
 	cfg.imagePaths = append([]string(nil), imagePaths...)
 	return cfg
 }
@@ -162,10 +190,10 @@ func initialModel(cfg config) model {
 	ta.SetWidth(68)
 	ta.SetHeight(8)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(green)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(green)
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(dimGreen)
-	ta.FocusedStyle.Base = lipgloss.NewStyle().Foreground(green)
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(cyan)
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(text)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(muted)
+	ta.FocusedStyle.Base = lipgloss.NewStyle().Foreground(text)
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.Focus()
 
@@ -237,16 +265,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.focus == focusAgents {
+		if m.focus == focusConfig {
 			switch msg.String() {
-			case "left", "h":
-				m.selectedAgent = (m.selectedAgent + 2) % 3
-			case "right", "l":
-				m.selectedAgent = (m.selectedAgent + 1) % 3
-			case "up", "k", "+", "=":
-				m.adjustSelectedAgent(1)
-			case "down", "j", "-":
-				m.adjustSelectedAgent(-1)
+			case "up", "k":
+				m.moveSelectedConfig(-1)
+			case "down", "j":
+				m.moveSelectedConfig(1)
+			case "left", "h", "-":
+				m.adjustSelectedConfig(-1)
+			case "right", "l", "+", "=":
+				m.adjustSelectedConfig(1)
+			case " ":
+				m.chooseSelectedPlacement()
 			case "enter", "esc":
 				m.focus = focusPrompt
 				cmd = m.textarea.Focus()
@@ -281,16 +311,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) resize(width, height int) {
 	m.width = width
 	m.height = height
-	boxWidth := clampInt(width-10, 68, 102)
-	textWidth := clampInt(boxWidth-12, 44, 90)
-	textHeight := clampInt(height/3, 6, 11)
+	boxWidth := clampInt(width-6, 78, 118)
+	textWidth := clampInt(boxWidth-18, 52, 94)
+	textHeight := clampInt(height/4, 5, 9)
 	m.textarea.SetWidth(textWidth)
 	m.textarea.SetHeight(textHeight)
 }
 
 func (m *model) toggleFocus() {
 	if m.focus == focusPrompt {
-		m.focus = focusAgents
+		m.focus = focusConfig
 		m.textarea.Blur()
 		return
 	}
@@ -298,14 +328,31 @@ func (m *model) toggleFocus() {
 	m.textarea.Focus()
 }
 
-func (m *model) adjustSelectedAgent(delta int) {
-	switch m.selectedAgent {
+func (m *model) moveSelectedConfig(delta int) {
+	count := 3 + len(placementOptions)
+	m.selectedConfig = (m.selectedConfig + delta + count) % count
+}
+
+func (m *model) adjustSelectedConfig(delta int) {
+	switch m.selectedConfig {
 	case 0:
 		m.cfg.claudeCount = clampInt(m.cfg.claudeCount+delta, 0, 8)
 	case 1:
 		m.cfg.codexCount = clampInt(m.cfg.codexCount+delta, 0, 8)
 	case 2:
 		m.cfg.openCount = clampInt(m.cfg.openCount+delta, 0, 8)
+	default:
+		index := placementIndex(m.cfg.placement)
+		index = (index + delta + len(placementOptions)) % len(placementOptions)
+		m.cfg.placement = placementOptions[index].value
+		m.selectedConfig = 3 + index
+	}
+}
+
+func (m *model) chooseSelectedPlacement() {
+	index := m.selectedConfig - 3
+	if index >= 0 && index < len(placementOptions) {
+		m.cfg.placement = placementOptions[index].value
 	}
 }
 
@@ -322,7 +369,7 @@ func (m model) startLaunch() (tea.Model, tea.Cmd) {
 	}
 	m.launching = true
 	m.statusKind = ""
-	m.status = "creating worktrees and workspace..."
+	m.status = "creating worktrees and cmux layout..."
 	cfg := m.cfg
 	images := append([]imageAttachment(nil), m.images...)
 	return m, func() tea.Msg {
@@ -342,6 +389,7 @@ func (m model) startLaunch() (tea.Model, tea.Cmd) {
 			"--claude", strconv.Itoa(cfg.claudeCount),
 			"--codex", strconv.Itoa(cfg.codexCount),
 			"--opencode", strconv.Itoa(cfg.openCount),
+			"--placement", cfg.placement,
 		)
 		if cfg.basePath != "" {
 			args = append(args, "--base", cfg.basePath)
@@ -369,27 +417,26 @@ func (m model) View() string {
 		return ""
 	}
 
-	boxWidth := clampInt(m.width-10, 68, 102)
-	header := title.Width(boxWidth - 8).Render("CMUX HOME")
-	subheader := subtle.Width(boxWidth - 8).Align(lipgloss.Center).Render("agent workspace launcher")
-	inputBox := lipgloss.NewStyle().
-		Border(lipgloss.NormalBorder()).
-		BorderForeground(dimGreen).
-		Padding(0, 1).
-		Render(m.textarea.View())
-	agents := m.agentLine()
+	boxWidth := clampInt(m.width-6, 78, 118)
+	innerWidth := boxWidth - 8
+	promptWidth := clampInt(innerWidth-8, 58, 100)
+	header := m.header(innerWidth)
+	inputTitle := m.sectionTitle("Launch prompt", m.focus == focusPrompt, promptWidth+4)
+	inputBox := panel.Width(promptWidth + 4).Render(m.textarea.View())
+	config := m.configPanel(promptWidth + 4)
 	images := m.imageLine(boxWidth - 8)
 	status := m.statusLine(boxWidth - 8)
-	help := subtle.Width(boxWidth - 8).Align(lipgloss.Center).Render("ctrl+r launch   tab agents   arrows adjust   ctrl+c quit")
+	help := subtle.Width(boxWidth - 8).Align(lipgloss.Center).Render("ctrl+r launch   tab config   arrows adjust   space choose   ctrl+c quit")
 
 	body := lipgloss.JoinVertical(
 		lipgloss.Center,
 		header,
-		subheader,
 		"",
+		inputTitle,
 		inputBox,
 		"",
-		agents,
+		config,
+		"",
 		images,
 		status,
 		help,
@@ -398,20 +445,110 @@ func (m model) View() string {
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, rendered)
 }
 
-func (m model) agentLine() string {
-	items := []string{
-		fmt.Sprintf("Claude %d", m.cfg.claudeCount),
-		fmt.Sprintf("Codex %d", m.cfg.codexCount),
-		fmt.Sprintf("OpenCode %d", m.cfg.openCount),
+func (m model) header(width int) string {
+	logo := cmuxLogo()
+	welcome := welcomePanel(maxInt(32, width-lipgloss.Width(logo)-4))
+	if width >= 84 {
+		return lipgloss.JoinHorizontal(lipgloss.Top, logo, strings.Repeat(" ", 4), welcome)
 	}
-	for i, item := range items {
-		if m.focus == focusAgents && i == m.selectedAgent {
-			items[i] = hot.Render("[" + item + "]")
-		} else {
-			items[i] = subtle.Render(item)
-		}
+	return lipgloss.JoinVertical(lipgloss.Center, logo, welcome)
+}
+
+func cmuxLogo() string {
+	c1 := lipgloss.NewStyle().Foreground(cyan)
+	c2 := lipgloss.NewStyle().Foreground(sky)
+	c3 := lipgloss.NewStyle().Foreground(blue)
+	c4 := lipgloss.NewStyle().Foreground(indigo)
+	c5 := lipgloss.NewStyle().Foreground(violet)
+	c7 := lipgloss.NewStyle().Foreground(purple)
+	return strings.Join([]string{
+		c1.Render("  ::"),
+		c2.Render("    ::::") + "              " + c1.Render("c") + c2.Render("m") + c3.Render("u") + c7.Render("x"),
+		c3.Render("      ::::::"),
+		c4.Render("        ::::::") + "        " + subtle.Render("the open source terminal"),
+		c5.Render("      ::::::") + "          " + subtle.Render("built for coding agents"),
+		c7.Render("    ::::"),
+		c7.Render("  ::"),
+	}, "\n")
+}
+
+func welcomePanel(width int) string {
+	lines := []string{
+		hot.Render("Shortcuts"),
+		shortcutLine("cmd+N", "New workspace"),
+		shortcutLine("cmd+T", "New tab"),
+		shortcutLine("cmd+P", "Go to workspace"),
+		shortcutLine("cmd+D", "Split right"),
+		shortcutLine("cmd+shift+D", "Split down"),
+		shortcutLine("cmd+shift+P", "Command palette"),
+		"",
+		hot.Render("Links"),
+		subtle.Render("Docs     https://cmux.com/docs"),
+		subtle.Render("Feedback cmux feedback"),
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center, items[0], "  ", items[1], "  ", items[2])
+	return lipgloss.NewStyle().Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func shortcutLine(key, label string) string {
+	return fmt.Sprintf("%-12s %s", purpleHot.Render(key), subtle.Render(label))
+}
+
+func (m model) sectionTitle(label string, active bool, width int) string {
+	style := subtle
+	if active {
+		style = hot
+	}
+	return style.Width(width).Align(lipgloss.Left).Render(label)
+}
+
+func (m model) configPanel(width int) string {
+	lines := []string{
+		m.sectionTitle("Agents", m.focus == focusConfig && m.selectedConfig < 3, width-4),
+		m.agentRow(0, "Claude Code", m.cfg.claudeCount),
+		m.agentRow(1, "Codex", m.cfg.codexCount),
+		m.agentRow(2, "OpenCode Kimi", m.cfg.openCount),
+		"",
+		m.sectionTitle("Placement", m.focus == focusConfig && m.selectedConfig >= 3, width-4),
+	}
+	for index, option := range placementOptions {
+		lines = append(lines, m.placementRow(index, option))
+	}
+	return panel.Width(width).Render(strings.Join(lines, "\n"))
+}
+
+func (m model) agentRow(index int, label string, count int) string {
+	active := m.focus == focusConfig && m.selectedConfig == index
+	prefix := " "
+	if active {
+		prefix = ">"
+	}
+	line := fmt.Sprintf("%s %-18s  [-] %d [+]", prefix, label, count)
+	if active {
+		return selected.Render(line)
+	}
+	return subtle.Render(line)
+}
+
+func (m model) placementRow(index int, option placementOption) string {
+	rowIndex := index + 3
+	active := m.focus == focusConfig && m.selectedConfig == rowIndex
+	chosen := m.cfg.placement == option.value
+	prefix := " "
+	if active {
+		prefix = ">"
+	}
+	mark := "( )"
+	if chosen {
+		mark = "(*)"
+	}
+	line := fmt.Sprintf("%s %s %-11s %s", prefix, mark, option.label, option.help)
+	if active {
+		return selected.Render(line)
+	}
+	if chosen {
+		return hot.Render(line)
+	}
+	return subtle.Render(line)
 }
 
 func (m model) imageLine(width int) string {
@@ -428,7 +565,7 @@ func (m model) imageLine(width int) string {
 func (m model) statusLine(width int) string {
 	text := m.status
 	if m.launching {
-		text = "creating worktrees and workspace..."
+		text = "creating worktrees and cmux layout..."
 	}
 	style := subtle
 	if m.statusKind == "error" {
@@ -663,4 +800,32 @@ func clampInt(value, minValue, maxValue int) int {
 		return maxValue
 	}
 	return value
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+func normalizePlacement(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "tab", "tabs":
+		return "tabs"
+	case "workspace", "workspaces", "separate":
+		return "workspaces"
+	default:
+		return "splits"
+	}
+}
+
+func placementIndex(value string) int {
+	normalized := normalizePlacement(value)
+	for index, option := range placementOptions {
+		if option.value == normalized {
+			return index
+		}
+	}
+	return 0
 }
