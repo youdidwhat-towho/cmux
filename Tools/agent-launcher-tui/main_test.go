@@ -3,7 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 func TestReplaceImagePathsUsesStableTokens(t *testing.T) {
@@ -26,6 +29,22 @@ func TestReplaceImagePathsUsesStableTokens(t *testing.T) {
 	}
 	if m.images[0].Token != "[Image #1]" {
 		t.Fatalf("unexpected token: %q", m.images[0].Token)
+	}
+}
+
+func TestRenderInputFillsEveryLine(t *testing.T) {
+	m := initialModel(config{claudeCount: 1, codexCount: 1, useAIName: true})
+	m.resize(120, 40)
+
+	out := m.renderInput(72)
+	lines := strings.Split(out, "\n")
+	if len(lines) != m.textarea.Height() {
+		t.Fatalf("expected %d lines, got %d", m.textarea.Height(), len(lines))
+	}
+	for index, line := range lines {
+		if width := lipgloss.Width(line); width != 72 {
+			t.Fatalf("line %d width = %d, want 72", index, width)
+		}
 	}
 }
 

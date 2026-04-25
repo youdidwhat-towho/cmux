@@ -361,17 +361,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *model) resize(width, height int) {
 	m.width = width
 	m.height = height
-	boxWidth := clampInt(width-8, 68, 104)
-	textWidth := clampInt(boxWidth-10, 52, 90)
+	contentWidth := contentWidthForWindow(width)
+	textWidth := maxInt(1, contentWidth-lipgloss.Width("  "))
 	textHeight := clampInt(height/5, 5, 8)
 	m.textarea.SetWidth(textWidth)
 	m.textarea.SetHeight(textHeight)
 }
 
 func (m model) metrics() layoutMetrics {
-	boxWidth := clampInt(m.width-8, 68, 104)
-	contentWidth := clampInt(boxWidth-6, 56, 94)
-	inputHeight := m.textarea.Height() + 2
+	contentWidth := contentWidthForWindow(m.width)
+	inputHeight := m.textarea.Height()
 	logoHeight := 7
 	configHeight := configLineCount()
 	bodyHeight := logoHeight + 1 + inputHeight + 1 + configHeight + 1 + 3
@@ -607,11 +606,7 @@ func (m model) View() string {
 	}
 
 	metrics := m.metrics()
-	inputBox := lipgloss.NewStyle().
-		Width(metrics.width).
-		Background(inputBG).
-		Padding(1, 2).
-		Render(m.textarea.View())
+	inputBox := m.renderInput(metrics.width)
 	logo := cmuxLogo(metrics.width)
 	config := m.configPanel(metrics.width)
 	images := m.imageLine(metrics.width)
@@ -632,6 +627,29 @@ func (m model) View() string {
 	)
 	rendered := lipgloss.NewStyle().Foreground(text).Render(body)
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, rendered)
+}
+
+func (m model) renderInput(width int) string {
+	lines := strings.Split(strings.TrimRight(m.textarea.View(), "\n"), "\n")
+	for len(lines) < m.textarea.Height() {
+		lines = append(lines, "")
+	}
+	if len(lines) > m.textarea.Height() {
+		lines = lines[:m.textarea.Height()]
+	}
+
+	style := lipgloss.NewStyle().Width(width).Background(inputBG)
+	for index, line := range lines {
+		filled := lipgloss.PlaceHorizontal(
+			width,
+			lipgloss.Left,
+			line,
+			lipgloss.WithWhitespaceBackground(inputBG),
+			lipgloss.WithWhitespaceChars(" "),
+		)
+		lines[index] = style.Render(filled)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func cmuxLogo(width int) string {
@@ -994,6 +1012,11 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func contentWidthForWindow(width int) int {
+	boxWidth := clampInt(width-8, 68, 104)
+	return clampInt(boxWidth-6, 56, 94)
 }
 
 func normalizePlacement(value string) string {
