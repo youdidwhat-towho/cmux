@@ -573,7 +573,7 @@ func (m model) startLaunch() (tea.Model, tea.Cmd) {
 			args = append(args, "--json")
 		}
 		args = append(args,
-			"agent-launcher", "run",
+			"home", "run",
 			"--prompt", prompt,
 			"--claude", strconv.Itoa(cfg.claudeCount),
 			"--codex", strconv.Itoa(cfg.codexCount),

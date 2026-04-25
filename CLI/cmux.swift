@@ -1783,7 +1783,7 @@ struct CMUXCLI {
             return
         }
 
-        if command == "agent-launcher" {
+        if command == "home" || command == "agent-launcher" {
             try runAgentLauncher(
                 commandArgs: commandArgs,
                 socketPath: resolvedSocketPath,
@@ -3351,7 +3351,7 @@ struct CMUXCLI {
                 jsonOutput: jsonOutput
             )
         default:
-            throw CLIError(message: "agent-launcher: unknown subcommand '\(commandArgs.first ?? "")'. Use tui, run, or install.")
+            throw CLIError(message: "home: unknown subcommand '\(commandArgs.first ?? "")'. Use tui, run, or install.")
         }
     }
 
@@ -3407,7 +3407,7 @@ struct CMUXCLI {
             executablePath: helperPath,
             arguments: arguments,
             environment: ProcessInfo.processInfo.environment,
-            failureDescription: "agent launcher Charm TUI"
+            failureDescription: "cmux home Charm TUI"
         )
     }
 
@@ -3437,7 +3437,7 @@ struct CMUXCLI {
 
         print("""
 
-        cmux agent launcher
+        cmux home
         Paste a prompt, paste or drag image files, then type /run.
 
         Commands:
@@ -3508,7 +3508,7 @@ struct CMUXCLI {
             request.prompt = String(data: data, encoding: .utf8) ?? ""
         }
         guard !request.prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !request.imagePaths.isEmpty else {
-            throw CLIError(message: "agent-launcher run requires --prompt <text>, stdin, or at least one --image <path>")
+            throw CLIError(message: "home run requires --prompt <text>, stdin, or at least one --image <path>")
         }
 
         let result = try launchAgentWorkspace(
@@ -3528,14 +3528,14 @@ struct CMUXCLI {
         let (nameOpt, remaining) = parseOption(commandArgs, name: "--name")
         let filtered = remaining.filter { $0 != "--" }
         if let unknown = filtered.first {
-            throw CLIError(message: "agent-launcher install: unknown flag '\(unknown)'. Known flags: --name <title>")
+            throw CLIError(message: "home install: unknown flag '\(unknown)'. Known flags: --name <title>")
         }
 
         let title = normalizedAgentLauncherWorkspaceName(nameOpt) ?? "hq homepage"
         let launchRoot = resolveAgentLauncherLaunchRoot(baseDirectory: nil)
         let launcherCommandParts = [
             shellQuote(currentCmuxExecutableForLauncher()),
-            "agent-launcher"
+            "home"
         ] + ["--base", shellQuote(launchRoot.basePath)]
         let launcherCommand = launcherCommandParts.joined(separator: " ")
         let layout: [String: Any] = [
@@ -3559,11 +3559,11 @@ struct CMUXCLI {
 
         let created = try client.sendV2(method: "workspace.create", params: [
             "title": title,
-            "description": "cmux agent launcher",
+            "description": "cmux home",
             "layout": layout
         ])
         guard let workspaceId = created["workspace_id"] as? String else {
-            throw CLIError(message: "agent-launcher install: workspace.create did not return workspace_id")
+            throw CLIError(message: "home install: workspace.create did not return workspace_id")
         }
         _ = try client.sendV2(method: "workspace.action", params: ["workspace_id": workspaceId, "action": "pin"])
         _ = try client.sendV2(method: "workspace.action", params: ["workspace_id": workspaceId, "action": "move_top"])
@@ -3604,7 +3604,7 @@ struct CMUXCLI {
         let remaining = rem14.filter { $0 != "--" }
         if let unknown = remaining.first {
             throw CLIError(
-                message: "agent-launcher: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --custom, --command, --placement, --layout, --isolation, --worktrees, --no-worktrees, --image, --no-ai-name"
+                message: "home: unknown flag '\(unknown)'. Known flags: --prompt, --name, --base, --claude, --codex, --opencode, --custom, --command, --placement, --layout, --isolation, --worktrees, --no-worktrees, --image, --no-ai-name"
             )
         }
 
@@ -3639,7 +3639,7 @@ struct CMUXCLI {
     private func parseAgentLauncherCount(_ raw: String?, fallback: Int, flag: String) throws -> Int {
         guard let raw else { return fallback }
         guard let value = Int(raw), value >= 0, value <= 8 else {
-            throw CLIError(message: "agent-launcher: \(flag) must be an integer from 0 through 8")
+            throw CLIError(message: "home: \(flag) must be an integer from 0 through 8")
         }
         return value
     }
@@ -3655,7 +3655,7 @@ struct CMUXCLI {
         case "workspace", "workspaces", "separate":
             return .workspaces
         default:
-            throw CLIError(message: "agent-launcher: --placement must be splits, tabs, or workspaces")
+            throw CLIError(message: "home: --placement must be splits, tabs, or workspaces")
         }
     }
 
@@ -3665,7 +3665,7 @@ struct CMUXCLI {
         forceWorktrees: Bool
     ) throws -> AgentLauncherIsolation {
         if forceShared, forceWorktrees {
-            throw CLIError(message: "agent-launcher: use only one of --worktrees or --no-worktrees")
+            throw CLIError(message: "home: use only one of --worktrees or --no-worktrees")
         }
         if forceShared { return .shared }
         if forceWorktrees { return .worktrees }
@@ -3679,7 +3679,7 @@ struct CMUXCLI {
         case "worktree", "worktrees", "required", "git":
             return .worktrees
         default:
-            throw CLIError(message: "agent-launcher: --isolation must be auto, shared, or worktrees")
+            throw CLIError(message: "home: --isolation must be auto, shared, or worktrees")
         }
     }
 
@@ -3853,7 +3853,7 @@ struct CMUXCLI {
                 "layout": layout
             ])
             guard let workspaceId = response["workspace_id"] as? String else {
-                throw CLIError(message: "agent-launcher: workspace.create did not return workspace_id")
+                throw CLIError(message: "home: workspace.create did not return workspace_id")
             }
             createdWorkspaces = [
                 AgentLauncherCreatedWorkspace(
@@ -3872,7 +3872,7 @@ struct CMUXCLI {
                     "layout": agentLauncherSinglePaneLayout(surface, focused: true)
                 ])
                 guard let workspaceId = response["workspace_id"] as? String else {
-                    throw CLIError(message: "agent-launcher: workspace.create did not return workspace_id")
+                    throw CLIError(message: "home: workspace.create did not return workspace_id")
                 }
                 created.append(AgentLauncherCreatedWorkspace(
                     name: title,
@@ -4178,7 +4178,7 @@ struct CMUXCLI {
         )
         if result.status != 0 {
             let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-            FileHandle.standardError.write(Data("agent-launcher: git fetch origin failed, using local refs. \(message)\n".utf8))
+            FileHandle.standardError.write(Data("home: git fetch origin failed, using local refs. \(message)\n".utf8))
         }
     }
 
@@ -4204,7 +4204,7 @@ struct CMUXCLI {
             )
         case .worktrees:
             guard let repoRoot = launchRoot.repoRoot else {
-                throw CLIError(message: "agent-launcher: --isolation worktrees requires a git repository")
+                throw CLIError(message: "home: --isolation worktrees requires a git repository")
             }
             return try createAgentLauncherWorktree(
                 repoRoot: repoRoot,
@@ -4246,7 +4246,7 @@ struct CMUXCLI {
                 )
                 guard result.status == 0 else {
                     let message = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    throw CLIError(message: "agent-launcher: failed to create worktree \(branch): \(message)")
+                    throw CLIError(message: "home: failed to create worktree \(branch): \(message)")
                 }
                 let submoduleResult = runProcess(
                     executablePath: "/usr/bin/env",
@@ -4255,7 +4255,7 @@ struct CMUXCLI {
                 )
                 guard submoduleResult.status == 0 else {
                     let message = submoduleResult.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                    throw CLIError(message: "agent-launcher: failed to initialize submodules for \(branch): \(message)")
+                    throw CLIError(message: "home: failed to initialize submodules for \(branch): \(message)")
                 }
                 return AgentLauncherLaunchDirectory(branchName: branch, path: path, usesWorktree: true)
             }
@@ -8355,19 +8355,19 @@ struct CMUXCLI {
             If the app is already running, this restores the last saved session into the current app.
             If the app is not running, this launches cmux and lets startup restore reopen the saved session.
             """
-        case "agent-launcher":
+        case "home", "agent-launcher":
             return """
-            Usage: cmux agent-launcher [tui]
-                   cmux agent-launcher install [--name <title>]
-                   cmux agent-launcher run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--custom <n>] [--command <bash>] [--placement splits|tabs|workspaces] [--isolation auto|shared|worktrees] [--name <title>] [--base <path>] [--no-ai-name]
+            Usage: cmux home [tui]
+                   cmux home install [--name <title>]
+                   cmux home run --prompt <text> [--image <path> ...] [--claude <n>] [--codex <n>] [--opencode <n>] [--custom <n>] [--command <bash>] [--placement splits|tabs|workspaces] [--isolation auto|shared|worktrees] [--name <title>] [--base <path>] [--no-ai-name]
 
             Start the Charm TUI for creating agent workspaces.
 
-            The launcher opens cmux agents in splits, tabs, or separate workspaces.
+            cmux home opens agents in splits, tabs, or separate workspaces.
             Worktrees are optional: auto uses them inside git repos and falls back to the current directory elsewhere.
             Defaults to one Claude pane on the left and one Codex pane on the right.
 
-            Images pasted or dropped into a cmux terminal are inserted as file paths. The launcher
+            Images pasted or dropped into a cmux terminal are inserted as file paths. cmux home
             shows those paths as [Image #N] tokens, passes them to Codex with --image, and also
             lists them in the prompt for Claude and OpenCode.
 
@@ -17012,7 +17012,7 @@ export default CMUXSessionRestore;
           welcome
           shortcuts
           restore-session
-          agent-launcher [tui|install|run]
+          home [tui|install|run]
           feedback [--email <email> --body <text> [--image <path> ...]]
           themes [list|set|clear]
           claude-teams [claude-args...]
