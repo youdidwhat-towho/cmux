@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func TestReplaceImagePathsUsesStableTokens(t *testing.T) {
@@ -46,6 +47,21 @@ func TestRenderInputFillsEveryLine(t *testing.T) {
 		if width := lipgloss.Width(line); width != 72 {
 			t.Fatalf("line %d width = %d, want 72", index, width)
 		}
+	}
+}
+
+func TestRenderInputUsesTwoCellLeftInset(t *testing.T) {
+	m := initialModel(config{claudeCount: 1, codexCount: 1, useAIName: true})
+	m.resize(120, 40)
+
+	out := m.renderInput(72)
+	lines := strings.Split(out, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected rendered input content, got %d lines", len(lines))
+	}
+	line := ansi.Strip(lines[1])
+	if !strings.HasPrefix(line, "  What should") {
+		t.Fatalf("expected two-cell left inset before placeholder, got %q", line[:min(len(line), 16)])
 	}
 }
 

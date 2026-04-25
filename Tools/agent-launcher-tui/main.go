@@ -54,6 +54,11 @@ const (
 	focusConfig
 )
 
+const (
+	inputLeftInset  = 2
+	inputRightInset = 1
+)
+
 type model struct {
 	cfg             config
 	textarea        textarea.Model
@@ -130,19 +135,20 @@ var isolationOptions = []isolationOption{
 }
 
 var (
-	cmuxC1    = lipgloss.Color("#00D4FF")
-	cmuxC2    = lipgloss.Color("#18B5FA")
-	cmuxC3    = lipgloss.Color("#3096F5")
-	cmuxC4    = lipgloss.Color("#4877F1")
-	cmuxC5    = lipgloss.Color("#6058EF")
-	cmuxC6    = lipgloss.Color("#6E49EE")
-	cmuxC7    = lipgloss.Color("#7C3AED")
+	cmuxC1    = lipgloss.AdaptiveColor{Light: "#007EA7", Dark: "#00D4FF"}
+	cmuxC2    = lipgloss.AdaptiveColor{Light: "#0877B8", Dark: "#18B5FA"}
+	cmuxC3    = lipgloss.AdaptiveColor{Light: "#116FC5", Dark: "#3096F5"}
+	cmuxC4    = lipgloss.AdaptiveColor{Light: "#2A63D7", Dark: "#4877F1"}
+	cmuxC5    = lipgloss.AdaptiveColor{Light: "#4B55DC", Dark: "#6058EF"}
+	cmuxC6    = lipgloss.AdaptiveColor{Light: "#6045D0", Dark: "#6E49EE"}
+	cmuxC7    = lipgloss.AdaptiveColor{Light: "#6D36B8", Dark: "#7C3AED"}
 	blue      = cmuxC3
-	text      = lipgloss.Color("#D7DCE5")
-	muted     = lipgloss.Color("#8B93A3")
-	dim       = lipgloss.Color("#5D6572")
-	red       = lipgloss.Color("#F87171")
-	inputBG   = lipgloss.Color("#2A2F37")
+	text      = lipgloss.AdaptiveColor{Light: "#1D2533", Dark: "#DDE4EF"}
+	inputText = lipgloss.AdaptiveColor{Light: "#0F172A", Dark: "#F7FAFF"}
+	muted     = lipgloss.AdaptiveColor{Light: "#626C7C", Dark: "#9AA5B8"}
+	dim       = lipgloss.AdaptiveColor{Light: "#8A93A3", Dark: "#6F7888"}
+	red       = lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#F87171"}
+	inputBG   = lipgloss.AdaptiveColor{Light: "#EDF1F6", Dark: "#2A2F37"}
 	subtle    = lipgloss.NewStyle().Foreground(muted)
 	dimText   = lipgloss.NewStyle().Foreground(dim)
 	hot       = lipgloss.NewStyle().Foreground(blue)
@@ -152,6 +158,7 @@ var (
 
 func main() {
 	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(termenv.HasDarkBackground())
 	cfg := parseConfig()
 	m := initialModel(cfg)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run(); err != nil {
@@ -230,9 +237,9 @@ func initialModel(cfg config) model {
 	ta.SetHeight(8)
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle().Background(inputBG)
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(blue).Background(inputBG)
-	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(text).Background(inputBG)
-	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(dim).Background(inputBG)
-	ta.FocusedStyle.Base = lipgloss.NewStyle().Foreground(text).Background(inputBG)
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(inputText).Background(inputBG)
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(muted).Background(inputBG)
+	ta.FocusedStyle.Base = lipgloss.NewStyle().Foreground(inputText).Background(inputBG)
 	ta.FocusedStyle.EndOfBuffer = lipgloss.NewStyle().Foreground(inputBG).Background(inputBG)
 	ta.BlurredStyle = ta.FocusedStyle
 	ta.Focus()
@@ -360,7 +367,7 @@ func (m *model) resize(width, height int) {
 	m.width = width
 	m.height = height
 	contentWidth := contentWidthForWindow(width)
-	textWidth := maxInt(1, contentWidth-2)
+	textWidth := maxInt(1, contentWidth-inputLeftInset-inputRightInset)
 	textHeight := clampInt(height/5, 5, 8)
 	m.textarea.SetWidth(textWidth)
 	m.textarea.SetHeight(textHeight)
@@ -634,13 +641,14 @@ func (m model) renderInput(width int) string {
 		text        string
 		placeholder bool
 		cursorCol   int
+		showCursor  bool
 	}
 
 	height := m.textarea.Height()
 	if height <= 0 || width <= 0 {
 		return ""
 	}
-	innerWidth := maxInt(1, width-2)
+	innerWidth := maxInt(1, width-inputLeftInset-inputRightInset)
 
 	value := m.textarea.Value()
 	cursorLine := m.textarea.Line()
@@ -648,12 +656,14 @@ func (m model) renderInput(width int) string {
 	cursorRawCol := info.StartColumn + info.ColumnOffset
 	lines := make([]displayLine, 0, height)
 	cursorDisplayIndex := 0
+	showCursor := m.focus == focusPrompt && !m.textarea.Cursor.Blink
 
 	if value == "" {
 		lines = append(lines, displayLine{
 			text:        m.textarea.Placeholder,
 			placeholder: true,
 			cursorCol:   0,
+			showCursor:  showCursor,
 		})
 	} else {
 		rawLines := strings.Split(value, "\n")
@@ -661,11 +671,13 @@ func (m model) renderInput(width int) string {
 			segments := wrapEditorLine(rawLine, innerWidth)
 			for segmentIndex, segment := range segments {
 				cursorCol := -1
+				lineShowCursor := false
 				if lineIndex == cursorLine && segmentIndex == info.RowOffset {
 					cursorDisplayIndex = len(lines)
 					cursorCol = clampInt(cursorRawCol-segment.start, 0, len([]rune(segment.text)))
+					lineShowCursor = showCursor
 				}
-				lines = append(lines, displayLine{text: segment.text, cursorCol: cursorCol})
+				lines = append(lines, displayLine{text: segment.text, cursorCol: cursorCol, showCursor: lineShowCursor})
 			}
 		}
 	}
@@ -689,7 +701,7 @@ func (m model) renderInput(width int) string {
 	rendered := make([]string, 0, len(visible))
 	rendered = append(rendered, renderEditorBlankLine(width))
 	for _, line := range visible {
-		rendered = append(rendered, renderEditorInsetLine(line.text, innerWidth, line.cursorCol, line.placeholder))
+		rendered = append(rendered, renderEditorInsetLine(line.text, innerWidth, line.cursorCol, line.placeholder, line.showCursor))
 	}
 	rendered = append(rendered, renderEditorBlankLine(width))
 	return strings.Join(rendered, "\n")
@@ -732,19 +744,19 @@ func wrapEditorLine(line string, width int) []editorSegment {
 	return segments
 }
 
-func renderEditorLine(raw string, width int, cursorCol int, placeholder bool) string {
+func renderEditorLine(raw string, width int, cursorCol int, placeholder bool, showCursor bool) string {
 	runes := []rune(raw)
 	if len(runes) > width {
 		runes = runes[:width]
 	}
 
-	normalStyle := lipgloss.NewStyle().Foreground(text).Background(inputBG)
-	placeholderStyle := lipgloss.NewStyle().Foreground(dim).Background(inputBG)
+	normalStyle := lipgloss.NewStyle().Foreground(inputText).Background(inputBG)
+	placeholderStyle := lipgloss.NewStyle().Foreground(muted).Background(inputBG)
 	lineStyle := normalStyle
 	if placeholder {
 		lineStyle = placeholderStyle
 	}
-	cursorStyle := lipgloss.NewStyle().Foreground(inputBG).Background(text)
+	cursorStyle := lipgloss.NewStyle().Foreground(inputBG).Background(inputText)
 
 	var out strings.Builder
 	for col := 0; col < width; col++ {
@@ -752,7 +764,7 @@ func renderEditorLine(raw string, width int, cursorCol int, placeholder bool) st
 		if col < len(runes) {
 			cell = string(runes[col])
 		}
-		if col == cursorCol {
+		if showCursor && col == cursorCol {
 			out.WriteString(cursorStyle.Render(cell))
 		} else {
 			out.WriteString(lineStyle.Render(cell))
@@ -761,9 +773,11 @@ func renderEditorLine(raw string, width int, cursorCol int, placeholder bool) st
 	return out.String()
 }
 
-func renderEditorInsetLine(raw string, innerWidth int, cursorCol int, placeholder bool) string {
+func renderEditorInsetLine(raw string, innerWidth int, cursorCol int, placeholder bool, showCursor bool) string {
 	cell := inputCellStyle()
-	return cell.Render(" ") + renderEditorLine(raw, innerWidth, cursorCol, placeholder) + cell.Render(" ")
+	left := cell.Render(strings.Repeat(" ", inputLeftInset))
+	right := cell.Render(strings.Repeat(" ", inputRightInset))
+	return left + renderEditorLine(raw, innerWidth, cursorCol, placeholder, showCursor) + right
 }
 
 func renderEditorBlankLine(width int) string {
@@ -771,7 +785,7 @@ func renderEditorBlankLine(width int) string {
 }
 
 func inputCellStyle() lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(text).Background(inputBG)
+	return lipgloss.NewStyle().Foreground(inputText).Background(inputBG)
 }
 
 func cmuxLogo(width int) string {
