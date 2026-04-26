@@ -10,6 +10,7 @@
     "db:down": "bash scripts/db-local.sh down",
     "db:generate": "bunx drizzle-kit generate --config drizzle.config.ts",
     "db:migrate": "bash scripts/db-local.sh migrate",
+    "db:migrate:aws-rds-iam": "bun scripts/migrate-aws-rds-iam.ts",
     "db:ready": "bash scripts/db-local.sh ready",
     "db:reset": "bash scripts/db-local.sh reset",
     "db:status": "bash scripts/db-local.sh status",
@@ -21,6 +22,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@aws-sdk/rds-signer": "^3.1037.0",
     "@effect/experimental": "0.57.9",
     "@effect/platform": "0.93.6",
     "@effect/sql": "0.48.6",
@@ -30,6 +32,7 @@
     "@stackframe/stack": "^2.8.78",
     "@t3-oss/env-nextjs": "^0.13.10",
     "@vercel/firewall": "^1.1.2",
+    "@vercel/oidc-aws-credentials-provider": "^3.0.8",
     "@vercel/otel": "^2.1.2",
     "drizzle-orm": "1.0.0-beta.22",
     "e2b": "^2.19.0",

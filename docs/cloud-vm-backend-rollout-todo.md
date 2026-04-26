@@ -7,6 +7,8 @@ This is the scoped todo list for making the Cloud VM backend production-ready wi
 - Vercel project exists: `manaflow/cmux`.
 - Vercel root directory is `web`.
 - Production URL is `https://cmux.com`.
+- Vercel custom `staging` environment exists for the `manaflow/cmux` project and tracks the
+  `staging` git branch.
 - VM application logic already runs in the Vercel Next app:
   - `web/app/api/vm/**`
   - `web/app/api/rivet/**`
@@ -241,6 +243,16 @@ after the Vercel REST handshake. Rivet is only a temporary stateful control-plan
 - [x] Add CMUX_PORT-derived local Postgres so parallel worktrees do not collide.
 - [x] Add CI migration verification against a real Postgres service.
 - [x] Add the first internal DB-backed VM read model and real Postgres test.
+- [x] Add a Vercel Marketplace Aurora OIDC/RDS IAM runtime DB adapter.
+- [x] Add a dedicated `bun db:migrate:aws-rds-iam` migration command for production/staging.
+- [x] Seed Vercel staging and production with app/provider DB driver env names.
+- [ ] Connect the Vercel Marketplace Aurora resource to `manaflow/cmux` for both `staging` and production so these env names are present:
+  - `AWS_ROLE_ARN`
+  - `AWS_REGION`
+  - `PGHOST`
+  - `PGPORT`
+  - `PGUSER`
+  - `PGDATABASE`
 - [ ] Keep app runtime DB user separate from migration DB user.
 - [ ] Run migrations through protected GitHub Actions, never during Vercel build/startup.
 - [ ] Replace `userVmsActor` and `vmActor` with Vercel route handlers plus database tables:

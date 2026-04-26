@@ -145,6 +145,12 @@ Cloud VM backend logic must stay in Vercel route handlers and Effect services ba
 Do not reintroduce Rivet or a raw actor protocol for this feature unless a later architecture doc
 explicitly changes the control plane.
 
+Production and staging Cloud VM Postgres should use the Vercel Marketplace AWS Aurora PostgreSQL
+OIDC/RDS IAM path. Runtime env names are `CMUX_DB_DRIVER=aws-rds-iam`, `AWS_ROLE_ARN`,
+`AWS_REGION`, `PGHOST`, `PGPORT`, `PGUSER`, and `PGDATABASE`. Run production/staging migrations
+with `bun db:migrate:aws-rds-iam`; never run Drizzle migrations from Vercel build or route startup.
+Local development keeps using the `CMUX_PORT`-derived Docker Postgres path from `bun dev`.
+
 ## Debug event log
 
 All debug events (keys, mouse, focus, splits, tabs) go to a unified log in DEBUG builds:

@@ -59,10 +59,19 @@ Provider SDKs remain Promise-based adapters under `drivers/`, but all route-visi
 
 Vercel runs the Next.js application and all VM REST routes. Postgres is the persistent control plane. There is no Rivet deployment for this feature.
 
-Set these Vercel environment variables per environment:
+Production and staging use Vercel Marketplace AWS Aurora PostgreSQL with OIDC federation and RDS IAM auth. The runtime does not need a long-lived database password.
 
-- `DATABASE_URL`, runtime Postgres connection string.
-- `DIRECT_DATABASE_URL`, direct Postgres connection string for migrations.
+Set these Vercel environment variables per production/staging environment:
+
+- `CMUX_DB_DRIVER=aws-rds-iam`.
+- `AWS_ROLE_ARN`, IAM role Vercel assumes.
+- `AWS_REGION`, Aurora region.
+- `PGHOST`, Aurora cluster endpoint.
+- `PGPORT`, usually `5432`.
+- `PGUSER`, IAM-enabled Postgres role.
+- `PGDATABASE`, app database name.
+- `CMUX_DB_POOL_MAX`, small pool size for Vercel Functions. Start with `5`.
+- `CMUX_DB_SSL_REJECT_UNAUTHORIZED`, currently `false` unless an RDS CA certificate is configured.
 - `E2B_API_KEY`, E2B provider key.
 - `FREESTYLE_API_KEY`, Freestyle provider key.
 - `E2B_CMUXD_WS_TEMPLATE`, E2B template alias/name for WebSocket PTY sandboxes.
@@ -71,7 +80,19 @@ Set these Vercel environment variables per environment:
 - Stack Auth environment variables.
 - Axiom/OpenTelemetry exporter variables.
 
-Run Drizzle migrations before or during deployment, using the same migration flow documented in the backend setup plan.
+Local development keeps using Docker Postgres through `DATABASE_URL` derived from `CMUX_PORT`.
+
+Run production/staging migrations explicitly, never during Vercel build or route startup:
+
+```bash
+CMUX_DB_DRIVER=aws-rds-iam bun db:migrate:aws-rds-iam
+```
+
+For local Docker Postgres, keep using:
+
+```bash
+bun db:migrate
+```
 
 ## Local database development
 
