@@ -103,7 +103,7 @@
 		A5001621 /* AppleScriptSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001620 /* AppleScriptSupport.swift */; };
 		A5001623 /* cmux.sdef in Resources */ = {isa = PBXBuildFile; fileRef = A5001622 /* cmux.sdef */; };
 		A5001640 /* RemoteRelayZshBootstrap.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001641 /* RemoteRelayZshBootstrap.swift */; };
-		A5001660 /* RestorableAgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001661 /* RestorableAgentSession.swift */; };
+		A5001662 /* RestorableAgentSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001661 /* RestorableAgentSession.swift */; };
 		A5001650 /* CmuxConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001651 /* CmuxConfig.swift */; };
 		A5001652 /* CmuxConfigExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001653 /* CmuxConfigExecutor.swift */; };
 		A5001654 /* CmuxActionTrust.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001655 /* CmuxActionTrust.swift */; };
@@ -177,7 +177,7 @@
 		FE003101 /* SessionIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003001 /* SessionIndexStore.swift */; };
 		FE003102 /* SessionIndexView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003002 /* SessionIndexView.swift */; };
 		FE003103 /* RightSidebarPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE003003 /* RightSidebarPanelView.swift */; };
-		A5001661 /* WorkspaceDaemonBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001660 /* WorkspaceDaemonBridge.swift */; };
+		A5001663 /* WorkspaceDaemonBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001660 /* WorkspaceDaemonBridge.swift */; };
 		A50016D1 /* DaemonTerminalBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50016D0 /* DaemonTerminalBridge.swift */; };
 		A50016D3 /* TerminalSessionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50016D2 /* TerminalSessionRegistry.swift */; };
 		A50016E1 /* DaemonConnection.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50016E0 /* DaemonConnection.swift */; };
@@ -1024,7 +1024,7 @@
 				A5001240 /* WindowDecorationsController.swift in Sources */,
 				A500120C /* WindowAccessor.swift in Sources */,
 				A5001610 /* SessionPersistence.swift in Sources */,
-				A5001660 /* RestorableAgentSession.swift in Sources */,
+				A5001662 /* RestorableAgentSession.swift in Sources */,
 				A5001640 /* RemoteRelayZshBootstrap.swift in Sources */,
 				A5001650 /* CmuxConfig.swift in Sources */,
 				A5001652 /* CmuxConfigExecutor.swift in Sources */,
@@ -1043,7 +1043,7 @@
 				D9FEC58D5BACCF76459F1BBE /* AuthEnvironment.swift in Sources */,
 				350DAC5EBD38642A3E81471A /* AuthManager.swift in Sources */,
 				698944F99A6ADFBA24A7BFB9 /* AuthSettingsStore.swift in Sources */,
-				A5001661 /* WorkspaceDaemonBridge.swift in Sources */,
+				A5001663 /* WorkspaceDaemonBridge.swift in Sources */,
 				A50016D1 /* DaemonTerminalBridge.swift in Sources */,
 				A50016D3 /* TerminalSessionRegistry.swift in Sources */,
 				A50016E1 /* DaemonConnection.swift in Sources */,
