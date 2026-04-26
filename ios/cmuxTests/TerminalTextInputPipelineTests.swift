@@ -15,4 +15,35 @@ final class TerminalTextInputPipelineTests: XCTestCase {
         XCTAssertEqual(result.committedText, "日本")
         XCTAssertEqual(result.nextBufferText, "")
     }
+
+    func testCursorBlinkStateTogglesOnInterval() {
+        var state = TerminalCursorBlinkState()
+
+        state.start(now: 10)
+
+        XCTAssertTrue(state.isVisible)
+        XCTAssertFalse(state.advance(now: 10.49))
+        XCTAssertTrue(state.isVisible)
+        XCTAssertTrue(state.advance(now: 10.5))
+        XCTAssertFalse(state.isVisible)
+        XCTAssertTrue(state.advance(now: 11.0))
+        XCTAssertTrue(state.isVisible)
+    }
+
+    func testCursorBlinkStateResetMakesCursorVisible() {
+        var state = TerminalCursorBlinkState()
+
+        state.start(now: 10)
+        _ = state.advance(now: 10.5)
+        state.reset(now: 12)
+
+        XCTAssertTrue(state.isVisible)
+        XCTAssertFalse(state.advance(now: 12.49))
+        XCTAssertTrue(state.isVisible)
+    }
+
+    func testTerminalFontZoomDirectionUsesGhosttyBindingActions() {
+        XCTAssertEqual(TerminalFontZoomDirection.decrease.bindingAction, "decrease_font_size:1")
+        XCTAssertEqual(TerminalFontZoomDirection.increase.bindingAction, "increase_font_size:1")
+    }
 }

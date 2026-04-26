@@ -60,6 +60,91 @@ final class TerminalInputTextViewTests: XCTestCase {
         XCTAssertLessThanOrEqual(scrollView?.frame.maxX ?? .greatestFiniteMagnitude, toolbar.bounds.maxX - 16)
     }
 
+    func testAccessoryToolbarIncludesZoomButtons() {
+        let textView = TerminalInputTextView()
+        guard let toolbar = textView.inputAccessoryView else {
+            return XCTFail("Expected terminal input accessory toolbar")
+        }
+
+        let zoomOutButton = toolbar.subviewsRecursive().compactMap { $0 as? UIButton }.first {
+            $0.accessibilityIdentifier == TerminalInputAccessoryAction.zoomOut.accessibilityIdentifier
+        }
+        let zoomInButton = toolbar.subviewsRecursive().compactMap { $0 as? UIButton }.first {
+            $0.accessibilityIdentifier == TerminalInputAccessoryAction.zoomIn.accessibilityIdentifier
+        }
+
+        XCTAssertNotNil(zoomOutButton?.image(for: .normal))
+        XCTAssertNotNil(zoomInButton?.image(for: .normal))
+        XCTAssertEqual(zoomOutButton?.accessibilityLabel, TerminalInputAccessoryAction.zoomOut.accessibilityLabel)
+        XCTAssertEqual(zoomInButton?.accessibilityLabel, TerminalInputAccessoryAction.zoomIn.accessibilityLabel)
+    }
+
+    func testAccessoryZoomButtonsMatchStandardButtonDimensions() {
+        let textView = TerminalInputTextView()
+        guard let toolbar = textView.inputAccessoryView else {
+            return XCTFail("Expected terminal input accessory toolbar")
+        }
+
+        toolbar.frame = CGRect(x: 0, y: 0, width: 393, height: 44)
+        toolbar.setNeedsLayout()
+        toolbar.layoutIfNeeded()
+
+        let buttons = toolbar.subviewsRecursive().compactMap { $0 as? UIButton }
+        let zoomOutButton = buttons.first {
+            $0.accessibilityIdentifier == TerminalInputAccessoryAction.zoomOut.accessibilityIdentifier
+        }
+        let zoomInButton = buttons.first {
+            $0.accessibilityIdentifier == TerminalInputAccessoryAction.zoomIn.accessibilityIdentifier
+        }
+        let escapeButton = buttons.first {
+            $0.accessibilityIdentifier == TerminalInputAccessoryAction.escape.accessibilityIdentifier
+        }
+
+        guard let zoomOutButton, let zoomInButton, let escapeButton else {
+            return XCTFail("Missing one or more accessory buttons needed for sizing assertions")
+        }
+
+        XCTAssertEqual(zoomOutButton.bounds.height, escapeButton.bounds.height, accuracy: 0.5)
+        XCTAssertEqual(zoomInButton.bounds.height, escapeButton.bounds.height, accuracy: 0.5)
+        XCTAssertEqual(zoomOutButton.bounds.width, escapeButton.bounds.width, accuracy: 0.5)
+        XCTAssertEqual(zoomInButton.bounds.width, escapeButton.bounds.width, accuracy: 0.5)
+    }
+
+    func testAccessoryZoomActionsCallZoomHandlerWithoutTerminalBytes() {
+        let textView = TerminalInputTextView()
+        var zooms: [TerminalFontZoomDirection] = []
+        var escapeOutputs: [Data] = []
+        var textOutputs: [String] = []
+        textView.onZoom = { zooms.append($0) }
+        textView.onEscapeSequence = { escapeOutputs.append($0) }
+        textView.onText = { textOutputs.append($0) }
+
+        textView.simulateAccessoryActionForTesting(.zoomOut)
+        textView.simulateAccessoryActionForTesting(.zoomIn)
+
+        XCTAssertEqual(zooms, [.decrease, .increase])
+        XCTAssertTrue(escapeOutputs.isEmpty)
+        XCTAssertTrue(textOutputs.isEmpty)
+    }
+
+    func testAccessoryZoomDisarmsModifierState() {
+        let textView = TerminalInputTextView()
+        var zooms: [TerminalFontZoomDirection] = []
+        var escapeOutputs: [Data] = []
+        var textOutputs: [String] = []
+        textView.onZoom = { zooms.append($0) }
+        textView.onEscapeSequence = { escapeOutputs.append($0) }
+        textView.onText = { textOutputs.append($0) }
+
+        textView.simulateAccessoryActionForTesting(.control)
+        textView.simulateAccessoryActionForTesting(.zoomIn)
+        textView.simulateTextChangeForTesting("c", isComposing: false)
+
+        XCTAssertEqual(zooms, [.increase])
+        XCTAssertTrue(escapeOutputs.isEmpty)
+        XCTAssertEqual(textOutputs, ["c"])
+    }
+
     func testInsertTextSuppressesMirroredTextViewChange() {
         let textView = TerminalInputTextView()
         var outputs: [String] = []

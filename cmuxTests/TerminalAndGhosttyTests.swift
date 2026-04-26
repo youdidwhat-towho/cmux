@@ -4214,75 +4214,75 @@ final class GhosttyTerminalViewVisibilityPolicyTests: XCTestCase {
 
     func testSurfaceResizeDeferralRequiresRealDragOutsideLiveResize() {
         XCTAssertTrue(
-            GhosttyTerminalView.shouldDeferSurfaceResizeForActiveDrag(
+            GhosttyNSView.shouldDeferSurfaceResizeForActiveDrag(
                 hasTabDragPasteboardTypes: true,
                 eventType: .leftMouseDragged,
-                windowInLiveResize: false
+                interactiveGeometryResizeActive: false
             )
         )
     }
 
-    func testSurfaceResizeDeferralSkipsLiveWindowResizeEvenWithTabDragPasteboard() {
+    func testSurfaceResizeDeferralSkipsInteractiveGeometryResizeEvenWithTabDragPasteboard() {
         XCTAssertFalse(
-            GhosttyTerminalView.shouldDeferSurfaceResizeForActiveDrag(
+            GhosttyNSView.shouldDeferSurfaceResizeForActiveDrag(
                 hasTabDragPasteboardTypes: true,
                 eventType: .leftMouseDragged,
-                windowInLiveResize: true
+                interactiveGeometryResizeActive: true
             )
         )
     }
 
     func testSurfaceResizeDeferralSkipsNonDragEvents() {
         XCTAssertFalse(
-            GhosttyTerminalView.shouldDeferSurfaceResizeForActiveDrag(
+            GhosttyNSView.shouldDeferSurfaceResizeForActiveDrag(
                 hasTabDragPasteboardTypes: true,
                 eventType: .leftMouseUp,
-                windowInLiveResize: false
+                interactiveGeometryResizeActive: false
             )
         )
     }
 
     func testCoreSurfaceTargetSizePrefersLiveScrollBoundsOverStaleContentSizeWidth() {
         XCTAssertEqual(
-            GhosttySurfaceScrollView.coreSurfaceTargetSize(
-                hostedBounds: CGSize.zero,
-                scrollBounds: CGSize(width: 600, height: 388),
-                contentSize: CGSize(width: 840, height: 388)
+            GhosttySurfaceScrollView.synchronizedCoreSurfaceFrame(
+                currentOrigin: CGPoint(x: 12, y: 34),
+                containerSize: CGSize(width: 600, height: 388),
+                letterboxRect: nil
             ),
-            CGSize(width: 600, height: 388)
+            CGRect(x: 12, y: 34, width: 600, height: 388)
         )
     }
 
     func testCoreSurfaceTargetSizePrefersLiveScrollBoundsOverStaleContentSizeHeight() {
         XCTAssertEqual(
-            GhosttySurfaceScrollView.coreSurfaceTargetSize(
-                hostedBounds: CGSize.zero,
-                scrollBounds: CGSize(width: 700, height: 420),
-                contentSize: CGSize(width: 700, height: 588)
+            GhosttySurfaceScrollView.synchronizedCoreSurfaceFrame(
+                currentOrigin: CGPoint(x: 8, y: 16),
+                containerSize: CGSize(width: 700, height: 420),
+                letterboxRect: nil
             ),
-            CGSize(width: 700, height: 420)
+            CGRect(x: 8, y: 16, width: 700, height: 420)
         )
     }
 
-    func testCoreSurfaceTargetSizeFallsBackToContentSizeWhenLiveBoundsUnavailable() {
+    func testCoreSurfaceTargetSizeKeepsCurrentOriginWhenUnconstrained() {
         XCTAssertEqual(
-            GhosttySurfaceScrollView.coreSurfaceTargetSize(
-                hostedBounds: CGSize.zero,
-                scrollBounds: CGSize.zero,
-                contentSize: CGSize(width: 700, height: 588)
+            GhosttySurfaceScrollView.synchronizedCoreSurfaceFrame(
+                currentOrigin: CGPoint(x: 20, y: 30),
+                containerSize: CGSize(width: 700, height: 588),
+                letterboxRect: CGRect(x: 0, y: 0, width: 700, height: 588)
             ),
-            CGSize(width: 700, height: 588)
+            CGRect(x: 20, y: 30, width: 700, height: 588)
         )
     }
 
-    func testCoreSurfaceTargetSizePrefersHostedBoundsDuringPortalResize() {
+    func testCoreSurfaceTargetSizeUsesPinnedLetterboxWhenSmallerThanContainer() {
         XCTAssertEqual(
-            GhosttySurfaceScrollView.coreSurfaceTargetSize(
-                hostedBounds: CGSize(width: 1000, height: 738),
-                scrollBounds: CGSize(width: 700, height: 388),
-                contentSize: CGSize(width: 700, height: 388)
+            GhosttySurfaceScrollView.synchronizedCoreSurfaceFrame(
+                currentOrigin: CGPoint(x: 20, y: 30),
+                containerSize: CGSize(width: 1000, height: 738),
+                letterboxRect: CGRect(x: 0, y: 0, width: 700, height: 388)
             ),
-            CGSize(width: 1000, height: 738)
+            CGRect(x: 0, y: 0, width: 700, height: 388)
         )
     }
 }

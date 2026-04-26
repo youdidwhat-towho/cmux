@@ -4869,6 +4869,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
             to: &env,
             protectedKeys: &protectedStartupEnvironmentKeys
         )
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(
+            to: &env,
+            protectedKeys: &protectedStartupEnvironmentKeys
+        )
         func setManagedEnvironmentValue(_ key: String, _ value: String) {
             env[key] = value
             protectedStartupEnvironmentKeys.insert(key)
@@ -4883,10 +4887,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
         setManagedEnvironmentValue("CMUX_SOCKET_PATH", socketPath)
         // Backward-compatible alias expected by older scripts and third-party integrations.
         setManagedEnvironmentValue("CMUX_SOCKET", socketPath)
-        if let bundledCLIURL = Bundle.main.resourceURL?.appendingPathComponent("bin/cmux"),
-           FileManager.default.isExecutableFile(atPath: bundledCLIURL.path) {
-            setManagedEnvironmentValue("CMUX_BUNDLED_CLI_PATH", bundledCLIURL.path)
-        }
         if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
             setManagedEnvironmentValue("CMUX_BUNDLE_ID", bundleId)
         }
@@ -4911,17 +4911,6 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
         if !GeminiIntegrationSettings.hooksEnabled() {
             setManagedEnvironmentValue("CMUX_GEMINI_HOOKS_DISABLED", "1")
-        }
-
-        if let cliBinPath = Bundle.main.resourceURL?.appendingPathComponent("bin").path {
-            let currentPath = env["PATH"]
-                ?? getenv("PATH").map { String(cString: $0) }
-                ?? ProcessInfo.processInfo.environment["PATH"]
-                ?? ""
-            if !currentPath.split(separator: ":").contains(Substring(cliBinPath)) {
-                let separator = currentPath.isEmpty ? "" : ":"
-                setManagedEnvironmentValue("PATH", "\(cliBinPath)\(separator)\(currentPath)")
-            }
         }
 
         // Shell integration: inject ZDOTDIR wrapper for zsh shells.
@@ -6953,17 +6942,29 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
     }
 
-    private static func shouldDeferSurfaceResizeForActiveDrag() -> Bool {
+    static func shouldDeferSurfaceResizeForActiveDrag(
+        hasTabDragPasteboardTypes: Bool,
+        eventType: NSEvent.EventType?,
+        interactiveGeometryResizeActive: Bool
+    ) -> Bool {
         // The drag pasteboard can retain tab-transfer UTIs briefly after a split command
         // or other layout churn. Only defer terminal resizes while an actual drag event
         // is in flight; otherwise pre-existing panes can stay stuck at their old size.
         // Interactive geometry resize already has an explicit fast path for sidebar and
         // split-divider drags. Do not let stale drag-pasteboard state suppress those updates.
-        if TerminalWindowPortalRegistry.isInteractiveGeometryResizeActive {
+        if interactiveGeometryResizeActive {
             return false
         }
-        guard hasTabDragPasteboardTypes() else { return false }
-        return isDragResizeEvent(NSApp.currentEvent?.type)
+        guard hasTabDragPasteboardTypes else { return false }
+        return isDragResizeEvent(eventType)
+    }
+
+    private static func shouldDeferSurfaceResizeForActiveDrag() -> Bool {
+        shouldDeferSurfaceResizeForActiveDrag(
+            hasTabDragPasteboardTypes: hasTabDragPasteboardTypes(),
+            eventType: NSApp.currentEvent?.type,
+            interactiveGeometryResizeActive: TerminalWindowPortalRegistry.isInteractiveGeometryResizeActive
+        )
     }
 
     private func activeSurfaceResizeDeferralReason() -> String? {
@@ -10084,6 +10085,26 @@ final class GhosttySurfaceScrollView: NSView {
         }
     }
 
+    static func synchronizedCoreSurfaceFrame(
+        currentOrigin: CGPoint,
+        containerSize: CGSize,
+        letterboxRect: CGRect?
+    ) -> CGRect {
+        if let pin = letterboxRect,
+           pin.width > 0,
+           pin.height > 0,
+           pin.width + 0.5 < containerSize.width || pin.height + 0.5 < containerSize.height {
+            return CGRect(
+                x: 0,
+                y: 0,
+                width: min(pin.width, containerSize.width),
+                height: min(pin.height, containerSize.height)
+            )
+        }
+
+        return CGRect(origin: currentOrigin, size: containerSize)
+    }
+
     private static func flashPresentation(for style: FlashStyle) -> WorkspaceAttentionFlashPresentation {
         switch style {
         case .navigation:
@@ -10829,19 +10850,11 @@ final class GhosttySurfaceScrollView: NSView {
         // renders into a small corner of a larger layer whose remaining
         // pixels keep ghost content from the previous grid). Otherwise
         // fill the container.
-        let targetSurfaceFrame: CGRect
-        if let pin = surfaceView.letterboxRect,
-           pin.width > 0, pin.height > 0,
-           pin.width + 0.5 < targetSize.width || pin.height + 0.5 < targetSize.height {
-            targetSurfaceFrame = CGRect(
-                x: 0,
-                y: 0,
-                width: min(pin.width, targetSize.width),
-                height: min(pin.height, targetSize.height)
-            )
-        } else {
-            targetSurfaceFrame = CGRect(origin: surfaceView.frame.origin, size: targetSize)
-        }
+        let targetSurfaceFrame = Self.synchronizedCoreSurfaceFrame(
+            currentOrigin: surfaceView.frame.origin,
+            containerSize: targetSize,
+            letterboxRect: surfaceView.letterboxRect
+        )
         #if DEBUG
         let prevFrame = surfaceView.frame
         #endif

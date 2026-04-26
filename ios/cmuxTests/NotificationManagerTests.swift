@@ -70,6 +70,64 @@ final class NotificationManagerTests: XCTestCase {
             )
         )
     }
+
+    func testLaunchPolicyCanSkipPermissionPrompt() async {
+        let system = StubNotificationSystem()
+        let manager = NotificationManager(
+            pushSyncer: StubNotificationPushSyncer(),
+            tokenStore: InMemoryNotificationTokenStore(),
+            routeStore: NotificationRouteStore(),
+            system: system,
+            deviceInfo: StubNotificationDeviceInfo(
+                bundleIdentifier: "dev.cmux.app.dev.sim",
+                vendorIdentifier: "device-123"
+            ),
+            permissionRequestPolicy: StubNotificationPermissionRequestPolicy(allowedTriggers: [.settings]),
+            observeDidBecomeActive: false
+        )
+
+        await manager.requestAuthorizationIfNeeded(trigger: .launch)
+
+        XCTAssertEqual(system.requestAuthorizationCallCount, 0)
+        XCTAssertFalse(system.didRegisterForRemoteNotifications)
+        XCTAssertEqual(manager.authorizationStatus, .notDetermined)
+    }
+
+    func testSettingsTriggerStillRequestsPermissionWhenPolicyAllowsIt() async {
+        let system = StubNotificationSystem()
+        let manager = NotificationManager(
+            pushSyncer: StubNotificationPushSyncer(),
+            tokenStore: InMemoryNotificationTokenStore(),
+            routeStore: NotificationRouteStore(),
+            system: system,
+            deviceInfo: StubNotificationDeviceInfo(
+                bundleIdentifier: "dev.cmux.app.dev.sim",
+                vendorIdentifier: "device-123"
+            ),
+            permissionRequestPolicy: StubNotificationPermissionRequestPolicy(allowedTriggers: [.settings]),
+            observeDidBecomeActive: false
+        )
+
+        await manager.requestAuthorizationIfNeeded(trigger: .settings)
+
+        XCTAssertEqual(system.requestAuthorizationCallCount, 1)
+        XCTAssertTrue(system.didRegisterForRemoteNotifications)
+        XCTAssertEqual(manager.authorizationStatus, .authorized)
+    }
+
+    func testLivePolicySkipsLaunchPromptOnSimulator() {
+        let policy = LiveNotificationPermissionRequestPolicy(runsOnSimulator: true)
+
+        XCTAssertFalse(policy.shouldRequestAuthorization(trigger: .launch))
+        XCTAssertTrue(policy.shouldRequestAuthorization(trigger: .settings))
+    }
+
+    func testLivePolicyKeepsLaunchPromptOnDeviceBuilds() {
+        let policy = LiveNotificationPermissionRequestPolicy(runsOnSimulator: false)
+
+        XCTAssertTrue(policy.shouldRequestAuthorization(trigger: .launch))
+        XCTAssertTrue(policy.shouldRequestAuthorization(trigger: .settings))
+    }
 }
 
 @MainActor
@@ -134,6 +192,7 @@ private final class InMemoryNotificationTokenStore: NotificationTokenStoring {
 private final class StubNotificationSystem: NotificationSystemHandling {
     var status: UNAuthorizationStatus = .notDetermined
     var requestAuthorizationResult = true
+    var requestAuthorizationCallCount = 0
     var didRegisterForRemoteNotifications = false
     var didOpenSettings = false
 
@@ -142,6 +201,7 @@ private final class StubNotificationSystem: NotificationSystemHandling {
     }
 
     func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
+        requestAuthorizationCallCount += 1
         status = requestAuthorizationResult ? .authorized : .denied
         return requestAuthorizationResult
     }
@@ -163,6 +223,14 @@ private final class StubNotificationSystem: NotificationSystemHandling {
 private struct StubNotificationDeviceInfo: NotificationDeviceInfoProviding {
     let bundleIdentifier: String?
     let vendorIdentifier: String?
+}
+
+private struct StubNotificationPermissionRequestPolicy: NotificationPermissionRequestPolicy {
+    let allowedTriggers: Set<NotificationRequestTrigger>
+
+    func shouldRequestAuthorization(trigger: NotificationRequestTrigger) -> Bool {
+        allowedTriggers.contains(trigger)
+    }
 }
 
 @MainActor

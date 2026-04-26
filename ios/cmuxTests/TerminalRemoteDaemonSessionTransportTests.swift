@@ -340,6 +340,135 @@ final class TerminalRemoteDaemonSessionTransportTests: XCTestCase {
         await transport.disconnect()
     }
 
+    func testFreshSharedAttachCombinesSubscribeSnapshotWithInitialHistory() async throws {
+        let historyData = Data("cmux welcome\r\nRun cmux shortcuts to edit shortcuts.\r\n".utf8)
+        let gapData = Data("Run cmux feedback to report a bug.\r\n\r\nlawrence in / λ ".utf8)
+        let historyOffset: UInt64 = 10
+        let gapEndOffset = historyOffset + UInt64(gapData.count)
+        let client = StubDaemonSessionClient(
+            hello: .init(
+                name: "cmuxd-remote",
+                version: "dev",
+                instanceID: nil,
+                capabilities: ["terminal.stream", "terminal.subscribe"]
+            ),
+            attachResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    attachments: [],
+                    effectiveCols: 49,
+                    effectiveRows: 34,
+                    lastKnownCols: 49,
+                    lastKnownRows: 34,
+                    gridGeneration: nil
+                )
+            ),
+            openResult: .init(
+                sessionID: "sess-opened",
+                attachmentID: "att-opened",
+                attachments: [],
+                effectiveCols: 49,
+                effectiveRows: 34,
+                lastKnownCols: 49,
+                lastKnownRows: 34,
+                offset: 0,
+                gridGeneration: nil
+            ),
+            readResults: [],
+            historyResult: .init(
+                sessionID: "sess-shared",
+                history: String(decoding: historyData, as: UTF8.self),
+                nextOffset: historyOffset
+            ),
+            subscribeResult: .success(
+                .init(
+                    sessionID: "sess-shared",
+                    offset: gapEndOffset,
+                    baseOffset: 0,
+                    truncated: false,
+                    eof: false,
+                    data: gapData
+                )
+            )
+        )
+        let transport = TerminalRemoteDaemonSessionTransport(
+            client: client,
+            command: "tmux new-session -A -s demo",
+            sharedSessionID: "sess-shared"
+        )
+        let outputs = LockedOutputs()
+
+        transport.eventHandler = { event in
+            if case .output(let data) = event {
+                outputs.append(data)
+            }
+        }
+
+        try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 49, rows: 34))
+
+        var expectedReplay = historyData
+        expectedReplay.append(gapData)
+        XCTAssertEqual(outputs.values(), [expectedReplay])
+
+        let readCalls = await client.recordedReads()
+        XCTAssertEqual(readCalls.count, 0)
+
+        let subscribeCalls = await client.recordedSubscriptions()
+        XCTAssertEqual(subscribeCalls.count, 1)
+        XCTAssertEqual(subscribeCalls.first?.sessionID, "sess-shared")
+        XCTAssertEqual(subscribeCalls.first?.offset, historyOffset)
+
+        await transport.disconnect()
+    }
+
+    func testSharedSessionNotFoundDoesNotOpenOrphanTerminal() async throws {
+        let client = StubDaemonSessionClient(
+            hello: .init(
+                name: "cmuxd-remote",
+                version: "dev",
+                instanceID: nil,
+                capabilities: ["terminal.stream"]
+            ),
+            attachResult: .failure(
+                TerminalRemoteDaemonClientError.rpc(code: "not_found", message: "session not found")
+            ),
+            openResult: .init(
+                sessionID: "sess-orphan",
+                attachmentID: "att-orphan",
+                attachments: [],
+                effectiveCols: 100,
+                effectiveRows: 30,
+                lastKnownCols: 100,
+                lastKnownRows: 30,
+                offset: 0,
+                gridGeneration: nil
+            ),
+            readResults: []
+        )
+        let transport = TerminalRemoteDaemonSessionTransport(
+            client: client,
+            command: "tmux new-session -A -s demo",
+            sharedSessionID: "sess-restored"
+        )
+
+        do {
+            try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 100, rows: 30))
+            XCTFail("Expected missing shared session to wait for the daemon-owned session")
+        } catch TerminalRemoteDaemonSessionTransportError.sharedSessionUnavailable(let sessionID) {
+            XCTAssertEqual(sessionID, "sess-restored")
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let attachCalls = await client.recordedAttaches()
+        let openedCommands = await client.openedCommands()
+        let openedSessionIDs = await client.recordedOpenedSessionIDs()
+        XCTAssertEqual(attachCalls.count, 1)
+        XCTAssertEqual(attachCalls.first?.sessionID, "sess-restored")
+        XCTAssertEqual(openedCommands, [String]())
+        XCTAssertEqual(openedSessionIDs, [String?]())
+    }
+
     func testDuplicateAndOverlappingPushPayloadsOnlyEmitNewBytes() async throws {
         let client = StubDaemonSessionClient(
             hello: .init(
@@ -490,6 +619,7 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient, Termin
     private var detachValues: [(sessionID: String, attachmentID: String)] = []
     private var writeValues: [Data] = []
     private var resizeValues: [(sessionID: String, attachmentID: String, cols: Int, rows: Int)] = []
+    private var readValues: [(sessionID: String, offset: UInt64, maxBytes: Int, timeoutMilliseconds: Int)] = []
     private var closedSessionValues: [String] = []
     private var historyValues: [(sessionID: String, format: String)] = []
     private var subscribeValues: [(sessionID: String, offset: UInt64?)] = []
@@ -549,6 +679,7 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient, Termin
         maxBytes: Int,
         timeoutMilliseconds: Int
     ) async throws -> TerminalRemoteDaemonTerminalReadResult {
+        readValues.append((sessionID, offset, maxBytes, timeoutMilliseconds))
         guard !readResults.isEmpty else {
             throw TerminalRemoteDaemonClientError.rpc(
                 code: "deadline_exceeded",
@@ -610,6 +741,10 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient, Termin
         openedCommandValues
     }
 
+    func recordedOpenedSessionIDs() -> [String?] {
+        openedSessionIDs
+    }
+
     func recordedAttaches() -> [(sessionID: String, attachmentID: String, cols: Int, rows: Int)] {
         attachValues
     }
@@ -620,6 +755,10 @@ private actor StubDaemonSessionClient: TerminalRemoteDaemonSessionClient, Termin
 
     func recordedResizes() -> [(sessionID: String, attachmentID: String, cols: Int, rows: Int)] {
         resizeValues
+    }
+
+    func recordedReads() -> [(sessionID: String, offset: UInt64, maxBytes: Int, timeoutMilliseconds: Int)] {
+        readValues
     }
 
     func recordedDetaches() -> [(sessionID: String, attachmentID: String)] {

@@ -4,6 +4,259 @@ import Darwin
 import Bonsplit
 import UniformTypeIdentifiers
 
+enum WorkspaceTitlebarSettings {
+    static let showTitlebarKey = "workspaceTitlebarVisible"
+    static let defaultShowTitlebar = true
+
+    static func isVisible(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: showTitlebarKey) == nil {
+            return defaultShowTitlebar
+        }
+        return defaults.bool(forKey: showTitlebarKey)
+    }
+}
+
+enum WorkspacePresentationModeSettings {
+    static let modeKey = "workspacePresentationMode"
+
+    enum Mode: String {
+        case standard
+        case minimal
+    }
+
+    static let defaultMode: Mode = .standard
+
+    static func mode(for rawValue: String?) -> Mode {
+        Mode(rawValue: rawValue ?? "") ?? defaultMode
+    }
+
+    static func mode(defaults: UserDefaults = .standard) -> Mode {
+        mode(for: defaults.string(forKey: modeKey))
+    }
+
+    static func isMinimal(defaults: UserDefaults = .standard) -> Bool {
+        mode(defaults: defaults) == .minimal
+    }
+}
+
+enum WorkspaceButtonFadeSettings {
+    static let modeKey = "workspaceButtonsFadeMode"
+    static let legacyTitlebarControlsVisibilityModeKey = "titlebarControlsVisibilityMode"
+    static let legacyPaneTabBarControlsVisibilityModeKey = "paneTabBarControlsVisibilityMode"
+
+    enum Mode: String {
+        case enabled
+        case disabled
+    }
+
+    static let defaultMode: Mode = .disabled
+
+    static func mode(for rawValue: String?) -> Mode {
+        Mode(rawValue: rawValue ?? "") ?? defaultMode
+    }
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        mode(for: defaults.string(forKey: modeKey)) == .enabled
+    }
+
+    static func initializeStoredModeIfNeeded(defaults: UserDefaults = .standard) {
+        guard defaults.string(forKey: modeKey) == nil else { return }
+
+        if let migratedMode = migratedLegacyMode(defaults: defaults) {
+            defaults.set(migratedMode.rawValue, forKey: modeKey)
+            return
+        }
+
+        let initialMode: Mode = WorkspaceTitlebarSettings.isVisible(defaults: defaults) ? .disabled : .enabled
+        defaults.set(initialMode.rawValue, forKey: modeKey)
+    }
+
+    private static func migratedLegacyMode(defaults: UserDefaults) -> Mode? {
+        let legacyValues = [
+            defaults.string(forKey: legacyTitlebarControlsVisibilityModeKey),
+            defaults.string(forKey: legacyPaneTabBarControlsVisibilityModeKey),
+        ]
+
+        if legacyValues.contains(where: { $0 == "onHover" || $0 == "hover" || $0 == "enabled" }) {
+            return .enabled
+        }
+        if legacyValues.contains(where: { $0 == "always" || $0 == "disabled" }) {
+            return .disabled
+        }
+        return nil
+    }
+}
+
+enum PaneFirstClickFocusSettings {
+    static let enabledKey = "paneFirstClickFocus.enabled"
+    static let defaultEnabled = false
+
+    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
+        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
+    }
+}
+
+enum TerminalScrollBarSettings {
+    static let showScrollBarKey = "terminal.showScrollBar"
+    static let defaultShowScrollBar = true
+    static let didChangeNotification = Notification.Name("cmux.terminalScrollBarSettingsDidChange")
+
+    static func isVisible(defaults: UserDefaults = .standard) -> Bool {
+        if defaults.object(forKey: showScrollBarKey) == nil {
+            return defaultShowScrollBar
+        }
+        return defaults.bool(forKey: showScrollBarKey)
+    }
+
+    static func notifyDidChange(notificationCenter: NotificationCenter = .default) {
+        notificationCenter.post(name: didChangeNotification, object: nil)
+    }
+}
+
+enum CmuxBundleTerminalEnvironment {
+    static func overrides(
+        processEnvironment: [String: String],
+        resourceURL: URL?,
+        executableURL: URL?,
+        bundleIdentifier: String?,
+        bundleVersion: String?,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        var overrides: [String: String] = [
+            "TERM": TerminalSurface.managedTerminalType,
+            "COLORTERM": TerminalSurface.managedColorTerm,
+            "TERM_PROGRAM": TerminalSurface.managedTerminalProgram,
+        ]
+
+        if let bundleIdentifier, !bundleIdentifier.isEmpty {
+            overrides["CMUX_BUNDLE_ID"] = bundleIdentifier
+        }
+        if let bundleVersion, !bundleVersion.isEmpty {
+            overrides["TERM_PROGRAM_VERSION"] = bundleVersion
+        }
+        if let executableURL {
+            overrides["GHOSTTY_BIN_DIR"] = executableURL.deletingLastPathComponent().path
+        }
+
+        guard let resourceURL else {
+            return overrides
+        }
+
+        let shellIntegrationDir = resourceURL.appendingPathComponent("shell-integration", isDirectory: true)
+        let ghosttyDir = resourceURL.appendingPathComponent("ghostty", isDirectory: true)
+        let terminfoDir = resourceURL.appendingPathComponent("terminfo", isDirectory: true)
+        let binDir = resourceURL.appendingPathComponent("bin", isDirectory: true)
+        let bundledCLI = binDir.appendingPathComponent("cmux", isDirectory: false)
+        let manDir = resourceURL.appendingPathComponent("man", isDirectory: true)
+
+        overrides["CMUX_SHELL_INTEGRATION_DIR"] = shellIntegrationDir.path
+        overrides["GHOSTTY_RESOURCES_DIR"] = ghosttyDir.path
+        overrides["TERMINFO"] = terminfoDir.path
+        overrides["PATH"] = pathListPrepending(
+            binDir.path,
+            to: processEnvironment["PATH"] ?? ""
+        )
+        overrides["XDG_DATA_DIRS"] = pathListPrepending(
+            resourceURL.path,
+            to: processEnvironment["XDG_DATA_DIRS"] ?? "/usr/local/share:/usr/share"
+        )
+        overrides["MANPATH"] = pathListPrepending(
+            manDir.path,
+            to: processEnvironment["MANPATH"] ?? ""
+        )
+
+        if fileManager.isExecutableFile(atPath: bundledCLI.path) {
+            overrides["CMUX_BUNDLED_CLI_PATH"] = bundledCLI.path
+        }
+
+        return overrides
+    }
+
+    static func applyCurrentBundle(
+        to environment: inout [String: String],
+        protectedKeys: inout Set<String>,
+        processEnvironment: [String: String] = cmuxCurrentProcessEnvironment(),
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) {
+        let baseEnvironment = environment.merging(processEnvironment) { current, _ in current }
+        let values = overrides(
+            processEnvironment: baseEnvironment,
+            resourceURL: bundle.resourceURL,
+            executableURL: bundle.executableURL,
+            bundleIdentifier: bundle.bundleIdentifier,
+            bundleVersion: bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+            fileManager: fileManager
+        )
+        for (key, value) in values where !value.isEmpty {
+            environment[key] = value
+            protectedKeys.insert(key)
+        }
+    }
+
+    static func applyCurrentBundle(
+        to environment: inout [String: String],
+        processEnvironment: [String: String] = cmuxCurrentProcessEnvironment(),
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) {
+        var protectedKeys: Set<String> = []
+        applyCurrentBundle(
+            to: &environment,
+            protectedKeys: &protectedKeys,
+            processEnvironment: processEnvironment,
+            bundle: bundle,
+            fileManager: fileManager
+        )
+    }
+
+    private static func pathListPrepending(_ path: String, to current: String) -> String {
+        guard !path.isEmpty else { return current }
+        let entries = current
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .map(String.init)
+            .filter { $0 != path }
+        return ([path] + entries).joined(separator: ":")
+    }
+}
+
+enum UITestLaunchManifest {
+    static let argumentName = "-cmuxUITestLaunchManifest"
+
+    struct Payload: Decodable {
+        let environment: [String: String]
+    }
+
+    static func applyIfPresent(
+        arguments: [String] = CommandLine.arguments,
+        loadData: (String) -> Data? = { path in
+            try? Data(contentsOf: URL(fileURLWithPath: path))
+        },
+        applyEnvironment: (String, String) -> Void = { key, value in
+            setenv(key, value, 1)
+        }
+    ) {
+        guard let path = manifestPath(from: arguments),
+              let data = loadData(path),
+              let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
+            return
+        }
+
+        for (key, value) in payload.environment {
+            applyEnvironment(key, value)
+        }
+    }
+
+    static func manifestPath(from arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: argumentName) else { return nil }
+        let valueIndex = arguments.index(after: index)
+        guard valueIndex < arguments.endIndex else { return nil }
+
+        let rawPath = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines)
+        return rawPath.isEmpty ? nil : rawPath
+    }
+}
+
 @main
 struct cmuxApp: App {
     @StateObject private var tabManager: TabManager
@@ -75,65 +328,35 @@ struct cmuxApp: App {
     }
 
     private static func configureGhosttyEnvironment() {
-        let fileManager = FileManager.default
-        let ghosttyAppResources = "/Applications/Ghostty.app/Contents/Resources/ghostty"
-        let bundledGhosttyURL = Bundle.main.resourceURL?.appendingPathComponent("ghostty")
-        var resolvedResourcesDir: String?
+        let overrides = ghosttyEnvironmentOverrides(
+            processEnvironment: cmuxCurrentProcessEnvironment(),
+            resourceURL: Bundle.main.resourceURL,
+            executableURL: Bundle.main.executableURL,
+            bundleIdentifier: Bundle.main.bundleIdentifier,
+            bundleVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        )
 
-        if getenv("GHOSTTY_RESOURCES_DIR") == nil {
-            if let bundledGhosttyURL,
-               fileManager.fileExists(atPath: bundledGhosttyURL.path),
-               fileManager.fileExists(atPath: bundledGhosttyURL.appendingPathComponent("themes").path) {
-                resolvedResourcesDir = bundledGhosttyURL.path
-            } else if fileManager.fileExists(atPath: ghosttyAppResources) {
-                resolvedResourcesDir = ghosttyAppResources
-            } else if let bundledGhosttyURL, fileManager.fileExists(atPath: bundledGhosttyURL.path) {
-                resolvedResourcesDir = bundledGhosttyURL.path
-            }
-
-            if let resolvedResourcesDir {
-                setenv("GHOSTTY_RESOURCES_DIR", resolvedResourcesDir, 1)
-            }
-        }
-
-        if getenv("TERM") == nil {
-            setenv("TERM", TerminalSurface.managedTerminalType, 1)
-        }
-
-        if getenv("COLORTERM") == nil {
-            setenv("COLORTERM", TerminalSurface.managedColorTerm, 1)
-        }
-
-        if getenv("TERM_PROGRAM") == nil {
-            setenv("TERM_PROGRAM", TerminalSurface.managedTerminalProgram, 1)
-        }
-
-        if let resourcesDir = getenv("GHOSTTY_RESOURCES_DIR").flatMap({ String(cString: $0) }) {
-            let resourcesURL = URL(fileURLWithPath: resourcesDir)
-            let resourcesParent = resourcesURL.deletingLastPathComponent()
-            let dataDir = resourcesParent.path
-            let manDir = resourcesParent.appendingPathComponent("man").path
-
-            appendEnvPathIfMissing(
-                "XDG_DATA_DIRS",
-                path: dataDir,
-                defaultValue: "/usr/local/share:/usr/share"
-            )
-            appendEnvPathIfMissing("MANPATH", path: manDir)
+        for (key, value) in overrides where !value.isEmpty {
+            setenv(key, value, 1)
         }
     }
 
-    private static func appendEnvPathIfMissing(_ key: String, path: String, defaultValue: String? = nil) {
-        if path.isEmpty { return }
-        var current = getenv(key).flatMap { String(cString: $0) } ?? ""
-        if current.isEmpty, let defaultValue {
-            current = defaultValue
-        }
-        if current.split(separator: ":").contains(Substring(path)) {
-            return
-        }
-        let updated = current.isEmpty ? path : "\(current):\(path)"
-        setenv(key, updated, 1)
+    static func ghosttyEnvironmentOverrides(
+        processEnvironment: [String: String],
+        resourceURL: URL?,
+        executableURL: URL?,
+        bundleIdentifier: String?,
+        bundleVersion: String?,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        CmuxBundleTerminalEnvironment.overrides(
+            processEnvironment: processEnvironment,
+            resourceURL: resourceURL,
+            executableURL: executableURL,
+            bundleIdentifier: bundleIdentifier,
+            bundleVersion: bundleVersion,
+            fileManager: fileManager
+        )
     }
 
     private func migrateSidebarAppearanceDefaultsIfNeeded(defaults: UserDefaults) {

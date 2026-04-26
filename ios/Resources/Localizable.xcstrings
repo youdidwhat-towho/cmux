@@ -2,6 +2,20 @@
   "sourceLanguage" : "en",
   "version" : "1.0",
   "strings" : {
+    "terminal.input_accessory.zoom_in" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Zoom In" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "拡大" } }
+      }
+    },
+    "terminal.input_accessory.zoom_out" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Zoom Out" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "縮小" } }
+      }
+    },
     "terminal.home.action.delete" : {
       "extractionState" : "manual",
       "localizations" : {
@@ -735,6 +749,13 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Terminal surface unavailable" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "ターミナル画面を作成できません" } }
+      }
+    },
+    "terminal.workspace.waiting_for_daemon" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for Mac to finish starting this workspace…" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Mac がこのワークスペースの起動を完了するのを待っています…" } }
       }
     },
     "terminal.workspace.unavailable_title" : {

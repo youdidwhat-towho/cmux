@@ -494,7 +494,7 @@ final class TerminalDirectDaemonTransportTests: XCTestCase {
             TerminalRemoteDaemonResumeState(
                 sessionID: "sess-ticket",
                 attachmentID: "att-ticket",
-                readOffset: 17
+                readOffset: 0
             )
         )
     }

@@ -431,7 +431,11 @@ final class TerminalSidebarStoreTests: XCTestCase {
         let host = try XCTUnwrap(fixture.store.hosts.first(where: { $0.stableID == "machine_123" }))
         let workspace = try XCTUnwrap(fixture.store.workspace(with: workspaceID))
 
+        #if DEBUG && targetEnvironment(simulator)
+        XCTAssertEqual(host.hostname, "127.0.0.1")
+        #else
         XCTAssertEqual(host.hostname, "cmux-macmini.tail")
+        #endif
         XCTAssertEqual(host.serverID, "cmux-macmini.tail")
         XCTAssertEqual(host.transportPreference, .remoteDaemon)
         XCTAssertEqual(workspace.remoteWorkspaceID, "workspace_123")
@@ -1011,7 +1015,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testControllerCreationPersistsInitialSurfaceFailure() throws {
+    func testControllerCreationPersistsInitialSurfaceFailure() async throws {
         let surfaceError = "Ghostty surface boot failed."
         let host = TerminalHost(
             name: "Mac Mini",
@@ -1047,6 +1051,11 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         let controller = fixture.store.controller(for: workspace)
+        controller.connectIfNeeded()
+        try await waitForCondition {
+            surfaceFactory.attemptCount == 1 && controller.phase == .failed
+        }
+
         let persistedWorkspace = try XCTUnwrap(
             fixture.snapshotStore.load().workspaces.first(where: { $0.id == workspace.id })
         )
@@ -1336,6 +1345,9 @@ final class TerminalSidebarStoreTests: XCTestCase {
             transportFactory: transportFactory,
             networkPathMonitor: networkMonitor
         )
+        fixture.store.simulateNetworkPathUpdateForTesting(
+            TerminalNetworkPathState(isReachable: true, signature: "wifi")
+        )
 
         _ = fixture.store.openWorkspace(workspace)
         await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
@@ -1545,15 +1557,19 @@ final class TerminalSidebarStoreTests: XCTestCase {
 
         _ = fixture.store.openWorkspace(workspace)
         await fulfillment(of: [initialConnectStartedExpectation], timeout: 1.0)
+        let selectedController = fixture.store.controller(for: workspace)
+        XCTAssertEqual(selectedController.phase, .reconnecting)
 
-        networkMonitor.send(TerminalNetworkPathState(isReachable: true, signature: "cellular"))
-        await fulfillment(of: [initialDisconnectExpectation], timeout: 1.0)
+        fixture.store.simulateNetworkPathUpdateForTesting(
+            TerminalNetworkPathState(isReachable: true, signature: "cellular")
+        )
+        await fulfillment(of: [initialDisconnectExpectation, replacementConnectedExpectation], timeout: 1.0)
 
         XCTAssertEqual(initialTransport.disconnectCallCount, 1)
-        XCTAssertEqual(replacementTransport.connectCallCount, 0)
+        XCTAssertEqual(replacementTransport.connectCallCount, 1)
 
         await connectGate.open()
-        await fulfillment(of: [replacementConnectedExpectation], timeout: 1.0)
+        await Task.yield()
 
         XCTAssertEqual(replacementTransport.connectCallCount, 1)
     }
@@ -1603,6 +1619,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
         return (store, snapshotStore, credentialsStore, workspaceIdentityService, workspaceMetadataService)
     }
+
 }
 
 @MainActor

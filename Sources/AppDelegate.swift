@@ -13894,6 +13894,9 @@ final class MobileDaemonBridgeInline {
             "--parent-pid", String(ProcessInfo.processInfo.processIdentifier),
             "--db-path", dbPath,
         ]
+        var daemonEnvironment = cmuxCurrentProcessEnvironment()
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(to: &daemonEnvironment)
+        proc.environment = daemonEnvironment
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         proc.terminationHandler = { [weak self] _ in self?.cleanup() }

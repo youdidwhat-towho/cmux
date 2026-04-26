@@ -43,11 +43,17 @@ protocol TerminalRemoteDaemonSessionClient: Sendable {
 
 enum TerminalRemoteDaemonSessionTransportError: LocalizedError {
     case missingCapability(String)
+    case sharedSessionUnavailable(String)
 
     var errorDescription: String? {
         switch self {
         case .missingCapability(let capability):
             return "Remote daemon is missing required capability \(capability)."
+        case .sharedSessionUnavailable:
+            return String(
+                localized: "terminal.workspace.waiting_for_daemon",
+                defaultValue: "Waiting for Mac to finish starting this workspace…"
+            )
         }
     }
 }
@@ -81,6 +87,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
     private var readTask: Task<Void, Never>?
     private var closed = false
     private var pushSubscribed = false
+    private var pendingInitialReplayData: Data?
 
     init(
         client: any TerminalRemoteDaemonSessionClient,
@@ -119,6 +126,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             log.debug("Push subscription active")
         } else {
             try await preparePollingOffset(start: subscriptionStart)
+            emitPendingInitialReplayDataIfNeeded()
             startReadLoop()
             log.debug("Fallback polling read loop started")
         }
@@ -211,7 +219,8 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
                 return nil
             } catch let error as TerminalRemoteDaemonClientError {
                 if case .rpc(let code, _) = error, code == "not_found" {
-                    log.debug("Shared session \(sharedSessionID, privacy: .public) not found, creating")
+                    log.debug("Shared session \(sharedSessionID, privacy: .public) not found, waiting for daemon-owned session")
+                    throw TerminalRemoteDaemonSessionTransportError.sharedSessionUnavailable(sharedSessionID)
                 } else {
                     throw error
                 }
@@ -277,7 +286,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             command: command,
             cols: cols,
             rows: rows,
-            sessionID: sharedSessionID
+            sessionID: nil
         )
 
         withLockedState {
@@ -347,19 +356,28 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         guard let bootstrap else { return .storedOffset }
 
         let result = try await client.sessionHistory(sessionID: bootstrap.sessionID, format: "vt")
-        if !result.history.isEmpty {
-            eventHandler?(.output(Data(result.history.utf8)))
-        }
+        log.debug(
+            "Initial VT history session=\(bootstrap.sessionID, privacy: .public) bytes=\(result.history.utf8.count, privacy: .public) nextOffset=\(String(describing: result.nextOffset), privacy: .public) containsPrompt=\(Self.containsPromptLikeText(result.history), privacy: .public) containsFeedback=\(result.history.contains("feedback"), privacy: .public) tail=\(Self.textTailSummary(result.history), privacy: .public)"
+        )
 
         if let nextOffset = result.nextOffset {
             withLockedState {
                 if sessionID == bootstrap.sessionID {
                     self.nextOffset = nextOffset
+                    self.pendingInitialReplayData = Data(result.history.utf8)
                 }
             }
             return .exactOffset(nextOffset)
         }
 
+        let replayData = Data(result.history.utf8)
+        if !replayData.isEmpty {
+            withLockedState {
+                if sessionID == bootstrap.sessionID {
+                    self.pendingInitialReplayData = replayData
+                }
+            }
+        }
         log.warning("session.history for \(bootstrap.sessionID, privacy: .public) did not include next_offset; falling back to tail-only subscribe")
         return .currentTail
     }
@@ -387,12 +405,23 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             throw error
         }
 
-        applySubscriptionPayload(
+        log.debug(
+            "Initial subscribe payload session=\(state.sessionID, privacy: .public) bytes=\(result.data.count, privacy: .public) offset=\(result.offset, privacy: .public) truncated=\(result.truncated, privacy: .public) eof=\(result.eof, privacy: .public) containsPrompt=\(Self.dataContainsPromptLikeText(result.data), privacy: .public) containsFeedback=\(Self.dataContains(result.data, "feedback"), privacy: .public) tail=\(Self.dataTailSummary(result.data), privacy: .public)"
+        )
+        let handledInitialReplay = applyInitialReplaySubscriptionPayload(
             data: result.data,
             offset: result.offset,
             truncated: result.truncated,
             eof: result.eof
         )
+        if !handledInitialReplay {
+            applySubscriptionPayload(
+                data: result.data,
+                offset: result.offset,
+                truncated: result.truncated,
+                eof: result.eof
+            )
+        }
     }
 
     private func preparePollingOffset(start: SubscriptionStart) async throws {
@@ -422,6 +451,39 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
         case .currentTail:
             return nil
         }
+    }
+
+    private static func textTailSummary(_ text: String, maxCharacters: Int = 220) -> String {
+        guard !text.isEmpty else { return "<empty>" }
+        let tail = String(text.suffix(maxCharacters))
+        return sanitizeForLog(tail)
+    }
+
+    private static func dataTailSummary(_ data: Data, maxBytes: Int = 220) -> String {
+        guard !data.isEmpty else { return "<empty>" }
+        let tail = data.suffix(maxBytes)
+        return sanitizeForLog(String(decoding: tail, as: UTF8.self))
+    }
+
+    private static func sanitizeForLog(_ text: String) -> String {
+        let escaped = text
+            .replacingOccurrences(of: "\u{001B}", with: "<ESC>")
+            .replacingOccurrences(of: "\r", with: "<CR>")
+            .replacingOccurrences(of: "\n", with: "<LF>")
+        guard escaped.count > 260 else { return escaped }
+        return "\(escaped.prefix(260))..."
+    }
+
+    private static func containsPromptLikeText(_ text: String) -> Bool {
+        text.contains("lawrence") || text.contains(" λ") || text.contains("$ ") || text.contains("% ")
+    }
+
+    private static func dataContainsPromptLikeText(_ data: Data) -> Bool {
+        containsPromptLikeText(String(decoding: data, as: UTF8.self))
+    }
+
+    private static func dataContains(_ data: Data, _ needle: String) -> Bool {
+        String(decoding: data, as: UTF8.self).contains(needle)
     }
 
     private func handlePushEvent(_ event: TerminalPushEvent) {
@@ -468,6 +530,51 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             log.debug("EOF via push for session")
             clearSessionState()
             finishDisconnect(error: nil)
+        }
+    }
+
+    @discardableResult
+    private func applyInitialReplaySubscriptionPayload(
+        data: Data,
+        offset: UInt64,
+        truncated: Bool,
+        eof: Bool
+    ) -> Bool {
+        guard let initialReplay = takePendingInitialReplayData() else { return false }
+        let filtered = takeNewSubscriptionData(data: data, offset: offset)
+        log.debug(
+            "Apply initial replay payload initialBytes=\(initialReplay.count, privacy: .public) rawBytes=\(data.count, privacy: .public) filteredBytes=\(filtered.data.count, privacy: .public) offset=\(offset, privacy: .public) advanced=\(filtered.didAdvance, privacy: .public) truncated=\(truncated, privacy: .public) eof=\(eof, privacy: .public) tail=\(Self.dataTailSummary(filtered.data), privacy: .public)"
+        )
+
+        var replay = initialReplay
+        if truncated, filtered.didAdvance {
+            log.warning("Initial subscribe payload was truncated; using VT history snapshot without truncated raw tail")
+        } else if !filtered.data.isEmpty {
+            replay.append(filtered.data)
+        }
+
+        if !replay.isEmpty {
+            eventHandler?(.output(replay))
+        }
+
+        if eof {
+            log.debug("EOF via initial push for session")
+            clearSessionState()
+            finishDisconnect(error: nil)
+        }
+        return true
+    }
+
+    private func emitPendingInitialReplayDataIfNeeded() {
+        guard let initialReplay = takePendingInitialReplayData(), !initialReplay.isEmpty else { return }
+        eventHandler?(.output(initialReplay))
+    }
+
+    private func takePendingInitialReplayData() -> Data? {
+        withLockedState {
+            let data = pendingInitialReplayData
+            pendingInitialReplayData = nil
+            return data
         }
     }
 
@@ -582,6 +689,7 @@ final class TerminalRemoteDaemonSessionTransport: @unchecked Sendable, TerminalT
             sessionID = nil
             attachmentID = nil
             nextOffset = 0
+            pendingInitialReplayData = nil
         }
     }
 

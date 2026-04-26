@@ -111,23 +111,6 @@ struct CmuxSurfaceConfigTemplate {
     }
 }
 
-enum WorkspacePendingTerminalInputReason {
-    case configurationCommand
-}
-
-enum WorkspacePendingTerminalInputPolicy {
-    static func timeout(for reason: WorkspacePendingTerminalInputReason) -> TimeInterval? {
-        switch reason {
-        case .configurationCommand:
-            return 3.0
-        }
-    }
-}
-
-private final class WorkspacePendingTerminalInputObserver: @unchecked Sendable {
-    var observer: NSObjectProtocol?
-}
-
 func cmuxSurfaceContextName(_ context: ghostty_surface_context_e) -> String {
     switch context {
     case GHOSTTY_SURFACE_CONTEXT_WINDOW:
@@ -584,8 +567,9 @@ extension Workspace {
 
     #if DEBUG
     private func preCreateDaemonSessionsForRestoredPanels() {
-        // The daemon may not be running yet when restoration happens (it starts
-        // asynchronously in applicationDidFinishLaunching). Retry until it's ready.
+        restoredDaemonPreCreateCancellable?.cancel()
+        restoredDaemonPreCreateCancellable = nil
+
         let terminalPanels = panels.values.compactMap { $0 as? TerminalPanel }
         guard !terminalPanels.isEmpty else { return }
         // Collect surface IDs and any saved daemon session IDs (from previous quit).
@@ -594,38 +578,45 @@ extension Workspace {
         let panelInfo: [(surfaceID: UUID, savedSessionID: String?)] = terminalPanels.map {
             ($0.surface.id, $0.surface.savedDaemonSessionID)
         }
+        guard panelInfo.contains(where: { $0.savedSessionID != nil }) else { return }
+
         let workspaceID = self.id
         dlog("preCreateDaemonSessions.scheduled workspace=\(workspaceID.uuidString.prefix(8)) panels=\(panelInfo.count)")
-        Self.retryPreCreate(workspaceID: workspaceID, panelInfo: panelInfo, attempts: 0)
+
+        if MobileDaemonBridgeInline.shared.isRunning {
+            Self.performPreCreateDaemonSessions(workspaceID: workspaceID, panelInfo: panelInfo)
+            return
+        }
+
+        restoredDaemonPreCreateCancellable = NotificationCenter.default
+            .publisher(for: .cmuxDaemonHealthChanged)
+            .compactMap { $0.userInfo?["state"] as? DaemonHealthState }
+            .filter { $0 == .healthy }
+            .prefix(1)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                self?.restoredDaemonPreCreateCancellable = nil
+                Self.performPreCreateDaemonSessions(workspaceID: workspaceID, panelInfo: panelInfo)
+            }
     }
 
-    private static func retryPreCreate(workspaceID: UUID, panelInfo: [(surfaceID: UUID, savedSessionID: String?)], attempts: Int) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + (attempts == 0 ? 0.5 : 1.0)) {
-            let daemonRunning = MobileDaemonBridgeInline.shared.isRunning
-            if daemonRunning {
-                dlog("preCreateDaemonSessions.ready workspace=\(workspaceID.uuidString.prefix(8)) attempts=\(attempts)")
-                for info in panelInfo {
-                    // Only pre-create when we have a persisted daemon
-                    // session id to restore. Fresh panels (no saved id)
-                    // get their id minted by `workspace.open_pane` when
-                    // the surface comes up, not here.
-                    guard let sessionID = info.savedSessionID else { continue }
-                    let shellCommand = buildPreCreateShellCommand(
-                        workspaceID: workspaceID,
-                        surfaceID: info.surfaceID
-                    )
-                    DaemonConnection.ensureSession(
-                        sessionID: sessionID,
-                        shellCommand: shellCommand
-                    )
-                }
-                return
-            }
-            if attempts < 10 {
-                retryPreCreate(workspaceID: workspaceID, panelInfo: panelInfo, attempts: attempts + 1)
-            } else {
-                dlog("preCreateDaemonSessions.giveup workspace=\(workspaceID.uuidString.prefix(8))")
-            }
+    private static func performPreCreateDaemonSessions(
+        workspaceID: UUID,
+        panelInfo: [(surfaceID: UUID, savedSessionID: String?)]
+    ) {
+        dlog("preCreateDaemonSessions.ready workspace=\(workspaceID.uuidString.prefix(8))")
+        for info in panelInfo {
+            // Only pre-create when we have a persisted daemon session id to
+            // restore. Fresh panels get their id minted by `workspace.open_pane`.
+            guard let sessionID = info.savedSessionID else { continue }
+            let shellCommand = buildPreCreateShellCommand(
+                workspaceID: workspaceID,
+                surfaceID: info.surfaceID
+            )
+            DaemonConnection.ensureSession(
+                sessionID: sessionID,
+                shellCommand: shellCommand
+            )
         }
     }
 
@@ -649,20 +640,14 @@ extension Workspace {
         if let bundleId = Bundle.main.bundleIdentifier {
             env["CMUX_BUNDLE_ID"] = bundleId
         }
-        if let resourceURL = Bundle.main.resourceURL {
-            let shellIntegrationDir = resourceURL.appendingPathComponent("shell-integration").path
-            env["CMUX_SHELL_INTEGRATION_DIR"] = shellIntegrationDir
-            env["GHOSTTY_RESOURCES_DIR"] = resourceURL.appendingPathComponent("ghostty").path
-            env["TERMINFO"] = resourceURL.appendingPathComponent("terminfo").path
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(to: &env)
+        if let shellIntegrationDir = env["CMUX_SHELL_INTEGRATION_DIR"] {
             // For zsh, set ZDOTDIR so shell integration loads
             let shellName = URL(fileURLWithPath: shell).lastPathComponent
             if shellName == "zsh" {
                 env["ZDOTDIR"] = shellIntegrationDir
                 env["CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION"] = "1"
             }
-            let binDir = resourceURL.appendingPathComponent("bin").path
-            let currentPath = ProcessInfo.processInfo.environment["PATH"] ?? ""
-            env["PATH"] = "\(binDir):\(currentPath)"
         }
 
         var envPairs: [String] = []
@@ -1347,92 +1332,21 @@ extension Workspace {
         }
     }
 
-    private func sendInputWhenReady(
-        _ text: String,
-        to panel: TerminalPanel,
-        reason: WorkspacePendingTerminalInputReason = .configurationCommand
-    ) {
+    private func sendInputWhenReady(_ text: String, to panel: TerminalPanel) {
         if panel.surface.surface != nil {
             panel.sendInput(text)
             return
         }
 
-        let timeout = WorkspacePendingTerminalInputPolicy.timeout(for: reason)
-        let panelId = panel.id
-        let registration = WorkspacePendingTerminalInputObserver()
-
-        registration.observer = NotificationCenter.default.addObserver(
-            forName: .terminalSurfaceDidBecomeReady,
-            object: panel.surface,
-            queue: .main
-        ) { [weak self, registration] _ in
-            Task { @MainActor [weak self, registration] in
-                guard
-                    let self,
-                    self.hasPendingTerminalInputObserver(registration, forPanelId: panelId)
-                else {
-                    return
-                }
-
-                self.removePendingTerminalInputObserver(registration, forPanelId: panelId)
-                if let panel = self.panels[panelId] as? TerminalPanel {
-                    panel.sendInput(text)
-                }
+        let pendingInputID = UUID()
+        pendingSurfaceInputCancellables[pendingInputID] = NotificationCenter.default
+            .publisher(for: .terminalSurfaceDidBecomeReady, object: panel.surface)
+            .prefix(1)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak panel] _ in
+                self?.pendingSurfaceInputCancellables[pendingInputID] = nil
+                panel?.sendInput(text)
             }
-        }
-        pendingTerminalInputObserversByPanelId[panelId, default: []].append(registration)
-
-        guard let timeout else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { [weak self, registration] in
-            Task { @MainActor [weak self, registration] in
-                guard
-                    let self,
-                    self.hasPendingTerminalInputObserver(registration, forPanelId: panelId)
-                else {
-                    return
-                }
-
-                self.removePendingTerminalInputObserver(registration, forPanelId: panelId)
-                NSLog("[CmuxConfig] surface not ready after 3s, dropping command (%d chars)", text.count)
-            }
-        }
-    }
-
-    private func hasPendingTerminalInputObserver(
-        _ registration: WorkspacePendingTerminalInputObserver,
-        forPanelId panelId: UUID
-    ) -> Bool {
-        pendingTerminalInputObserversByPanelId[panelId]?.contains {
-            $0 === registration
-        } == true
-    }
-
-    private func removePendingTerminalInputObserver(
-        _ registration: WorkspacePendingTerminalInputObserver,
-        forPanelId panelId: UUID
-    ) {
-        if let observer = registration.observer {
-            NotificationCenter.default.removeObserver(observer)
-            registration.observer = nil
-        }
-        pendingTerminalInputObserversByPanelId[panelId]?.removeAll {
-            $0 === registration
-        }
-        if pendingTerminalInputObserversByPanelId[panelId]?.isEmpty == true {
-            pendingTerminalInputObserversByPanelId.removeValue(forKey: panelId)
-        }
-    }
-
-    private func removePendingTerminalInputObservers(forPanelId panelId: UUID) {
-        guard let observers = pendingTerminalInputObserversByPanelId.removeValue(forKey: panelId) else {
-            return
-        }
-        for registration in observers {
-            if let observer = registration.observer {
-                NotificationCenter.default.removeObserver(observer)
-                registration.observer = nil
-            }
-        }
     }
 
 }
@@ -7501,6 +7415,12 @@ enum LocalTerminalDaemonBridge {
         var managedEnvironment = environment
         for (k, v) in additionalEnvironment { managedEnvironment[k] = v }
         for (k, v) in initialEnvironmentOverrides { managedEnvironment[k] = v }
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(
+            to: &managedEnvironment,
+            processEnvironment: environment,
+            bundle: bundle,
+            fileManager: fileManager
+        )
 
         let daemonCommand = daemonSessionCommand(
             environment: sanitizedDaemonEnvironment(managedEnvironment),
@@ -7615,6 +7535,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Subscriptions for panel updates (e.g., browser title changes)
     private var panelSubscriptions: [UUID: AnyCancellable] = [:]
+    private var pendingSurfaceInputCancellables: [UUID: AnyCancellable] = [:]
 
     /// When true, suppresses auto-creation in didSplitPane (programmatic splits handle their own panels)
     private var isProgrammaticSplit = false
@@ -7628,6 +7549,9 @@ final class Workspace: Identifiable, ObservableObject {
     /// Per-panel inherited zoom lineage. Descendants reuse this root value unless
     /// a panel is explicitly re-zoomed by the user.
     private var terminalInheritanceFontPointsByPanelId: [UUID: Float] = [:]
+    #if DEBUG
+    private var restoredDaemonPreCreateCancellable: AnyCancellable?
+    #endif
 
     /// Callback used by TabManager to capture recently closed browser panels for Cmd+Shift+T restore.
     var onClosedBrowserPanel: ((ClosedBrowserPanelRestoreSnapshot) -> Void)?
@@ -7731,8 +7655,6 @@ final class Workspace: Identifiable, ObservableObject {
     private var restoredAgentSnapshotsByPanelId: [UUID: SessionRestorableAgentSnapshot] = [:]
     private var restoredAgentAutoResumePendingPanelIds: Set<UUID> = []
     private var invalidatedRestoredAgentFingerprintsByPanelId: [UUID: Int] = [:]
-    private var pendingTerminalInputObserversByPanelId: [UUID: [WorkspacePendingTerminalInputObserver]] = [:]
-
     private func sidebarObservationSignal<Value: Equatable>(
         _ publisher: Published<Value>.Publisher
     ) -> AnyPublisher<Void, Never> {
@@ -8064,13 +7986,9 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     deinit {
-        for registrations in pendingTerminalInputObserversByPanelId.values {
-            for registration in registrations {
-                if let observer = registration.observer {
-                    NotificationCenter.default.removeObserver(observer)
-                }
-            }
-        }
+        #if DEBUG
+        restoredDaemonPreCreateCancellable?.cancel()
+        #endif
         activeRemoteSessionControllerID = nil
         remoteSessionController?.stop()
     }
@@ -9013,9 +8931,6 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     func pruneSurfaceMetadata(validSurfaceIds: Set<UUID>) {
-        for panelId in Array(pendingTerminalInputObserversByPanelId.keys) where !validSurfaceIds.contains(panelId) {
-            removePendingTerminalInputObservers(forPanelId: panelId)
-        }
         panelDirectories = panelDirectories.filter { validSurfaceIds.contains($0.key) }
         panelTitles = panelTitles.filter { validSurfaceIds.contains($0.key) }
         panelCustomTitles = panelCustomTitles.filter { validSurfaceIds.contains($0.key) }
@@ -10557,7 +10472,6 @@ final class Workspace: Identifiable, ObservableObject {
 
         let panelEntries = Array(panels)
         for (panelId, panel) in panelEntries {
-            removePendingTerminalInputObservers(forPanelId: panelId)
             panelSubscriptions.removeValue(forKey: panelId)
             PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
             panel.close()
@@ -10566,10 +10480,10 @@ final class Workspace: Identifiable, ObservableObject {
         panels.removeAll(keepingCapacity: false)
         surfaceIdToPanelId.removeAll(keepingCapacity: false)
         panelSubscriptions.removeAll(keepingCapacity: false)
+        pendingSurfaceInputCancellables.removeAll(keepingCapacity: false)
         pendingRemoteTerminalChildExitSurfaceIds.removeAll(keepingCapacity: false)
         pruneSurfaceMetadata(validSurfaceIds: [])
         restoredTerminalScrollbackByPanelId.removeAll(keepingCapacity: false)
-        pendingTerminalInputObserversByPanelId.removeAll(keepingCapacity: false)
         terminalInheritanceFontPointsByPanelId.removeAll(keepingCapacity: false)
         lastTerminalConfigInheritancePanelId = nil
         lastTerminalConfigInheritanceFontPoints = nil
@@ -13096,7 +13010,6 @@ extension Workspace: BonsplitDelegate {
         #endif
 
         let panel = panels[panelId]
-        removePendingTerminalInputObservers(forPanelId: panelId)
         let transferredRemoteCleanupConfiguration = transferredRemoteCleanupConfigurationsByPanelId.removeValue(forKey: panelId)
 
         if isDetaching, let panel {
@@ -13287,7 +13200,6 @@ extension Workspace: BonsplitDelegate {
 
         if !closedPanelIds.isEmpty {
             for panelId in closedPanelIds {
-                removePendingTerminalInputObservers(forPanelId: panelId)
                 panels[panelId]?.close()
                 panels.removeValue(forKey: panelId)
                 untrackRemoteTerminalSurface(panelId)

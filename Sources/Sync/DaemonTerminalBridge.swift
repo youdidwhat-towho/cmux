@@ -3,6 +3,34 @@ import Foundation
 import Bonsplit
 #endif
 
+struct DaemonInitialWriteGate {
+    let enabled: Bool
+    private(set) var hasReceivedOutput = false
+
+    var shouldQueueWrites: Bool {
+        enabled && !hasReceivedOutput
+    }
+
+    mutating func takeWritesForAssignedSession(_ pendingWrites: inout [Data]) -> (writes: [Data], queuedCount: Int) {
+        guard shouldQueueWrites else {
+            let writes = pendingWrites
+            pendingWrites = []
+            return (writes, 0)
+        }
+        return ([], pendingWrites.count)
+    }
+
+    mutating func takeWritesAfterOutput(_ pendingWrites: inout [Data], outputIsEmpty: Bool) -> (writes: [Data], becameReady: Bool) {
+        guard shouldQueueWrites, !outputIsEmpty else {
+            return ([], false)
+        }
+        hasReceivedOutput = true
+        let writes = pendingWrites
+        pendingWrites = []
+        return (writes, true)
+    }
+}
+
 /// Thin facade preserving the old per-surface bridge API while routing all
 /// socket I/O through the single shared `DaemonConnection`. Creates no socket
 /// of its own.
@@ -38,6 +66,7 @@ final class DaemonTerminalBridge: @unchecked Sendable {
     private var pendingStart: (cols: Int, rows: Int)?
     private var pendingWrites: [Data] = []
     private var pendingResize: (cols: Int, rows: Int)?
+    private var initialWriteGate: DaemonInitialWriteGate
 
     var onOutput: ((_ data: Data) -> Void)?
     var onDisconnect: ((_ error: String?) -> Void)?
@@ -48,6 +77,7 @@ final class DaemonTerminalBridge: @unchecked Sendable {
         self.surfaceID = surfaceID
         self.sessionID = sessionID
         self.shellCommand = shellCommand
+        self.initialWriteGate = DaemonInitialWriteGate(enabled: sessionID == nil)
     }
 
     deinit { stopInternal() }
@@ -81,13 +111,14 @@ final class DaemonTerminalBridge: @unchecked Sendable {
         let shouldStart = started && !subscribed
         let pendingStart = self.pendingStart
         let pendingResize = self.pendingResize
-        let pendingWrites = self.pendingWrites
+        let assignedWrites = initialWriteGate.takeWritesForAssignedSession(&self.pendingWrites)
+        let pendingWrites = assignedWrites.writes
+        let queuedWriteCount = assignedWrites.queuedCount
         self.pendingStart = nil
         self.pendingResize = nil
-        self.pendingWrites = []
         lock.unlock()
         #if DEBUG
-        dlog("blank.bridge.assignSessionID sid=\(sid) shouldStart=\(shouldStart) pendingStart=\(pendingStart.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingResize=\(pendingResize.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingWrites=\(pendingWrites.count)")
+        dlog("blank.bridge.assignSessionID sid=\(sid) shouldStart=\(shouldStart) pendingStart=\(pendingStart.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingResize=\(pendingResize.map { "\($0.cols)x\($0.rows)" } ?? "nil") pendingWrites=\(pendingWrites.count) queuedUntilOutput=\(queuedWriteCount)")
         #endif
 
         if shouldStart, let ps = pendingStart {
@@ -142,10 +173,36 @@ final class DaemonTerminalBridge: @unchecked Sendable {
             shellCommand: shellCommand,
             cols: cols,
             rows: rows,
-            onOutput: { [weak self] data in self?.onOutput?(data) },
+            onOutput: { [weak self] data in
+                self?.handleDaemonOutput(data, sessionID: sessionID)
+            },
             onDisconnect: { [weak self] err in self?.onDisconnect?(err) },
             onViewSize: { [weak self] c, r in self?.onViewSize?(c, r) }
         )
+    }
+
+    private func handleDaemonOutput(_ data: Data, sessionID: String) {
+        let writesToFlush: [Data]
+        let didMarkInitialOutputReady: Bool
+        lock.lock()
+        let flushed = initialWriteGate.takeWritesAfterOutput(&pendingWrites, outputIsEmpty: data.isEmpty)
+        writesToFlush = flushed.writes
+        didMarkInitialOutputReady = flushed.becameReady
+        lock.unlock()
+
+        #if DEBUG
+        if !writesToFlush.isEmpty {
+            dlog("blank.bridge.initialOutput.flush sid=\(sessionID) bytes=\(data.count) pendingWrites=\(writesToFlush.count)")
+        } else if didMarkInitialOutputReady {
+            dlog("blank.bridge.initialOutput.ready sid=\(sessionID) bytes=\(data.count)")
+        }
+        #endif
+
+        onOutput?(data)
+
+        for pending in writesToFlush {
+            DaemonConnection.shared.writeToSession(sessionID: sessionID, data: pending)
+        }
     }
 
     func stop() { stopInternal() }
@@ -176,6 +233,15 @@ final class DaemonTerminalBridge: @unchecked Sendable {
             return
         }
         if let sid = sessionID {
+            if initialWriteGate.shouldQueueWrites {
+                pendingWrites.append(data)
+                let pendingWriteCount = pendingWrites.count
+                lock.unlock()
+                #if DEBUG
+                dlog("blank.bridge.write.queued_until_initial_output surface=\(surfaceID.uuidString.prefix(8)) sid=\(sid) bytes=\(data.count) pendingWrites=\(pendingWriteCount)")
+                #endif
+                return
+            }
             lock.unlock()
             DaemonConnection.shared.writeToSession(sessionID: sid, data: data)
             return

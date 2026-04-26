@@ -114,6 +114,30 @@ struct LiveNotificationDeviceInfo: NotificationDeviceInfoProviding {
     }
 }
 
+protocol NotificationPermissionRequestPolicy {
+    func shouldRequestAuthorization(trigger: NotificationRequestTrigger) -> Bool
+}
+
+struct LiveNotificationPermissionRequestPolicy: NotificationPermissionRequestPolicy {
+    private let runsOnSimulator: Bool
+
+    init(runsOnSimulator: Bool = Self.defaultRunsOnSimulator) {
+        self.runsOnSimulator = runsOnSimulator
+    }
+
+    func shouldRequestAuthorization(trigger: NotificationRequestTrigger) -> Bool {
+        !(runsOnSimulator && trigger == .launch)
+    }
+
+    private static var defaultRunsOnSimulator: Bool {
+        #if targetEnvironment(simulator)
+        true
+        #else
+        false
+        #endif
+    }
+}
+
 @MainActor
 @Observable
 final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
@@ -127,6 +151,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
     private let routeStore: NotificationRouteStore
     private let system: NotificationSystemHandling
     private let deviceInfo: NotificationDeviceInfoProviding
+    private let permissionRequestPolicy: NotificationPermissionRequestPolicy
     private var isRequestInFlight = false
 
     private override init() {
@@ -135,6 +160,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         self.routeStore = .shared
         self.system = LiveNotificationSystem()
         self.deviceInfo = LiveNotificationDeviceInfo()
+        self.permissionRequestPolicy = LiveNotificationPermissionRequestPolicy()
         super.init()
         NotificationCenter.default.addObserver(
             self,
@@ -150,6 +176,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         routeStore: NotificationRouteStore,
         system: NotificationSystemHandling,
         deviceInfo: NotificationDeviceInfoProviding,
+        permissionRequestPolicy: NotificationPermissionRequestPolicy = LiveNotificationPermissionRequestPolicy(),
         observeDidBecomeActive: Bool
     ) {
         self.pushSyncer = pushSyncer
@@ -157,6 +184,7 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
         self.routeStore = routeStore
         self.system = system
         self.deviceInfo = deviceInfo
+        self.permissionRequestPolicy = permissionRequestPolicy
         super.init()
         if observeDidBecomeActive {
             NotificationCenter.default.addObserver(
@@ -224,6 +252,10 @@ final class NotificationManager: NSObject, UNUserNotificationCenterDelegate {
             if isAuthorized {
                 registerForRemoteNotifications()
             }
+            return
+        }
+
+        guard permissionRequestPolicy.shouldRequestAuthorization(trigger: trigger) else {
             return
         }
 

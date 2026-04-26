@@ -1152,6 +1152,12 @@ final class TerminalSidebarStore {
         }
     }
 
+    #if DEBUG
+    func simulateNetworkPathUpdateForTesting(_ state: TerminalNetworkPathState) {
+        handleNetworkPathUpdate(state)
+    }
+    #endif
+
     private func makeController(for workspace: TerminalWorkspace, host: TerminalHost) -> TerminalSessionController {
         let controller = controllerFactory(
             workspace,
@@ -1568,8 +1574,15 @@ final class TerminalSessionController {
     private let surfaceFactory: @MainActor (GhosttySurfaceViewDelegate) throws -> any TerminalSurfaceHosting
 
     private var terminalSurface: (any TerminalSurfaceHosting)?
+    private var surfaceNeedsInitialReplay = false
     private var remoteDaemonResumeState: TerminalRemoteDaemonResumeState?
     private var transport: TerminalTransport?
+    @ObservationIgnored
+    private let transportEventQueue = DispatchQueue(
+        label: "dev.cmux.TerminalSessionController.transport-events",
+        qos: .userInitiated,
+        target: .main
+    )
     private var transportConnectTask: Task<Void, Never>?
     private var transportDisconnectTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -1668,9 +1681,11 @@ final class TerminalSessionController {
             queueReconnectAfterPendingTransportWork(reconnecting: reconnecting)
             return
         }
-        let createdFreshSurface = terminalSurface == nil
-        guard ensureTerminalSurface(), let terminalSurface else {
-            setPhase(.failed, error: errorMessage ?? TerminalStoreStrings.surfaceUnavailableError)
+        guard ensureTerminalSurface() else {
+            return
+        }
+        guard let terminalSurface else {
+            setPhase(.failed, error: TerminalStoreStrings.surfaceUnavailableError)
             return
         }
         guard host.isConfigured else {
@@ -1716,12 +1731,16 @@ final class TerminalSessionController {
             host: host,
             credentials: credentials,
             sessionName: effectiveSessionName,
-            resumeState: resumeStateForConnect(createdFreshSurface: createdFreshSurface)
+            resumeState: resumeStateForConnect(surfaceNeedsInitialReplay: surfaceNeedsInitialReplay)
         )
-        transport.eventHandler = { [weak self, weak transport] event in
-            Task { @MainActor in
-                guard let self, let transport, self.isCurrentTransport(transport) else { return }
-                self.handle(event: event)
+        let transportEventQueue = self.transportEventQueue
+        let transportID = ObjectIdentifier(transport as AnyObject)
+        transport.eventHandler = { [weak self] event in
+            transportEventQueue.async { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, self.isCurrentTransport(transportID) else { return }
+                    self.handle(event: event)
+                }
             }
         }
         self.transport = transport
@@ -1746,7 +1765,9 @@ final class TerminalSessionController {
                     if isCurrentTransport {
                         transport.eventHandler = nil
                         self.transport = nil
-                        if let sshError = error as? TerminalSSHError {
+                        if case TerminalRemoteDaemonSessionTransportError.sharedSessionUnavailable = error {
+                            self.setPhase(.connecting, error: error.localizedDescription)
+                        } else if let sshError = error as? TerminalSSHError {
                             switch sshError {
                             case .untrustedHostKey(let hostKey), .hostKeyChanged(let hostKey):
                                 self.onUpdate?(.pendingHostKey(hostKey))
@@ -1809,7 +1830,12 @@ final class TerminalSessionController {
         if isLiveAnchormuxSession {
             liveAnchormuxLog("controller.reconnectNow phase=\(phase)")
         }
-        guard phase != .reconnecting, transportDisconnectTask == nil else {
+        guard transportDisconnectTask == nil else {
+            terminalSurface?.focusInput()
+            return
+        }
+        let hasTransportWork = transport != nil || transportConnectTask != nil
+        guard phase != .reconnecting || hasTransportWork else {
             terminalSurface?.focusInput()
             return
         }
@@ -1908,6 +1934,9 @@ final class TerminalSessionController {
             }
         case .output(let data):
             terminalSurface?.processOutput(data)
+            if !data.isEmpty {
+                surfaceNeedsInitialReplay = false
+            }
             #if DEBUG
             refreshAccessibilityTerminalText()
             #endif
@@ -2053,13 +2082,13 @@ final class TerminalSessionController {
         statusMessage = nil
     }
 
-    private func resumeStateForConnect(createdFreshSurface: Bool) -> TerminalRemoteDaemonResumeState? {
+    private func resumeStateForConnect(surfaceNeedsInitialReplay: Bool) -> TerminalRemoteDaemonResumeState? {
         guard var state = remoteDaemonResumeState else { return nil }
         // A fresh Ghostty surface starts with an empty local emulator. Reusing
         // a persisted readOffset would only replay the unread tail into that
         // empty renderer, which drops older scrollback like the initial prompt.
         // Keep session/attachment identity, but bootstrap from offset 0.
-        if createdFreshSurface {
+        if surfaceNeedsInitialReplay {
             state.readOffset = 0
         }
         return state
@@ -2098,6 +2127,7 @@ final class TerminalSessionController {
             let surface = try surfaceFactory(self)
             terminalSurface = surface
             surfaceView = surface as? GhosttySurfaceView
+            surfaceNeedsInitialReplay = true
             observeSurfaceClose(for: surface)
             // Marker: surface created successfully
             if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
@@ -2136,6 +2166,7 @@ final class TerminalSessionController {
         surfaceView?.disposeSurface()
         terminalSurface = nil
         surfaceView = nil
+        surfaceNeedsInitialReplay = false
         updateRemoteDaemonResumeState(nil)
         #if DEBUG
         accessibilityTerminalText = ""
@@ -2231,7 +2262,10 @@ final class TerminalSessionController {
     }
 
     private func cancelTransportConnectTask() {
-        transportConnectTask?.cancel()
+        guard let task = transportConnectTask else { return }
+        transportConnectGeneration += 1
+        task.cancel()
+        transportConnectTask = nil
     }
 
     private func finishTransportConnectTask(generation: Int) {
@@ -2245,6 +2279,11 @@ final class TerminalSessionController {
     private func isCurrentTransport(_ candidate: any TerminalTransport) -> Bool {
         guard let transport else { return false }
         return transport as AnyObject === candidate as AnyObject
+    }
+
+    private func isCurrentTransport(_ candidateID: ObjectIdentifier) -> Bool {
+        guard let transport else { return false }
+        return ObjectIdentifier(transport as AnyObject) == candidateID
     }
 
     private func scheduleTransportDisconnect(

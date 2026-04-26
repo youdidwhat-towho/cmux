@@ -30,6 +30,18 @@ final class TerminalSessionControllerTests: XCTestCase {
             surfaceFactory: surfaceFactory.makeSurface(delegate:)
         )
 
+        let failedExpectation = expectation(description: "surface creation failed")
+        controller.onUpdate = { update in
+            guard case .phase(.failed, let error) = update,
+                  error == StubSurfaceFactoryError.transient.localizedDescription else {
+                return
+            }
+            failedExpectation.fulfill()
+        }
+
+        controller.connectIfNeeded()
+        await fulfillment(of: [failedExpectation], timeout: 1.0)
+
         XCTAssertEqual(controller.phase, .failed)
         XCTAssertEqual(controller.errorMessage, StubSurfaceFactoryError.transient.localizedDescription)
         XCTAssertEqual(surfaceFactory.attemptCount, 1)
@@ -217,12 +229,56 @@ final class TerminalSessionControllerTests: XCTestCase {
             bellExpectation.fulfill()
         }
 
+        controller.connectIfNeeded()
+
         NotificationCenter.default.post(
             name: .ghosttySurfaceDidRingBell,
             object: surface
         )
 
         await fulfillment(of: [bellExpectation], timeout: 1.0)
+    }
+
+    func testViewSizeIsAppliedBeforeInitialReplayOutput() async throws {
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon
+        )
+        let workspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Mac Mini",
+            tmuxSessionName: "sess-shared"
+        )
+        let credentialsStore = InMemoryTerminalCredentialsStore(passwords: [host.id: "secret"])
+        let surface = StubTerminalSurface()
+        let outputExpectation = expectation(description: "initial replay output processed")
+        surface.onOutput = {
+            outputExpectation.fulfill()
+        }
+        let transport = OrderedEventsStubTerminalTransport(events: [
+            .viewSize(cols: 99, rows: 34),
+            .output(Data("lawrence in / λ ".utf8)),
+        ])
+
+        let controller = TerminalSessionController(
+            workspace: workspace,
+            host: host,
+            credentialsStore: credentialsStore,
+            transportFactory: StubTerminalTransportFactory(transport: transport),
+            surfaceFactory: { _ in surface }
+        )
+
+        controller.connectIfNeeded()
+        await fulfillment(of: [outputExpectation], timeout: 1.0)
+
+        XCTAssertEqual(surface.eventLog, [
+            "viewSize:99x34",
+            "output:lawrence in / λ ",
+        ])
     }
 
     func testSuspendPreservingStateDisconnectsTransportAndReconnectsWithFreshSurfaceReplay() async throws {
@@ -447,7 +503,7 @@ final class TerminalSessionControllerTests: XCTestCase {
         XCTAssertEqual(surfaceFactory.attemptCount, 2)
     }
 
-    func testReconnectNowWaitsForPendingConnectBeforeStartingReplacementTransport() async throws {
+    func testReconnectNowCancelsPendingConnectBeforeStartingReplacementTransport() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -507,13 +563,13 @@ final class TerminalSessionControllerTests: XCTestCase {
         await fulfillment(of: [initialConnectStartedExpectation], timeout: 1.0)
 
         controller.reconnectNow()
-        await fulfillment(of: [initialDisconnectExpectation], timeout: 1.0)
+        await fulfillment(of: [initialDisconnectExpectation, replacementConnectedExpectation], timeout: 1.0)
 
         XCTAssertEqual(initialTransport.disconnectCallCount, 1)
-        XCTAssertEqual(replacementTransport.connectCallCount, 0)
+        XCTAssertEqual(replacementTransport.connectCallCount, 1)
 
         await connectGate.open()
-        await fulfillment(of: [replacementConnectedExpectation], timeout: 1.0)
+        await Task.yield()
 
         XCTAssertEqual(replacementTransport.connectCallCount, 1)
         XCTAssertEqual(replacementTransport.connectedGridSizes, [firstSurface.currentGridSize])
@@ -585,7 +641,7 @@ final class TerminalSessionControllerTests: XCTestCase {
             transportFactory.resumeStates,
             [
                 nil,
-                .init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 42),
+                .init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 0),
             ]
         )
     }
@@ -626,6 +682,64 @@ final class TerminalSessionControllerTests: XCTestCase {
         }
 
         controller.connectIfNeeded()
+        await fulfillment(of: [connectedExpectation], timeout: 1.0)
+
+        XCTAssertEqual(
+            transportFactory.resumeStates,
+            [.init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 0)]
+        )
+    }
+
+    func testConnectUsesFullReplayOffsetWhenSurfaceWasCreatedBeforeHostConfigured() async throws {
+        let hostID = TerminalHost.ID()
+        let initialHost = TerminalHost(
+            id: hostID,
+            name: "Mac Mini",
+            hostname: "",
+            username: "",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon
+        )
+        let configuredHost = TerminalHost(
+            id: hostID,
+            name: "Mac Mini",
+            hostname: "127.0.0.1",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon,
+            wsPort: 52185,
+            wsSecret: "secret"
+        )
+        let workspace = TerminalWorkspace(
+            hostID: hostID,
+            title: "Mac Mini",
+            tmuxSessionName: "cmux-mac-mini",
+            remoteDaemonResumeState: .init(sessionID: "sess-1", attachmentID: "att-1", readOffset: 42)
+        )
+        let credentialsStore = InMemoryTerminalCredentialsStore()
+        let transport = ConnectedStubTerminalTransport()
+        let transportFactory = TrackingSequencedTerminalTransportFactory(transports: [transport])
+        let connectedExpectation = expectation(description: "controller connected")
+
+        let controller = TerminalSessionController(
+            workspace: workspace,
+            host: initialHost,
+            credentialsStore: credentialsStore,
+            transportFactory: transportFactory,
+            surfaceFactory: { _ in StubTerminalSurface() }
+        )
+        controller.onUpdate = { update in
+            if case .phase(.connected, nil) = update {
+                connectedExpectation.fulfill()
+            }
+        }
+
+        controller.connectIfNeeded()
+        XCTAssertEqual(transportFactory.resumeStates, [])
+
+        controller.refreshHost(configuredHost)
         await fulfillment(of: [connectedExpectation], timeout: 1.0)
 
         XCTAssertEqual(
@@ -685,6 +799,60 @@ final class TerminalSessionControllerTests: XCTestCase {
             controller.errorMessage,
             "Direct daemon TLS verification failed: certificate pin mismatch"
         )
+    }
+
+    func testSharedSessionUnavailableStaysConnectingAndRetries() async throws {
+        setenv("CMUX_UITEST_TERMINAL_RECONNECT_DELAY", "0.05", 1)
+        defer { unsetenv("CMUX_UITEST_TERMINAL_RECONNECT_DELAY") }
+
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon
+        )
+        let workspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Mac Mini",
+            tmuxSessionName: "sess-restored"
+        )
+        let credentialsStore = InMemoryTerminalCredentialsStore(passwords: [host.id: "secret"])
+        let transport = ThrowingStubTerminalTransport(
+            connectError: TerminalRemoteDaemonSessionTransportError.sharedSessionUnavailable("sess-restored")
+        )
+        let transportFactory = StubTerminalTransportFactory(transport: transport)
+
+        let controller = TerminalSessionController(
+            workspace: workspace,
+            host: host,
+            credentialsStore: credentialsStore,
+            transportFactory: transportFactory,
+            surfaceFactory: { _ in StubTerminalSurface() }
+        )
+
+        let connectingExpectation = expectation(description: "controller waits for daemon-owned session")
+        connectingExpectation.assertForOverFulfill = false
+        let retryExpectation = expectation(description: "controller retries daemon-owned session attach")
+        retryExpectation.assertForOverFulfill = false
+        controller.onUpdate = { update in
+            guard case .phase(.connecting, let error) = update,
+                  error == "Waiting for Mac to finish starting this workspace…" else {
+                return
+            }
+            connectingExpectation.fulfill()
+            if transport.connectCallCount > 1 {
+                retryExpectation.fulfill()
+            }
+        }
+
+        controller.connectIfNeeded()
+        await fulfillment(of: [connectingExpectation, retryExpectation], timeout: 2.0)
+
+        XCTAssertGreaterThan(transport.connectCallCount, 1)
+        XCTAssertEqual(controller.phase, .connecting)
+        XCTAssertEqual(controller.errorMessage, "Waiting for Mac to finish starting this workspace…")
     }
 
     func testConnectFailureDoesNotAutoReconnectOnDirectAuthRejection() async throws {
@@ -986,6 +1154,28 @@ final class ConnectedStubTerminalTransport: TerminalTransport {
     }
 }
 
+final class OrderedEventsStubTerminalTransport: TerminalTransport {
+    var eventHandler: (@Sendable (TerminalTransportEvent) -> Void)?
+    private let events: [TerminalTransportEvent]
+
+    init(events: [TerminalTransportEvent]) {
+        self.events = events
+    }
+
+    func connect(initialSize: TerminalGridSize) async throws {
+        eventHandler?(.connected)
+        for event in events {
+            eventHandler?(event)
+        }
+    }
+
+    func send(_ data: Data) async throws {}
+
+    func resize(_ size: TerminalGridSize) async {}
+
+    func disconnect() async {}
+}
+
 final class ThrowingStubTerminalTransport: TerminalTransport {
     var eventHandler: (@Sendable (TerminalTransportEvent) -> Void)?
 
@@ -1159,12 +1349,21 @@ final class FailThenSucceedSurfaceFactory {
 
 final class StubTerminalSurface: TerminalSurfaceHosting {
     let currentGridSize: TerminalGridSize
+    private(set) var eventLog: [String] = []
+    var onOutput: (() -> Void)?
 
     init(gridSize: TerminalGridSize = TerminalGridSize(columns: 88, rows: 28, pixelWidth: 880, pixelHeight: 560)) {
         self.currentGridSize = gridSize
     }
 
-    func processOutput(_ data: Data) {}
+    func processOutput(_ data: Data) {
+        eventLog.append("output:\(String(decoding: data, as: UTF8.self))")
+        onOutput?()
+    }
+
+    func applyViewSize(cols: Int, rows: Int) {
+        eventLog.append("viewSize:\(cols)x\(rows)")
+    }
 }
 
 @MainActor

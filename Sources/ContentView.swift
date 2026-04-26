@@ -1,5 +1,6 @@
 import AppKit
 import Bonsplit
+import CMUXMarkdown
 import Combine
 import ImageIO
 import SwiftUI
@@ -13765,10 +13766,15 @@ private struct SidebarWorkspaceDescriptionText: View {
 
 enum SidebarMarkdownRenderer {
     static func renderWorkspaceDescription(_ markdown: String) -> AttributedString? {
-        try? AttributedString(
-            markdown: markdown,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        )
+        CMUXMarkdown.attributedString(fromMarkdown: markdown)
+    }
+
+    static func renderInlineMetadata(_ markdown: String) -> AttributedString? {
+        CMUXMarkdown.attributedString(fromMarkdown: markdown)
+    }
+
+    static func renderMetadataBlock(_ markdown: String) -> AttributedString? {
+        CMUXMarkdown.attributedString(fromMarkdown: markdown, mode: .fullDocumentPlain)
     }
 }
 
@@ -13906,10 +13912,7 @@ private struct SidebarMetadataEntryRow: View {
         let trimmed = entry.value.trimmingCharacters(in: .whitespacesAndNewlines)
         let display = trimmed.isEmpty ? entry.key : trimmed
         if entry.format == .markdown,
-           let attributed = try? AttributedString(
-                markdown: display,
-                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-           ) {
+           let attributed = SidebarMarkdownRenderer.renderInlineMetadata(display) {
             Text(attributed)
                 .underline(underlined)
                 .foregroundColor(foregroundColor)
@@ -13997,10 +14000,7 @@ private struct SidebarMetadataMarkdownBlockRow: View {
     }
 
     private func renderMarkdown() {
-        renderedMarkdown = try? AttributedString(
-            markdown: block.markdown,
-            options: .init(interpretedSyntax: .full)
-        )
+        renderedMarkdown = SidebarMarkdownRenderer.renderMetadataBlock(block.markdown)
     }
 }
 

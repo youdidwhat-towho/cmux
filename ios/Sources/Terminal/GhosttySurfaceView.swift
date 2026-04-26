@@ -128,6 +128,34 @@ struct TerminalTextInputPipeline {
     }
 }
 
+struct TerminalCursorBlinkState: Equatable {
+    static let interval: CFTimeInterval = 0.5
+
+    private(set) var isVisible = true
+    private var lastToggle: CFTimeInterval = 0
+
+    mutating func start(now: CFTimeInterval) {
+        isVisible = true
+        lastToggle = now
+    }
+
+    mutating func reset(now: CFTimeInterval) {
+        isVisible = true
+        lastToggle = now
+    }
+
+    mutating func advance(now: CFTimeInterval) -> Bool {
+        let elapsed = now - lastToggle
+        guard elapsed >= Self.interval else { return false }
+        let intervals = max(1, Int(elapsed / Self.interval))
+        if intervals % 2 == 1 {
+            isVisible.toggle()
+        }
+        lastToggle += CFTimeInterval(intervals) * Self.interval
+        return true
+    }
+}
+
 private struct TerminalHardwareKeyCommand: Sendable {
     let input: String
     let modifierFlags: UIKeyModifierFlags
@@ -243,11 +271,27 @@ private enum TerminalHardwareKeyResolver {
     }
 }
 
+enum TerminalFontZoomDirection: Equatable {
+    case decrease
+    case increase
+
+    var bindingAction: String {
+        switch self {
+        case .decrease:
+            return "decrease_font_size:1"
+        case .increase:
+            return "increase_font_size:1"
+        }
+    }
+}
+
 enum TerminalInputAccessoryAction: Int, CaseIterable {
     case control
     case alternate
     case command
     case shift
+    case zoomOut
+    case zoomIn
     case escape
     case tab
     case upArrow
@@ -280,6 +324,10 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
             return "⌘"
         case .shift:
             return "⇧"
+        case .zoomOut:
+            return ""
+        case .zoomIn:
+            return ""
         case .escape:
             return "Esc"
         case .tab:
@@ -325,6 +373,8 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
         case .alternate: return "terminal.inputAccessory.alt"
         case .command: return "terminal.inputAccessory.command"
         case .shift: return "terminal.inputAccessory.shift"
+        case .zoomOut: return "terminal.inputAccessory.zoomOut"
+        case .zoomIn: return "terminal.inputAccessory.zoomIn"
         case .escape: return "terminal.inputAccessory.escape"
         case .tab: return "terminal.inputAccessory.tab"
         case .upArrow: return "terminal.inputAccessory.up"
@@ -346,6 +396,39 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
         }
     }
 
+    var accessibilityLabel: String? {
+        switch self {
+        case .zoomOut:
+            return String(localized: "terminal.input_accessory.zoom_out", defaultValue: "Zoom Out")
+        case .zoomIn:
+            return String(localized: "terminal.input_accessory.zoom_in", defaultValue: "Zoom In")
+        default:
+            return nil
+        }
+    }
+
+    var symbolName: String? {
+        switch self {
+        case .zoomOut:
+            return "minus.magnifyingglass"
+        case .zoomIn:
+            return "plus.magnifyingglass"
+        default:
+            return nil
+        }
+    }
+
+    var zoomDirection: TerminalFontZoomDirection? {
+        switch self {
+        case .zoomOut:
+            return .decrease
+        case .zoomIn:
+            return .increase
+        default:
+            return nil
+        }
+    }
+
     /// Whether this action is a modifier key (toggleable armed state).
     var isModifier: Bool {
         switch self {
@@ -356,7 +439,7 @@ enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var output: Data? {
         switch self {
-        case .control, .alternate, .command, .shift:
+        case .control, .alternate, .command, .shift, .zoomOut, .zoomIn:
             return nil
         case .escape:
             return Data([0x1B])
@@ -407,10 +490,11 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     var onFocusInputRequestedForTesting: (() -> Void)?
     private var surfaceTitle: String?
     private var displayLink: CADisplayLink?
-    private var cursorBlinkVisible: Bool = true
-    private var lastBlinkToggle: CFTimeInterval = 0
+    private var cursorBlinkState = TerminalCursorBlinkState()
+    private var cursorOverlayLayer: CALayer?
     private var needsDraw: Bool = false
     private var surfaceHasReceivedOutput: Bool = false
+    private var shouldScrollInitialOutputToBottom = true
     // Serial background queue for feeding bytes into Ghostty. Keeps
     // `ghostty_surface_process_output` off the main thread so a potential
     // Ghostty internal mutex/futex wait can't freeze the UI. Ordering is
@@ -422,6 +506,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     #if DEBUG
     private var lastInputTimestamp: CFTimeInterval = 0
     private var latencySamples: [Double] = []
+    var onOutputProcessedForTesting: (() -> Void)?
     #endif
     private let snapshotFallbackView: UITextView = {
         let view = UITextView()
@@ -531,6 +616,9 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             TerminalInputDebugLog.log("surface.onEscape data=\(TerminalInputDebugLog.dataSummary(data))")
             self.delegate?.ghosttySurfaceView(self, didProduceInput: data)
         }
+        inputProxy.onZoom = { [weak self] direction in
+            self?.performFontZoom(direction)
+        }
         inputProxy.onHideKeyboard = { [weak self] in
             self?.inputProxy.resignFirstResponder()
         }
@@ -634,27 +722,42 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     }
 
     @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-        guard let surface else { return }
         switch gesture.state {
         case .began:
             pinchAccumulatedScale = 1.0
         case .changed:
             let delta = gesture.scale - pinchAccumulatedScale
             if abs(delta) >= 0.15 {
-                let actionStr = delta > 0 ? "increase_font_size:1" : "decrease_font_size:1"
-                _ = ghostty_surface_binding_action(surface, actionStr, UInt(actionStr.utf8.count))
-                pinchAccumulatedScale = gesture.scale
-                // Font size change recalculates the grid internally. Re-sync
-                // geometry so the new cols/rows are propagated to the daemon
-                // session via session.resize. Without this, the shell keeps
-                // the old dimensions and the rendered grid doesn't match.
-                syncSurfaceGeometry()
+                let direction: TerminalFontZoomDirection = delta > 0 ? .increase : .decrease
+                if performFontZoom(direction) {
+                    pinchAccumulatedScale = gesture.scale
+                }
             }
         case .ended, .cancelled:
             // Final sync to make sure the last font change is applied.
             syncSurfaceGeometry()
         default:
             break
+        }
+    }
+
+    @discardableResult
+    private func performFontZoom(_ direction: TerminalFontZoomDirection) -> Bool {
+        let handled = performBindingAction(direction.bindingAction)
+        guard handled else { return false }
+
+        // Font size changes recalculate cell metrics. Re-sync geometry so the
+        // new natural cols/rows are propagated through session.resize to every
+        // attached device.
+        syncSurfaceGeometry()
+        return true
+    }
+
+    @discardableResult
+    private func performBindingAction(_ action: String) -> Bool {
+        guard let surface else { return false }
+        return action.withCString { pointer in
+            ghostty_surface_binding_action(surface, pointer, UInt(action.utf8.count))
         }
     }
 
@@ -732,6 +835,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
                 if !self.surfaceHasReceivedOutput {
                     self.surfaceHasReceivedOutput = true
                     self.snapshotFallbackView.isHidden = true
+                    self.scrollInitialOutputToBottomIfNeeded()
                 }
                 let now = CACurrentMediaTime()
                 if now - self.lastProcessOutputLogTime > 1.0 {
@@ -740,8 +844,17 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
                         self.logLayerTree(reason: "processOutput")
                     }
                 }
+                #if DEBUG
+                self.onOutputProcessedForTesting?()
+                #endif
             }
         }
+    }
+
+    private func scrollInitialOutputToBottomIfNeeded() {
+        guard shouldScrollInitialOutputToBottom else { return }
+        shouldScrollInitialOutputToBottom = false
+        _ = performBindingAction("scroll_to_bottom")
     }
 
     static func forwardDaemonOutputBytes(_ data: Data) -> Data {
@@ -903,38 +1016,93 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         displayLink = link
-        cursorBlinkVisible = true
-        lastBlinkToggle = CACurrentMediaTime()
+        cursorBlinkState.start(now: CACurrentMediaTime())
+        needsDraw = true
+        updateCursorOverlay()
     }
 
     private func stopDisplayLink() {
         displayLink?.invalidate()
         displayLink = nil
+        cursorOverlayLayer?.isHidden = true
     }
 
     /// Reset cursor to visible and restart blink cycle (call on user input).
     private func resetCursorBlink() {
         guard surface != nil else { return }
-        cursorBlinkVisible = true
-        lastBlinkToggle = CACurrentMediaTime()
+        cursorBlinkState.reset(now: CACurrentMediaTime())
+        needsDraw = true
+        updateCursorOverlay()
     }
 
     @objc func handleDisplayLinkFire() {
         guard let surface else { return }
         let now = CACurrentMediaTime()
-        var blinkChanged = false
-        if now - lastBlinkToggle >= 0.5 {
-            cursorBlinkVisible.toggle()
-            lastBlinkToggle = now
-            blinkChanged = true
-        }
+        let blinkChanged = cursorBlinkState.advance(now: now)
         if needsDraw || blinkChanged {
             needsDraw = false
             ghostty_surface_render_now(surface)
+            updateCursorOverlay()
         }
     }
 
+    private func updateCursorOverlay() {
+        guard let surface,
+              window != nil,
+              !isHidden,
+              alpha > 0.01,
+              !lastRenderRect.isEmpty,
+              cellPixelSize.width > 0,
+              cellPixelSize.height > 0 else {
+            cursorOverlayLayer?.isHidden = true
+            return
+        }
+        let overlay = ensureCursorOverlayLayer()
+        var x: Double = 0
+        var y: Double = 0
+        var width: Double = 0
+        var height: Double = 0
+        ghostty_surface_ime_point(surface, &x, &y, &width, &height)
+
+        let scale = max(preferredScreenScale, 1)
+        overlay.contentsScale = scale
+        let cellWidth = max(cellPixelSize.width / scale, 1)
+        let cellHeight = max(CGFloat(height), cellPixelSize.height / scale, 1)
+        let cursorWidth = max(1.0 / scale, min(CGFloat(1.5), cellWidth))
+        let cursorX = lastRenderRect.minX + CGFloat(x) - (cellWidth / 2)
+        let cursorY = lastRenderRect.minY + CGFloat(y) - cellHeight
+        overlay.frame = CGRect(
+            x: floor(cursorX),
+            y: floor(cursorY),
+            width: cursorWidth,
+            height: ceil(cellHeight)
+        )
+        overlay.backgroundColor = cursorBlinkState.isVisible
+            ? (configCursorColor ?? UIColor(red: 0xc0/255.0, green: 0xc1/255.0, blue: 0xb5/255.0, alpha: 1.0)).cgColor
+            : (configBackgroundColor ?? backgroundColor ?? .black).cgColor
+        overlay.isHidden = false
+    }
+
+    private func ensureCursorOverlayLayer() -> CALayer {
+        if let cursorOverlayLayer {
+            return cursorOverlayLayer
+        }
+        let layer = CALayer()
+        layer.name = "cmux.cursorOverlay"
+        layer.zPosition = 1001
+        layer.actions = [
+            "backgroundColor": NSNull(),
+            "bounds": NSNull(),
+            "frame": NSNull(),
+            "position": NSNull(),
+        ]
+        self.layer.addSublayer(layer)
+        cursorOverlayLayer = layer
+        return layer
+    }
+
     private(set) var configBackgroundColor: UIColor?
+    private(set) var configCursorColor: UIColor?
 
     private func applyBackgroundColorFromConfig(_ config: ghostty_config_t) {
         var bgColor = ghostty_config_color_s()
@@ -957,6 +1125,16 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         if ghostty_config_get(config, &fgColor, fgKey, UInt(fgKey.lengthOfBytes(using: .utf8))) {
             snapshotFallbackView.textColor = UIColor(red: CGFloat(fgColor.r) / 255.0, green: CGFloat(fgColor.g) / 255.0, blue: CGFloat(fgColor.b) / 255.0, alpha: 1.0)
         }
+        var cursorColor = ghostty_config_color_s()
+        let cursorKey = "cursor-color"
+        if ghostty_config_get(config, &cursorColor, cursorKey, UInt(cursorKey.lengthOfBytes(using: .utf8))) {
+            configCursorColor = UIColor(
+                red: CGFloat(cursorColor.r) / 255.0,
+                green: CGFloat(cursorColor.g) / 255.0,
+                blue: CGFloat(cursorColor.b) / 255.0,
+                alpha: 1.0
+            )
+        }
     }
 
     private func setFocus(_ focused: Bool) {
@@ -973,6 +1151,11 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             bounds.height > 0
         liveAnchormuxLog("surface.occlusion visible=\(visible) window=\(window != nil) hidden=\(isHidden) alpha=\(alpha)")
         ghostty_surface_set_occlusion(surface, visible)
+        if visible {
+            updateCursorOverlay()
+        } else {
+            cursorOverlayLayer?.isHidden = true
+        }
     }
 
     func applyViewSize(cols: Int, rows: Int) {
@@ -1099,6 +1282,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         lastRenderRect = renderRect
         syncRendererLayerFrame(scale: scale, renderRect: renderRect)
         updateLetterboxBorder(renderRect: renderRect, isLetterboxed: renderRect.width + 0.5 < containerW || renderRect.height + 0.5 < containerH)
+        updateCursorOverlay()
 
         liveAnchormuxLog(
             "surface.geometry bounds=\(Int(bounds.width))x\(Int(bounds.height)) container=\(Int(containerW))x\(Int(containerH)) render=\(Int(renderRect.width))x\(Int(renderRect.height))@\(Int(renderRect.origin.x)),\(Int(renderRect.origin.y)) natural=\(naturalSize.columns)x\(naturalSize.rows) effective=\(effectiveGrid.map { "\($0.cols)x\($0.rows)" } ?? "none")"
@@ -1442,6 +1626,7 @@ final class TerminalInputTextView: UITextView {
     var onText: ((String) -> Void)?
     var onBackspace: (() -> Void)?
     var onEscapeSequence: ((Data) -> Void)?
+    var onZoom: ((TerminalFontZoomDirection) -> Void)?
     var onHideKeyboard: (() -> Void)?
     private var controlAccessoryArmed = false
     private var alternateAccessoryArmed = false
@@ -1470,6 +1655,13 @@ final class TerminalInputTextView: UITextView {
 
     private static let monokaiBarColor = UIColor(red: 0x27/255.0, green: 0x28/255.0, blue: 0x22/255.0, alpha: 1)
     private static let accessoryHorizontalInset: CGFloat = 16
+    private static let accessoryButtonFont = UIFont.systemFont(ofSize: 14, weight: .medium)
+    private static let accessoryButtonSymbolConfig = UIImage.SymbolConfiguration(pointSize: 14, weight: .medium)
+    private static let accessoryButtonInsets = UIEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
+    private static let accessoryButtonCornerRadius: CGFloat = 6
+    private static let accessoryButtonHeight: CGFloat = 28
+    private static let accessoryButtonMinWidth: CGFloat = 44
+    private static let accessoryButtonNormalBackground = UIColor(white: 0.35, alpha: 1)
 
     private lazy var terminalAccessoryToolbar: UIView = {
         let container = UIView()
@@ -1498,16 +1690,7 @@ final class TerminalInputTextView: UITextView {
         stack.alignment = .center
 
         for action in TerminalInputAccessoryAction.allCases {
-            let button = UIButton(type: .system)
-            button.setTitle(action.title, for: .normal)
-            button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
-            button.tag = action.rawValue
-            button.addTarget(self, action: #selector(handleAccessoryButton(_:)), for: .touchUpInside)
-            button.accessibilityIdentifier = action.accessibilityIdentifier
-            button.contentEdgeInsets = UIEdgeInsets(top: 5, left: 10, bottom: 5, right: 10)
-            button.backgroundColor = UIColor(white: 0.35, alpha: 1)
-            button.setTitleColor(.white, for: .normal)
-            button.layer.cornerRadius = 6
+            let button = makeAccessoryButton(for: action)
             // Command is Mac-only; don't add it to the stack at all by default.
             // updateModifierLabels(isMacRemote: true) will insert it dynamically.
             if action == .command {
@@ -1686,7 +1869,23 @@ final class TerminalInputTextView: UITextView {
     }
 
     func simulateAccessoryActionForTesting(_ action: TerminalInputAccessoryAction) {
+        resetStickyTapTimeForTesting(action)
         handleAccessoryAction(action)
+    }
+
+    private func resetStickyTapTimeForTesting(_ action: TerminalInputAccessoryAction) {
+        switch action {
+        case .control:
+            lastControlTapTime = nil
+        case .alternate:
+            lastAlternateTapTime = nil
+        case .command:
+            lastCommandTapTime = nil
+        case .shift:
+            lastShiftTapTime = nil
+        default:
+            break
+        }
     }
 
     @objc
@@ -1718,7 +1917,44 @@ final class TerminalInputTextView: UITextView {
 
     private static let stickyDoubleTapInterval: TimeInterval = 0.4
 
+    private func makeAccessoryButton(for action: TerminalInputAccessoryAction) -> UIButton {
+        let button = UIButton(type: .system)
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.tag = action.rawValue
+        button.addTarget(self, action: #selector(handleAccessoryButton(_:)), for: .touchUpInside)
+        button.accessibilityIdentifier = action.accessibilityIdentifier
+        button.accessibilityLabel = action.accessibilityLabel
+        button.titleLabel?.font = Self.accessoryButtonFont
+
+        if let symbolName = action.symbolName {
+            button.setImage(UIImage(systemName: symbolName), for: .normal)
+            button.setPreferredSymbolConfiguration(Self.accessoryButtonSymbolConfig, forImageIn: .normal)
+        } else {
+            button.setTitle(action.title, for: .normal)
+        }
+
+        applyAccessoryButtonBaseStyle(button)
+        return button
+    }
+
+    private func applyAccessoryButtonBaseStyle(_ button: UIButton) {
+        button.contentEdgeInsets = Self.accessoryButtonInsets
+        button.backgroundColor = Self.accessoryButtonNormalBackground
+        button.setTitleColor(.white, for: .normal)
+        button.tintColor = .white
+        button.layer.cornerRadius = Self.accessoryButtonCornerRadius
+        button.heightAnchor.constraint(equalToConstant: Self.accessoryButtonHeight).isActive = true
+        button.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.accessoryButtonMinWidth).isActive = true
+    }
+
     private func handleAccessoryAction(_ action: TerminalInputAccessoryAction) {
+        if let zoomDirection = action.zoomDirection {
+            disarmAllModifiers()
+            refreshAccessoryButtonStyles()
+            onZoom?(zoomDirection)
+            return
+        }
+
         if controlAccessoryArmed,
            !action.isModifier {
             if !controlAccessorySticky {
@@ -1848,15 +2084,18 @@ final class TerminalInputTextView: UITextView {
             if sticky {
                 button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.85)
                 button.setTitleColor(.white, for: .normal)
+                button.tintColor = .white
                 button.layer.borderWidth = 2
                 button.layer.borderColor = UIColor.white.cgColor
             } else if armed {
                 button.backgroundColor = .systemBlue
                 button.setTitleColor(.white, for: .normal)
+                button.tintColor = .white
                 button.layer.borderWidth = 0
             } else {
-                button.backgroundColor = UIColor(white: 0.35, alpha: 1)
+                button.backgroundColor = Self.accessoryButtonNormalBackground
                 button.setTitleColor(.white, for: .normal)
+                button.tintColor = .white
                 button.layer.borderWidth = 0
             }
         }

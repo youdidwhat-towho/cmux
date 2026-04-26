@@ -1191,7 +1191,12 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
         try FileManager.default.createDirectory(at: ghosttyThemesDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: terminfoDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: shellIntegrationDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: macOSDir, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: executableURL.path, contents: Data())
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
         let infoPlist: [String: Any] = [
             "CFBundleIdentifier": "com.cmuxterm.app.debug.test",
             "CFBundleShortVersionString": "1.2.3",
@@ -1206,23 +1211,36 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let bundle = try XCTUnwrap(Bundle(url: appBundleURL))
 
-        let env = TerminalSurface.startupEnvironment(
-            tabId: UUID(),
-            surfaceId: UUID(),
-            portOrdinal: 0,
-            baseEnvironment: [
-                "TERM": "dumb",
-                "SHELL": "/bin/zsh",
-            ],
-            additionalEnvironment: [:],
-            initialEnvironmentOverrides: [:],
+        var baseEnvironment = [
+            "TERM": "dumb",
+            "SHELL": "/bin/zsh",
+        ]
+        var protectedKeys: Set<String> = []
+        TerminalSurface.applyManagedTerminalIdentityEnvironment(
+            to: &baseEnvironment,
+            protectedKeys: &protectedKeys
+        )
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(
+            to: &baseEnvironment,
+            protectedKeys: &protectedKeys,
             processEnvironment: [
                 "CMUX_SOCKET_PATH": "/tmp/cmux-debug-startup-env.sock",
                 "COLORTERM": "24bit",
                 "TERM_PROGRAM": "Apple_Terminal",
-                "TERM_PROGRAM_VERSION": "1.2.3",
+                "TERM_PROGRAM_VERSION": "999",
             ],
             bundle: bundle
+        )
+        baseEnvironment["CMUX_SOCKET_PATH"] = "/tmp/cmux-debug-startup-env.sock"
+        protectedKeys.insert("CMUX_SOCKET_PATH")
+        baseEnvironment["CMUX_SOCKET"] = "/tmp/cmux-debug-startup-env.sock"
+        protectedKeys.insert("CMUX_SOCKET")
+
+        let env = TerminalSurface.mergedStartupEnvironment(
+            base: baseEnvironment,
+            protectedKeys: protectedKeys,
+            additionalEnvironment: [:],
+            initialEnvironmentOverrides: [:]
         )
 
         XCTAssertEqual(env["CMUX_SOCKET_PATH"], "/tmp/cmux-debug-startup-env.sock")
@@ -1232,9 +1250,9 @@ final class GhosttyTerminalStartupEnvironmentTests: XCTestCase {
         XCTAssertEqual(env["GHOSTTY_BIN_DIR"], macOSDir.path)
         XCTAssertEqual(env["GHOSTTY_RESOURCES_DIR"], ghosttyDir.path)
         XCTAssertEqual(env["TERMINFO"], terminfoDir.path)
-        XCTAssertEqual(env["TERM"], "xterm-ghostty")
-        XCTAssertEqual(env["COLORTERM"], "24bit")
-        XCTAssertEqual(env["TERM_PROGRAM"], "ghostty")
+        XCTAssertEqual(env["TERM"], TerminalSurface.managedTerminalType)
+        XCTAssertEqual(env["COLORTERM"], TerminalSurface.managedColorTerm)
+        XCTAssertEqual(env["TERM_PROGRAM"], TerminalSurface.managedTerminalProgram)
         XCTAssertEqual(env["TERM_PROGRAM_VERSION"], "1.2.3")
     }
 }
@@ -1248,12 +1266,20 @@ final class GhosttyAppEnvironmentOverrideTests: XCTestCase {
         let ghosttyThemesDir = ghosttyDir.appendingPathComponent("themes", isDirectory: true)
         let shellIntegrationDir = resourcesDir.appendingPathComponent("shell-integration", isDirectory: true)
         let terminfoDir = resourcesDir.appendingPathComponent("terminfo", isDirectory: true)
+        let binDir = resourcesDir.appendingPathComponent("bin", isDirectory: true)
+        let bundledCLIURL = binDir.appendingPathComponent("cmux", isDirectory: false)
         let executableURL = root.appendingPathComponent("Contents/MacOS/cmux DEV")
 
         try FileManager.default.createDirectory(at: ghosttyThemesDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: shellIntegrationDir, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: terminfoDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
         FileManager.default.createFile(atPath: executableURL.path, contents: Data())
+        FileManager.default.createFile(atPath: bundledCLIURL.path, contents: Data())
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: bundledCLIURL.path
+        )
         defer { try? FileManager.default.removeItem(at: root) }
 
         let overrides = cmuxApp.ghosttyEnvironmentOverrides(
@@ -1268,6 +1294,7 @@ final class GhosttyAppEnvironmentOverrideTests: XCTestCase {
                 "TERM_PROGRAM_VERSION": "999",
                 "MANPATH": "/Applications/Ghostty.app/Contents/Resources/man:/usr/share/man",
                 "XDG_DATA_DIRS": "/Applications/Ghostty.app/Contents/Resources:/usr/local/share:/usr/share",
+                "PATH": "/usr/bin:/bin",
             ],
             resourceURL: resourcesDir,
             executableURL: executableURL,
@@ -1280,10 +1307,12 @@ final class GhosttyAppEnvironmentOverrideTests: XCTestCase {
         XCTAssertEqual(overrides["GHOSTTY_BIN_DIR"], executableURL.deletingLastPathComponent().path)
         XCTAssertEqual(overrides["GHOSTTY_RESOURCES_DIR"], ghosttyDir.path)
         XCTAssertEqual(overrides["TERMINFO"], terminfoDir.path)
-        XCTAssertEqual(overrides["TERM"], "xterm-ghostty")
+        XCTAssertEqual(overrides["CMUX_BUNDLED_CLI_PATH"], bundledCLIURL.path)
+        XCTAssertEqual(overrides["PATH"], "\(binDir.path):/usr/bin:/bin")
+        XCTAssertEqual(overrides["TERM"], TerminalSurface.managedTerminalType)
         XCTAssertEqual(overrides["TERM_PROGRAM"], "ghostty")
         XCTAssertEqual(overrides["TERM_PROGRAM_VERSION"], "1.2.3")
-        XCTAssertEqual(overrides["COLORTERM"], "24bit")
+        XCTAssertEqual(overrides["COLORTERM"], TerminalSurface.managedColorTerm)
         XCTAssertEqual(
             overrides["MANPATH"],
             "\(resourcesDir.appendingPathComponent("man").path):/Applications/Ghostty.app/Contents/Resources/man:/usr/share/man"
@@ -1794,6 +1823,75 @@ final class LocalTerminalDaemonBridgeTests: XCTestCase {
         XCTAssertTrue(command.contains(socketPath), "Expected daemon socket path in startup command, got: \(command)")
         XCTAssertTrue(command.contains(sessionID.uuidString), "Expected session ID in startup command, got: \(command)")
         XCTAssertTrue(command.contains(workspaceID.uuidString), "Expected workspace ID in startup command, got: \(command)")
+    }
+
+    func testStartupCommandPrefersCurrentBundleCLIEnvironment() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let appBundleURL = temporaryDirectory.appendingPathComponent("cmux DEV star.app", isDirectory: true)
+        let contentsDir = appBundleURL.appendingPathComponent("Contents", isDirectory: true)
+        let resourcesDir = contentsDir.appendingPathComponent("Resources", isDirectory: true)
+        let macOSDir = contentsDir.appendingPathComponent("MacOS", isDirectory: true)
+        let binDir = resourcesDir.appendingPathComponent("bin", isDirectory: true)
+        let bundledCLIURL = binDir.appendingPathComponent("cmux", isDirectory: false)
+        let executableURL = macOSDir.appendingPathComponent("cmux DEV star", isDirectory: false)
+        let infoPlistURL = contentsDir.appendingPathComponent("Info.plist", isDirectory: false)
+
+        try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: macOSDir, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: bundledCLIURL.path, contents: Data())
+        FileManager.default.createFile(atPath: executableURL.path, contents: Data())
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bundledCLIURL.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executableURL.path)
+        let infoPlist: [String: Any] = [
+            "CFBundleIdentifier": "com.cmuxterm.app.debug.star",
+            "CFBundleShortVersionString": "1.2.3",
+            "CFBundleExecutable": "cmux DEV star",
+        ]
+        let plistData = try PropertyListSerialization.data(
+            fromPropertyList: infoPlist,
+            format: .xml,
+            options: 0
+        )
+        try plistData.write(to: infoPlistURL)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let fakeDaemonBinary = temporaryDirectory.appendingPathComponent("cmuxd-remote", isDirectory: false)
+        FileManager.default.createFile(atPath: fakeDaemonBinary.path, contents: Data())
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fakeDaemonBinary.path)
+        let bundle = try XCTUnwrap(Bundle(url: appBundleURL))
+        LocalTerminalDaemonBridge.testingConfiguration = LocalTerminalDaemonConfiguration(
+            socketPath: temporaryDirectory.appendingPathComponent("cmuxd.sock").path,
+            daemonBinaryPath: fakeDaemonBinary.path
+        )
+        LocalTerminalDaemonBridge.testingEnsureDaemonListening = { _ in true }
+
+        let command = try XCTUnwrap(
+            LocalTerminalDaemonBridge.startupCommand(
+                sessionID: UUID(),
+                workspaceID: UUID(),
+                portOrdinal: 0,
+                workingDirectory: temporaryDirectory.path,
+                intendedCommand: "which cmux",
+                initialEnvironmentOverrides: [:],
+                additionalEnvironment: [:],
+                environment: [
+                    "CMUXD_UNIX_PATH": temporaryDirectory.appendingPathComponent("cmuxd.sock").path,
+                    "CMUX_REMOTE_DAEMON_BINARY": fakeDaemonBinary.path,
+                    "PATH": "/Applications/cmux.app/Contents/Resources/bin:/usr/bin:/bin",
+                    "SHELL": "/bin/zsh",
+                ],
+                bundle: bundle,
+                fileManager: .default
+            )
+        )
+
+        XCTAssertTrue(command.contains("CMUX_BUNDLED_CLI_PATH"), "Expected bundled CLI export, got: \(command)")
+        XCTAssertTrue(command.contains(bundledCLIURL.path), "Expected current tagged bundle CLI path, got: \(command)")
+        XCTAssertTrue(command.contains("GHOSTTY_BIN_DIR"), "Expected current bundle binary directory export, got: \(command)")
+        XCTAssertTrue(command.contains(macOSDir.path), "Expected current tagged bundle MacOS path, got: \(command)")
+        XCTAssertTrue(command.contains("export PATH="), "Expected PATH export, got: \(command)")
+        XCTAssertTrue(command.contains(binDir.path), "Expected PATH to include current tagged bundle bin path, got: \(command)")
     }
 
     private func makeListeningUnixSocket(at path: String) throws -> Int32 {

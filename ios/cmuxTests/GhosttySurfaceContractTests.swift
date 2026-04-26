@@ -14,6 +14,39 @@ final class GhosttySurfaceContractTests: XCTestCase {
         )
     }
 
+    func testGhosttySurfaceShowsBottomOfInitialReplay() async throws {
+        let surfaceView = try await MainActor.run {
+            let (surfaceView, _) = try makeSurfaceView()
+            surfaceView.frame = CGRect(x: 0, y: 0, width: 240, height: 160)
+            surfaceView.layoutIfNeeded()
+            return surfaceView
+        }
+
+        let renderedExpectation = expectation(description: "initial replay rendered at bottom")
+        renderedExpectation.assertForOverFulfill = false
+        await MainActor.run {
+            surfaceView.onOutputProcessedForTesting = {
+                let rendered = surfaceView.renderedTextForTesting(pointTag: GHOSTTY_POINT_VIEWPORT) ?? ""
+                if rendered.contains("lawrence in / λ") {
+                    renderedExpectation.fulfill()
+                }
+            }
+            let lines = (1...80).map { String(format: "replay line %03d\r\n", $0) }.joined()
+            surfaceView.processOutput(Data("\(lines)lawrence in / λ ".utf8))
+        }
+
+        await fulfillment(of: [renderedExpectation], timeout: 2.0)
+        let rendered = await MainActor.run {
+            surfaceView.renderedTextForTesting(pointTag: GHOSTTY_POINT_VIEWPORT) ?? ""
+        }
+
+        XCTAssertTrue(rendered.contains("lawrence in / λ"))
+        XCTAssertFalse(
+            rendered.contains("replay line 001"),
+            "Initial replay should land at the active bottom, not the top of scrollback: \(rendered)"
+        )
+    }
+
     func testGhosttySurfaceReportsGridSizeAfterLayout() async throws {
         let (_, delegate) = try await MainActor.run {
             let (surfaceView, delegate) = try makeSurfaceView()
@@ -167,7 +200,7 @@ final class GhosttySurfaceContractTests: XCTestCase {
         }
 
         let focusExpectation = expectation(description: "show keyboard action focuses target surface")
-        try await MainActor.run {
+        await MainActor.run {
             surfaceView.onFocusInputRequestedForTesting = {
                 focusExpectation.fulfill()
             }
@@ -264,6 +297,7 @@ final class GhosttySurfaceContractTests: XCTestCase {
         let surfaceView = GhosttySurfaceView(runtime: runtime, delegate: delegate)
         return (surfaceView, delegate)
     }
+
 }
 
 @MainActor

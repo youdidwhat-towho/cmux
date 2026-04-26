@@ -1431,11 +1431,11 @@ final class TabManagerNotificationFocusTests: XCTestCase {
 
 @MainActor
 final class BonsplitZoomCompatibilityTests: XCTestCase {
-    func testTabIDCompatibilityRoundTripPreservesUUID() {
+    func testTabIDCompatibilityRoundTripPreservesUUID() throws {
         let uuid = UUID()
         let tabId = TabID(uuid: uuid)
 
-        XCTAssertEqual(tabId.uuid, uuid)
+        XCTAssertEqual(try tabUUID(tabId), uuid)
     }
 
     func testContextMenuShortcutsCanBeStored() {
@@ -1447,21 +1447,22 @@ final class BonsplitZoomCompatibilityTests: XCTestCase {
         XCTAssertEqual(controller.contextMenuShortcuts[.rename], shortcut)
     }
 
-    func testExternalTabDropHandlerCanBeStoredAndInvoked() {
+    func testExternalTabDropHandlerCanBeStoredAndInvoked() throws {
         let controller = BonsplitController()
         guard let paneId = controller.allPaneIds.first else {
             XCTFail("Expected a default Bonsplit pane")
             return
         }
+        let requestTabUUID = UUID()
 
         let request = BonsplitController.ExternalTabDropRequest(
-            tabId: TabID(uuid: UUID()),
+            tabId: TabID(uuid: requestTabUUID),
             sourcePaneId: paneId,
             destination: .insert(targetPane: paneId, targetIndex: nil)
         )
 
         controller.onExternalTabDrop = { incoming in
-            XCTAssertEqual(incoming.tabId.uuid, request.tabId.uuid)
+            XCTAssertEqual(try? self.tabUUID(incoming.tabId), requestTabUUID)
             XCTAssertEqual(incoming.sourcePaneId, request.sourcePaneId)
 
             guard case let .insert(targetPane, targetIndex) = incoming.destination else {
@@ -1477,9 +1478,10 @@ final class BonsplitZoomCompatibilityTests: XCTestCase {
         XCTAssertTrue(controller.onExternalTabDrop?(request) ?? false)
     }
 
-    func testTabCloseRequestHandlerCanBeStoredAndInvoked() {
+    func testTabCloseRequestHandlerCanBeStoredAndInvoked() throws {
         let controller = BonsplitController()
-        let tabId = TabID(uuid: UUID())
+        let tabUUIDValue = UUID()
+        let tabId = TabID(uuid: tabUUIDValue)
 
         var receivedTabId: TabID?
         var receivedPaneId: PaneID?
@@ -1489,10 +1491,11 @@ final class BonsplitZoomCompatibilityTests: XCTestCase {
             receivedPaneId = incomingPaneId
         }
 
-        let paneId = controller.allPaneIds.first
+        let paneId = try XCTUnwrap(controller.allPaneIds.first)
         controller.onTabCloseRequest?(tabId, paneId)
 
-        XCTAssertEqual(receivedTabId?.uuid, tabId.uuid)
+        let actualReceivedTabId = try XCTUnwrap(receivedTabId)
+        XCTAssertEqual(try tabUUID(actualReceivedTabId), tabUUIDValue)
         XCTAssertEqual(receivedPaneId, paneId)
     }
 
@@ -1522,6 +1525,12 @@ final class BonsplitZoomCompatibilityTests: XCTestCase {
         XCTAssertFalse(workspace.bonsplitController.isSplitZoomed)
         XCTAssertNil(workspace.bonsplitController.zoomedPaneId)
         XCTAssertFalse(workspace.bonsplitController.clearPaneZoom())
+    }
+
+    private func tabUUID(_ tabID: TabID) throws -> UUID {
+        try XCTUnwrap(
+            Mirror(reflecting: tabID).children.first(where: { $0.label == "id" })?.value as? UUID
+        )
     }
 }
 
