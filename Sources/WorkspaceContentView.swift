@@ -317,6 +317,11 @@ struct WorkspaceContentView: View {
                     onRequestPanelFocus: {
                         guard isWorkspaceInputActive else { return }
                         guard workspace.panels[panel.id] != nil else { return }
+                        AppDelegate.shared?.noteMainPanelKeyboardFocusIntent(
+                            workspaceId: workspace.id,
+                            panelId: panel.id,
+                            in: NSApp.keyWindow ?? NSApp.mainWindow
+                        )
                         workspace.focusPanel(panel.id)
                     },
                     onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
@@ -736,7 +741,7 @@ struct EmptyPanelView: View {
 
     private func createTerminal() {
         #if DEBUG
-        dlog("emptyPane.newTerminal pane=\(paneId.id.uuidString.prefix(5))")
+        cmuxDebugLog("emptyPane.newTerminal pane=\(paneId.id.uuidString.prefix(5))")
         #endif
         focusPane()
         _ = workspace.newTerminalSurface(inPane: paneId)
@@ -744,7 +749,7 @@ struct EmptyPanelView: View {
 
     private func createBrowser() {
         #if DEBUG
-        dlog("emptyPane.newBrowser pane=\(paneId.id.uuidString.prefix(5))")
+        cmuxDebugLog("emptyPane.newBrowser pane=\(paneId.id.uuidString.prefix(5))")
         #endif
         focusPane()
         _ = workspace.newBrowserSurface(inPane: paneId)

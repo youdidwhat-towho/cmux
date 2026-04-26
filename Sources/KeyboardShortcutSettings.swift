@@ -41,11 +41,17 @@ enum KeyboardShortcutSettings {
         case toggleSidebar
         case newTab
         case openFolder
+        case reopenPreviousSession
         case goToWorkspace
         case commandPalette
         case sendFeedback
         case showNotifications
         case jumpToUnread
+        case focusRightSidebar
+        case switchRightSidebarToFiles
+        case switchRightSidebarToFind
+        case switchRightSidebarToSessions
+        case switchRightSidebarToFeed
         case triggerFlash
 
         // Navigation
@@ -111,11 +117,17 @@ enum KeyboardShortcutSettings {
             case .toggleSidebar: return String(localized: "shortcut.toggleSidebar.label", defaultValue: "Toggle Sidebar")
             case .newTab: return String(localized: "shortcut.newWorkspace.label", defaultValue: "New Workspace")
             case .openFolder: return String(localized: "shortcut.openFolder.label", defaultValue: "Open Folder")
+            case .reopenPreviousSession: return String(localized: "shortcut.reopenPreviousSession.label", defaultValue: "Reopen Previous Session")
             case .goToWorkspace: return String(localized: "menu.file.goToWorkspace", defaultValue: "Go to Workspace…")
             case .commandPalette: return String(localized: "menu.file.commandPalette", defaultValue: "Command Palette…")
             case .sendFeedback: return String(localized: "sidebar.help.sendFeedback", defaultValue: "Send Feedback")
             case .showNotifications: return String(localized: "shortcut.showNotifications.label", defaultValue: "Show Notifications")
             case .jumpToUnread: return String(localized: "shortcut.jumpToUnread.label", defaultValue: "Jump to Latest Unread")
+            case .focusRightSidebar: return String(localized: "shortcut.focusRightSidebar.label", defaultValue: "Focus Right Sidebar")
+            case .switchRightSidebarToFiles: return String(localized: "shortcut.switchRightSidebarToFiles.label", defaultValue: "Show Sidebar Files")
+            case .switchRightSidebarToFind: return String(localized: "shortcut.switchRightSidebarToFind.label", defaultValue: "Show Sidebar Find")
+            case .switchRightSidebarToSessions: return String(localized: "shortcut.switchRightSidebarToSessions.label", defaultValue: "Show Sidebar Sessions")
+            case .switchRightSidebarToFeed: return String(localized: "shortcut.switchRightSidebarToFeed.label", defaultValue: "Show Sidebar Feed")
             case .triggerFlash: return String(localized: "shortcut.flashFocusedPanel.label", defaultValue: "Flash Focused Panel")
             case .nextSurface: return String(localized: "shortcut.nextSurface.label", defaultValue: "Next Surface")
             case .prevSurface: return String(localized: "shortcut.previousSurface.label", defaultValue: "Previous Surface")
@@ -163,6 +175,20 @@ enum KeyboardShortcutSettings {
 
         var defaultsKey: String { "shortcut.\(rawValue)" }
 
+        private enum ConflictScope {
+            case application
+            case rightSidebarFocus
+        }
+
+        private var conflictScope: ConflictScope {
+            switch self {
+            case .switchRightSidebarToFiles, .switchRightSidebarToFind, .switchRightSidebarToSessions, .switchRightSidebarToFeed:
+                return .rightSidebarFocus
+            default:
+                return .application
+            }
+        }
+
         var defaultShortcut: StoredShortcut {
             switch self {
             case .openSettings:
@@ -189,6 +215,8 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "n", command: true, shift: false, option: false, control: false)
             case .openFolder:
                 return StoredShortcut(key: "o", command: true, shift: false, option: false, control: false)
+            case .reopenPreviousSession:
+                return StoredShortcut(key: "o", command: true, shift: true, option: false, control: false)
             case .goToWorkspace:
                 return StoredShortcut(key: "p", command: true, shift: false, option: false, control: false)
             case .commandPalette:
@@ -199,6 +227,16 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "i", command: true, shift: false, option: false, control: false)
             case .jumpToUnread:
                 return StoredShortcut(key: "u", command: true, shift: true, option: false, control: false)
+            case .focusRightSidebar:
+                return StoredShortcut(key: "e", command: true, shift: true, option: false, control: false)
+            case .switchRightSidebarToFiles:
+                return StoredShortcut(key: "1", command: false, shift: false, option: false, control: true)
+            case .switchRightSidebarToFind:
+                return StoredShortcut(key: "2", command: false, shift: false, option: false, control: true)
+            case .switchRightSidebarToSessions:
+                return StoredShortcut(key: "3", command: false, shift: false, option: false, control: true)
+            case .switchRightSidebarToFeed:
+                return StoredShortcut(key: "4", command: false, shift: false, option: false, control: true)
             case .triggerFlash:
                 return StoredShortcut(key: "h", command: true, shift: true, option: false, control: false)
             case .nextSidebarTab:
@@ -210,7 +248,7 @@ enum KeyboardShortcutSettings {
             case .renameWorkspace:
                 return StoredShortcut(key: "r", command: true, shift: true, option: false, control: false)
             case .editWorkspaceDescription:
-                return StoredShortcut(key: "e", command: true, shift: true, option: false, control: false)
+                return StoredShortcut(key: "e", command: true, shift: false, option: true, control: false)
             case .closeTab:
                 return StoredShortcut(key: "w", command: true, shift: false, option: false, control: false)
             case .closeOtherTabsInPane:
@@ -313,7 +351,10 @@ enum KeyboardShortcutSettings {
             proposedAction: Action,
             configuredShortcut: StoredShortcut
         ) -> Bool {
-            KeyboardShortcutSettings.shortcutsConflict(
+            guard conflictScope == proposedAction.conflictScope else {
+                return false
+            }
+            return KeyboardShortcutSettings.shortcutsConflict(
                 proposedShortcut,
                 proposedUsesNumberedDigitMatching: proposedAction.usesNumberedDigitMatching,
                 configuredShortcut,
@@ -913,7 +954,7 @@ final class SystemWideHotkeyController {
 
         guard status == noErr, let hotKeyRef else {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "globalHotkey.register failed shortcut=\(normalizedShortcut.displayString) " +
                 "keyCode=\(registration.keyCode) modifiers=\(registration.modifiers) status=\(status)"
             )
@@ -926,7 +967,7 @@ final class SystemWideHotkeyController {
         registeredHotKeyRegistration = registration
 
 #if DEBUG
-        dlog(
+        cmuxDebugLog(
             "globalHotkey.register success shortcut=\(normalizedShortcut.displayString) " +
             "keyCode=\(registration.keyCode) modifiers=\(registration.modifiers)"
         )
@@ -953,7 +994,7 @@ final class SystemWideHotkeyController {
 
 #if DEBUG
         if status != noErr {
-            dlog("globalHotkey.handlerInstall failed status=\(status)")
+            cmuxDebugLog("globalHotkey.handlerInstall failed status=\(status)")
         }
 #endif
     }
@@ -996,7 +1037,7 @@ final class SystemWideHotkeyController {
         }
 
 #if DEBUG
-        dlog("globalHotkey.fire shortcut=\(shortcut.displayString) active=\(NSApp.isActive ? 1 : 0)")
+        cmuxDebugLog("globalHotkey.fire shortcut=\(shortcut.displayString) active=\(NSApp.isActive ? 1 : 0)")
 #endif
 
         DispatchQueue.main.async { [weak self] in
@@ -1076,7 +1117,7 @@ final class SystemWideHotkeyController {
     }
 }
 
-struct ShortcutStroke: Equatable {
+struct ShortcutStroke: Equatable, Hashable {
     enum RecordingResult: Equatable {
         case accepted(ShortcutStroke)
         case rejected(KeyboardShortcutSettings.ShortcutRecordingRejection)
@@ -1738,7 +1779,7 @@ struct ShortcutStroke: Equatable {
 }
 
 /// A keyboard shortcut that can be stored in UserDefaults
-struct StoredShortcut: Codable, Equatable {
+struct StoredShortcut: Codable, Equatable, Hashable {
     var key: String
     var command: Bool
     var shift: Bool
@@ -1939,6 +1980,158 @@ struct StoredShortcut: Codable, Equatable {
     var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
         guard !hasChord else { return nil }
         return firstStroke.carbonHotKeyRegistration
+    }
+}
+
+extension ShortcutStroke {
+    static func parseConfig(_ rawValue: String) -> ShortcutStroke? {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let parts = trimmed.split(separator: "+", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        guard !parts.isEmpty, let lastPart = parts.last, !lastPart.isEmpty else {
+            return nil
+        }
+
+        var command = false
+        var shift = false
+        var option = false
+        var control = false
+
+        for modifier in parts.dropLast() {
+            switch modifier.lowercased() {
+            case "cmd", "command", "⌘":
+                command = true
+            case "shift", "⇧":
+                shift = true
+            case "opt", "option", "alt", "⌥":
+                option = true
+            case "ctrl", "control", "ctl", "⌃":
+                control = true
+            default:
+                return nil
+            }
+        }
+
+        guard let key = parseConfigKeyToken(lastPart) else { return nil }
+        return ShortcutStroke(
+            key: key,
+            command: command,
+            shift: shift,
+            option: option,
+            control: control
+        )
+    }
+
+    func configString(preserveDigit: Bool = true) -> String {
+        var parts: [String] = []
+        if command { parts.append("cmd") }
+        if shift { parts.append("shift") }
+        if option { parts.append("opt") }
+        if control { parts.append("ctrl") }
+        parts.append(configKeyString(preserveDigit: preserveDigit))
+        return parts.joined(separator: "+")
+    }
+
+    private func configKeyString(preserveDigit: Bool) -> String {
+        if preserveDigit {
+            return key
+        }
+        if let digit = Int(key), (1...9).contains(digit) {
+            return "1"
+        }
+        return key
+    }
+
+    private static func parseConfigKeyToken(_ rawValue: String) -> String? {
+        let lowered = rawValue.lowercased()
+        switch lowered {
+        case "left", "arrowleft", "leftarrow", "←":
+            return "←"
+        case "right", "arrowright", "rightarrow", "→":
+            return "→"
+        case "up", "arrowup", "uparrow", "↑":
+            return "↑"
+        case "down", "arrowdown", "downarrow", "↓":
+            return "↓"
+        case "tab":
+            return "\t"
+        case "return", "enter", "↩":
+            return "\r"
+        case "space":
+            return " "
+        case "comma":
+            return ","
+        case "period", "dot":
+            return "."
+        case "slash":
+            return "/"
+        case "backslash":
+            return "\\"
+        case "semicolon":
+            return ";"
+        case "quote", "apostrophe":
+            return "'"
+        case "backtick", "grave":
+            return "`"
+        case "minus", "hyphen":
+            return "-"
+        case "plus", "equals":
+            return "="
+        case "leftbracket", "openbracket":
+            return "["
+        case "rightbracket", "closebracket":
+            return "]"
+        case "volumeup", "mediavolumeup", "media.volumeup":
+            return "media.volumeUp"
+        case "volumedown", "mediavolumedown", "media.volumedown":
+            return "media.volumeDown"
+        case "brightnessup", "mediabrightnessup", "media.brightnessup":
+            return "media.brightnessUp"
+        case "brightnessdown", "mediabrightnessdown", "media.brightnessdown":
+            return "media.brightnessDown"
+        case "mute", "mediamute", "media.mute":
+            return "media.mute"
+        case "playpause", "mediaplaypause", "media.playpause":
+            return "media.playPause"
+        case "nexttrack", "medianext", "media.next", "media.nexttrack":
+            return "media.next"
+        case "previoustrack", "mediaprevious", "media.previous", "media.previoustrack":
+            return "media.previous"
+        default:
+            if lowered.hasPrefix("f"),
+               let number = Int(lowered.dropFirst()),
+               (1...20).contains(number) {
+                return "f\(number)"
+            }
+            guard lowered.count == 1 else { return nil }
+            return lowered
+        }
+    }
+}
+
+extension StoredShortcut {
+    static func parseConfig(_ rawValue: String) -> StoredShortcut? {
+        parseConfig(strokes: [rawValue])
+    }
+
+    static func parseConfig(strokes: [String]) -> StoredShortcut? {
+        guard !strokes.isEmpty, strokes.count <= 2 else { return nil }
+        let parsedStrokes = strokes.compactMap(ShortcutStroke.parseConfig(_:))
+        guard parsedStrokes.count == strokes.count, let firstStroke = parsedStrokes.first else {
+            return nil
+        }
+        guard !firstStroke.modifierFlags.isEmpty else { return nil }
+        let secondStroke = parsedStrokes.count == 2 ? parsedStrokes[1] : nil
+        return StoredShortcut(first: firstStroke, second: secondStroke)
+    }
+
+    var configIdentifier: String {
+        if let secondStroke {
+            return "\(firstStroke.configString()) \(secondStroke.configString())"
+        }
+        return firstStroke.configString()
     }
 }
 

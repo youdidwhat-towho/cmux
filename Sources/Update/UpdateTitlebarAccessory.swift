@@ -359,7 +359,7 @@ struct TitlebarControlsView: View {
         let content = HStack(spacing: config.spacing) {
             TitlebarControlButton(config: config, action: {
                 #if DEBUG
-                dlog("titlebar.toggleSidebar")
+                cmuxDebugLog("titlebar.toggleSidebar")
                 #endif
                 onToggleSidebar()
             }) {
@@ -371,7 +371,7 @@ struct TitlebarControlsView: View {
 
             TitlebarControlButton(config: config, action: {
                 #if DEBUG
-                dlog("titlebar.notifications")
+                cmuxDebugLog("titlebar.notifications")
                 #endif
                 onToggleNotifications()
             }) {
@@ -398,7 +398,7 @@ struct TitlebarControlsView: View {
 
             TitlebarControlButton(config: config, action: {
                 #if DEBUG
-                dlog("titlebar.newTab")
+                cmuxDebugLog("titlebar.newTab")
                 #endif
                 onNewTab()
             }) {
@@ -507,10 +507,10 @@ struct TitlebarControlsView: View {
                     .accessibilityIdentifier("titlebarShortcutHint.\(item.action.rawValue)")
                     .frame(width: item.width, alignment: .leading)
                     .offset(x: item.leftEdge, y: yOffset)
+                    .shortcutHintTransition()
             }
         }
-        .animation(.easeOut(duration: 0.12), value: shouldShowTitlebarShortcutHints)
-        .transition(.opacity)
+        .shortcutHintVisibilityAnimation(value: shouldShowTitlebarShortcutHints)
         .allowsHitTesting(false)
     }
 
@@ -558,7 +558,9 @@ struct HiddenTitlebarSidebarControlsView: View {
                     anchorView: viewModel.notificationsAnchorView
                 )
             },
-            onNewTab: { _ = AppDelegate.shared?.tabManager?.addTab() },
+            onNewTab: {
+                AppDelegate.shared?.performNewWorkspaceAction(debugSource: "titlebar.hiddenNewWorkspace")
+            },
             visibilityMode: .onHover
         )
         .frame(width: hostWidth, height: hostHeight, alignment: .leading)
@@ -684,13 +686,13 @@ private final class TitlebarShortcutHintModifierMonitor: ObservableObject {
     }
 
     private func update(from modifierFlags: NSEvent.ModifierFlags, eventWindow: NSWindow?) {
-        guard ShortcutHintModifierPolicy.shouldShowHints(
-            for: modifierFlags,
-            hostWindowNumber: hostWindow?.windowNumber,
-            hostWindowIsKey: hostWindow?.isKeyWindow ?? false,
-            eventWindowNumber: eventWindow?.windowNumber,
-            keyWindowNumber: NSApp.keyWindow?.windowNumber
-        ) else {
+        guard ShortcutHintModifierPolicy.shouldShowCommandHints(for: modifierFlags),
+              ShortcutHintModifierPolicy.isCurrentWindow(
+                hostWindowNumber: hostWindow?.windowNumber,
+                hostWindowIsKey: hostWindow?.isKeyWindow ?? false,
+                eventWindowNumber: eventWindow?.windowNumber,
+                keyWindowNumber: NSApp.keyWindow?.windowNumber
+              ) else {
             cancelPendingHintShow(resetVisible: true)
             return
         }
@@ -699,19 +701,20 @@ private final class TitlebarShortcutHintModifierMonitor: ObservableObject {
     }
 
     private func queueHintShow() {
-        guard !isModifierPressed else { return }
-        guard pendingShowWorkItem == nil else { return }
+        if pendingShowWorkItem != nil || isModifierPressed {
+            return
+        }
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.pendingShowWorkItem = nil
-            guard ShortcutHintModifierPolicy.shouldShowHints(
-                for: NSEvent.modifierFlags,
-                hostWindowNumber: self.hostWindow?.windowNumber,
-                hostWindowIsKey: self.hostWindow?.isKeyWindow ?? false,
-                eventWindowNumber: nil,
-                keyWindowNumber: NSApp.keyWindow?.windowNumber
-            ) else { return }
+            guard ShortcutHintModifierPolicy.shouldShowCommandHints(for: NSEvent.modifierFlags),
+                  ShortcutHintModifierPolicy.isCurrentWindow(
+                    hostWindowNumber: self.hostWindow?.windowNumber,
+                    hostWindowIsKey: self.hostWindow?.isKeyWindow ?? false,
+                    eventWindowNumber: nil,
+                    keyWindowNumber: NSApp.keyWindow?.windowNumber
+                  ) else { return }
             self.isModifierPressed = true
         }
 
@@ -791,7 +794,7 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
         self.notificationStore = notificationStore
         let toggleSidebar = { _ = AppDelegate.shared?.sidebarState?.toggle() }
         let toggleNotifications: () -> Void = { _ = AppDelegate.shared?.toggleNotificationsPopover(animated: true) }
-        let newTab = { _ = AppDelegate.shared?.tabManager?.addTab() }
+        let newTab = { _ = AppDelegate.shared?.performNewWorkspaceAction(debugSource: "titlebar.accessoryNewWorkspace") }
         hostingView = NonDraggableHostingView(
             rootView: TitlebarControlsView(
                 notificationStore: notificationStore,

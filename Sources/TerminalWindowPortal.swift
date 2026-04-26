@@ -206,6 +206,10 @@ final class WindowTerminalHostView: NSView {
         let visibleHostedViews = subviews.compactMap { $0 as? GhosttySurfaceScrollView }
             .filter { !$0.isHidden && $0.window != nil && $0.frame.width > 1 && $0.frame.height > 1 }
 
+        if shouldPassThroughToTrailingSidebarResizer(at: point, visibleHostedViews: visibleHostedViews) {
+            return true
+        }
+
         // If content is flush to the leading edge, sidebar is effectively hidden.
         // In that state, treating any internal split edge as a sidebar divider
         // steals split-divider cursor/drag behavior.
@@ -247,9 +251,17 @@ final class WindowTerminalHostView: NSView {
             return false
         }
 
-        let regionMinX = dividerX - SidebarResizeInteraction.sidebarSideHitWidth
-        let regionMaxX = dividerX + SidebarResizeInteraction.contentSideHitWidth
-        return point.x >= regionMinX && point.x <= regionMaxX
+        return SidebarResizeInteraction.Edge.leading.hitRange(dividerX: dividerX).contains(point.x)
+    }
+
+    private func shouldPassThroughToTrailingSidebarResizer(
+        at point: NSPoint,
+        visibleHostedViews: [GhosttySurfaceScrollView]
+    ) -> Bool {
+        guard let rightMostEdge = visibleHostedViews.map(\.frame.maxX).max() else { return false }
+        let trailingGap = bounds.maxX - rightMostEdge
+        guard trailingGap > Self.minimumVisibleLeadingContentWidth else { return false }
+        return SidebarResizeInteraction.Edge.trailing.hitRange(dividerX: rightMostEdge).contains(point.x)
     }
 
     private func updateDividerCursor(at point: NSPoint) {
@@ -403,7 +415,7 @@ final class WindowTerminalHostView: NSView {
         guard lastDragRouteSignature != signature else { return }
         lastDragRouteSignature = signature
 
-        dlog(
+        cmuxDebugLog(
             "portal.dragRoute passThrough=\(passThrough ? 1 : 0) " +
             "event=\(debugEventName(eventType)) target=\(targetClass) " +
             "types=\(debugPasteboardTypes(pasteboardTypes))"
@@ -760,7 +772,7 @@ final class WindowTerminalPortal: NSObject {
             hostView.frame = frameInContainer
             CATransaction.commit()
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.hostFrame.update host=\(portalDebugToken(hostView)) " +
                 "frame=\(portalDebugFrame(frameInContainer))"
             )
@@ -940,7 +952,7 @@ final class WindowTerminalPortal: NSObject {
         lastLoggedBonsplitContainerSignature = signature
 
         let containerClass = NSStringFromClass(type(of: container))
-        dlog(
+        cmuxDebugLog(
             "portal.bonsplit.container hosted=\(portalDebugToken(hostedView)) " +
             "class=\(containerClass) frame=\(portalDebugFrame(containerFrame)) " +
             "host=\(portalDebugFrameInWindow(hostView)) anchor=\(portalDebugFrameInWindow(anchorView))"
@@ -1007,7 +1019,7 @@ final class WindowTerminalPortal: NSObject {
         }
 #if DEBUG
         let hadSuperview = (entry.hostedView?.superview === hostView) ? 1 : 0
-        dlog(
+        cmuxDebugLog(
             "portal.detach hosted=\(portalDebugToken(entry.hostedView)) " +
             "anchor=\(portalDebugToken(entry.anchorView)) hadSuperview=\(hadSuperview)"
         )
@@ -1022,13 +1034,12 @@ final class WindowTerminalPortal: NSObject {
     /// Used when a workspace is permanently unmounted (vs. transient bonsplit dismantles).
     func hideEntry(forHostedId hostedId: ObjectIdentifier) {
         guard var entry = entriesByHostedId[hostedId] else { return }
-        guard entry.visibleInUI else { return }
         entry.visibleInUI = false
         entry.transientRecoveryRetriesRemaining = 0
         entriesByHostedId[hostedId] = entry
         entry.hostedView?.isHidden = true
 #if DEBUG
-        dlog("portal.hideEntry hosted=\(portalDebugToken(entry.hostedView)) reason=workspaceUnmount")
+        cmuxDebugLog("portal.hideEntry hosted=\(portalDebugToken(entry.hostedView)) reason=workspaceUnmount")
 #endif
     }
 
@@ -1062,7 +1073,7 @@ final class WindowTerminalPortal: NSObject {
             let previousToken = entriesByHostedId[previousHostedId]
                 .map { portalDebugToken($0.hostedView) }
                 ?? String(describing: previousHostedId)
-            dlog(
+            cmuxDebugLog(
                 "portal.bind.replace anchor=\(portalDebugToken(anchorView)) " +
                 "oldHosted=\(previousToken) newHosted=\(portalDebugToken(hostedView))"
             )
@@ -1093,7 +1104,7 @@ final class WindowTerminalPortal: NSObject {
         let priorityIncreased = zPriority > (previousEntry?.zPriority ?? Int.min)
 #if DEBUG
         if previousEntry == nil || didChangeAnchor || becameVisible || priorityIncreased || hostedView.superview !== hostView {
-            dlog(
+            cmuxDebugLog(
                 "portal.bind hosted=\(portalDebugToken(hostedView)) " +
                 "anchor=\(portalDebugToken(anchorView)) prevAnchor=\(portalDebugToken(previousEntry?.anchorView)) " +
                 "visible=\(visibleInUI ? 1 : 0) prevVisible=\((previousEntry?.visibleInUI ?? false) ? 1 : 0) " +
@@ -1130,7 +1141,7 @@ final class WindowTerminalPortal: NSObject {
 
         if hostedView.superview !== hostView {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.reparent hosted=\(portalDebugToken(hostedView)) " +
                 "reason=attach super=\(portalDebugToken(hostedView.superview))"
             )
@@ -1141,7 +1152,7 @@ final class WindowTerminalPortal: NSObject {
             // Anchor-only churn is common during split tree updates; forcing remove/add there
             // causes transient inWindow=0 -> 1 bounces that can flash black.
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.reparent hosted=\(portalDebugToken(hostedView)) reason=raise " +
                 "didChangeAnchor=\(didChangeAnchor ? 1 : 0) becameVisible=\(becameVisible ? 1 : 0) " +
                 "priorityIncreased=\(priorityIncreased ? 1 : 0)"
@@ -1229,7 +1240,7 @@ final class WindowTerminalPortal: NSObject {
         entry.transientRecoveryRetriesRemaining -= 1
         entriesByHostedId[hostedId] = entry
 #if DEBUG
-        dlog(
+        cmuxDebugLog(
             "portal.sync.deferRecover hosted=\(portalDebugToken(hostedView)) " +
             "reason=\(reason) remaining=\(entry.transientRecoveryRetriesRemaining)"
         )
@@ -1258,7 +1269,7 @@ final class WindowTerminalPortal: NSObject {
                     )
                 if shouldPreserveVisibleOnTransient {
 #if DEBUG
-                    dlog(
+                    cmuxDebugLog(
                         "portal.hidden.deferKeep hosted=\(portalDebugToken(hostedView)) " +
                         "reason=missingAnchorOrWindow frame=\(portalDebugFrame(hostedView.frame))"
                     )
@@ -1270,7 +1281,7 @@ final class WindowTerminalPortal: NSObject {
             }
 #if DEBUG
             if !hostedView.isHidden {
-                dlog("portal.hidden hosted=\(portalDebugToken(hostedView)) value=1 reason=missingAnchorOrWindow")
+                cmuxDebugLog("portal.hidden hosted=\(portalDebugToken(hostedView)) value=1 reason=missingAnchorOrWindow")
             }
 #endif
             hostedView.isHidden = true
@@ -1287,7 +1298,7 @@ final class WindowTerminalPortal: NSObject {
         guard anchorView.window === window else {
 #if DEBUG
             if !hostedView.isHidden {
-                dlog(
+                cmuxDebugLog(
                     "portal.hidden hosted=\(portalDebugToken(hostedView)) value=1 " +
                     "reason=anchorWindowMismatch anchorWindow=\(portalDebugToken(anchorView.window?.contentView))"
                 )
@@ -1303,7 +1314,7 @@ final class WindowTerminalPortal: NSObject {
                     )
                 if shouldPreserveVisibleOnTransient {
 #if DEBUG
-                    dlog(
+                    cmuxDebugLog(
                         "portal.hidden.deferKeep hosted=\(portalDebugToken(hostedView)) " +
                         "reason=anchorWindowMismatch frame=\(portalDebugFrame(hostedView.frame))"
                     )
@@ -1341,7 +1352,7 @@ final class WindowTerminalPortal: NSObject {
         let hostBoundsReady = hasFiniteHostBounds && hostBounds.width > 1 && hostBounds.height > 1
         if !hostBoundsReady {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.sync.defer hosted=\(portalDebugToken(hostedView)) " +
                 "reason=hostBoundsNotReady host=\(portalDebugFrame(hostBounds)) " +
                 "anchor=\(portalDebugFrame(frameInHost)) visibleInUI=\(entry.visibleInUI ? 1 : 0)"
@@ -1357,7 +1368,7 @@ final class WindowTerminalPortal: NSObject {
                     )
                 if shouldPreserveVisibleOnTransient {
 #if DEBUG
-                    dlog(
+                    cmuxDebugLog(
                         "portal.hidden.deferKeep hosted=\(portalDebugToken(hostedView)) " +
                         "reason=hostBoundsNotReady frame=\(portalDebugFrame(hostedView.frame))"
                     )
@@ -1437,7 +1448,7 @@ final class WindowTerminalPortal: NSObject {
 #if DEBUG
         let frameWasClamped = hasFiniteFrame && !Self.rectApproximatelyEqual(frameInHost, targetFrame)
         if frameWasClamped {
-            dlog(
+            cmuxDebugLog(
                 "portal.frame.clamp hosted=\(portalDebugToken(hostedView)) " +
                 "anchor=\(portalDebugToken(anchorView)) " +
                 "raw=\(portalDebugFrame(frameInHost)) clamped=\(portalDebugFrame(targetFrame)) " +
@@ -1447,12 +1458,12 @@ final class WindowTerminalPortal: NSObject {
         let collapsedToTiny = oldFrame.width > 1 && oldFrame.height > 1 && tinyFrame
         let restoredFromTiny = (oldFrame.width <= 1 || oldFrame.height <= 1) && !tinyFrame
         if collapsedToTiny {
-            dlog(
+            cmuxDebugLog(
                 "portal.frame.collapse hosted=\(portalDebugToken(hostedView)) anchor=\(portalDebugToken(anchorView)) " +
                 "old=\(portalDebugFrame(oldFrame)) new=\(portalDebugFrame(targetFrame))"
             )
         } else if restoredFromTiny {
-            dlog(
+            cmuxDebugLog(
                 "portal.frame.restore hosted=\(portalDebugToken(hostedView)) anchor=\(portalDebugToken(anchorView)) " +
                 "old=\(portalDebugFrame(oldFrame)) new=\(portalDebugFrame(targetFrame))"
             )
@@ -1464,7 +1475,7 @@ final class WindowTerminalPortal: NSObject {
         // briefly transitions through offscreen/tiny geometry during rapid split churn.
         if shouldHide, !hostedView.isHidden, !shouldPreserveVisibleOnTransientGeometry {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.hidden hosted=\(portalDebugToken(hostedView)) value=1 " +
                 "visibleInUI=\(entry.visibleInUI ? 1 : 0) anchorHidden=\(anchorHidden ? 1 : 0) " +
                 "tiny=\(tinyFrame ? 1 : 0) revealReady=\(revealReadyForDisplay ? 1 : 0) finite=\(hasFiniteFrame ? 1 : 0) " +
@@ -1476,7 +1487,7 @@ final class WindowTerminalPortal: NSObject {
         }
         if shouldPreserveVisibleOnTransientGeometry {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.hidden.deferKeep hosted=\(portalDebugToken(hostedView)) " +
                 "reason=\(transientRecoveryReason ?? "unknown") frame=\(portalDebugFrame(hostedView.frame))"
             )
@@ -1506,7 +1517,7 @@ final class WindowTerminalPortal: NSObject {
         if shouldDeferReveal {
 #if DEBUG
             if !Self.rectApproximatelyEqual(oldFrame, frameInHost) {
-                dlog(
+                cmuxDebugLog(
                     "portal.hidden.deferReveal hosted=\(portalDebugToken(hostedView)) " +
                     "frame=\(portalDebugFrame(frameInHost)) min=\(Int(Self.minimumRevealWidth))x\(Int(Self.minimumRevealHeight))"
                 )
@@ -1516,7 +1527,7 @@ final class WindowTerminalPortal: NSObject {
 
         if !shouldHide, hostedView.isHidden, revealReadyForDisplay {
 #if DEBUG
-            dlog(
+            cmuxDebugLog(
                 "portal.hidden hosted=\(portalDebugToken(hostedView)) value=0 " +
                 "visibleInUI=\(entry.visibleInUI ? 1 : 0) anchorHidden=\(anchorHidden ? 1 : 0) " +
                 "tiny=\(tinyFrame ? 1 : 0) revealReady=\(revealReadyForDisplay ? 1 : 0) finite=\(hasFiniteFrame ? 1 : 0) " +
@@ -1537,7 +1548,7 @@ final class WindowTerminalPortal: NSObject {
         }
 
 #if DEBUG
-        dlog(
+        cmuxDebugLog(
             "portal.sync.result hosted=\(portalDebugToken(hostedView)) " +
             "anchor=\(portalDebugToken(anchorView)) host=\(portalDebugToken(hostView)) " +
             "hostWin=\(hostView.window?.windowNumber ?? -1) " +
@@ -1914,7 +1925,7 @@ enum TerminalWindowPortalRegistry {
             )
             blockedBindCount += 1
             blockedBindReasons[reason, default: 0] += 1
-            dlog(
+            cmuxDebugLog(
                 "portal.bind.blocked hosted=\(portalDebugToken(hostedView)) " +
                 "reason=\(reason) expectedSurface=\(expectedSurfaceId?.uuidString.prefix(5) ?? "nil") " +
                 "expectedGeneration=\(expectedGeneration.map { String($0) } ?? "nil") " +

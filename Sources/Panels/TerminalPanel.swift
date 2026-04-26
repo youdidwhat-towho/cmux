@@ -142,10 +142,18 @@ final class TerminalPanel: Panel, ObservableObject {
     }
 
     func focus() {
-        surface.setFocus(true)
         // `unfocus()` force-disables active state to stop stale retries from stealing focus.
         // Re-enable it immediately for explicit focus requests (socket/UI) so ensureFocus can run.
         hostedView.setActive(true)
+        guard AppDelegate.shared?.allowsTerminalKeyboardFocus(
+            workspaceId: workspaceId,
+            panelId: id,
+            in: hostedView.window
+        ) != false else {
+            surface.setFocus(false)
+            return
+        }
+        surface.setFocus(true)
         hostedView.ensureFocus(for: workspaceId, surfaceId: id)
     }
 
@@ -168,7 +176,7 @@ final class TerminalPanel: Panel, ObservableObject {
 #if DEBUG
         let frame = String(format: "%.1fx%.1f", hostedView.frame.width, hostedView.frame.height)
         let bounds = String(format: "%.1fx%.1f", hostedView.bounds.width, hostedView.bounds.height)
-        dlog(
+        cmuxDebugLog(
             "surface.panel.close.begin panel=\(id.uuidString.prefix(5)) " +
             "workspace=\(workspaceId.uuidString.prefix(5)) runtimeSurface=\(surface.surface != nil ? 1 : 0) " +
             "inWindow=\(hostedView.window != nil ? 1 : 0) hasSuperview=\(hostedView.superview != nil ? 1 : 0) " +
@@ -179,7 +187,7 @@ final class TerminalPanel: Panel, ObservableObject {
         hostedView.setVisibleInUI(false)
         TerminalWindowPortalRegistry.detach(hostedView: hostedView)
 #if DEBUG
-        dlog(
+        cmuxDebugLog(
             "surface.panel.close.end panel=\(id.uuidString.prefix(5)) " +
             "inWindow=\(hostedView.window != nil ? 1 : 0) hasSuperview=\(hostedView.superview != nil ? 1 : 0) " +
             "hidden=\(hostedView.isHidden ? 1 : 0)"
