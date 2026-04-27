@@ -1168,7 +1168,7 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
     }
 
     @MainActor
-    func testKeyboardInputRepairCanRefreshFocusedWebViewWrapperWhenRequested() throws {
+    func testKeyboardInputRepairDoesNotReactivateFocusedWebViewWrapperDuringKeyDispatch() throws {
         let panel = BrowserPanel(workspaceId: UUID())
         let window = BrowserPanelKeyStateTestWindow(
             contentRect: NSRect(x: 0, y: 0, width: 640, height: 480),
@@ -1196,20 +1196,20 @@ final class BrowserPanelFindFocusRequestTests: XCTestCase {
 
         cmuxWebView.allowsFirstResponderAcquisition = false
         let nilRequestsBeforeDefaultRepair = window.nilFirstResponderRequestCount
-        XCTAssertFalse(panel.repairWebContentFocusForKeyboardInput(in: window, reason: "test"))
-        XCTAssertEqual(window.nilFirstResponderRequestCount, nilRequestsBeforeDefaultRepair)
-        XCTAssertTrue(window.firstResponder === panel.webView)
-
-        XCTAssertTrue(
+        XCTAssertFalse(
             panel.repairWebContentFocusForKeyboardInput(
                 in: window,
                 reason: "test",
                 repairFocusedWrapper: true
             )
         )
+        XCTAssertEqual(window.nilFirstResponderRequestCount, nilRequestsBeforeDefaultRepair)
+        XCTAssertTrue(window.firstResponder === panel.webView)
 
-        XCTAssertTrue(cmuxWebView.allowsFirstResponderAcquisition)
-        XCTAssertEqual(window.nilFirstResponderRequestCount, nilRequestsBeforeDefaultRepair + 1)
+        XCTAssertFalse(panel.repairWebContentFocusForKeyboardInput(in: window, reason: "test"))
+
+        XCTAssertFalse(cmuxWebView.allowsFirstResponderAcquisition)
+        XCTAssertEqual(window.nilFirstResponderRequestCount, nilRequestsBeforeDefaultRepair)
         XCTAssertTrue(panel.hasWebViewFirstResponder(in: window))
         XCTAssertEqual(panel.captureFocusIntent(in: window), .browser(.webView))
     }
