@@ -257,4 +257,33 @@ final class TerminalServerCatalogTests: XCTestCase {
 
         XCTAssertEqual(catalog.hosts.first?.directTLSPins, ["sha256:pin-a", "sha256:pin-b"])
     }
+
+    func testGeneratedLocalEndpointNameFollowsCurrentDaemonPort() {
+        let updatedName = TailscaleServerDiscovery.refreshedEndpointDisplayName(
+            currentName: "Local Dev (:52191)",
+            hostname: "127.0.0.1",
+            port: 52192,
+            source: .discovered
+        )
+
+        XCTAssertEqual(updatedName, "Local Dev (:52192)")
+    }
+
+    func testGeneratedEndpointNameDoesNotOverwriteCustomName() {
+        let updatedName = TailscaleServerDiscovery.refreshedEndpointDisplayName(
+            currentName: "Mac mini",
+            hostname: "127.0.0.1",
+            port: 52192,
+            source: .discovered
+        )
+        let customHostName = TailscaleServerDiscovery.refreshedEndpointDisplayName(
+            currentName: "Local Dev (:52191)",
+            hostname: "127.0.0.1",
+            port: 52192,
+            source: .custom
+        )
+
+        XCTAssertEqual(updatedName, "Mac mini")
+        XCTAssertEqual(customHostName, "Local Dev (:52191)")
+    }
 }

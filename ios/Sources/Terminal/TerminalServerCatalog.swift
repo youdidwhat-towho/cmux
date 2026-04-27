@@ -54,7 +54,8 @@ struct TerminalServerCatalog {
                     directTLSPins: host.directTLSPins,
                     wsPort: host.wsPort,
                     wsSecret: host.wsSecret,
-                    machineStatus: host.machineStatus
+                    machineStatus: host.machineStatus,
+                    daemonWorkspaceChangeSeq: host.daemonWorkspaceChangeSeq
                 )
             }
 
@@ -80,7 +81,8 @@ struct TerminalServerCatalog {
                 directTLSPins: host.directTLSPins,
                 wsPort: host.wsPort,
                 wsSecret: host.wsSecret,
-                machineStatus: host.machineStatus
+                machineStatus: host.machineStatus,
+                daemonWorkspaceChangeSeq: host.daemonWorkspaceChangeSeq
             )
         }
 

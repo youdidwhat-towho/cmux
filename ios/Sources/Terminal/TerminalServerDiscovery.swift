@@ -175,9 +175,10 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
                         let matched = existing.first(where: {
                             $0.stableID == stableID || ($0.hostname == hostname && $0.wsPort == port)
                         })
+                        let endpointName = Self.endpointDisplayName(hostname: hostname, port: port)
                         var host = matched ?? TerminalHost(
                             stableID: stableID,
-                            name: hostname == "127.0.0.1" ? "Local Dev (:\(port))" : "\(hostname) (:\(port))",
+                            name: endpointName,
                             hostname: hostname,
                             port: 22,
                             username: "cmux",
@@ -193,6 +194,13 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
                         host.serverID = result.instanceID
                         host.machineStatus = .online
                         host.wsPort = port
+                        host.name = Self.refreshedEndpointDisplayName(
+                            currentName: host.name,
+                            hostname: hostname,
+                            port: port,
+                            source: host.source
+                        )
+                        host.daemonWorkspaceChangeSeq = result.workspaceChangeSeq
                         if host.wsSecret == nil || host.wsSecret?.isEmpty == true {
                             host.wsSecret = secret
                         }
@@ -241,6 +249,30 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
     }
 
     // MARK: - Helpers
+
+    static func endpointDisplayName(hostname: String, port: Int) -> String {
+        hostname == "127.0.0.1" ? "Local Dev (:\(port))" : "\(hostname) (:\(port))"
+    }
+
+    static func refreshedEndpointDisplayName(
+        currentName: String,
+        hostname: String,
+        port: Int,
+        source: TerminalHostSource
+    ) -> String {
+        guard source == .discovered else { return currentName }
+        guard isGeneratedEndpointDisplayName(currentName, hostname: hostname) else { return currentName }
+        return endpointDisplayName(hostname: hostname, port: port)
+    }
+
+    private static func isGeneratedEndpointDisplayName(_ name: String, hostname: String) -> Bool {
+        let prefix = hostname == "127.0.0.1" ? "Local Dev (:" : "\(hostname) (:"
+        guard name.hasPrefix(prefix), name.hasSuffix(")") else { return false }
+
+        let suffixStart = name.index(name.startIndex, offsetBy: prefix.count)
+        let suffixEnd = name.index(before: name.endIndex)
+        return Int(name[suffixStart..<suffixEnd]) != nil
+    }
 
     private func startProbeTimer() {
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))

@@ -460,7 +460,12 @@ pub const Registry = struct {
     ///
     /// This aligns `workspace.sync` with the SSOT direction where the
     /// daemon owns pane/session state and mac just pushes metadata.
-    pub fn syncAll(self: *Registry, workspaces_data: []const SyncWorkspace, selected_id: ?[]const u8) !void {
+    pub fn syncAll(
+        self: *Registry,
+        workspaces_data: []const SyncWorkspace,
+        selected_id: ?[]const u8,
+        prune_sessionless_missing: bool,
+    ) !void {
         var incoming_ids = std.StringHashMap(void).init(self.alloc);
         defer incoming_ids.deinit();
         var incoming_session_ids = std.StringHashMap(void).init(self.alloc);
@@ -487,7 +492,7 @@ pub const Registry = struct {
         for (self.order.items) |existing_id| {
             if (incoming_ids.contains(existing_id)) continue;
             const existing = self.workspaces.getPtr(existing_id) orelse continue;
-            if (!shouldPruneMissingWorkspace(existing, &incoming_session_ids, now_ms)) continue;
+            if (!shouldPruneMissingWorkspace(existing, &incoming_session_ids, now_ms, prune_sessionless_missing)) continue;
 
             const id_copy = try self.alloc.dupe(u8, existing_id);
             errdefer self.alloc.free(id_copy);
@@ -659,8 +664,10 @@ pub const Registry = struct {
         ws: *const Workspace,
         incoming_session_ids: *const std.StringHashMap(void),
         now_ms: i64,
+        prune_sessionless_missing: bool,
     ) bool {
         if (!workspaceHasAnySession(ws)) {
+            if (prune_sessionless_missing) return true;
             return now_ms - ws.last_activity_at >= sessionless_missing_workspace_prune_grace_ms;
         }
         return workspaceHasOverlappingSession(ws, incoming_session_ids);
@@ -1021,7 +1028,7 @@ test "syncAll preserves existing pane session_ids when payload has none" {
             },
         },
     };
-    try reg.syncAll(&workspaces_with_session, null);
+    try reg.syncAll(&workspaces_with_session, null, false);
     const seeded = reg.get("ws-a").?;
     try std.testing.expect(seeded.root_pane.* == .leaf);
     try std.testing.expectEqualStrings("sess-established", seeded.root_pane.leaf.session_id.?);
@@ -1036,7 +1043,7 @@ test "syncAll preserves existing pane session_ids when payload has none" {
             .pinned = true,
         },
     };
-    try reg.syncAll(&workspaces_metadata_only, null);
+    try reg.syncAll(&workspaces_metadata_only, null, false);
     const after = reg.get("ws-a").?;
     try std.testing.expectEqualStrings("renamed", after.title);
     try std.testing.expectEqualStrings("/Users/me", after.directory);
@@ -1068,7 +1075,7 @@ test "syncAll upsert-in-place: metadata-only update keeps existing pane tree" {
             },
         },
     };
-    try reg.syncAll(&initial, null);
+    try reg.syncAll(&initial, null, false);
     const before = reg.get("ws-ren").?;
     try std.testing.expect(before.root_pane.* == .leaf);
     try std.testing.expectEqualStrings("sess-stable", before.root_pane.leaf.session_id.?);
@@ -1077,7 +1084,7 @@ test "syncAll upsert-in-place: metadata-only update keeps existing pane tree" {
     const rename = [_]Registry.SyncWorkspace{
         .{ .id = "ws-ren", .title = "renamed", .directory = "/tmp" },
     };
-    try reg.syncAll(&rename, null);
+    try reg.syncAll(&rename, null, false);
     const after = reg.get("ws-ren").?;
     try std.testing.expectEqualStrings("renamed", after.title);
     try std.testing.expect(after.root_pane.* == .leaf);
@@ -1098,7 +1105,7 @@ test "syncAll preserves missing workspace with distinct session" {
         .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
         .{ .id = "ws-only-on-phone", .title = "phone", .directory = "", .session_id = "sess-phone" },
     };
-    try reg.syncAll(&initial, null);
+    try reg.syncAll(&initial, null, false);
     try std.testing.expect(reg.get("ws-keep") != null);
     try std.testing.expect(reg.get("ws-only-on-phone") != null);
 
@@ -1106,7 +1113,7 @@ test "syncAll preserves missing workspace with distinct session" {
     const partial = [_]Registry.SyncWorkspace{
         .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
     };
-    try reg.syncAll(&partial, null);
+    try reg.syncAll(&partial, null, false);
     try std.testing.expect(reg.get("ws-keep") != null);
     try std.testing.expect(reg.get("ws-only-on-phone") != null);
 }
@@ -1126,7 +1133,7 @@ test "syncAll prunes missing workspace with duplicate incoming session" {
             },
         },
     };
-    try reg.syncAll(&initial, null);
+    try reg.syncAll(&initial, null, false);
     try std.testing.expect(reg.get("ws-old") != null);
 
     const relaunched = [_]Registry.SyncWorkspace{
@@ -1139,7 +1146,7 @@ test "syncAll prunes missing workspace with duplicate incoming session" {
             },
         },
     };
-    try reg.syncAll(&relaunched, null);
+    try reg.syncAll(&relaunched, null, false);
 
     try std.testing.expect(reg.get("ws-old") == null);
     try std.testing.expect(reg.get("ws-new") != null);
@@ -1155,15 +1162,37 @@ test "syncAll prunes stale missing sessionless workspace" {
     const initial = [_]Registry.SyncWorkspace{
         .{ .id = "ws-empty", .title = "empty", .directory = "" },
     };
-    try reg.syncAll(&initial, null);
+    try reg.syncAll(&initial, null, false);
     const empty = reg.get("ws-empty").?;
     empty.last_activity_at -= Registry.sessionless_missing_workspace_prune_grace_ms + 1;
 
     const live = [_]Registry.SyncWorkspace{
         .{ .id = "ws-live", .title = "live", .directory = "", .session_id = "sess-live" },
     };
-    try reg.syncAll(&live, null);
+    try reg.syncAll(&live, null, false);
 
     try std.testing.expect(reg.get("ws-empty") == null);
     try std.testing.expect(reg.get("ws-live") != null);
+}
+
+test "syncAll authoritative sync prunes fresh missing sessionless workspace" {
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    const initial = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-bootstrap", .title = "bootstrap", .directory = "" },
+    };
+    try reg.syncAll(&initial, null, false);
+    try std.testing.expect(reg.get("ws-bootstrap") != null);
+
+    const restored = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-restored", .title = "restored", .directory = "", .session_id = "sess-restored" },
+    };
+    try reg.syncAll(&restored, "ws-restored", true);
+
+    try std.testing.expect(reg.get("ws-bootstrap") == null);
+    try std.testing.expect(reg.get("ws-restored") != null);
+    try std.testing.expectEqualStrings("ws-restored", reg.selected_id.?);
+    try std.testing.expectEqual(@as(usize, 1), reg.order.items.len);
 }

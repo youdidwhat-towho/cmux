@@ -55,6 +55,7 @@ fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request
                 .version = build_options.version,
                 .instance_id = service.instance_id,
                 .workspace_count = service.workspace_reg.order.items.len,
+                .change_seq = service.workspace_reg.change_seq,
                 .capabilities = .{
                     "session.basic",
                     "session.resize.min",
@@ -1319,6 +1320,10 @@ fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.R
         return invalidParams(alloc, req.id, "workspace.sync requires params");
 
     const selected_id = getOptionalStringParam(params, "selected_workspace_id");
+    const prune_sessionless_missing: bool = if (params.get("prune_sessionless_missing")) |v| switch (v) {
+        .bool => |b| b,
+        else => false,
+    } else false;
 
     // Parse workspaces array from the JSON Value
     const ws_value = params.get("workspaces") orelse
@@ -1395,7 +1400,7 @@ fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.R
         });
     }
 
-    service.workspace_reg.syncAll(sync_workspaces.items, selected_id) catch |err| {
+    service.workspace_reg.syncAll(sync_workspaces.items, selected_id, prune_sessionless_missing) catch |err| {
         return try errorResponse(alloc, req.id, "internal_error", @errorName(err));
     };
 

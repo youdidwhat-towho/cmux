@@ -128,6 +128,12 @@ typealias TerminalSessionControllerFactory = @MainActor (
     TerminalTransportFactory
 ) -> TerminalSessionController
 
+typealias TerminalWorkspaceListFetcher = @Sendable (TerminalHost) async throws -> TerminalRemoteDaemonWorkspaceListResult
+typealias TerminalWorkspaceSubscriptionStarter = @Sendable (
+    TerminalHost,
+    @escaping @Sendable (TerminalDaemonConnectionEvent) -> Void
+) async -> Bool
+
 @MainActor
 protocol TerminalRemoteWorkspaceReadMarking {
     func markRead(item: UnifiedInboxItem) async throws
@@ -164,6 +170,8 @@ final class TerminalSidebarStore {
     private let analyticsTracker: MobileAnalyticsTracking?
     private let eagerlyRestoreSessions: Bool
     private let controllerFactory: TerminalSessionControllerFactory
+    private let workspaceListFetcher: TerminalWorkspaceListFetcher
+    private let workspaceSubscriptionStarter: TerminalWorkspaceSubscriptionStarter
 
     private var controllers: [TerminalWorkspace.ID: TerminalSessionController] = [:]
     private var workspaceIdentityTasks: [TerminalWorkspace.ID: Task<Void, Never>] = [:]
@@ -173,9 +181,10 @@ final class TerminalSidebarStore {
     private var lastNetworkPathState: TerminalNetworkPathState?
     private var attachAttemptStartedAt: [TerminalWorkspace.ID: Date] = [:]
     private var reportedAttachResults: [TerminalWorkspace.ID: String] = [:]
-    private var activeWorkspaceSubscriptionKeys: [String: String] = [:]
     private var workspaceIDReplacements: [TerminalWorkspace.ID: TerminalWorkspace.ID] = [:]
     private var lastKnownWorkspacesByID: [TerminalWorkspace.ID: TerminalWorkspace] = [:]
+    private var lastAppliedWorkspaceChangeSeqByStableID: [String: UInt64] = [:]
+    private var pendingWorkspaceSnapshotSeqByStableID: [String: UInt64] = [:]
 
     init(
         snapshotStore: TerminalSnapshotPersisting = TerminalSnapshotStore(),
@@ -188,7 +197,9 @@ final class TerminalSidebarStore {
         remoteWorkspaceReadMarker: TerminalRemoteWorkspaceReadMarking? = nil,
         analyticsTracker: MobileAnalyticsTracking? = nil,
         eagerlyRestoreSessions: Bool = true,
-        controllerFactory: TerminalSessionControllerFactory? = nil
+        controllerFactory: TerminalSessionControllerFactory? = nil,
+        workspaceListFetcher: TerminalWorkspaceListFetcher? = nil,
+        workspaceSubscriptionStarter: TerminalWorkspaceSubscriptionStarter? = nil
     ) {
         self.snapshotStore = snapshotStore
         self.credentialsStore = credentialsStore
@@ -207,6 +218,28 @@ final class TerminalSidebarStore {
                 credentialsStore: credentialsStore,
                 transportFactory: transportFactory
             )
+        }
+        self.workspaceListFetcher = workspaceListFetcher ?? { host in
+            guard let wsPort = host.wsPort else {
+                throw TerminalWebSocketTransportError.invalidURL
+            }
+            let connection = TerminalDaemonConnectionPool.shared.connection(
+                stableID: host.stableID,
+                hostname: host.hostname,
+                port: wsPort,
+                secret: host.wsSecret ?? ""
+            )
+            return try await connection.fetchWorkspaceList()
+        }
+        self.workspaceSubscriptionStarter = workspaceSubscriptionStarter ?? { host, onEvent in
+            guard let wsPort = host.wsPort else { return false }
+            let connection = TerminalDaemonConnectionPool.shared.connection(
+                stableID: host.stableID,
+                hostname: host.hostname,
+                port: wsPort,
+                secret: host.wsSecret ?? ""
+            )
+            return await connection.startWorkspaceSubscription(onEvent: onEvent)
         }
 
         let snapshot = snapshotStore.load()
@@ -564,9 +597,7 @@ final class TerminalSidebarStore {
         // added via the Find Servers sheet would appear as a pin with zero
         // workspaces until the next background discovery tick (which may
         // not cover it at all if its hostname isn't in the probe range).
-        if host.wsPort != nil {
-            startWorkspaceSubscription(for: host)
-        }
+        ensureWorkspaceSync(for: host)
         // Also hand it to the discovery so its periodic probe starts
         // watching it for reachability changes.
         if let discovery = serverDiscovery as? TailscaleServerDiscovery {
@@ -627,7 +658,7 @@ final class TerminalSidebarStore {
     func applyDiscoveredHosts(_ discoveredHosts: [TerminalHost]) {
         Self.debugLog("applyDiscoveredHosts: \(discoveredHosts.count) hosts")
         for h in discoveredHosts {
-            Self.debugLog("  host: \(h.stableID) status=\(String(describing: h.machineStatus)) name=\(h.name)")
+            Self.debugLog("  host: \(h.stableID) status=\(String(describing: h.machineStatus)) seq=\(String(describing: h.daemonWorkspaceChangeSeq)) name=\(h.name)")
         }
         let existingHostsByID = Dictionary(hosts.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
         var mergedHosts = TerminalServerCatalog.merge(discovered: discoveredHosts, local: hosts)
@@ -668,6 +699,10 @@ final class TerminalSidebarStore {
         }
 
         hosts = mergedHosts.sorted(by: { $0.sortIndex < $1.sortIndex })
+
+        for host in hosts where host.wsPort != nil {
+            ensureWorkspaceSync(for: host)
+        }
 
         for index in workspaces.indices {
             guard let host = server(for: workspaces[index].hostID) else { continue }
@@ -726,10 +761,6 @@ final class TerminalSidebarStore {
             .sink { [weak self] hosts in
                 Self.debugLog("observeServerDiscovery: received \(hosts.count) hosts")
                 self?.applyDiscoveredHosts(hosts)
-                // Start persistent workspace subscription for each host
-                for host in hosts where host.wsPort != nil {
-                    self?.startWorkspaceSubscription(for: host)
-                }
             }
             .store(in: &cancellables)
     }
@@ -748,25 +779,23 @@ final class TerminalSidebarStore {
         )
     }
 
+    private func ensureWorkspaceSync(for host: TerminalHost) {
+        guard host.wsPort != nil else { return }
+        startWorkspaceSubscription(for: host)
+        refreshWorkspaceSnapshotIfNeeded(for: host)
+    }
+
     /// Start a persistent WebSocket subscription for workspace changes.
     /// The TerminalDaemonConnection owns reconnect/backoff; we just consume
     /// the event stream and apply updates to the workspace store.
     private func startWorkspaceSubscription(for host: TerminalHost) {
-        guard let connection = daemonConnection(for: host) else { return }
         let stableID = host.stableID
         let hostname = host.hostname
         let port = host.wsPort ?? 0
-        let endpointKey = "\(hostname):\(port):\(host.wsSecret ?? "")"
+        let starter = workspaceSubscriptionStarter
 
-        if activeWorkspaceSubscriptionKeys[stableID] == endpointKey {
-            return
-        }
-        activeWorkspaceSubscriptionKeys[stableID] = endpointKey
-
-        Self.debugLog("subscription: starting for \(hostname):\(port)")
-
-        Task { [connection, stableID, hostname, port] in
-            await connection.startWorkspaceSubscription { event in
+        Task { [weak self, starter, host, stableID, hostname, port] in
+            let didStart = await starter(host) { [weak self] event in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
                     self.handleDaemonConnectionEvent(
@@ -775,6 +804,50 @@ final class TerminalSidebarStore {
                         hostname: hostname,
                         port: port
                     )
+                }
+            }
+            if didStart {
+                Self.debugLog("subscription: starting for \(hostname):\(port)")
+            }
+        }
+    }
+
+    private func refreshWorkspaceSnapshotIfNeeded(for host: TerminalHost) {
+        guard let targetSeq = host.daemonWorkspaceChangeSeq else { return }
+        let stableID = host.stableID
+        if lastAppliedWorkspaceChangeSeqByStableID[stableID] == targetSeq {
+            return
+        }
+        if pendingWorkspaceSnapshotSeqByStableID[stableID] == targetSeq {
+            return
+        }
+        pendingWorkspaceSnapshotSeqByStableID[stableID] = targetSeq
+        let hostID = host.id
+        let hostname = host.hostname
+        let port = host.wsPort ?? 0
+        let fetcher = workspaceListFetcher
+
+        Task { [weak self, host, stableID, hostID, hostname, port, targetSeq, fetcher] in
+            do {
+                let result = try await fetcher(host)
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    guard let currentHost = self.hosts.first(where: {
+                        $0.id == hostID ||
+                            ($0.stableID == stableID && $0.hostname == hostname && $0.wsPort == port)
+                    }) else {
+                        self.pendingWorkspaceSnapshotSeqByStableID[stableID] = nil
+                        return
+                    }
+                    self.applyRemoteWorkspaceList(result, hostID: currentHost.id, host: currentHost)
+                }
+            } catch {
+                await MainActor.run { [weak self] in
+                    guard let self else { return }
+                    if self.pendingWorkspaceSnapshotSeqByStableID[stableID] == targetSeq {
+                        self.pendingWorkspaceSnapshotSeqByStableID[stableID] = nil
+                    }
+                    Self.debugLog("subscription: workspace snapshot failed for \(hostname):\(port) seq=\(targetSeq) error=\(error.localizedDescription)")
                 }
             }
         }
@@ -818,6 +891,7 @@ final class TerminalSidebarStore {
             ScannerLog.shared.log("subscription.parse_failed hostname=\(hostname) port=\(port)")
             return
         }
+        let changeSeq = Self.uint64Value(resultObj["change_seq"]) ?? Self.uint64Value(json["change_seq"])
 
         ScannerLog.shared.log("subscription.workspaces hostname=\(hostname) port=\(port) count=\(workspaces.count)")
         for ws in workspaces {
@@ -845,11 +919,29 @@ final class TerminalSidebarStore {
                 port: 22, username: "cmux", symbolName: "desktopcomputer",
                 palette: .sky, source: .discovered, transportPreference: .remoteDaemon
             )
-            self.applyRemoteWorkspaces(workspaces, hostID: hostID, host: host)
+            self.applyRemoteWorkspaces(workspaces, hostID: hostID, host: host, changeSeq: changeSeq)
         }
     }
 
-    func applyRemoteWorkspaces(_ data: [[String: Any]], hostID: UUID, host: TerminalHost) {
+    private func applyRemoteWorkspaceList(
+        _ result: TerminalRemoteDaemonWorkspaceListResult,
+        hostID: UUID,
+        host: TerminalHost
+    ) {
+        applyRemoteWorkspaces(
+            Self.workspaceDictionaries(from: result),
+            hostID: hostID,
+            host: host,
+            changeSeq: result.changeSeq
+        )
+    }
+
+    func applyRemoteWorkspaces(
+        _ data: [[String: Any]],
+        hostID: UUID,
+        host: TerminalHost,
+        changeSeq: UInt64? = nil
+    ) {
         let remoteIds = data.compactMap { $0["id"] as? String }
         let previousIDBySession = Dictionary(
             workspaces
@@ -1045,12 +1137,57 @@ final class TerminalSidebarStore {
         }
         pruneWorkspaceIDReplacements()
 
+        if let changeSeq {
+            lastAppliedWorkspaceChangeSeqByStableID[host.stableID] = changeSeq
+            pendingWorkspaceSnapshotSeqByStableID[host.stableID] = nil
+        }
+
         Self.debugLog("applyRemoteWorkspaces: \(data.count) workspaces from host \(host.name)")
         if let selectedWorkspaceID,
            let selectedWorkspace = workspaces.first(where: { $0.id == selectedWorkspaceID }) {
             controller(for: selectedWorkspace).resumeIfNeeded()
         }
         persist()
+    }
+
+    private static func workspaceDictionaries(from result: TerminalRemoteDaemonWorkspaceListResult) -> [[String: Any]] {
+        result.workspaces.map { workspace in
+            var entry: [String: Any] = [
+                "id": workspace.id,
+                "title": workspace.title,
+                "directory": workspace.directory,
+                "pane_count": workspace.paneCount,
+                "created_at": workspace.createdAt,
+                "last_activity_at": workspace.lastActivityAt,
+            ]
+            if let sessionID = workspace.sessionID { entry["session_id"] = sessionID }
+            if let preview = workspace.preview { entry["preview"] = preview }
+            if let unreadCount = workspace.unreadCount { entry["unread_count"] = unreadCount }
+            if let pinned = workspace.pinned { entry["pinned"] = pinned }
+            if let panes = workspace.panes {
+                entry["panes"] = panes.map { pane in
+                    var paneEntry: [String: Any] = ["id": pane.id]
+                    if let sessionID = pane.sessionID { paneEntry["session_id"] = sessionID }
+                    if let title = pane.title { paneEntry["title"] = title }
+                    if let directory = pane.directory { paneEntry["directory"] = directory }
+                    return paneEntry
+                }
+            }
+            return entry
+        }
+    }
+
+    private static func uint64Value(_ value: Any?) -> UInt64? {
+        if let value = value as? UInt64 {
+            return value
+        }
+        if let value = value as? Int, value >= 0 {
+            return UInt64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.uint64Value
+        }
+        return nil
     }
 
     private static func localWorkspaceID(forRemoteWorkspaceID remoteWorkspaceID: String, fallback: UUID? = nil) -> UUID {

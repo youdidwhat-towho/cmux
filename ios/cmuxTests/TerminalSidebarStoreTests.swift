@@ -724,6 +724,79 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testDiscoveredWorkspaceRevisionFetchesAuthoritativeSnapshotOnce() async throws {
+        let discovery = StubTerminalServerDiscovery()
+        let fetcher = StubWorkspaceListFetcher(results: [
+            TerminalRemoteDaemonWorkspaceListResult(
+                workspaces: [
+                    Self.remoteWorkspaceEntry(
+                        id: "11111111-1111-1111-1111-111111111111",
+                        title: "Desktop A",
+                        sessionID: "session-a"
+                    ),
+                ],
+                selectedWorkspaceID: nil,
+                changeSeq: 7
+            ),
+            TerminalRemoteDaemonWorkspaceListResult(
+                workspaces: [
+                    Self.remoteWorkspaceEntry(
+                        id: "22222222-2222-2222-2222-222222222222",
+                        title: "Desktop B",
+                        sessionID: "session-b"
+                    ),
+                ],
+                selectedWorkspaceID: nil,
+                changeSeq: 8
+            ),
+        ])
+        let fixture = makeStore(
+            snapshot: TerminalStoreSnapshot(hosts: [], workspaces: [], selectedWorkspaceID: nil),
+            serverDiscovery: discovery,
+            workspaceListFetcher: { host in
+                try await fetcher.fetch(host: host)
+            },
+            workspaceSubscriptionStarter: { _, _ in false }
+        )
+        let host = TerminalHost(
+            stableID: "cmuxd-dev-test",
+            name: "Local Dev (:52195)",
+            hostname: "127.0.0.1",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .sky,
+            source: .discovered,
+            transportPreference: .remoteDaemon,
+            serverID: "cmuxd-dev-test",
+            wsPort: 52195,
+            wsSecret: "secret",
+            machineStatus: .online,
+            daemonWorkspaceChangeSeq: 7
+        )
+
+        discovery.send([host])
+        try await waitForCondition {
+            fixture.store.workspaces.map(\.title) == ["Desktop A"]
+        }
+        var callCount = await fetcher.recordedCallCount()
+        XCTAssertEqual(callCount, 1)
+
+        discovery.send([host])
+        await Task.yield()
+        callCount = await fetcher.recordedCallCount()
+        XCTAssertEqual(callCount, 1)
+
+        var updatedHost = host
+        updatedHost.daemonWorkspaceChangeSeq = 8
+        discovery.send([updatedHost])
+        try await waitForCondition {
+            fixture.store.workspaces.map(\.title) == ["Desktop B"]
+        }
+        callCount = await fetcher.recordedCallCount()
+        XCTAssertEqual(callCount, 2)
+    }
+
+    @MainActor
     func testApplyDiscoveredHostsReplacesPlaceholderCustomHostWithLiveMachine() throws {
         let placeholderHost = TerminalHost(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,
@@ -1583,9 +1656,12 @@ final class TerminalSidebarStoreTests: XCTestCase {
         workspaceMetadataService: StubTerminalWorkspaceMetadataService? = nil,
         remoteWorkspaceReadMarker: TerminalRemoteWorkspaceReadMarking? = nil,
         analyticsTracker: MobileAnalyticsTracking? = nil,
+        serverDiscovery: TerminalServerDiscovering? = nil,
         networkPathMonitor: TerminalNetworkPathMonitoring? = nil,
         eagerlyRestoreSessions: Bool = false,
-        controllerFactory: TerminalSessionControllerFactory? = nil
+        controllerFactory: TerminalSessionControllerFactory? = nil,
+        workspaceListFetcher: TerminalWorkspaceListFetcher? = nil,
+        workspaceSubscriptionStarter: TerminalWorkspaceSubscriptionStarter? = nil
     ) -> (
         store: TerminalSidebarStore,
         snapshotStore: InMemoryTerminalSnapshotStore,
@@ -1610,14 +1686,44 @@ final class TerminalSidebarStoreTests: XCTestCase {
             transportFactory: transportFactory,
             workspaceIdentityService: workspaceIdentityService,
             workspaceMetadataService: workspaceMetadataService,
-            serverDiscovery: nil,
+            serverDiscovery: serverDiscovery,
             networkPathMonitor: networkPathMonitor,
             remoteWorkspaceReadMarker: remoteWorkspaceReadMarker,
             analyticsTracker: analyticsTracker,
             eagerlyRestoreSessions: eagerlyRestoreSessions,
-            controllerFactory: resolvedControllerFactory
+            controllerFactory: resolvedControllerFactory,
+            workspaceListFetcher: workspaceListFetcher,
+            workspaceSubscriptionStarter: workspaceSubscriptionStarter
         )
         return (store, snapshotStore, credentialsStore, workspaceIdentityService, workspaceMetadataService)
+    }
+
+    private static func remoteWorkspaceEntry(
+        id: String,
+        title: String,
+        sessionID: String
+    ) -> TerminalRemoteDaemonWorkspaceEntry {
+        TerminalRemoteDaemonWorkspaceEntry(
+            id: id,
+            title: title,
+            directory: "/",
+            focusedPaneID: "pane-\(id)",
+            paneCount: 1,
+            createdAt: 1_800_000_000_000,
+            lastActivityAt: 1_800_000_000_000,
+            sessionID: sessionID,
+            preview: nil,
+            unreadCount: nil,
+            pinned: nil,
+            panes: [
+                TerminalRemoteDaemonWorkspacePane(
+                    id: "pane-\(id)",
+                    sessionID: sessionID,
+                    title: title,
+                    directory: "/"
+                ),
+            ]
+        )
     }
 
 }
@@ -1655,6 +1761,43 @@ private final class StubTerminalNetworkPathMonitor: TerminalNetworkPathMonitorin
         currentState = state
         subject.send(state)
     }
+}
+
+private final class StubTerminalServerDiscovery: TerminalServerDiscovering {
+    private let subject = PassthroughSubject<[TerminalHost], Never>()
+
+    var hostsPublisher: AnyPublisher<[TerminalHost], Never> {
+        subject.eraseToAnyPublisher()
+    }
+
+    func send(_ hosts: [TerminalHost]) {
+        subject.send(hosts)
+    }
+}
+
+private actor StubWorkspaceListFetcher {
+    private var results: [TerminalRemoteDaemonWorkspaceListResult]
+    private var callCount = 0
+
+    init(results: [TerminalRemoteDaemonWorkspaceListResult]) {
+        self.results = results
+    }
+
+    func fetch(host: TerminalHost) throws -> TerminalRemoteDaemonWorkspaceListResult {
+        callCount += 1
+        guard !results.isEmpty else {
+            throw StubWorkspaceListFetcherError.missingResult(host.stableID)
+        }
+        return results.removeFirst()
+    }
+
+    func recordedCallCount() -> Int {
+        callCount
+    }
+}
+
+private enum StubWorkspaceListFetcherError: Error {
+    case missingResult(String)
 }
 
 @MainActor

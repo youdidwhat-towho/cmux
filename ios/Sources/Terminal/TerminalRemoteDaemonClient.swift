@@ -12,12 +12,32 @@ struct TerminalRemoteDaemonHello: Decodable, Equatable, Sendable {
     let name: String
     let version: String
     let instanceID: String?
+    let workspaceCount: Int?
+    let changeSeq: UInt64?
     let capabilities: [String]
+
+    init(
+        name: String,
+        version: String,
+        instanceID: String?,
+        workspaceCount: Int? = nil,
+        changeSeq: UInt64? = nil,
+        capabilities: [String]
+    ) {
+        self.name = name
+        self.version = version
+        self.instanceID = instanceID
+        self.workspaceCount = workspaceCount
+        self.changeSeq = changeSeq
+        self.capabilities = capabilities
+    }
 
     private enum CodingKeys: String, CodingKey {
         case name
         case version
         case instanceID = "instance_id"
+        case workspaceCount = "workspace_count"
+        case changeSeq = "change_seq"
         case capabilities
     }
 }

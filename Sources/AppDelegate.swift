@@ -1468,7 +1468,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // daemon's Unix socket is accepting connections.
         MobileDaemonBridgeInline.shared.startIfNeeded()
 #endif
-        mobilePresenceCoordinator.start(tabManager: tabManager)
         disableSuddenTerminationIfNeeded()
         installLifecycleSnapshotObserversIfNeeded()
         prepareStartupSessionSnapshotIfNeeded()
@@ -3467,6 +3466,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         attemptStartupSessionRestoreIfNeeded(primaryWindow: window)
+        mobilePresenceCoordinator.start(tabManager: tabManager, isAuthoritative: true)
         if !isTerminatingApp {
             _ = saveSessionSnapshot(includeScrollback: false)
         }
@@ -12417,6 +12417,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         sidebarSelectionState = context.sidebarSelectionState
         fileExplorerState = context.fileExplorerState
         TerminalController.shared.setActiveTabManager(context.tabManager)
+        if didAttemptStartupSessionRestore && !isApplyingSessionRestore {
+            mobilePresenceCoordinator.start(tabManager: context.tabManager, isAuthoritative: true)
+        }
 #if DEBUG
         cmuxDebugLog(
             "mainWindow.active window={\(debugWindowToken(window))} context={\(debugContextToken(context))} beforeMgr=\(beforeManagerToken) afterMgr=\(debugManagerToken(tabManager)) \(debugShortcutRouteSnapshot())"

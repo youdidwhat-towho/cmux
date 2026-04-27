@@ -104,6 +104,7 @@ struct TerminalHost: Identifiable, Codable, Equatable, Sendable {
     var wsPort: Int?
     var wsSecret: String?
     var machineStatus: MobileMachineStatus?
+    var daemonWorkspaceChangeSeq: UInt64?
 
     init(
         id: ID = UUID(),
@@ -127,7 +128,8 @@ struct TerminalHost: Identifiable, Codable, Equatable, Sendable {
         directTLSPins: [String] = [],
         wsPort: Int? = nil,
         wsSecret: String? = nil,
-        machineStatus: MobileMachineStatus? = nil
+        machineStatus: MobileMachineStatus? = nil,
+        daemonWorkspaceChangeSeq: UInt64? = nil
     ) {
         self.id = id
         self.stableID = stableID ?? id.uuidString
@@ -151,6 +153,7 @@ struct TerminalHost: Identifiable, Codable, Equatable, Sendable {
         self.wsPort = wsPort
         self.wsSecret = wsSecret
         self.machineStatus = machineStatus
+        self.daemonWorkspaceChangeSeq = daemonWorkspaceChangeSeq
     }
 
     var hasWebSocketEndpoint: Bool {
@@ -234,6 +237,7 @@ struct TerminalHost: Identifiable, Codable, Equatable, Sendable {
         case wsPort
         case wsSecret
         case machineStatus
+        case daemonWorkspaceChangeSeq
     }
 
     init(from decoder: Decoder) throws {
@@ -269,7 +273,8 @@ struct TerminalHost: Identifiable, Codable, Equatable, Sendable {
             directTLSPins: try container.decodeIfPresent([String].self, forKey: .directTLSPins) ?? [],
             wsPort: try container.decodeIfPresent(Int.self, forKey: .wsPort),
             wsSecret: try container.decodeIfPresent(String.self, forKey: .wsSecret),
-            machineStatus: try container.decodeIfPresent(MobileMachineStatus.self, forKey: .machineStatus)
+            machineStatus: try container.decodeIfPresent(MobileMachineStatus.self, forKey: .machineStatus),
+            daemonWorkspaceChangeSeq: try container.decodeIfPresent(UInt64.self, forKey: .daemonWorkspaceChangeSeq)
         )
     }
 

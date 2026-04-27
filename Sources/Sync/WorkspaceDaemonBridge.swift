@@ -15,6 +15,7 @@ final class WorkspaceDaemonBridge {
     private var workspaceCancellables: [UUID: AnyCancellable] = [:]
     private var panelCancellables: [UUID: AnyCancellable] = [:]
     private var panelSetCancellables: [UUID: AnyCancellable] = [:]
+    private var syncIsAuthoritative = false
 
     private var syncScheduled = false
     private(set) var lastSyncTime: Date?
@@ -64,12 +65,17 @@ final class WorkspaceDaemonBridge {
         heartbeatPublisher: AnyObject? = nil
     ) {}
 
-    func start(tabManager: TabManager) {
-        guard self.tabManager !== tabManager else { return }
+    func start(tabManager: TabManager, isAuthoritative: Bool = true) {
+        let isSameTabManager = self.tabManager === tabManager
+        let authorityChanged = syncIsAuthoritative != isAuthoritative
+        guard !isSameTabManager || authorityChanged else { return }
         self.tabManager = tabManager
+        syncIsAuthoritative = isAuthoritative
         self.notificationStore = .shared
         cancellables.removeAll()
         workspaceCancellables.removeAll()
+        panelCancellables.removeAll()
+        panelSetCancellables.removeAll()
 
         connection.setWorkspaceSyncProvider { [weak self] in
             guard let self else { return nil }
@@ -429,6 +435,7 @@ final class WorkspaceDaemonBridge {
 
         return [
             "selected_workspace_id": tabManager.selectedTabId?.uuidString.lowercased() ?? "",
+            "prune_sessionless_missing": syncIsAuthoritative,
             "workspaces": workspaces,
         ]
     }

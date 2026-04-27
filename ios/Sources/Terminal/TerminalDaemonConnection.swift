@@ -70,12 +70,15 @@ actor TerminalDaemonConnection {
         return try await ensureConnected()
     }
 
-    func startWorkspaceSubscription(onEvent: @escaping @Sendable (TerminalDaemonConnectionEvent) -> Void) {
-        guard subscriptionTask == nil else { return }
+    @discardableResult
+    func startWorkspaceSubscription(onEvent: @escaping @Sendable (TerminalDaemonConnectionEvent) -> Void) -> Bool {
+        guard subscriptionTask == nil else { return false }
         subscribed = true
         subscriptionTask = Task { [weak self] in
             await self?.runSubscriptionLoop(onEvent: onEvent)
+            await self?.subscriptionLoopDidFinish()
         }
+        return true
     }
 
     func stopWorkspaceSubscription() async {
@@ -88,6 +91,21 @@ actor TerminalDaemonConnection {
         // Any pull-to-refresh waiters still pending against this connection
         // would never complete after the loop is gone — release them now.
         resumeSubscribeRoundWaiters()
+    }
+
+    private func subscriptionLoopDidFinish() {
+        subscriptionTask = nil
+    }
+
+    func fetchWorkspaceList() async throws -> TerminalRemoteDaemonWorkspaceListResult {
+        do {
+            let (client, _) = try await acquireClient()
+            return try await client.workspaceList()
+        } catch {
+            await teardownClient()
+            let (client, _) = try await acquireClient()
+            return try await client.workspaceList()
+        }
     }
 
     /// Force an immediate reconnect: tear down the current client so the

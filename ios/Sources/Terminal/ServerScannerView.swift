@@ -11,15 +11,17 @@ struct DiscoveredServer: Identifiable {
     let version: String
     let instanceID: String?
     let workspaceCount: Int
+    let workspaceChangeSeq: UInt64?
     let wsSecret: String
 
-    init(hostname: String, port: Int, name: String, version: String, instanceID: String?, workspaceCount: Int, wsSecret: String) {
+    init(hostname: String, port: Int, name: String, version: String, instanceID: String?, workspaceCount: Int, workspaceChangeSeq: UInt64?, wsSecret: String) {
         self.hostname = hostname
         self.port = port
         self.name = name
         self.version = version
         self.instanceID = instanceID
         self.workspaceCount = workspaceCount
+        self.workspaceChangeSeq = workspaceChangeSeq
         self.wsSecret = wsSecret
     }
 }
@@ -177,7 +179,7 @@ final class ServerScanner {
         }
     }
 
-    static func probeSync(hostname: String, port: Int, secret: String, expectedInstanceID: String? = nil) -> DiscoveredServer? {
+    nonisolated static func probeSync(hostname: String, port: Int, secret: String, expectedInstanceID: String? = nil) -> DiscoveredServer? {
         let fd = socket(AF_INET, SOCK_STREAM, 0)
         guard fd >= 0 else { return nil }
         defer { close(fd) }
@@ -253,6 +255,7 @@ final class ServerScanner {
         }
 
         let workspaceCount = result["workspace_count"] as? Int ?? 0
+        let workspaceChangeSeq = uint64Value(result["change_seq"])
         let instanceID = result["instance_id"] as? String
         if let expectedInstanceID,
            !instanceMatches(actual: instanceID, expected: expectedInstanceID) {
@@ -267,11 +270,25 @@ final class ServerScanner {
             version: version,
             instanceID: instanceID,
             workspaceCount: workspaceCount,
+            workspaceChangeSeq: workspaceChangeSeq,
             wsSecret: secret
         )
     }
 
-    private static func instanceMatches(actual: String?, expected: String) -> Bool {
+    private nonisolated static func uint64Value(_ value: Any?) -> UInt64? {
+        if let value = value as? UInt64 {
+            return value
+        }
+        if let value = value as? Int, value >= 0 {
+            return UInt64(value)
+        }
+        if let value = value as? NSNumber {
+            return value.uint64Value
+        }
+        return nil
+    }
+
+    private nonisolated static func instanceMatches(actual: String?, expected: String) -> Bool {
         let expected = expected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !expected.isEmpty else { return true }
         guard let actual = actual?.trimmingCharacters(in: .whitespacesAndNewlines), !actual.isEmpty else {
@@ -291,7 +308,7 @@ final class ServerScanner {
 
     // MARK: - WebSocket helpers
 
-    private static func wsSend(fd: Int32, data: String) {
+    private nonisolated static func wsSend(fd: Int32, data: String) {
         guard let payload = data.data(using: .utf8) else { return }
         var frame = [UInt8]()
         frame.append(0x81)
@@ -303,10 +320,10 @@ final class ServerScanner {
             frame.append(UInt8(payload.count & 0xFF))
         }
         frame.append(contentsOf: payload)
-        frame.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
+        _ = frame.withUnsafeBytes { write(fd, $0.baseAddress, $0.count) }
     }
 
-    private static func wsRecv(fd: Int32) -> String? {
+    private nonisolated static func wsRecv(fd: Int32) -> String? {
         var header = [UInt8](repeating: 0, count: 2)
         let headerRead = read(fd, &header, 2)
         guard headerRead == 2 else { return nil }
