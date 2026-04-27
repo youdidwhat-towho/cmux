@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+OUT_ROOT="${OWL_LAYER_HOST_FOCUSED_OUT:-$ROOT_DIR/artifacts/layer-host-focused-gui-latest}"
+RUN_SCRIPT="$SCRIPT_DIR/run-layer-host-verifier-gui.sh"
+
+if [ "$#" -eq 0 ]; then
+  suites=(render input resize scroll-text)
+else
+  suites=("$@")
+fi
+
+expanded_suites=()
+for suite in "${suites[@]}"; do
+  if [ "$suite" = "all" ]; then
+    expanded_suites+=(render input resize scroll-text)
+  else
+    expanded_suites+=("$suite")
+  fi
+done
+suites=("${expanded_suites[@]}")
+
+rm -rf "$OUT_ROOT"
+mkdir -p "$OUT_ROOT"
+
+run_suite() {
+  local suite="$1"
+  local out_dir="$OUT_ROOT/$suite"
+
+  echo "== OWL focused suite: $suite =="
+  case "$suite" in
+    render)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+        "$RUN_SCRIPT"
+      ;;
+    input)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="input-fixture,form-fixture,modifier-fixture" \
+        "$RUN_SCRIPT"
+      ;;
+    resize)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_RESIZE_CHECK=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="resize-small-fixture,resize-roundtrip-fixture" \
+        "$RUN_SCRIPT"
+      ;;
+    scroll-text)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="scroll-fixture,text-edit-fixture" \
+        "$RUN_SCRIPT"
+      ;;
+    *)
+      echo "unknown focused suite: $suite" >&2
+      echo "usage: $0 [all|render|input|resize|scroll-text ...]" >&2
+      exit 2
+      ;;
+  esac
+
+  if [ ! -f "$out_dir/summary.json" ]; then
+    echo "missing summary after focused suite: $suite" >&2
+    exit 1
+  fi
+}
+
+for suite in "${suites[@]}"; do
+  run_suite "$suite"
+done
+
+report="$OUT_ROOT/focused-suites.txt"
+{
+  echo "Focused OWL LayerHost suites"
+  echo "Artifacts root: $OUT_ROOT"
+  echo
+  for suite in "${suites[@]}"; do
+    suite_dir="$OUT_ROOT/$suite"
+    echo "[$suite]"
+    echo "summary: $suite_dir/summary.json"
+    find "$suite_dir" -maxdepth 1 -type f -name "*.png" -print | sort | sed 's/^/png: /'
+    find "$suite_dir" -maxdepth 1 -type f -name "*-mojo-dom-state.json" -print | sort | sed 's/^/dom: /'
+    echo
+  done
+} > "$report"
+
+cat "$report"

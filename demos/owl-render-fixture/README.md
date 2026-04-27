@@ -8,12 +8,12 @@ This verifier is the first visual gate for the OWL effort. It launches a Chromiu
 
 The real compositor path is Mojo plus Chromium-owned `CAContext` plus Swift `CALayerHost`. It does not use Unix sockets or remote debugging. The current Chromium patch adds `fresh-owl-hosted-frame-pump`, a scoped Owl switch that maps hosted surfaces into Chromium's existing renderer, root compositor, and GPU frame-pump settings without passing the broad `--disable-frame-rate-limit` command-line switch.
 
-The current visual gates are intentionally small but behavioral: example.com, deterministic canvas, click, form typing, modifier keys, resize-small, resize-roundtrip, scroll, and text-edit selection replacement. The full all-target run is still flaky after many sequential sessions, so use focused suites until the verifier lifecycle is hardened.
+The current visual gates are intentionally small but behavioral: example.com, deterministic canvas, click, form typing, modifier keys, resize-small, resize-roundtrip, scroll, and text-edit selection replacement. `Scripts/run-layer-host-focused-suites-gui.sh` is the default broad gate: it splits those checks into focused render, input, resize, and scroll-text batches, writes one artifact directory per suite, and emits a screenshot checklist at `artifacts/layer-host-focused-gui-latest/focused-suites.txt`. The old full all-target run is still useful as a stress test, but it is not the default pass/fail gate because it is flaky after many sequential sessions.
 
 ## Next gates
 
 1. Replace the patch-file workflow with an owned Chromium fork or DEPS-pinned patch application step that can be built reproducibly in CI.
-2. Split the verifier into deterministic focused suites so resize, input, scroll, and text editing can run independently without long-run AppKit or WindowServer lifecycle flake.
+2. Promote the focused-suite runner to CI on the AWS Mac so each suite reports its own summary and visual artifact bundle.
 3. Expand the Mojo schema from the current verifier surface toward real OWL concepts: session, profile, web view, renderer input, and layer host/client.
 4. Add popup/native widget coverage for `<select>`, context menus, color pickers, permission prompts, and other separate `RenderWidgetHostView` surfaces.
 5. Add lifecycle coverage for tab attach/detach, hidden/visible transitions, crash/restart recovery, device scale changes, and cross-display moves.
@@ -66,6 +66,26 @@ surface captures and DOM-state JSON for each input fixture. Set
 `OWL_LAYER_HOST_ONLY_TARGETS=scroll-fixture,text-edit-fixture` to run a smaller
 visual batch; every run writes `generated-transport-report.html` plus
 per-capture generated transport trace JSON.
+
+For the focused broad gate:
+
+```bash
+cd ~/cmux-owl-render-fixture
+./Scripts/run-layer-host-focused-suites-gui.sh
+```
+
+The focused runner executes four separate GUI-launched batches:
+
+- `render`: example.com plus deterministic canvas
+- `input`: click, text input, form submit, and modifier keys
+- `resize`: resize-small and resize-roundtrip
+- `scroll-text`: wheel scrolling and text-edit selection replacement
+
+Run a smaller subset by naming suites:
+
+```bash
+./Scripts/run-layer-host-focused-suites-gui.sh resize scroll-text
+```
 
 Generate or check Swift bindings from the Mojo source:
 
