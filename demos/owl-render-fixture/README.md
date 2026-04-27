@@ -8,7 +8,7 @@ This verifier is the first visual gate for the OWL effort. It launches a Chromiu
 
 The real compositor path is Mojo plus Chromium-owned `CAContext` plus Swift `CALayerHost`. It does not use Unix sockets or remote debugging. The current Chromium patch adds `fresh-owl-hosted-frame-pump`, a scoped Owl switch that maps hosted surfaces into Chromium's existing renderer, root compositor, and GPU frame-pump settings without passing the broad `--disable-frame-rate-limit` command-line switch.
 
-The current visual gates are intentionally small but behavioral: example.com, deterministic canvas, click, form typing, modifier keys, resize-small, resize-roundtrip, scroll, and text-edit selection replacement. `Scripts/run-layer-host-focused-suites-gui.sh` is the default broad gate: it splits those checks into focused render, input, resize, and scroll-text batches, writes one artifact directory per suite, and emits a screenshot checklist at `artifacts/layer-host-focused-gui-latest/focused-suites.txt`. The old full all-target run is still useful as a stress test, but it is not the default pass/fail gate because it is flaky after many sequential sessions.
+The current visual gates are intentionally small but behavioral: example.com, deterministic canvas, click, form typing, modifier keys, resize-small, resize-roundtrip, scroll, text-edit selection replacement, widget controls, and live Google search-box typing. `Scripts/run-layer-host-focused-suites-gui.sh` is the default broad gate: it splits the deterministic checks into focused render, input, resize, and scroll-text batches, writes one artifact directory per suite, and emits a screenshot checklist at `artifacts/layer-host-focused-gui-latest/focused-suites.txt`. The old full all-target run is still useful as a stress test, but it is not the default pass/fail gate because it is flaky after many sequential sessions.
 
 ## Next gates
 
@@ -81,10 +81,17 @@ The focused runner executes four separate GUI-launched batches:
 - `resize`: resize-small and resize-roundtrip
 - `scroll-text`: wheel scrolling and text-edit selection replacement
 
+It also has two optional real-world or widget suites:
+
+- `widgets`: `<select>` list selection, right-click `contextmenu` delivery, and color input click/focus coverage
+- `google`: visit Google and type into the live search box
+
+The `widgets` suite is intentionally deterministic. It verifies that widget-shaped DOM controls receive Mojo-routed input through the hosted Chromium surface. A separate native-popup gate is still needed for unmodified Chromium context menus, collapsed `<select>` popups, and system color panels; an early experiment showed those native popup paths can block the current harness instead of producing a stable artifact.
+
 Run a smaller subset by naming suites:
 
 ```bash
-./Scripts/run-layer-host-focused-suites-gui.sh resize scroll-text
+./Scripts/run-layer-host-focused-suites-gui.sh resize scroll-text widgets google
 ```
 
 Generate or check Swift bindings from the Mojo source:

@@ -15,6 +15,8 @@ private struct Options {
     var includeExample: Bool
     var includeInput: Bool
     var includeResize: Bool
+    var includeGoogle: Bool
+    var includeWidgets: Bool
     var inputDiagnosticCapture: Bool
     var onlyTargets: Set<String>
 }
@@ -34,6 +36,15 @@ private struct RenderTarget {
 private struct MouseClick {
     let x: Float
     let y: Float
+    let button: UInt32
+    let clickCount: UInt32
+
+    init(x: Float, y: Float, button: UInt32 = 0, clickCount: UInt32 = 1) {
+        self.x = x
+        self.y = y
+        self.button = button
+        self.clickCount = clickCount
+    }
 }
 
 private enum InputAction {
@@ -42,6 +53,7 @@ private enum InputAction {
     case key(OwlFreshKeyEvent)
     case resize(OwlFreshHostResizeRequest, waitForMode: String)
     case text(String)
+    case waitForJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
 }
 
 private struct JavaScriptExpectation {
@@ -64,7 +76,10 @@ private enum KeyModifiers {
 private enum KeyCodes {
     static let backspace: UInt32 = 8
     static let delete: UInt32 = 46
+    static let downArrow: UInt32 = 40
+    static let escape: UInt32 = 27
     static let leftArrow: UInt32 = 37
+    static let returnKey: UInt32 = 13
 }
 
 private struct PixelStats: Codable {
@@ -291,6 +306,8 @@ struct OwlLayerHostVerifier {
         var includeExample = true
         var includeInput = false
         var includeResize = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_RESIZE_CHECK"] == "1"
+        var includeGoogle = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_GOOGLE_CHECK"] == "1"
+        var includeWidgets = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_WIDGET_CHECK"] == "1"
         var inputDiagnosticCapture = false
         var onlyTargets = Set(
             (ProcessInfo.processInfo.environment["OWL_LAYER_HOST_ONLY_TARGETS"] ?? "")
@@ -335,6 +352,10 @@ struct OwlLayerHostVerifier {
                 includeInput = true
             case "--resize-check":
                 includeResize = true
+            case "--google-check":
+                includeGoogle = true
+            case "--widget-check":
+                includeWidgets = true
             case "--input-diagnostic-capture":
                 inputDiagnosticCapture = true
             case "--only-target":
@@ -345,7 +366,7 @@ struct OwlLayerHostVerifier {
                 onlyTargets.insert(arguments[index])
             case "--help":
                 print("""
-                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--input-diagnostic-capture] [--only-target <name>]
+                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--google-check] [--widget-check] [--input-diagnostic-capture] [--only-target <name>]
                 """)
                 exit(0)
             default:
@@ -370,6 +391,8 @@ struct OwlLayerHostVerifier {
             includeExample: includeExample,
             includeInput: includeInput,
             includeResize: includeResize,
+            includeGoogle: includeGoogle,
+            includeWidgets: includeWidgets,
             inputDiagnosticCapture: inputDiagnosticCapture,
             onlyTargets: onlyTargets
         )
@@ -444,6 +467,11 @@ private final class LayerHostRunner {
         let textEditingFixture = try writeFixture(
             name: "text-edit-fixture",
             html: Fixtures.textEditingFixture,
+            directory: fixtureDirectory
+        )
+        let widgetFixture = try writeFixture(
+            name: "widget-fixture",
+            html: Fixtures.widgetFixture,
             directory: fixtureDirectory
         )
         var targets: [RenderTarget] = []
@@ -693,6 +721,99 @@ private final class LayerHostRunner {
                         JavaScriptExpectation(key: "selectionTyped", value: .string("selectXYZ")),
                         JavaScriptExpectation(key: "status", value: .string("OWL_TEXT_SELECTION_OK")),
                         JavaScriptExpectation(key: "typed", value: .string("abcZfinalf")),
+                    ]
+                )
+            )
+        }
+        let requestedGoogleTargets = options.onlyTargets.contains("google-search")
+        if options.includeGoogle || requestedGoogleTargets {
+            targets.append(
+                RenderTarget(
+                    name: "google-search",
+                    url: "https://www.google.com/?hl=en&igu=1",
+                    screenshotName: "google-search-after-type.png",
+                    expected: [.dark, .light, .nonWhite],
+                    preInputScreenshotName: "google-search-before-type.png",
+                    preInputExpected: [.dark, .light, .nonWhite],
+                    inputActions: [
+                        .waitForJavaScript(
+                            label: "google search box",
+                            script: """
+                            (() => {
+                              const input = document.querySelector('textarea[name="q"], input[name="q"]');
+                              if (!input) {
+                                return { ready: false };
+                              }
+                              input.focus();
+                              return {
+                                activeName: document.activeElement?.getAttribute("name") || "",
+                                ready: document.activeElement === input,
+                                tag: input.tagName
+                              };
+                            })()
+                            """,
+                            expectations: [
+                                JavaScriptExpectation(key: "ready", value: .bool(true)),
+                            ]
+                        ),
+                        .text("owl mojo layer host"),
+                    ],
+                    postInputDiagnosticScript: """
+                    ({
+                      activeName: document.activeElement?.getAttribute("name") || "",
+                      query: document.querySelector('textarea[name="q"], input[name="q"]')?.value || "",
+                      title: document.title || ""
+                    })
+                    """,
+                    postInputExpectations: [
+                        JavaScriptExpectation(key: "query", value: .string("owl mojo layer host")),
+                    ]
+                )
+            )
+        }
+        let requestedWidgetTargets = options.onlyTargets.contains("widget-fixture")
+        if options.includeWidgets || requestedWidgetTargets {
+            targets.append(
+                RenderTarget(
+                    name: "widget-fixture",
+                    url: widgetFixture.absoluteString,
+                    screenshotName: "widget-fixture-after-input.png",
+                    expected: [.green, .yellow, .dark],
+                    preInputScreenshotName: "widget-fixture-before-input.png",
+                    preInputExpected: [.blue, .dark, .light],
+                    inputActions: [
+                        .waitForJavaScript(
+                            label: "widget fixture ready",
+                            script: """
+                            ({
+                              ready: window.owlWidgetState?.ready === true
+                            })
+                            """,
+                            expectations: [
+                                JavaScriptExpectation(key: "ready", value: .bool(true)),
+                            ]
+                        ),
+                        .mouseClick(MouseClick(x: 188, y: 190)),
+                        .mouseClick(MouseClick(x: 330, y: 312, button: 2)),
+                        .key(OwlFreshKeyEvent(keyDown: true, keyCode: KeyCodes.escape, text: "", modifiers: 0)),
+                        .mouseClick(MouseClick(x: 192, y: 470)),
+                        .key(OwlFreshKeyEvent(keyDown: true, keyCode: KeyCodes.escape, text: "", modifiers: 0)),
+                    ],
+                    postInputDiagnosticScript: """
+                    ({
+                      colorClicked: window.owlWidgetState?.colorClicked === true,
+                      colorFocused: window.owlWidgetState?.colorFocused === true,
+                      contextSeen: window.owlWidgetState?.contextSeen === true,
+                      selectValue: document.getElementById("nativeSelect")?.value || "",
+                      status: document.getElementById("status")?.textContent || ""
+                    })
+                    """,
+                    postInputExpectations: [
+                        JavaScriptExpectation(key: "colorClicked", value: .bool(true)),
+                        JavaScriptExpectation(key: "colorFocused", value: .bool(true)),
+                        JavaScriptExpectation(key: "contextSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "selectValue", value: .string("beta")),
+                        JavaScriptExpectation(key: "status", value: .string("OWL_WIDGETS_OK")),
                     ]
                 )
             )
@@ -1081,8 +1202,8 @@ private final class LayerHostRunner {
                     kind: .down,
                     x: click.x,
                     y: click.y,
-                    button: 0,
-                    clickCount: 1,
+                    button: click.button,
+                    clickCount: click.clickCount,
                     deltaX: 0,
                     deltaY: 0,
                     modifiers: 0
@@ -1092,8 +1213,8 @@ private final class LayerHostRunner {
                     kind: .up,
                     x: click.x,
                     y: click.y,
-                    button: 0,
-                    clickCount: 1,
+                    button: click.button,
+                    clickCount: click.clickCount,
                     deltaX: 0,
                     deltaY: 0,
                     modifiers: 0
@@ -1130,8 +1251,51 @@ private final class LayerHostRunner {
                     }
                     try sendKeyStroke(stroke, runtime: runtime, hostController: hostController)
                 }
+            case .waitForJavaScript(let label, let script, let expectations):
+                try waitForJavaScriptExpectations(
+                    label: label,
+                    script: script,
+                    expectations: expectations,
+                    runtime: runtime,
+                    session: session,
+                    events: events,
+                    app: app
+                )
             }
         }
+    }
+
+    private func waitForJavaScriptExpectations(
+        label: String,
+        script: String,
+        expectations: [JavaScriptExpectation],
+        runtime: OwlFreshMojoRuntime,
+        session: OpaquePointer,
+        events: SessionEvents,
+        app: NSApplication
+    ) throws {
+        let deadline = Date().addingTimeInterval(10)
+        var lastResult = ""
+        var lastError = ""
+        while Date() < deadline {
+            runtime.pollEvents(milliseconds: 50)
+            pumpApp(app, for: 0.02)
+            do {
+                let result = try runtime.executeJavaScript(session, script: script)
+                lastResult = result
+                try verifyJavaScriptExpectations(
+                    result: result,
+                    expectations: expectations,
+                    targetName: label
+                )
+                return
+            } catch {
+                lastError = String(describing: error)
+            }
+        }
+        throw VerifierError.input(
+            "timed out waiting for \(label); lastResult=\(lastResult); lastError=\(lastError); logs=\(events.snapshot().logs)"
+        )
     }
 
     private func waitForHostFlush(
@@ -2144,6 +2308,7 @@ private func renderGeneratedTransportReport(summary: Summary) -> String {
     </body>
     </html>
     """
+
 }
 
 private func escapeHTML(_ value: String) -> String {
@@ -3056,6 +3221,170 @@ private enum Fixtures {
         selectionInput.addEventListener("select", render);
         document.addEventListener("selectionchange", render);
         editInput.focus();
+        render();
+      </script>
+    </body>
+    </html>
+    """
+
+    static let widgetFixture = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>OWL LayerHost widget fixture</title>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgb(248,248,248); }
+        body { font: 26px -apple-system, BlinkMacSystemFont, sans-serif; color: rgb(20,20,20); }
+        #banner {
+          position: absolute;
+          left: 48px;
+          top: 34px;
+          width: 864px;
+          height: 58px;
+          background: rgb(0, 89, 255);
+          color: white;
+          display: flex;
+          align-items: center;
+          padding-left: 22px;
+          box-sizing: border-box;
+          font-weight: 900;
+        }
+        label {
+          position: absolute;
+          left: 48px;
+          font-weight: 900;
+        }
+        #selectLabel { top: 112px; }
+        #contextLabel { top: 266px; }
+        #colorLabel { top: 418px; }
+        #nativeSelect {
+          position: absolute;
+          left: 48px;
+          top: 142px;
+          width: 280px;
+          height: 112px;
+          font: 28px -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        #selectState,
+        #colorState {
+          position: absolute;
+          left: 360px;
+          width: 520px;
+          height: 58px;
+          display: flex;
+          align-items: center;
+          font-weight: 900;
+        }
+        #selectState { top: 142px; }
+        #colorState { top: 448px; }
+        #contextZone {
+          position: absolute;
+          left: 48px;
+          top: 296px;
+          width: 864px;
+          height: 88px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: white;
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-weight: 900;
+        }
+        #colorInput {
+          position: absolute;
+          left: 48px;
+          top: 448px;
+          width: 250px;
+          height: 58px;
+        }
+        #status {
+          position: absolute;
+          left: 48px;
+          top: 540px;
+          width: 864px;
+          height: 70px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: rgb(238,238,238);
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-size: 34px;
+          font-weight: 900;
+        }
+        .ok {
+          background: rgb(255, 210, 0) !important;
+        }
+        body.done #status {
+          background: rgb(0, 204, 82);
+        }
+      </style>
+    </head>
+    <body>
+      <div id="banner">OWL_WIDGETS_READY</div>
+      <label id="selectLabel" for="nativeSelect">native select</label>
+      <select id="nativeSelect" size="3">
+        <option value="alpha">ALPHA_WIDGET_OPTION</option>
+        <option value="beta">BETA_WIDGET_OPTION</option>
+        <option value="gamma">GAMMA_WIDGET_OPTION</option>
+      </select>
+      <div id="selectState">select: alpha</div>
+      <label id="contextLabel" for="contextZone">context menu target</label>
+      <div id="contextZone">right click here</div>
+      <label id="colorLabel" for="colorInput">color input</label>
+      <input id="colorInput" type="color" value="#0059ff">
+      <div id="colorState">color: not clicked</div>
+      <div id="status">OWL_WIDGETS_WAITING</div>
+      <script>
+        const state = {
+          ready: true,
+          colorClicked: false,
+          colorFocused: false,
+          contextSeen: false
+        };
+        window.owlWidgetState = state;
+
+        const select = document.getElementById("nativeSelect");
+        const selectState = document.getElementById("selectState");
+        const contextZone = document.getElementById("contextZone");
+        const colorInput = document.getElementById("colorInput");
+        const colorState = document.getElementById("colorState");
+        const status = document.getElementById("status");
+
+        const render = () => {
+          selectState.textContent = "select: " + select.value;
+          selectState.classList.toggle("ok", select.value === "beta");
+          contextZone.textContent = state.contextSeen ? "OWL_CONTEXT_MENU_SEEN" : "right click here";
+          contextZone.classList.toggle("ok", state.contextSeen);
+          colorState.textContent = state.colorClicked ? "color input clicked and focused" : "color: not clicked";
+          colorState.classList.toggle("ok", state.colorClicked && state.colorFocused);
+          if (select.value === "beta" && state.contextSeen && state.colorClicked && state.colorFocused) {
+            document.body.classList.add("done");
+            status.textContent = "OWL_WIDGETS_OK";
+          }
+        };
+
+        select.addEventListener("change", render);
+        select.addEventListener("input", render);
+        contextZone.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          state.contextSeen = true;
+          render();
+        });
+        colorInput.addEventListener("focus", () => {
+          state.colorFocused = true;
+          render();
+        });
+        colorInput.addEventListener("click", (event) => {
+          event.preventDefault();
+          state.colorClicked = true;
+          state.colorFocused = true;
+          colorInput.focus();
+          render();
+        });
+        colorInput.addEventListener("input", render);
         render();
       </script>
     </body>

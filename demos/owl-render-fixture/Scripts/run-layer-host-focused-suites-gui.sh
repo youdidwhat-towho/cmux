@@ -16,7 +16,7 @@ fi
 expanded_suites=()
 for suite in "${suites[@]}"; do
   if [ "$suite" = "all" ]; then
-    expanded_suites+=(render input resize scroll-text)
+    expanded_suites+=(render input resize scroll-text widgets google)
   else
     expanded_suites+=("$suite")
   fi
@@ -58,9 +58,25 @@ run_suite() {
       OWL_LAYER_HOST_ONLY_TARGETS="scroll-fixture,text-edit-fixture" \
         "$RUN_SCRIPT"
       ;;
+    widgets)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_WIDGET_CHECK=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="widget-fixture" \
+        "$RUN_SCRIPT"
+      ;;
+    google)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_GOOGLE_CHECK=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="google-search" \
+        "$RUN_SCRIPT"
+      ;;
     *)
       echo "unknown focused suite: $suite" >&2
-      echo "usage: $0 [all|render|input|resize|scroll-text ...]" >&2
+      echo "usage: $0 [all|render|input|resize|scroll-text|widgets|google ...]" >&2
       exit 2
       ;;
   esac
