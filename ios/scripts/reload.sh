@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build and install to both simulator and connected iPhone (if available)
+# Build and install to simulators and connected iPhone/iPad devices when available.
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -174,59 +174,69 @@ if [ "$SIMULATOR_ONLY" -eq 1 ]; then
     exit 0
 fi
 
-# Check for connected device (may appear as "offline" if the phone is locked/untrusted).
-DEVICE_ID=$(xcrun xctrace list devices 2>&1 | awk '
-    /^== Devices ==/ { in_devices = 1; next }
-    /^==/ { in_devices = 0 }
-    in_devices { print }
-' | grep -E "iPhone.*\\([0-9]+\\.[0-9]+(\\.[0-9]+)?\\)" | head -1 | grep -oE '\([A-F0-9-]+\)' | tr -d '()')
+IOS_DEVICES="$(connected_ios_device_lines)"
+MIN_IOS_VERSION="$(ios_deployment_target)"
+INSTALLED_DEVICE_COUNT=0
+if [ -n "$IOS_DEVICES" ]; then
+    echo "📱 Building and installing on connected iPhone/iPad device(s)..."
+    while IFS=$'\t' read -r DEVICE_NAME DEVICE_ID DEVICE_OS_VERSION; do
+        [ -n "$DEVICE_ID" ] || continue
+        if [ -n "$DEVICE_OS_VERSION" ] && [ -n "$MIN_IOS_VERSION" ] && ! ios_version_at_least "$DEVICE_OS_VERSION" "$MIN_IOS_VERSION"; then
+            echo "  ⚠️  Skipping $DEVICE_NAME (iOS/iPadOS $DEVICE_OS_VERSION). cmux requires iOS/iPadOS $MIN_IOS_VERSION or newer."
+            continue
+        fi
 
-if [ -n "$DEVICE_ID" ]; then
-    DEVICE_NAME=$(xcrun xctrace list devices 2>&1 | grep "$DEVICE_ID" | sed 's/ ([0-9].*//')
-    echo "📱 Building for $DEVICE_NAME..."
+        echo "  → Building for $DEVICE_NAME..."
 
-    xcodebuild -scheme cmux -configuration Debug \
-        -destination "id=$DEVICE_ID" \
-        -derivedDataPath "$DERIVED_DATA_PATH" \
-        "${EXTRA_SETTINGS[@]}" \
-        -allowProvisioningUpdates \
-        -allowProvisioningDeviceRegistration \
-        -quiet
+        xcodebuild -scheme cmux -configuration Debug \
+            -destination "id=$DEVICE_ID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            "${EXTRA_SETTINGS[@]}" \
+            -allowProvisioningUpdates \
+            -allowProvisioningDeviceRegistration \
+            -quiet
 
-    DEVICE_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Debug-iphoneos/cmux DEV.app"
-    copy_local_config_if_present "$DEVICE_APP_PATH" "$LOCAL_CONFIG_SOURCE"
-    rewrite_localhost_for_device "$DEVICE_APP_PATH/LocalConfig.plist"
-    embed_debug_relay_for_device "$DEVICE_APP_PATH"
+        DEVICE_APP_PATH="$DERIVED_DATA_PATH/Build/Products/Debug-iphoneos/cmux DEV.app"
+        copy_local_config_if_present "$DEVICE_APP_PATH" "$LOCAL_CONFIG_SOURCE"
+        rewrite_localhost_for_device "$DEVICE_APP_PATH/LocalConfig.plist"
+        embed_debug_relay_for_device "$DEVICE_APP_PATH"
 
-    # Embed wsPort if discovered
-    if [ -n "$WS_PORT" ] && [ -d "$DEVICE_APP_PATH" ]; then
-        printf '%s' "$WS_PORT" > "$DEVICE_APP_PATH/debug-ws-port"
-    fi
-    if [ -n "$TAG" ] && [ -d "$DEVICE_APP_PATH" ]; then
-        printf 'cmuxd-dev-%s' "$TAG_SLUG" > "$DEVICE_APP_PATH/debug-ws-instance"
-    fi
+        # Embed wsPort if discovered
+        if [ -n "$WS_PORT" ] && [ -d "$DEVICE_APP_PATH" ]; then
+            printf '%s' "$WS_PORT" > "$DEVICE_APP_PATH/debug-ws-port"
+        fi
+        if [ -n "$TAG" ] && [ -d "$DEVICE_APP_PATH" ]; then
+            printf 'cmuxd-dev-%s' "$TAG_SLUG" > "$DEVICE_APP_PATH/debug-ws-instance"
+        fi
 
-    echo "📲 Installing on device..."
-    xcrun devicectl device install app --device "$DEVICE_ID" "$DEVICE_APP_PATH"
+        echo "  → Installing on $DEVICE_NAME..."
+        xcrun devicectl device install app --device "$DEVICE_ID" "$DEVICE_APP_PATH"
 
-    echo "🚀 Launching on device..."
-    if ! xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"; then
-        echo "⚠️  Could not launch app. If the device is locked, unlock it and open cmux manually."
-    fi
-else
-    OFFLINE_DEVICE_ID=$(xcrun xctrace list devices 2>&1 | awk '
-        /^== Devices Offline ==/ { in_devices = 1; next }
-        /^==/ { in_devices = 0 }
-        in_devices { print }
-    ' | grep -E "iPhone.*\\([0-9]+\\.[0-9]+(\\.[0-9]+)?\\)" | head -1 | grep -oE '\([A-F0-9-]+\)' | tr -d '()')
+        echo "  → Launching on $DEVICE_NAME..."
+        if ! xcrun devicectl device process launch --device "$DEVICE_ID" "$BUNDLE_ID"; then
+            echo "  ⚠️  Could not launch on $DEVICE_NAME. If the device is locked, unlock it and open cmux manually."
+        fi
+        INSTALLED_DEVICE_COUNT=$((INSTALLED_DEVICE_COUNT + 1))
+    done <<< "$IOS_DEVICES"
+fi
 
-    if [ -n "$OFFLINE_DEVICE_ID" ]; then
-        OFFLINE_DEVICE_NAME=$(xcrun xctrace list devices 2>&1 | grep "$OFFLINE_DEVICE_ID" | sed 's/ ([0-9].*//')
-        echo "⚠️  Found $OFFLINE_DEVICE_NAME, but it is currently unavailable/offline."
+OFFLINE_DEVICES="$(offline_ios_device_lines)"
+if [ -n "$OFFLINE_DEVICES" ]; then
+    while IFS=$'\t' read -r OFFLINE_DEVICE_NAME OFFLINE_DEVICE_ID OFFLINE_DEVICE_OS_VERSION; do
+        [ -n "$OFFLINE_DEVICE_ID" ] || continue
+        if [ -n "$OFFLINE_DEVICE_OS_VERSION" ]; then
+            echo "⚠️  Found $OFFLINE_DEVICE_NAME (iOS/iPadOS $OFFLINE_DEVICE_OS_VERSION), but it is currently unavailable/offline."
+        else
+            echo "⚠️  Found $OFFLINE_DEVICE_NAME, but it is currently unavailable/offline."
+        fi
         echo "   Unlock the device and make sure it is trusted, then re-run this script."
-    else
-        echo "ℹ️  No iPhone connected, skipping device install"
-    fi
+    done <<< "$OFFLINE_DEVICES"
+fi
+
+if [ -z "$IOS_DEVICES" ]; then
+    echo "ℹ️  No iPhone or iPad connected, skipping physical device install"
+elif [ "$INSTALLED_DEVICE_COUNT" -eq 0 ]; then
+    echo "ℹ️  No compatible connected iPhone or iPad was reloaded"
 fi
 
 echo "✅ Done!"

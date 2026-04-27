@@ -9,8 +9,8 @@
 
 ## Development
 ```bash
-./scripts/reload.sh   # Build & install to simulator + iPhone (if connected)
-./scripts/device.sh   # Build & install to connected iPhone only
+./scripts/reload.sh   # Build & install to simulator + iPhone/iPad devices
+./scripts/device.sh   # Build & install to connected iPhone/iPad devices only
 ```
 
 Always run `./scripts/reload.sh` after making code changes to reload the app.

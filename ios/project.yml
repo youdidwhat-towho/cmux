@@ -69,6 +69,7 @@ targets:
         CURRENT_PROJECT_VERSION: "17"
         GENERATE_INFOPLIST_FILE: "YES"
         SWIFT_EMIT_LOC_STRINGS: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
         DEVELOPMENT_TEAM: 7WLXT3NR37
         SWIFT_OBJC_BRIDGING_HEADER: Sources/Terminal/Ghostty-Bridging-Header.h
         HEADER_SEARCH_PATHS[sdk=iphoneos*]:

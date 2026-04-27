@@ -12,8 +12,8 @@
 ./scripts/testflight.sh
 ```
 
-- `reload.sh` builds and installs the dev app to the simulator and a connected iPhone when available.
-- `device.sh` installs to a connected iPhone only.
+- `reload.sh` builds and installs the dev app to booted simulators and connected iPhone/iPad devices when available.
+- `device.sh` installs to connected iPhone/iPad devices only.
 - `testflight.sh` archives and uploads Nightly/Release builds.
 
 Public environment overrides live in `Sources/Config/LocalConfig.plist`, which is gitignored. Use `Sources/Config/LocalConfig.example.plist` as the template.
