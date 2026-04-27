@@ -511,6 +511,11 @@ private final class LayerHostRunner {
             html: Fixtures.nativePopupFixture,
             directory: fixtureDirectory
         )
+        let plainNativeSelectFixture = try writeFixture(
+            name: "plain-native-select-fixture",
+            html: Fixtures.plainNativeSelectFixture,
+            directory: fixtureDirectory
+        )
         var targets: [RenderTarget] = []
         if options.includeCanvas {
             targets.append(RenderTarget(
@@ -810,6 +815,7 @@ private final class LayerHostRunner {
         }
         let requestedWidgetTargets = options.onlyTargets.contains("widget-fixture")
             || options.onlyTargets.contains("native-popup-fixture")
+            || options.onlyTargets.contains("plain-native-select-fixture")
         if options.includeWidgets || requestedWidgetTargets {
             targets.append(
                 RenderTarget(
@@ -852,6 +858,58 @@ private final class LayerHostRunner {
                         JavaScriptExpectation(key: "contextSeen", value: .bool(true)),
                         JavaScriptExpectation(key: "selectValue", value: .string("beta")),
                         JavaScriptExpectation(key: "status", value: .string("OWL_WIDGETS_OK")),
+                    ]
+                )
+            )
+            targets.append(
+                RenderTarget(
+                    name: "plain-native-select-fixture",
+                    url: plainNativeSelectFixture.absoluteString,
+                    screenshotName: "plain-native-select-after-input.png",
+                    expected: [.dark, .light, .nonWhite, .green],
+                    preInputScreenshotName: "plain-native-select-before-input.png",
+                    preInputExpected: [.dark, .light, .nonWhite, .blue],
+                    inputActions: [
+                        .waitForJavaScript(
+                            label: "plain native select ready",
+                            script: """
+                            ({
+                              hit: document.elementFromPoint(158, 159)?.id || "",
+                              ready: window.owlPlainNativeSelectState?.ready === true &&
+                                document.readyState === "complete" &&
+                                document.getElementById("plainSelect") instanceof HTMLSelectElement
+                            })
+                            """,
+                            expectations: [
+                                JavaScriptExpectation(key: "hit", value: .string("plainSelect")),
+                                JavaScriptExpectation(key: "ready", value: .bool(true)),
+                            ]
+                        ),
+                        .mouseClick(MouseClick(x: 158, y: 159)),
+                        .waitForSurfaceTree(
+                            label: "plain native select popup surface",
+                            expectations: [
+                                SurfaceTreeExpectation(
+                                    kind: .nativeMenu,
+                                    label: "select-menu",
+                                    menuItem: "Beta"
+                                ),
+                            ]
+                        ),
+                        .captureNativeMenu(
+                            label: "select-menu",
+                            name: "plain-native-select-popup-open.png",
+                            expected: [.dark, .light, .nonWhite],
+                            response: .accept(1)
+                        ),
+                    ],
+                    postInputDiagnosticScript: """
+                    ({
+                      selectValue: document.getElementById("plainSelect")?.value || ""
+                    })
+                    """,
+                    postInputExpectations: [
+                        JavaScriptExpectation(key: "selectValue", value: .string("beta")),
                     ]
                 )
             )
@@ -4133,6 +4191,89 @@ private enum Fixtures {
         });
         render();
       </script>
+    </body>
+    </html>
+    """
+
+    static let plainNativeSelectFixture = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>Plain native select</title>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: white; }
+        body { font: 26px -apple-system, BlinkMacSystemFont, sans-serif; color: rgb(20,20,20); }
+        #banner {
+          position: absolute;
+          left: 48px;
+          top: 34px;
+          width: 864px;
+          height: 58px;
+          background: rgb(0, 89, 255);
+          color: white;
+          display: flex;
+          align-items: center;
+          padding-left: 22px;
+          box-sizing: border-box;
+          font-weight: 900;
+        }
+        #selectLabel {
+          position: absolute;
+          left: 48px;
+          top: 112px;
+          font-weight: 900;
+        }
+        #selectMount {
+          position: absolute;
+          left: 48px;
+          top: 146px;
+        }
+        #selectState {
+          position: absolute;
+          left: 48px;
+          top: 224px;
+          width: 864px;
+          height: 70px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: rgb(238,238,238);
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-weight: 900;
+        }
+        body.done #selectState {
+          background: rgb(0, 204, 82);
+        }
+      </style>
+    </head>
+    <body>
+      <div id="banner">PLAIN_NATIVE_SELECT_READY</div>
+      <label id="selectLabel" for="plainSelect">browser default select, no select CSS</label>
+      <div id="selectMount">
+        <select id="plainSelect">
+          <option value="alpha">Alpha native option</option>
+          <option value="beta">Beta native option</option>
+          <option value="gamma">Gamma native option</option>
+        </select>
+      </div>
+      <div id="selectState">select: alpha</div>
+        <script>
+          window.owlPlainNativeSelectState = { ready: true, changed: false };
+          const select = document.getElementById("plainSelect");
+          const selectState = document.getElementById("selectState");
+          const render = () => {
+            selectState.textContent = "select: " + select.value;
+            if (select.value === "beta") {
+              window.owlPlainNativeSelectState.changed = true;
+              document.body.classList.add("done");
+            }
+          };
+          select.addEventListener("change", render);
+          select.addEventListener("input", render);
+          render();
+        </script>
     </body>
     </html>
     """
