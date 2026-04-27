@@ -185,6 +185,7 @@ final class TerminalSidebarStore {
     private var lastKnownWorkspacesByID: [TerminalWorkspace.ID: TerminalWorkspace] = [:]
     private var lastAppliedWorkspaceChangeSeqByStableID: [String: UInt64] = [:]
     private var pendingWorkspaceSnapshotSeqByStableID: [String: UInt64] = [:]
+    private var visibleWorkspaceIDs: Set<TerminalWorkspace.ID> = []
 
     init(
         snapshotStore: TerminalSnapshotPersisting = TerminalSnapshotStore(),
@@ -253,7 +254,6 @@ final class TerminalSidebarStore {
         observeWorkspaceMetadata()
         if eagerlyRestoreSessions {
             rebuildControllers()
-            syncSelectedControllerLifecycle()
         }
         observeLifecycle()
     }
@@ -320,7 +320,6 @@ final class TerminalSidebarStore {
     ) -> TerminalWorkspace.ID {
         selectedWorkspaceID = workspace.id
         setUnread(false, for: workspace.id)
-        syncSelectedControllerLifecycle()
         persist()
         ensureBackendIdentityIfNeeded(for: workspace.id)
         startWorkspaceMetadataObservationIfNeeded(for: workspace.id)
@@ -412,7 +411,6 @@ final class TerminalSidebarStore {
         )
         workspaces.insert(workspace, at: 0)
         selectedWorkspaceID = workspace.id
-        syncSelectedControllerLifecycle()
         persist()
         ensureBackendIdentityIfNeeded(for: workspace.id)
         startWorkspaceMetadataObservationIfNeeded(for: workspace.id)
@@ -488,10 +486,11 @@ final class TerminalSidebarStore {
         controllers[workspace.id]?.disconnect()
         controllers.removeValue(forKey: workspace.id)
         workspaces.removeAll { $0.id == workspace.id }
+        visibleWorkspaceIDs.remove(workspace.id)
         if selectedWorkspaceID == workspace.id {
             selectedWorkspaceID = workspaces.first?.id
         }
-        syncSelectedControllerLifecycle()
+        syncVisibleControllerLifecycle()
         persist()
     }
 
@@ -615,12 +614,13 @@ final class TerminalSidebarStore {
         removedWorkspaceIDs.forEach { controllers[$0]?.disconnect() }
         removedWorkspaceIDs.forEach { controllers.removeValue(forKey: $0) }
         workspaces.removeAll { removedWorkspaceIDs.contains($0.id) }
+        visibleWorkspaceIDs.subtract(removedWorkspaceIDs)
 
         if let selectedWorkspaceID, removedWorkspaceIDs.contains(selectedWorkspaceID) {
             self.selectedWorkspaceID = workspaces.first?.id
         }
 
-        syncSelectedControllerLifecycle()
+        syncVisibleControllerLifecycle()
         persist()
     }
 
@@ -742,15 +742,31 @@ final class TerminalSidebarStore {
         }
     }
 
-    private func syncSelectedControllerLifecycle() {
-        for workspace in workspaces {
-            let controller = controller(for: workspace)
-            if workspace.id == selectedWorkspaceID {
-                controller.resumeIfNeeded()
-                ensureBackendIdentityIfNeeded(for: workspace.id)
-            } else {
-                controller.suspendPreservingState()
-            }
+    func setWorkspaceDetailVisible(_ workspaceID: TerminalWorkspace.ID, visible: Bool) {
+        let resolvedID = resolvedWorkspaceID(for: workspaceID)
+        if visible {
+            visibleWorkspaceIDs.insert(resolvedID)
+        } else {
+            visibleWorkspaceIDs.remove(workspaceID)
+            visibleWorkspaceIDs.remove(resolvedID)
+        }
+        syncVisibleControllerLifecycle()
+    }
+
+    private func syncVisibleControllerLifecycle() {
+        visibleWorkspaceIDs = Set(visibleWorkspaceIDs.compactMap { visibleID in
+            let resolvedID = resolvedWorkspaceID(for: visibleID)
+            return workspaces.contains(where: { $0.id == resolvedID }) ? resolvedID : nil
+        })
+
+        for (workspaceID, controller) in controllers where !visibleWorkspaceIDs.contains(workspaceID) {
+            controller.suspendPreservingState()
+        }
+
+        for workspaceID in visibleWorkspaceIDs {
+            guard let workspace = workspace(with: workspaceID) else { continue }
+            controller(for: workspace).resumeIfNeeded()
+            ensureBackendIdentityIfNeeded(for: workspace.id)
         }
     }
 
@@ -1135,6 +1151,10 @@ final class TerminalSidebarStore {
             let replacementID = resolvedWorkspaceID(for: selectedWorkspaceID)
             self.selectedWorkspaceID = workspaces.contains(where: { $0.id == replacementID }) ? replacementID : workspaces.first?.id
         }
+        visibleWorkspaceIDs = Set(visibleWorkspaceIDs.compactMap { visibleID in
+            let resolvedID = resolvedWorkspaceID(for: visibleID)
+            return workspaces.contains(where: { $0.id == resolvedID }) ? resolvedID : nil
+        })
         pruneWorkspaceIDReplacements()
 
         if let changeSeq {
@@ -1143,10 +1163,7 @@ final class TerminalSidebarStore {
         }
 
         Self.debugLog("applyRemoteWorkspaces: \(data.count) workspaces from host \(host.name)")
-        if let selectedWorkspaceID,
-           let selectedWorkspace = workspaces.first(where: { $0.id == selectedWorkspaceID }) {
-            controller(for: selectedWorkspace).resumeIfNeeded()
-        }
+        syncVisibleControllerLifecycle()
         persist()
     }
 
@@ -1268,13 +1285,13 @@ final class TerminalSidebarStore {
         }
 
         if previousState?.isReachable == false {
-            syncSelectedControllerLifecycle()
+            syncVisibleControllerLifecycle()
             return
         }
 
         guard previousState != nil,
-              let selectedWorkspaceID,
-              let workspace = workspace(with: selectedWorkspaceID) else {
+              let visibleWorkspaceID = visibleWorkspaceIDs.first,
+              let workspace = workspace(with: resolvedWorkspaceID(for: visibleWorkspaceID)) else {
             return
         }
 
@@ -1682,7 +1699,7 @@ final class TerminalSidebarStore {
             ) { [weak self] _ in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    self.syncSelectedControllerLifecycle()
+                    self.syncVisibleControllerLifecycle()
                 }
             }
         )

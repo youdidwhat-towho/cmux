@@ -398,6 +398,118 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testOpenWorkspaceDoesNotAttachUntilDetailIsVisible() async throws {
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon,
+            teamID: "team-1",
+            serverID: "cmux-macmini"
+        )
+        let workspace = TerminalWorkspace(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000010")!,
+            hostID: host.id,
+            title: "Main",
+            tmuxSessionName: "cmux-main"
+        )
+        let snapshot = TerminalStoreSnapshot(
+            hosts: [host],
+            workspaces: [workspace],
+            selectedWorkspaceID: nil
+        )
+
+        let connectExpectation = expectation(description: "visible workspace connected")
+        let disconnectExpectation = expectation(description: "hidden workspace disconnected")
+        let transport = ConnectedStubTerminalTransport(
+            onConnect: {
+                connectExpectation.fulfill()
+            },
+            onDisconnect: {
+                disconnectExpectation.fulfill()
+            }
+        )
+        let fixture = makeStore(
+            snapshot: snapshot,
+            passwords: [host.id: "secret"],
+            transportFactory: StubTerminalTransportFactory(transport: transport)
+        )
+
+        _ = fixture.store.openWorkspace(workspace)
+        await Task.yield()
+
+        XCTAssertEqual(fixture.store.selectedWorkspaceID, workspace.id)
+        XCTAssertEqual(transport.connectCallCount, 0)
+
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
+        await fulfillment(of: [connectExpectation], timeout: 1.0)
+
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: false)
+        await fulfillment(of: [disconnectExpectation], timeout: 1.0)
+
+        XCTAssertEqual(transport.connectCallCount, 1)
+        XCTAssertEqual(transport.disconnectCallCount, 1)
+    }
+
+    @MainActor
+    func testEagerSessionRestoreDoesNotAttachUntilDetailIsVisible() async throws {
+        let host = TerminalHost(
+            name: "Mac Mini",
+            hostname: "cmux-macmini",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            transportPreference: .remoteDaemon,
+            teamID: "team-1",
+            serverID: "cmux-macmini"
+        )
+        let workspace = TerminalWorkspace(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000013")!,
+            hostID: host.id,
+            title: "Main",
+            tmuxSessionName: "cmux-main"
+        )
+        let snapshot = TerminalStoreSnapshot(
+            hosts: [host],
+            workspaces: [workspace],
+            selectedWorkspaceID: workspace.id
+        )
+
+        let connectExpectation = expectation(description: "restored visible workspace connected")
+        let disconnectExpectation = expectation(description: "restored hidden workspace disconnected")
+        let transport = ConnectedStubTerminalTransport(
+            onConnect: {
+                connectExpectation.fulfill()
+            },
+            onDisconnect: {
+                disconnectExpectation.fulfill()
+            }
+        )
+        let fixture = makeStore(
+            snapshot: snapshot,
+            passwords: [host.id: "secret"],
+            transportFactory: StubTerminalTransportFactory(transport: transport),
+            eagerlyRestoreSessions: true
+        )
+
+        await Task.yield()
+
+        XCTAssertEqual(fixture.store.selectedWorkspaceID, workspace.id)
+        XCTAssertEqual(transport.connectCallCount, 0)
+
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
+        await fulfillment(of: [connectExpectation], timeout: 1.0)
+
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: false)
+        await fulfillment(of: [disconnectExpectation], timeout: 1.0)
+
+        XCTAssertEqual(transport.connectCallCount, 1)
+        XCTAssertEqual(transport.disconnectCallCount, 1)
+    }
+
+    @MainActor
     func testOpenInboxWorkspaceCreatesRemoteWorkspaceAndMarksRead() async throws {
         let readMarker = StubTerminalRemoteWorkspaceReadMarker()
         let fixture = makeStore(
@@ -517,6 +629,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
 
         NotificationCenter.default.post(
             name: .ghosttySurfaceDidRingBell,
@@ -1179,6 +1292,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
 
         try await waitForCondition {
             fixture.store.server(for: host.id)?.pendingHostKey == "ssh-ed25519 AAAAPENDING" &&
@@ -1240,6 +1354,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
 
         try await waitForCondition {
             fixture.store.server(for: host.id)?.pendingHostKey == "ssh-ed25519 AAAANEW" &&
@@ -1263,7 +1378,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testOpenWorkspaceSuspendsInactiveControllerAndConnectsSelectedWorkspace() async throws {
+    func testWorkspaceDetailVisibilitySuspendsInactiveControllerAndConnectsVisibleWorkspace() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -1355,11 +1470,14 @@ final class TerminalSidebarStoreTests: XCTestCase {
         _ = fixture.store.controller(for: firstWorkspace)
         _ = fixture.store.controller(for: secondWorkspace)
         _ = fixture.store.openWorkspace(firstWorkspace)
+        fixture.store.setWorkspaceDetailVisible(firstWorkspace.id, visible: true)
         await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
         XCTAssertEqual(firstWorkspaceTransports[0].connectCallCount, 1)
         XCTAssertEqual(secondWorkspaceTransports[0].connectCallCount, 0)
 
         _ = fixture.store.openWorkspace(secondWorkspace)
+        fixture.store.setWorkspaceDetailVisible(firstWorkspace.id, visible: false)
+        fixture.store.setWorkspaceDetailVisible(secondWorkspace.id, visible: true)
         await fulfillment(of: [firstDisconnectExpectation, secondConnectExpectation], timeout: 1.0)
 
         XCTAssertEqual(firstWorkspaceTransports[0].disconnectCallCount, 1)
@@ -1367,7 +1485,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testNetworkLossSuspendsSelectedWorkspaceAndRestorationResumesIt() async throws {
+    func testNetworkLossSuspendsVisibleWorkspaceAndRestorationResumesIt() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -1423,6 +1541,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
         await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
 
         networkMonitor.send(TerminalNetworkPathState(isReachable: false, signature: "offline"))
@@ -1436,7 +1555,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testReachablePathChangeReconnectsSelectedConnectedWorkspace() async throws {
+    func testReachablePathChangeReconnectsVisibleConnectedWorkspace() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -1489,6 +1608,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
         await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
 
         networkMonitor.send(TerminalNetworkPathState(isReachable: true, signature: "cellular"))
@@ -1499,7 +1619,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testApplyRemoteWorkspacesReconnectsSelectedWorkspaceWhenDaemonSessionIDChanges() async throws {
+    func testApplyRemoteWorkspacesReconnectsVisibleWorkspaceWhenDaemonSessionIDChanges() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -1549,6 +1669,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
         await fulfillment(of: [firstConnectExpectation], timeout: 1.0)
 
         fixture.store.applyRemoteWorkspaces(
@@ -1574,7 +1695,7 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
-    func testReachablePathChangeReconnectsSelectedConnectingWorkspace() async throws {
+    func testReachablePathChangeReconnectsVisibleConnectingWorkspace() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
             hostname: "cmux-macmini",
@@ -1629,9 +1750,10 @@ final class TerminalSidebarStoreTests: XCTestCase {
         )
 
         _ = fixture.store.openWorkspace(workspace)
+        fixture.store.setWorkspaceDetailVisible(workspace.id, visible: true)
         await fulfillment(of: [initialConnectStartedExpectation], timeout: 1.0)
-        let selectedController = fixture.store.controller(for: workspace)
-        XCTAssertEqual(selectedController.phase, .reconnecting)
+        let visibleController = fixture.store.controller(for: workspace)
+        XCTAssertEqual(visibleController.phase, .reconnecting)
 
         fixture.store.simulateNetworkPathUpdateForTesting(
             TerminalNetworkPathState(isReachable: true, signature: "cellular")

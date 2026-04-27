@@ -1108,11 +1108,11 @@ struct TerminalWorkspaceScreen: View {
             }
         }
         .task {
-            controller.resumeIfNeeded()
+            store.setWorkspaceDetailVisible(workspace.id, visible: true)
             controller.surfaceView?.focusInput()
         }
         .onDisappear {
-            controller.suspendPreservingState()
+            store.setWorkspaceDetailVisible(workspace.id, visible: false)
         }
     }
 
