@@ -5917,13 +5917,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             event: event
         ) else { return }
 
-        switch browserPanel.actualFocus(in: window) {
+        let actualFocus = browserPanel.actualFocus(in: window)
+        let shouldRepairFocusedWrapper: Bool
+        switch actualFocus {
         case let .browserWebContent(actualPanelId) where actualPanelId == panelId,
-             let .browserWebViewWrapper(actualPanelId) where actualPanelId == panelId,
              let .browserAddressBar(actualPanelId) where actualPanelId == panelId,
              let .browserFindField(actualPanelId) where actualPanelId == panelId:
             return
+        case let .browserWebViewWrapper(actualPanelId) where actualPanelId == panelId:
+            shouldRepairFocusedWrapper = shouldDispatchBrowserSpaceViaFirstResponderKeyDown(
+                keyCode: event.keyCode,
+                firstResponderIsBrowser: true,
+                firstResponderHasMarkedText: browserResponderHasMarkedText(firstResponder),
+                flags: event.modifierFlags
+            )
+            guard shouldRepairFocusedWrapper else { return }
         default:
+            shouldRepairFocusedWrapper = false
             break
         }
 
@@ -5933,13 +5943,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             "browser.focus.keyRepair.window attempt window=\(ObjectIdentifier(window)) " +
             "workspace=\(String(workspace.id.uuidString.prefix(5))) " +
             "panel=\(String(panelId.uuidString.prefix(5))) " +
-            "fr=\(before) keyCode=\(event.keyCode) mods=\(event.modifierFlags.rawValue)"
+            "fr=\(before) actual=\(actualFocus.debugDescription) " +
+            "wrapperRepair=\(shouldRepairFocusedWrapper ? 1 : 0) " +
+            "keyCode=\(event.keyCode) mods=\(event.modifierFlags.rawValue)"
         )
 #endif
 
         let repaired = browserPanel.repairWebContentFocusForKeyboardInput(
             in: window,
-            reason: "windowSendEvent"
+            reason: "windowSendEvent",
+            repairFocusedWrapper: shouldRepairFocusedWrapper
         )
 
 #if DEBUG
