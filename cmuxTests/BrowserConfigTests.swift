@@ -3016,6 +3016,117 @@ final class BrowserReturnKeyDownRoutingTests: XCTestCase {
     }
 }
 
+final class BrowserPlainTextKeyEquivalentRoutingTests: XCTestCase {
+    func testBypassesPlainLetterKeyEquivalentWhenBrowserFirstResponder() {
+        XCTAssertTrue(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                flags: [],
+                characters: "a",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+    }
+
+    func testBypassesShiftLetterKeyEquivalentWhenBrowserFirstResponder() {
+        XCTAssertTrue(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                flags: [.shift],
+                characters: "A",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+    }
+
+    func testDoesNotBypassPlainLetterWhenFirstResponderIsNotBrowser() {
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: false,
+                flags: [],
+                characters: "a",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+    }
+
+    func testDoesNotBypassPlainLetterWhenBrowserFirstResponderHasMarkedText() {
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                firstResponderHasMarkedText: true,
+                flags: [],
+                characters: "a",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+    }
+
+    func testDoesNotBypassModifiedLetterShortcuts() {
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                flags: [.command],
+                characters: "a",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                flags: [.option],
+                characters: "å",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 0,
+                firstResponderIsBrowser: true,
+                flags: [.control],
+                characters: "\u{1}",
+                charactersIgnoringModifiers: "a"
+            )
+        )
+    }
+
+    func testDoesNotBypassDedicatedBrowserKeyRoutes() {
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 49,
+                firstResponderIsBrowser: true,
+                flags: [],
+                characters: " ",
+                charactersIgnoringModifiers: " "
+            )
+        )
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 36,
+                firstResponderIsBrowser: true,
+                flags: [],
+                characters: "\r",
+                charactersIgnoringModifiers: "\r"
+            )
+        )
+        XCTAssertFalse(
+            shouldBypassBrowserPlainTextKeyEquivalent(
+                keyCode: 125,
+                firstResponderIsBrowser: true,
+                flags: [],
+                characters: "\u{F701}",
+                charactersIgnoringModifiers: "\u{F701}"
+            )
+        )
+    }
+}
+
 final class BrowserZoomShortcutActionTests: XCTestCase {
     func testZoomInSupportsEqualsAndPlusVariants() {
         XCTAssertEqual(
