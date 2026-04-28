@@ -2056,6 +2056,149 @@ class TerminalController {
                     "required": accessMode.requiresPasswordAuth
                 ]
             )
+        case "auth.status":
+            // Await the AuthManager bootstrap so the socket never reports a transient
+            // signed_in=false during on-launch session restoration (tokens exist on
+            // disk but refreshSession() hasn't populated Published state yet).
+            let semaphore = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                await AuthManager.shared.awaitBootstrapped()
+                semaphore.signal()
+            }
+            semaphore.wait()
+            return v2Ok(id: id, result: v2AuthStatusPayload(timedOut: false))
+        case "auth.begin_sign_in":
+            // Fire the popup on main, then block the socket worker thread
+            // until AuthManager.$isAuthenticated flips to true (or the
+            // timeout elapses). The RPC reply is the callback — no client
+            // polling required.
+            let timeoutSeconds = (params["timeout_seconds"] as? Double) ?? 300
+            let semaphore = DispatchSemaphore(value: 0)
+            nonisolated(unsafe) var signedIn = false
+            Task { @MainActor in
+                signedIn = await AuthManager.shared.beginSignInAndAwait(
+                    timeout: timeoutSeconds
+                )
+                semaphore.signal()
+            }
+            semaphore.wait()
+            return v2Ok(id: id, result: v2AuthStatusPayload(timedOut: !signedIn))
+        case "auth.sign_out":
+            let semaphore = DispatchSemaphore(value: 0)
+            Task { @MainActor in
+                _ = await AuthManager.shared.signOutAndAwait(timeout: 5)
+                semaphore.signal()
+            }
+            semaphore.wait()
+            return v2Ok(id: id, result: v2AuthStatusPayload(timedOut: false))
+
+        // Cloud VMs. Socket → Mac app → VMClient HTTP → cmux web backend. The CLI never touches
+        // Stack Auth tokens directly; AuthManager.shared inside the mac app does.
+        case "vm.list":
+            return v2VmCall(id: id) {
+                let items = try await VMClient.shared.list()
+                return [
+                    "vms": items.map { ["id": $0.id, "provider": $0.provider, "image": $0.image, "createdAt": $0.createdAt] as [String: Any] },
+                ]
+            }
+        case "vm.create":
+            let image = params["image"] as? String
+            let provider = params["provider"] as? String
+            let idempotencyKey = (params["idempotency_key"] as? String)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let idempotencyKey, !idempotencyKey.isEmpty else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.create requires `idempotency_key`")
+            }
+            return v2VmCall(id: id) {
+                let vm = try await VMClient.shared.create(image: image, provider: provider, idempotencyKey: idempotencyKey)
+                return ["id": vm.id, "provider": vm.provider, "image": vm.image, "createdAt": vm.createdAt]
+            }
+        case "vm.destroy":
+            guard let vmId = params["id"] as? String else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.destroy requires `id`")
+            }
+            return v2VmCall(id: id) {
+                try await VMClient.shared.destroy(id: vmId)
+                return ["ok": true]
+            }
+        case "vm.exec":
+            guard let vmId = params["id"] as? String else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.exec requires `id`")
+            }
+            guard let command = params["command"] as? String else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.exec requires `command`")
+            }
+            let timeoutMs = max(1, v2Int(params, "timeout_ms") ?? 30_000)
+            return v2VmCall(id: id) {
+                let r = try await VMClient.shared.exec(id: vmId, command: command, timeoutMs: timeoutMs)
+                return ["exit_code": r.exitCode, "stdout": r.stdout, "stderr": r.stderr]
+            }
+        case "vm.ssh_info":
+            guard let vmId = params["id"] as? String else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.ssh_info requires `id`")
+            }
+            return v2VmCall(id: id) {
+                let ep = try await VMClient.shared.openSSH(id: vmId)
+                var credPayload: [String: Any] = [:]
+                switch ep.credential {
+                case .password(let value):
+                    credPayload = ["kind": "password", "value": value]
+                case .authorizedKey(let pem):
+                    credPayload = ["kind": "authorizedKey", "private_key_pem": pem]
+                }
+                return [
+                    "host": ep.host,
+                    "port": ep.port,
+                    "username": ep.username,
+                    "credential": credPayload,
+                    "public_key_fingerprint": ep.publicKeyFingerprint ?? NSNull(),
+                ]
+            }
+        case "vm.attach_info":
+            guard let vmId = params["id"] as? String else {
+                return v2Error(id: id, code: "invalid_params", message: "vm.attach_info requires `id`")
+            }
+            let requireDaemon = v2Bool(params, "require_daemon") ?? v2Bool(params, "requireDaemon") ?? false
+            return v2VmCall(id: id) {
+                let endpoint = try await VMClient.shared.openAttach(id: vmId, requireDaemon: requireDaemon)
+                switch endpoint {
+                case .ssh(let ep):
+                    var credPayload: [String: Any] = [:]
+                    switch ep.credential {
+                    case .password(let value):
+                        credPayload = ["kind": "password", "value": value]
+                    case .authorizedKey(let pem):
+                        credPayload = ["kind": "authorizedKey", "private_key_pem": pem]
+                    }
+                    return [
+                        "transport": "ssh",
+                        "host": ep.host,
+                        "port": ep.port,
+                        "username": ep.username,
+                        "credential": credPayload,
+                        "public_key_fingerprint": ep.publicKeyFingerprint ?? NSNull(),
+                    ]
+                case .websocket(let ep):
+                    var payload: [String: Any] = [
+                        "transport": "websocket",
+                        "url": ep.url,
+                        "headers": ep.headers,
+                        "token": ep.token,
+                        "session_id": ep.sessionId,
+                        "expires_at_unix": ep.expiresAtUnix,
+                    ]
+                    if let daemon = ep.daemon {
+                        payload["daemon"] = [
+                            "url": daemon.url,
+                            "headers": daemon.headers,
+                            "token": daemon.token,
+                            "session_id": daemon.sessionId,
+                            "expires_at_unix": daemon.expiresAtUnix,
+                        ]
+                    }
+                    return payload
+                }
+            }
 
         // Windows
         case "window.list":
@@ -2461,6 +2604,15 @@ class TerminalController {
             "system.identify",
             "system.tree",
             "auth.login",
+            "auth.status",
+            "auth.begin_sign_in",
+            "auth.sign_out",
+            "vm.list",
+            "vm.create",
+            "vm.destroy",
+            "vm.exec",
+            "vm.attach_info",
+            "vm.ssh_info",
             "window.list",
             "window.current",
             "window.focus",
@@ -2944,7 +3096,40 @@ class TerminalController {
     }
 
     // MARK: - V2 Helpers (encoding + result plumbing)
-    // MARK: - V2 Helpers (encoding + result plumbing)
+
+    private func v2AuthStatusPayload(timedOut: Bool) -> [String: Any] {
+        var result: [String: Any] = [:]
+        v2MainSync {
+            let manager = AuthManager.shared
+            var status: [String: Any] = [
+                "signed_in": manager.isAuthenticated,
+                "is_restoring_session": manager.isRestoringSession,
+                "is_loading": manager.isLoading,
+                "timed_out": timedOut
+            ]
+            if let user = manager.currentUser {
+                var userDict: [String: Any] = ["id": user.id]
+                if let email = user.primaryEmail { userDict["email"] = email }
+                if let name = user.displayName { userDict["display_name"] = name }
+                status["user"] = userDict
+            }
+            if let teamID = manager.resolvedTeamID {
+                status["selected_team_id"] = teamID
+            }
+            if !manager.availableTeams.isEmpty {
+                status["teams"] = manager.availableTeams.map { team -> [String: Any] in
+                    var dict: [String: Any] = [
+                        "id": team.id,
+                        "display_name": team.displayName
+                    ]
+                    if let slug = team.slug { dict["slug"] = slug }
+                    return dict
+                }
+            }
+            result = status
+        }
+        return result
+    }
 
     private func v2OrNull(_ value: Any?) -> Any {
         // Avoid relying on `?? NSNull()` inference (Swift toolchains can disagree).
@@ -2965,6 +3150,50 @@ class TerminalController {
             "ok": true,
             "result": result
         ])
+    }
+
+    /// Bridge an async throws closure into a socket RPC response. Runs the work on a detached
+    /// Task (so VMClient's URLSession hops are free to use any actor) and blocks the socket
+    /// worker thread on a semaphore. Mirrors the auth.begin_sign_in pattern above.
+    private func v2VmCall(
+        id: Any?,
+        timeoutSeconds: TimeInterval = 17 * 60,
+        _ work: @escaping () async throws -> [String: Any]
+    ) -> String {
+        let semaphore = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var result: Result<[String: Any], Error>?
+        let task = Task {
+            do {
+                result = .success(try await work())
+            } catch {
+                result = .failure(error)
+            }
+            semaphore.signal()
+        }
+        if semaphore.wait(timeout: .now() + timeoutSeconds) == .timedOut {
+            task.cancel()
+            return v2Error(
+                id: id,
+                code: "timeout",
+                message: "VM request timed out after \(Int(timeoutSeconds)) seconds"
+            )
+        }
+        switch result {
+        case .success(let payload):
+            return v2Ok(id: id, result: payload)
+        case .failure(let error):
+            return v2Error(
+                id: id,
+                code: "vm_error",
+                message: String(describing: error)
+            )
+        case nil:
+            return v2Error(
+                id: id,
+                code: "vm_error",
+                message: "unknown vm error"
+            )
+        }
     }
 
     private func v2Error(id: Any?, code: String, message: String, data: Any? = nil) -> String {
@@ -3862,6 +4091,10 @@ class TerminalController {
 
         let identityFile = v2RawString(params, "identity_file")?.trimmingCharacters(in: .whitespacesAndNewlines)
         let sshOptions = v2StringArray(params, "ssh_options") ?? []
+        let transportRaw = v2RawString(params, "transport")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let transport = WorkspaceRemoteTransport(rawValue: transportRaw ?? "") ?? .ssh
         let autoConnect = v2Bool(params, "auto_connect") ?? true
         var relayPort: Int?
         if v2HasNonNullParam(params, "relay_port") {
@@ -3879,6 +4112,38 @@ class TerminalController {
         let localSocketPath = v2RawString(params, "local_socket_path")
         let terminalStartupCommand = v2RawString(params, "terminal_startup_command")?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketURL = v2RawString(params, "daemon_websocket_url")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketToken = v2RawString(params, "daemon_websocket_token")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketSessionID = v2RawString(params, "daemon_websocket_session_id")?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let daemonWebSocketExpiresAtUnix = (params["daemon_websocket_expires_at_unix"] as? Int64)
+            ?? Int64((params["daemon_websocket_expires_at_unix"] as? Double) ?? 0)
+        let rawDaemonHeaders = params["daemon_websocket_headers"] as? [String: Any] ?? [:]
+        let daemonWebSocketHeaders = rawDaemonHeaders.reduce(into: [String: String]()) { result, pair in
+            if let value = pair.value as? String {
+                result[pair.key] = value
+            }
+        }
+        let daemonWebSocketEndpoint: WorkspaceRemoteWebSocketDaemonEndpoint?
+        if let daemonWebSocketURL,
+           !daemonWebSocketURL.isEmpty,
+           let daemonWebSocketToken,
+           !daemonWebSocketToken.isEmpty,
+           let daemonWebSocketSessionID,
+           !daemonWebSocketSessionID.isEmpty {
+            daemonWebSocketEndpoint = WorkspaceRemoteWebSocketDaemonEndpoint(
+                url: daemonWebSocketURL,
+                headers: daemonWebSocketHeaders,
+                token: daemonWebSocketToken,
+                sessionId: daemonWebSocketSessionID,
+                expiresAtUnix: daemonWebSocketExpiresAtUnix
+            )
+        } else {
+            daemonWebSocketEndpoint = nil
+        }
+        let skipDaemonBootstrap = v2Bool(params, "skip_daemon_bootstrap") ?? false
         if relayPort != nil {
             guard let relayID, !relayID.isEmpty else {
                 return .err(code: "invalid_params", message: "relay_id is required when relay_port is set", data: nil)
@@ -3892,7 +4157,7 @@ class TerminalController {
 #if DEBUG
         dlog(
             "workspace.remote.configure.request workspace=\(workspaceId.uuidString.prefix(8)) " +
-            "target=\(destination) port=\(sshPort.map(String.init) ?? "nil") " +
+            "target=\(destination) transport=\(transport.rawValue) port=\(sshPort.map(String.init) ?? "nil") " +
             "autoConnect=\(autoConnect ? 1 : 0) relayPort=\(relayPort.map(String.init) ?? "nil") " +
             "localSocket=\(localSocketPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? localSocketPath! : "nil") " +
             "sshOptions=\(sshOptions.joined(separator: "|"))"
@@ -3911,6 +4176,7 @@ class TerminalController {
             let workspace = owner.workspace
 
             let config = WorkspaceRemoteConfiguration(
+                transport: transport,
                 destination: destination,
                 port: sshPort,
                 identityFile: identityFile?.isEmpty == true ? nil : identityFile,
@@ -3921,7 +4187,9 @@ class TerminalController {
                 relayToken: relayToken?.isEmpty == true ? nil : relayToken,
                 localSocketPath: localSocketPath,
                 terminalStartupCommand: terminalStartupCommand?.isEmpty == true ? nil : terminalStartupCommand,
-                foregroundAuthToken: foregroundAuthToken?.isEmpty == true ? nil : foregroundAuthToken
+                foregroundAuthToken: foregroundAuthToken?.isEmpty == true ? nil : foregroundAuthToken,
+                daemonWebSocketEndpoint: daemonWebSocketEndpoint,
+                skipDaemonBootstrap: skipDaemonBootstrap
             )
             workspace.configureRemoteConnection(config, autoConnect: autoConnect)
 

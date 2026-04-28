@@ -5041,7 +5041,7 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
             "Expected the new split panel to be selected before simulating stale focus state"
         )
 
-        // Simulate the split-pane failure mode: Bonsplit already points at the right panel,
+        // Simulate the split-pane failure mode: WorkspaceSplit already points at the right panel,
         // but the active terminal state is still stale on the left panel.
         leftPanel.surface.setFocus(true)
         leftPanel.hostedView.setActive(true)
@@ -5101,7 +5101,7 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
             "Expected the clicked split pane to already be selected before simulating stale focus state"
         )
 
-        // Simulate the ghost-terminal race: the right pane is selected in Bonsplit, but stale
+        // Simulate the ghost-terminal race: the right pane is selected in WorkspaceSplit, but stale
         // active state remains on the left and the right pane's AppKit focus callback never fires
         // after split reparent/layout churn.
         leftPanel.surface.setFocus(true)
@@ -5742,7 +5742,7 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
             return
         }
 
-        // Simulate one delayed stale split-selection callback from bonsplit.
+        // Simulate one delayed stale split-selection callback from WorkspaceSplit.
         DispatchQueue.main.async {
             workspace.workspaceSplit(didSelectTab: splitTabId, inPane: splitPaneId)
         }

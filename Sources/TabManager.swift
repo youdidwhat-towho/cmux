@@ -1005,6 +1005,7 @@ class TabManager: ObservableObject {
     private var selectionSideEffectsGeneration: UInt64 = 0
     private var workspaceCycleGeneration: UInt64 = 0
     private var workspaceCycleCooldownTask: Task<Void, Never>?
+    private var pendingWorkspaceUnfocusTarget: (tabId: UUID, panelId: UUID)?
     private var sidebarSelectedWorkspaceIds: Set<UUID> = []
     var confirmCloseHandler: ((String, String, Bool) -> Bool)?
     private struct WorkspaceCreationTabSnapshot {
@@ -4536,6 +4537,19 @@ class TabManager: ObservableObject {
         terminalPanel.applyWindowBackgroundIfActive()
     }
 
+    func applyWindowBackdropModeForAllTabs(reason: String) {
+        let backgroundColor = GhosttyApp.shared.defaultBackgroundColor
+        let backgroundOpacity = GhosttyApp.shared.defaultBackgroundOpacity
+        for tab in tabs {
+            tab.applyGhosttyChrome(
+                backgroundColor: backgroundColor,
+                backgroundOpacity: backgroundOpacity,
+                reason: reason
+            )
+        }
+        applyWindowBackgroundForSelectedTab()
+    }
+
     private func focusSelectedTabPanel(previousTabId: UUID?) {
         guard let selectedTabId,
               let tab = tabs.first(where: { $0.id == selectedTabId }) else { return }
@@ -4551,16 +4565,93 @@ class TabManager: ObservableObject {
             return
         }
 
-        // Route workspace reactivation through the normal focus machinery so panel-local
-        // activation intents like browser find-field focus are restored on return.
-        tab.focusPanel(panelId)
         if let previousTabId,
-           previousTabId != selectedTabId,
            let previousTab = tabs.first(where: { $0.id == previousTabId }),
            let previousPanelId = previousTab.focusedPanelId,
            previousTab.panels[previousPanelId] != nil {
-            unfocusWorkspacePanel(tabId: previousTabId, panelId: previousPanelId)
+            replacePendingWorkspaceUnfocusTarget(
+                with: (tabId: previousTabId, panelId: previousPanelId)
+            )
         }
+
+        // Route workspace reactivation through the normal focus machinery so panel-local
+        // activation intents like browser find-field focus are restored on return.
+        tab.focusPanel(panelId)
+    }
+
+    func completePendingWorkspaceUnfocus(reason: String) {
+        guard let pending = pendingWorkspaceUnfocusTarget else { return }
+        guard Self.shouldUnfocusPendingWorkspace(
+            pendingTabId: pending.tabId,
+            selectedTabId: selectedTabId
+        ) else {
+            pendingWorkspaceUnfocusTarget = nil
+#if DEBUG
+            dlog(
+                "ws.unfocus.drop tab=\(Self.debugShortWorkspaceId(pending.tabId)) panel=\(String(pending.panelId.uuidString.prefix(5))) reason=selected_again"
+            )
+#endif
+            return
+        }
+        pendingWorkspaceUnfocusTarget = nil
+        unfocusWorkspacePanel(tabId: pending.tabId, panelId: pending.panelId)
+#if DEBUG
+        if let snapshot = debugCurrentWorkspaceSwitchSnapshot() {
+            let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
+            dlog(
+                "ws.unfocus.complete id=\(snapshot.id) dt=\(Self.debugMsText(dtMs)) " +
+                "tab=\(Self.debugShortWorkspaceId(pending.tabId)) panel=\(String(pending.panelId.uuidString.prefix(5))) reason=\(reason)"
+            )
+        } else {
+            dlog(
+                "ws.unfocus.complete id=none tab=\(Self.debugShortWorkspaceId(pending.tabId)) " +
+                "panel=\(String(pending.panelId.uuidString.prefix(5))) reason=\(reason)"
+            )
+        }
+#endif
+    }
+
+    private func replacePendingWorkspaceUnfocusTarget(with next: (tabId: UUID, panelId: UUID)) {
+        if let current = pendingWorkspaceUnfocusTarget,
+           current.tabId == next.tabId,
+           current.panelId == next.panelId {
+            return
+        }
+
+        if let current = pendingWorkspaceUnfocusTarget {
+            if Self.shouldUnfocusPendingWorkspace(
+                pendingTabId: current.tabId,
+                selectedTabId: selectedTabId
+            ) {
+                unfocusWorkspacePanel(tabId: current.tabId, panelId: current.panelId)
+#if DEBUG
+                dlog(
+                    "ws.unfocus.flush tab=\(Self.debugShortWorkspaceId(current.tabId)) panel=\(String(current.panelId.uuidString.prefix(5))) reason=replaced"
+                )
+#endif
+            } else {
+#if DEBUG
+                dlog(
+                    "ws.unfocus.drop tab=\(Self.debugShortWorkspaceId(current.tabId)) panel=\(String(current.panelId.uuidString.prefix(5))) reason=replaced_selected"
+                )
+#endif
+            }
+        }
+
+        pendingWorkspaceUnfocusTarget = next
+#if DEBUG
+        if let snapshot = debugCurrentWorkspaceSwitchSnapshot() {
+            let dtMs = (CACurrentMediaTime() - snapshot.startedAt) * 1000
+            dlog(
+                "ws.unfocus.defer id=\(snapshot.id) dt=\(Self.debugMsText(dtMs)) " +
+                "tab=\(Self.debugShortWorkspaceId(next.tabId)) panel=\(String(next.panelId.uuidString.prefix(5)))"
+            )
+        } else {
+            dlog(
+                "ws.unfocus.defer id=none tab=\(Self.debugShortWorkspaceId(next.tabId)) panel=\(String(next.panelId.uuidString.prefix(5)))"
+            )
+        }
+#endif
     }
 
     private func unfocusWorkspacePanel(tabId: UUID, panelId: UUID) {
@@ -4568,6 +4659,11 @@ class TabManager: ObservableObject {
               let panel = tab.panels[panelId] else { return }
         panel.unfocus()
     }
+
+    static func shouldUnfocusPendingWorkspace(pendingTabId: UUID, selectedTabId: UUID?) -> Bool {
+        selectedTabId != pendingTabId
+    }
+
     private func dismissFocusedPanelNotificationIfActive(tabId: UUID) {
         let shouldSuppressFlash = suppressFocusFlash
         suppressFocusFlash = false
@@ -6885,6 +6981,7 @@ extension TabManager {
         isNavigatingHistory = false
         workspaceCycleCooldownTask?.cancel()
         workspaceCycleCooldownTask = nil
+        pendingWorkspaceUnfocusTarget = nil
         isWorkspaceCycleHot = false
         selectionSideEffectsGeneration &+= 1
         recentlyClosedBrowsers = RecentlyClosedBrowserStack(capacity: 20)

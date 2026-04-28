@@ -4,152 +4,6 @@ import SwiftUI
 import Darwin
 import UniformTypeIdentifiers
 
-enum WorkspaceTitlebarSettings {
-    static let showTitlebarKey = "workspaceTitlebarVisible"
-    static let defaultShowTitlebar = true
-
-    static func isVisible(defaults: UserDefaults = .standard) -> Bool {
-        if defaults.object(forKey: showTitlebarKey) == nil {
-            return defaultShowTitlebar
-        }
-        return defaults.bool(forKey: showTitlebarKey)
-    }
-}
-
-enum WorkspacePresentationModeSettings {
-    static let modeKey = "workspacePresentationMode"
-
-    enum Mode: String {
-        case standard
-        case minimal
-    }
-
-    static let defaultMode: Mode = .standard
-
-    static func mode(for rawValue: String?) -> Mode {
-        Mode(rawValue: rawValue ?? "") ?? defaultMode
-    }
-
-    static func mode(defaults: UserDefaults = .standard) -> Mode {
-        mode(for: defaults.string(forKey: modeKey))
-    }
-
-    static func isMinimal(defaults: UserDefaults = .standard) -> Bool {
-        mode(defaults: defaults) == .minimal
-    }
-}
-
-enum WorkspaceButtonFadeSettings {
-    static let modeKey = "workspaceButtonsFadeMode"
-    static let legacyTitlebarControlsVisibilityModeKey = "titlebarControlsVisibilityMode"
-    static let legacyPaneTabBarControlsVisibilityModeKey = "paneTabBarControlsVisibilityMode"
-
-    enum Mode: String {
-        case enabled
-        case disabled
-    }
-
-    static let defaultMode: Mode = .disabled
-
-    static func mode(for rawValue: String?) -> Mode {
-        Mode(rawValue: rawValue ?? "") ?? defaultMode
-    }
-
-    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
-        mode(for: defaults.string(forKey: modeKey)) == .enabled
-    }
-
-    static func initializeStoredModeIfNeeded(defaults: UserDefaults = .standard) {
-        guard defaults.string(forKey: modeKey) == nil else { return }
-
-        if let migratedMode = migratedLegacyMode(defaults: defaults) {
-            defaults.set(migratedMode.rawValue, forKey: modeKey)
-            return
-        }
-
-        let initialMode: Mode = WorkspaceTitlebarSettings.isVisible(defaults: defaults) ? .disabled : .enabled
-        defaults.set(initialMode.rawValue, forKey: modeKey)
-    }
-
-    private static func migratedLegacyMode(defaults: UserDefaults) -> Mode? {
-        let legacyValues = [
-            defaults.string(forKey: legacyTitlebarControlsVisibilityModeKey),
-            defaults.string(forKey: legacyPaneTabBarControlsVisibilityModeKey),
-        ]
-
-        if legacyValues.contains(where: { $0 == "onHover" || $0 == "hover" || $0 == "enabled" }) {
-            return .enabled
-        }
-        if legacyValues.contains(where: { $0 == "always" || $0 == "disabled" }) {
-            return .disabled
-        }
-        return nil
-    }
-}
-
-enum PaneFirstClickFocusSettings {
-    static let enabledKey = "paneFirstClickFocus.enabled"
-    static let defaultEnabled = false
-
-    static func isEnabled(defaults: UserDefaults = .standard) -> Bool {
-        defaults.object(forKey: enabledKey) as? Bool ?? defaultEnabled
-    }
-}
-
-enum TerminalScrollBarSettings {
-    static let showScrollBarKey = "terminal.showScrollBar"
-    static let defaultShowScrollBar = true
-    static let didChangeNotification = Notification.Name("cmux.terminalScrollBarSettingsDidChange")
-
-    static func isVisible(defaults: UserDefaults = .standard) -> Bool {
-        if defaults.object(forKey: showScrollBarKey) == nil {
-            return defaultShowScrollBar
-        }
-        return defaults.bool(forKey: showScrollBarKey)
-    }
-
-    static func notifyDidChange(notificationCenter: NotificationCenter = .default) {
-        notificationCenter.post(name: didChangeNotification, object: nil)
-    }
-}
-
-enum UITestLaunchManifest {
-    static let argumentName = "-cmuxUITestLaunchManifest"
-
-    struct Payload: Decodable {
-        let environment: [String: String]
-    }
-
-    static func applyIfPresent(
-        arguments: [String] = CommandLine.arguments,
-        loadData: (String) -> Data? = { path in
-            try? Data(contentsOf: URL(fileURLWithPath: path))
-        },
-        applyEnvironment: (String, String) -> Void = { key, value in
-            setenv(key, value, 1)
-        }
-    ) {
-        guard let path = manifestPath(from: arguments),
-              let data = loadData(path),
-              let payload = try? JSONDecoder().decode(Payload.self, from: data) else {
-            return
-        }
-
-        for (key, value) in payload.environment {
-            applyEnvironment(key, value)
-        }
-    }
-
-    static func manifestPath(from arguments: [String]) -> String? {
-        guard let index = arguments.firstIndex(of: argumentName) else { return nil }
-        let valueIndex = arguments.index(after: index)
-        guard valueIndex < arguments.endIndex else { return nil }
-
-        let rawPath = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines)
-        return rawPath.isEmpty ? nil : rawPath
-    }
-}
-
 @main
 struct cmuxApp: App {
     @StateObject private var tabManager: TabManager
@@ -516,6 +370,14 @@ struct cmuxApp: App {
                     }
                     Button("Workspace Tab Chrome Debug…") {
                         WorkspaceTabChromeDebugWindowController.shared.show()
+                    }
+                    Button(
+                        String(
+                            localized: "debug.menu.tabBarBackdropLab",
+                            defaultValue: "Tab Bar Backdrop Lab…"
+                        )
+                    ) {
+                        TabBarBackdropLabWindowController.shared.show()
                     }
                     Button("File Explorer Style Debug…") {
                         FileExplorerStyleDebugWindowController.shared.show()
@@ -1160,6 +1022,8 @@ struct cmuxApp: App {
         BackgroundDebugWindowController.shared.show()
         MenuBarExtraDebugWindowController.shared.show()
         WorkspaceTabChromeDebugWindowController.shared.show()
+        TabBarBackdropLabWindowController.shared.show()
+        FeedTextEditorDebugWindowController.shared.show()
     }
 }
 
@@ -1175,6 +1039,7 @@ private let cmuxAuxiliaryWindowIdentifiers: Set<String> = [
     "cmux.menubarDebug",
     "cmux.backgroundDebug",
     "cmux.workspaceTabChromeDebug",
+    "cmux.tabBarBackdropLab",
 ]
 
 /// Returns whether the given window should handle the standard close shortcut
@@ -1810,6 +1675,22 @@ private struct DebugWindowControlsView: View {
                         }
                         Button("Menu Bar Extra Debug…") {
                             MenuBarExtraDebugWindowController.shared.show()
+                        }
+                        Button(
+                            String(
+                                localized: "debug.menu.tabBarBackdropLab",
+                                defaultValue: "Tab Bar Backdrop Lab…"
+                            )
+                        ) {
+                            TabBarBackdropLabWindowController.shared.show()
+                        }
+                        Button(
+                            String(
+                                localized: "debug.menu.feedTextEditorDebug",
+                                defaultValue: "Feed Text Editor Lab…"
+                            )
+                        ) {
+                            FeedTextEditorDebugWindowController.shared.show()
                         }
                         Button("Open All Debug Windows") {
                             BrowserImportHintDebugWindowController.shared.show()
@@ -3411,18 +3292,22 @@ private final class SplitButtonLayoutDebugWindowController: NSWindowController, 
 private struct SplitButtonLayoutDebugView: View {
     @AppStorage("debugFadeColorStyle") private var backdropStyle = 0
 
-    private let options: [(Int, String)] = [
-        (0, "Pre-composited paneBackground"),
-        (1, "Raw paneBackground (opaque)"),
-        (2, "barBackground (tab chrome)"),
-        (3, "windowBackgroundColor"),
-        (4, "controlBackgroundColor"),
-        (5, "Pre-composited barBackground"),
-    ]
+    private var options: [(Int, String)] {
+        [
+            (0, String(localized: "debug.splitButtonLayout.option.precompositedPane", defaultValue: "Pre-composited paneBackground")),
+            (1, String(localized: "debug.splitButtonLayout.option.rawPane", defaultValue: "Raw paneBackground (opaque)")),
+            (2, String(localized: "debug.splitButtonLayout.option.rawBar", defaultValue: "barBackground (tab chrome)")),
+            (3, String(localized: "debug.splitButtonLayout.option.windowBackground", defaultValue: "windowBackgroundColor")),
+            (4, String(localized: "debug.splitButtonLayout.option.controlBackground", defaultValue: "controlBackgroundColor")),
+            (5, String(localized: "debug.splitButtonLayout.option.precompositedBar", defaultValue: "Pre-composited barBackground")),
+            (6, String(localized: "debug.splitButtonLayout.option.translucentChrome", defaultValue: "Translucent chrome")),
+            (7, String(localized: "debug.splitButtonLayout.option.hidden", defaultValue: "Hidden")),
+        ]
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Button Backdrop Color")
+            Text(String(localized: "debug.splitButtonLayout.title", defaultValue: "Button Backdrop Color"))
                 .font(.headline)
 
             ForEach(options, id: \.0) { id, label in
@@ -3435,7 +3320,7 @@ private struct SplitButtonLayoutDebugView: View {
                 .onTapGesture { backdropStyle = id }
             }
 
-            Text("Changes apply live.")
+            Text(String(localized: "debug.splitButtonLayout.liveNote", defaultValue: "Changes apply live."))
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -4237,6 +4122,480 @@ private struct WorkspaceTabChromeDebugScenarioSection: View {
             RoundedRectangle(cornerRadius: 6, style: .continuous)
                 .stroke(Color.black.opacity(0.12), lineWidth: 1)
         )
+    }
+}
+
+// MARK: - Tab Bar Backdrop Lab Window
+
+private final class TabBarBackdropLabWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = TabBarBackdropLabWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 1320, height: 880),
+            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(localized: "debug.tabBarBackdropLab.title", defaultValue: "Tab Bar Backdrop Lab")
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.level = .floating
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.tabBarBackdropLab")
+        window.center()
+
+        let hostingView = NSHostingView(rootView: TabBarBackdropLabView())
+        hostingView.wantsLayer = true
+        hostingView.layer?.backgroundColor = NSColor.clear.cgColor
+        window.contentView = hostingView
+
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+    }
+}
+
+private struct TabBarBackdropLabVariant: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let effect: WorkspaceLayoutConfiguration.Appearance.SplitButtonBackdropEffect
+    let chromeHex: String
+    let tabBarHex: String
+    let splitButtonBackdropHex: String
+    let paneHex: String
+    let borderHex: String
+    let terminalColor: NSColor
+    let surfaceColor: NSColor
+    let separatorColor: NSColor
+    let opacity: CGFloat
+}
+
+private struct TabBarBackdropLabView: View {
+    @State private var opacity: Double
+    @State private var sidebarWidth: Double = 74
+    @State private var candidateSoftness: Double = Double(Workspace.splitButtonBackdropSoftness)
+
+    init() {
+        let currentOpacity = Double(WindowAppearanceSnapshot.clampedOpacity(GhosttyApp.shared.defaultBackgroundOpacity))
+        _opacity = State(initialValue: currentOpacity < 0.999 ? currentOpacity : 0.72)
+    }
+
+    private var terminalColor: NSColor {
+        GhosttyApp.shared.defaultBackgroundColor.usingColorSpace(.sRGB) ?? NSColor(hex: "#646461") ?? .windowBackgroundColor
+    }
+
+    private var surfaceColor: NSColor {
+        terminalColor.withAlphaComponent(CGFloat(opacity))
+    }
+
+    private var separatorColor: NSColor {
+        WindowChromeSeparatorColor.color(forChromeBackground: terminalColor)
+    }
+
+    private var candidateBackdropEffect: WorkspaceLayoutConfiguration.Appearance.SplitButtonBackdropEffect {
+        let softness = CGFloat(min(max(0, candidateSoftness), 1))
+        let productionSoftness = Workspace.splitButtonBackdropSoftness
+        let production = Workspace.splitButtonBackdropEffect()
+        func interpolate(strong: CGFloat, production: CGFloat, soft: CGFloat) -> CGFloat {
+            if softness <= productionSoftness {
+                let progress = productionSoftness <= 0 ? 1 : softness / productionSoftness
+                return strong + ((production - strong) * progress)
+            }
+            let progress = (softness - productionSoftness) / max(0.0001, 1 - productionSoftness)
+            return production + ((soft - production) * progress)
+        }
+
+        return .init(
+            style: .translucentChrome,
+            fadeWidth: interpolate(strong: 20, production: production.fadeWidth, soft: 240),
+            contentFadeWidth: interpolate(strong: 0, production: production.contentFadeWidth, soft: 80),
+            solidWidth: interpolate(strong: 72, production: production.solidWidth, soft: 0),
+            fadeRampStartFraction: interpolate(strong: 0, production: production.fadeRampStartFraction, soft: 0.95),
+            leadingOpacity: production.leadingOpacity,
+            trailingOpacity: interpolate(strong: 1.0, production: production.trailingOpacity, soft: 0.25),
+            contentOcclusionFraction: interpolate(strong: 0, production: production.contentOcclusionFraction, soft: 1),
+            masksTabContent: true
+        )
+    }
+
+    private var variants: [TabBarBackdropLabVariant] {
+        let chromeHex = surfaceColor.hexString(includeAlpha: true)
+        let paneHex = "#00000000"
+        let borderHex = separatorColor.hexString(includeAlpha: true)
+        let opacityValue = CGFloat(opacity)
+
+        return [
+            variant(
+                id: "candidate",
+                title: String(localized: "debug.tabBarBackdropLab.variant.candidate", defaultValue: "Candidate"),
+                detail: String(localized: "debug.tabBarBackdropLab.variant.candidate.detail", defaultValue: "Translucent chrome with tab occlusion."),
+                effect: candidateBackdropEffect,
+                chromeHex: chromeHex,
+                paneHex: paneHex,
+                borderHex: borderHex,
+                opacity: opacityValue
+            ),
+            variant(
+                id: "wideFade",
+                title: String(localized: "debug.tabBarBackdropLab.variant.candidateWideFade", defaultValue: "Wide fade"),
+                detail: String(localized: "debug.tabBarBackdropLab.variant.candidateWideFade.detail", defaultValue: "Same model with a softer edge."),
+                effect: .init(
+                    style: .translucentChrome,
+                    fadeWidth: 104,
+                    contentFadeWidth: 46,
+                    solidWidth: 10,
+                    fadeRampStartFraction: 0.88,
+                    leadingOpacity: 0,
+                    trailingOpacity: 1.0,
+                    masksTabContent: true
+                ),
+                chromeHex: chromeHex,
+                paneHex: paneHex,
+                borderHex: borderHex,
+                opacity: opacityValue
+            ),
+            variant(
+                id: "transparent",
+                title: String(localized: "debug.tabBarBackdropLab.variant.sharedBackdrop", defaultValue: "Shared backdrop"),
+                detail: String(localized: "debug.tabBarBackdropLab.variant.sharedBackdrop.detail", defaultValue: "Transparent local pane surfaces."),
+                effect: .init(style: .hidden, masksTabContent: false),
+                chromeHex: chromeHex,
+                tabBarHex: "#00000000",
+                splitButtonBackdropHex: "#00000000",
+                paneHex: paneHex,
+                borderHex: borderHex,
+                opacity: opacityValue
+            ),
+        ]
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(String(localized: "debug.tabBarBackdropLab.title", defaultValue: "Tab Bar Backdrop Lab"))
+                    .font(.title2.weight(.semibold))
+                Text(String(localized: "debug.tabBarBackdropLab.subtitle", defaultValue: "Live WorkspaceSplit tab bars with overflow tabs under the split buttons. The window background is transparent."))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HStack(spacing: 18) {
+                    labSlider(
+                        title: String(localized: "debug.tabBarBackdropLab.opacity", defaultValue: "Opacity"),
+                        value: $opacity,
+                        range: 0.25...1,
+                        displayValue: String(format: "%.2f", opacity),
+                        width: 180
+                    )
+                    labSlider(
+                        title: String(localized: "debug.tabBarBackdropLab.sidebarWidth", defaultValue: "Sidebars"),
+                        value: $sidebarWidth,
+                        range: 48...140,
+                        displayValue: "\(Int(sidebarWidth))",
+                        width: 160
+                    )
+                    labSlider(
+                        title: String(localized: "debug.tabBarBackdropLab.softness", defaultValue: "Softness"),
+                        value: $candidateSoftness,
+                        range: 0...1,
+                        displayValue: String(format: "%.2f", candidateSoftness),
+                        width: 160
+                    )
+                }
+
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(variants) { variant in
+                        TabBarBackdropLabSample(
+                            variant: variant,
+                            sidebarWidth: CGFloat(sidebarWidth)
+                        )
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .background(Color.clear)
+        .frame(minWidth: 1120, minHeight: 720)
+    }
+
+    private func variant(
+        id: String,
+        title: String,
+        detail: String,
+        effect: WorkspaceLayoutConfiguration.Appearance.SplitButtonBackdropEffect,
+        chromeHex: String,
+        tabBarHex: String? = nil,
+        splitButtonBackdropHex: String? = nil,
+        paneHex: String,
+        borderHex: String,
+        opacity: CGFloat
+    ) -> TabBarBackdropLabVariant {
+        TabBarBackdropLabVariant(
+            id: id,
+            title: title,
+            detail: detail,
+            effect: effect,
+            chromeHex: chromeHex,
+            tabBarHex: tabBarHex ?? chromeHex,
+            splitButtonBackdropHex: splitButtonBackdropHex ?? tabBarHex ?? chromeHex,
+            paneHex: paneHex,
+            borderHex: borderHex,
+            terminalColor: terminalColor,
+            surfaceColor: surfaceColor,
+            separatorColor: separatorColor,
+            opacity: opacity
+        )
+    }
+
+    private func labSlider(
+        title: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        displayValue: String,
+        width: CGFloat
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(title) \(displayValue)")
+                .font(.caption.monospacedDigit())
+                .lineLimit(1)
+            Slider(value: value, in: range)
+                .frame(width: width)
+        }
+    }
+}
+
+private struct TabBarBackdropLabSample: View {
+    let variant: TabBarBackdropLabVariant
+    let sidebarWidth: CGFloat
+
+    private var appearance: WorkspaceLayoutConfiguration.Appearance {
+        WorkspaceLayoutConfiguration.Appearance(
+            tabBarHeight: 33,
+            tabMinWidth: 138,
+            tabMaxWidth: 210,
+            tabTitleFontSize: 11,
+            minimumPaneWidth: 120,
+            minimumPaneHeight: 80,
+            showSplitButtons: true,
+            splitButtonsOnHover: false,
+            splitButtonBackdropEffect: variant.effect,
+            animationDuration: 0,
+            enableAnimations: false,
+            chromeColors: .init(
+                backgroundHex: variant.chromeHex,
+                tabBarBackgroundHex: variant.tabBarHex,
+                splitButtonBackdropHex: variant.splitButtonBackdropHex,
+                paneBackgroundHex: variant.paneHex,
+                borderHex: variant.borderHex
+            ),
+            usesSharedBackdrop: variant.tabBarHex == "#00000000"
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(variant.title)
+                    .font(.caption.weight(.semibold))
+                Text(variant.detail)
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(spacing: 0) {
+                TabBarBackdropLabSidebar(
+                    title: String(localized: "debug.tabBarBackdropLab.leftSidebar", defaultValue: "L"),
+                    surfaceColor: variant.surfaceColor,
+                    separatorColor: variant.separatorColor,
+                    trailingBorder: true
+                )
+                .frame(width: sidebarWidth)
+
+                VStack(spacing: 0) {
+                    TabBarBackdropLabTitlebar(
+                        variant: variant,
+                        title: String(localized: "debug.tabBarBackdropLab.titlebarSample", defaultValue: "workspace@lab:~")
+                    )
+                    .frame(height: 24)
+
+                    VStack(spacing: 0) {
+                        TabBarBackdropLabTabStrip(appearance: appearance)
+                            .frame(height: appearance.tabBarHeight)
+                        TabBarBackdropLabTerminalPane(
+                            title: String(localized: "debug.tabBarBackdropLab.tab.backdropCheck", defaultValue: "split button backdrop check"),
+                            color: variant.terminalColor,
+                            opacity: variant.opacity
+                        )
+                    }
+                }
+                .frame(height: 132)
+
+                TabBarBackdropLabSidebar(
+                    title: String(localized: "debug.tabBarBackdropLab.rightSidebar", defaultValue: "R"),
+                    surfaceColor: variant.surfaceColor,
+                    separatorColor: variant.separatorColor,
+                    trailingBorder: false
+                )
+                .frame(width: sidebarWidth)
+            }
+            .frame(height: 160)
+            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(Color(nsColor: variant.separatorColor), lineWidth: 1)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct TabBarBackdropLabTabStrip: View {
+    let appearance: WorkspaceLayoutConfiguration.Appearance
+
+    private let titles = [
+        String(localized: "debug.tabBarBackdropLab.tab.agentBrowserLogs", defaultValue: "agent-browser logs"),
+        String(localized: "debug.tabBarBackdropLab.tab.terminalTransparency", defaultValue: "cmux terminal transparency"),
+        String(localized: "debug.tabBarBackdropLab.tab.underlayText", defaultValue: "underlay tab text visible here"),
+        String(localized: "debug.tabBarBackdropLab.tab.rightEdgeOverflow", defaultValue: "right edge overflow sample"),
+        String(localized: "debug.tabBarBackdropLab.tab.hiddenBelowControls", defaultValue: "tabs hidden below controls")
+    ]
+
+    var body: some View {
+        ZStack(alignment: .trailing) {
+            HStack(spacing: appearance.tabSpacing) {
+                ForEach(Array(titles.enumerated()), id: \.offset) { index, title in
+                    Text(title)
+                        .font(.system(size: appearance.tabTitleFontSize))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .foregroundColor(TabBarColors.activeText(for: appearance))
+                        .padding(.horizontal, 10)
+                        .frame(width: index == 0 ? 170 : 200, height: max(24, appearance.tabBarHeight - 7), alignment: .leading)
+                        .background(index == 0 ? TabBarColors.activeTabBackground(for: appearance) : TabBarColors.hoveredTabBackground(for: appearance))
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 8)
+            .padding(.trailing, 88)
+
+            HStack(spacing: 4) {
+                Image(systemName: "plus")
+                Image(systemName: "rectangle.split.2x1")
+                Image(systemName: "rectangle.split.1x2")
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(TabBarColors.splitActionIcon(for: appearance, isPressed: false))
+            .padding(.horizontal, 9)
+            .frame(height: appearance.tabBarHeight)
+            .background(
+                LinearGradient(
+                    stops: [
+                        .init(color: Color(nsColor: TabBarColors.nsColorSplitButtonBackdropSurface(for: appearance)).opacity(0), location: 0),
+                        .init(color: Color(nsColor: TabBarColors.nsColorSplitButtonBackdropSurface(for: appearance)), location: 0.65),
+                        .init(color: Color(nsColor: TabBarColors.nsColorSplitButtonBackdropSurface(for: appearance)), location: 1),
+                    ],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                )
+            )
+        }
+        .background(TabBarColors.barBackground(for: appearance))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(TabBarColors.separator(for: appearance))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct TabBarBackdropLabTitlebar: View {
+    let variant: TabBarBackdropLabVariant
+    let title: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 6) {
+                Circle().fill(Color.red.opacity(0.75)).frame(width: 8, height: 8)
+                Circle().fill(Color.yellow.opacity(0.75)).frame(width: 8, height: 8)
+                Circle().fill(Color.green.opacity(0.75)).frame(width: 8, height: 8)
+            }
+            Text(title)
+                .font(.caption2.weight(.medium))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .background(Color(nsColor: variant.surfaceColor))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(nsColor: variant.separatorColor))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct TabBarBackdropLabSidebar: View {
+    let title: String
+    let surfaceColor: NSColor
+    let separatorColor: NSColor
+    let trailingBorder: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.caption2.weight(.bold))
+            ForEach(0..<4, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(index == 0 ? Color.accentColor.opacity(0.85) : Color.white.opacity(0.12))
+                    .frame(height: 18)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(8)
+        .background(Color(nsColor: surfaceColor))
+        .overlay(alignment: trailingBorder ? .trailing : .leading) {
+            Rectangle()
+                .fill(Color(nsColor: separatorColor))
+                .frame(width: 1)
+        }
+    }
+}
+
+private struct TabBarBackdropLabTerminalPane: View {
+    let title: String
+    let color: NSColor
+    let opacity: CGFloat
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color(nsColor: color.withAlphaComponent(opacity))
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(String(localized: "debug.tabBarBackdropLab.terminal.prompt", defaultValue: "lawrence in ~/cmux")) \(title)")
+                    .foregroundColor(.green)
+                Text(String(localized: "debug.tabBarBackdropLab.terminal.overflow", defaultValue: "tab titles intentionally overflow under the split buttons"))
+                    .foregroundColor(.white.opacity(0.78))
+                Text(String(localized: "debug.tabBarBackdropLab.terminal.compare", defaultValue: "drag / resize / compare the transparent edges"))
+                    .foregroundColor(.white.opacity(0.52))
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 11, design: .monospaced))
+            .padding(10)
+        }
     }
 }
 
@@ -5221,6 +5580,7 @@ struct SettingsView: View {
     @AppStorage(NotificationPaneRingSettings.enabledKey) private var notificationPaneRingEnabled = NotificationPaneRingSettings.defaultEnabled
     @AppStorage(NotificationPaneFlashSettings.enabledKey) private var notificationPaneFlashEnabled = NotificationPaneFlashSettings.defaultEnabled
     @AppStorage(MenuBarExtraSettings.showInMenuBarKey) private var showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
+    @AppStorage(MenuBarOnlySettings.menuBarOnlyKey) private var menuBarOnly = MenuBarOnlySettings.defaultMenuBarOnly
     @AppStorage(QuitWarningSettings.warnBeforeQuitKey) private var warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
     @AppStorage(CommandPaletteRenameSelectionSettings.selectAllOnFocusKey)
     private var commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
@@ -5466,6 +5826,27 @@ struct SettingsView: View {
                 workspacePresentationMode = newValue
                     ? WorkspacePresentationModeSettings.Mode.minimal.rawValue
                     : WorkspacePresentationModeSettings.Mode.standard.rawValue
+                SettingsWindowController.shared.preserveFocusAfterPreferenceMutation()
+            }
+        )
+    }
+
+    private var menuBarOnlyBinding: Binding<Bool> {
+        Binding(
+            get: { menuBarOnly },
+            set: { newValue in
+                menuBarOnly = newValue
+                SettingsWindowController.shared.preserveFocusAfterPreferenceMutation()
+            }
+        )
+    }
+
+    private var showMenuBarExtraBinding: Binding<Bool> {
+        Binding(
+            get: { menuBarOnly || showMenuBarExtra },
+            set: { newValue in
+                guard !menuBarOnly else { return }
+                showMenuBarExtra = newValue
                 SettingsWindowController.shared.preserveFocusAfterPreferenceMutation()
             }
         )
@@ -5943,17 +6324,34 @@ struct SettingsView: View {
                         SettingsCardDivider()
 
                         SettingsCardRow(
+                            configurationReview: .json("app.menuBarOnly"),
+                            String(localized: "settings.app.menuBarOnly", defaultValue: "Menu Bar Only"),
+                            subtitle: String(localized: "settings.app.menuBarOnly.subtitle", defaultValue: "Hide the Dock icon and Cmd+Tab entry. Use the menu bar item to show cmux.")
+                        ) {
+                            Toggle("", isOn: menuBarOnlyBinding)
+                                .labelsHidden()
+                                .controlSize(.small)
+                                .accessibilityIdentifier("SettingsMenuBarOnlyToggle")
+                                .accessibilityLabel(
+                                    String(localized: "settings.app.menuBarOnly", defaultValue: "Menu Bar Only")
+                                )
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
                             configurationReview: .json("notifications.showInMenuBar"),
                             String(localized: "settings.app.showInMenuBar", defaultValue: "Show in Menu Bar"),
                             subtitle: String(localized: "settings.app.showInMenuBar.subtitle", defaultValue: "Keep cmux in the menu bar for unread notifications and quick actions.")
                         ) {
-                            Toggle("", isOn: $showMenuBarExtra)
+                            Toggle("", isOn: showMenuBarExtraBinding)
                                 .labelsHidden()
                                 .controlSize(.small)
                                 .accessibilityLabel(
                                     String(localized: "settings.app.showInMenuBar", defaultValue: "Show in Menu Bar")
                                 )
                         }
+                        .disabled(menuBarOnly)
 
                         SettingsCardDivider()
 
@@ -7353,6 +7751,7 @@ struct SettingsView: View {
         notificationPaneRingEnabled = NotificationPaneRingSettings.defaultEnabled
         notificationPaneFlashEnabled = NotificationPaneFlashSettings.defaultEnabled
         showMenuBarExtra = MenuBarExtraSettings.defaultShowInMenuBar
+        menuBarOnly = MenuBarOnlySettings.defaultMenuBarOnly
         warnBeforeQuitShortcut = QuitWarningSettings.defaultWarnBeforeQuit
         commandPaletteRenameSelectAllOnFocus = CommandPaletteRenameSelectionSettings.defaultSelectAllOnFocus
         commandPaletteSearchAllSurfaces = CommandPaletteSwitcherSearchSettings.defaultSearchAllSurfaces

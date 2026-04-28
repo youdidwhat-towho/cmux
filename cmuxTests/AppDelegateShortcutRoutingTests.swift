@@ -852,6 +852,93 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         createdWindowId = newWindowIds.first
     }
 
+    func testCmdShiftNCreatesWindowFromEventWindowWithoutAddingWorkspace() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let firstWindowId = appDelegate.createMainWindow()
+        let secondWindowId = appDelegate.createMainWindow()
+        var createdWindowId: UUID?
+
+        defer {
+            if let createdWindowId {
+                closeWindow(withId: createdWindowId)
+            }
+            closeWindow(withId: firstWindowId)
+            closeWindow(withId: secondWindowId)
+        }
+
+        guard let firstManager = appDelegate.tabManagerFor(windowId: firstWindowId),
+              let secondManager = appDelegate.tabManagerFor(windowId: secondWindowId),
+              let firstWindow = window(withId: firstWindowId),
+              let secondWindow = window(withId: secondWindowId),
+              let visibleFrame = (secondWindow.screen ?? NSScreen.main)?.visibleFrame else {
+            XCTFail("Expected both window contexts to exist")
+            return
+        }
+
+        let firstFrame = NSRect(
+            x: visibleFrame.minX + 40,
+            y: visibleFrame.maxY - 460,
+            width: 760,
+            height: 420
+        )
+        let secondFrame = NSRect(
+            x: min(visibleFrame.minX + 180, visibleFrame.maxX - 600),
+            y: max(visibleFrame.minY + 80, visibleFrame.maxY - 560),
+            width: 560,
+            height: 380
+        )
+        firstWindow.setFrame(firstFrame, display: true)
+        secondWindow.setFrame(secondFrame, display: true)
+        firstWindow.makeKeyAndOrderFront(nil)
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+
+        let eventSourceFrame = secondWindow.frame
+        let firstCount = firstManager.tabs.count
+        let secondCount = secondManager.tabs.count
+        let existingWindowIds = mainWindowIds()
+
+        guard let event = makeKeyDownEvent(
+            key: "n",
+            modifiers: [.command, .shift],
+            keyCode: 45,
+            windowNumber: secondWindow.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd+Shift+N event")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+
+        let newWindowIds = mainWindowIds().subtracting(existingWindowIds)
+        XCTAssertEqual(newWindowIds.count, 1, "Cmd+Shift+N should create one new main window")
+        createdWindowId = newWindowIds.first
+
+        XCTAssertEqual(firstManager.tabs.count, firstCount, "Cmd+Shift+N must not create a workspace in the key window")
+        XCTAssertEqual(secondManager.tabs.count, secondCount, "Cmd+Shift+N must not create a workspace in the event window")
+
+        guard let createdWindowId,
+              let createdWindow = window(withId: createdWindowId) else {
+            XCTFail("Expected created window")
+            return
+        }
+
+        XCTAssertEqual(createdWindow.frame.width, eventSourceFrame.width, accuracy: 1)
+        XCTAssertEqual(createdWindow.frame.height, eventSourceFrame.height, accuracy: 1)
+        XCTAssertTrue(
+            visibleFrame.contains(createdWindow.frame),
+            "New window should be placed inside the source window display"
+        )
+    }
+
     func testAddWorkspaceInPreferredMainWindowUsesKeyWindowWhenObjectKeyLookupIsMismatched() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
@@ -1213,7 +1300,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         window.makeKeyAndOrderFront(nil)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
         workspace.focusPanel(rightPanel.id)
-        XCTAssertEqual(workspace.focusedPanelId, rightPanel.id, "Expected Bonsplit selection to stay on the right pane")
+        XCTAssertEqual(workspace.focusedPanelId, rightPanel.id, "Expected WorkspaceSplit selection to stay on the right pane")
         leftPanel.hostedView.suppressReparentFocus()
         XCTAssertTrue(window.makeFirstResponder(leftSurfaceView))
         leftPanel.hostedView.clearSuppressReparentFocus()
@@ -1576,6 +1663,170 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
             0,
             accuracy: 0.5,
             "Minimal mode should not leave a top safe-area inset in the main window content view"
+        )
+    }
+
+    func testMinimalModeTitlebarPaddingOnlyCancelsHostingSafeArea() {
+        XCTAssertEqual(
+            ContentView.effectiveTitlebarPadding(
+                isMinimalMode: false,
+                isFullScreen: false,
+                titlebarPadding: 32,
+                hostingSafeAreaTop: 0
+            ),
+            32,
+            accuracy: 0.5,
+            "Standard mode should keep reserving titlebar space above terminal content"
+        )
+
+        XCTAssertEqual(
+            ContentView.effectiveTitlebarPadding(
+                isMinimalMode: true,
+                isFullScreen: true,
+                titlebarPadding: 32,
+                hostingSafeAreaTop: 32
+            ),
+            0,
+            accuracy: 0.5,
+            "Fullscreen minimal mode should not offset for a titlebar"
+        )
+
+        XCTAssertEqual(
+            ContentView.effectiveTitlebarPadding(
+                isMinimalMode: true,
+                isFullScreen: false,
+                titlebarPadding: 32,
+                hostingSafeAreaTop: 0
+            ),
+            0,
+            accuracy: 0.5,
+            "Manually hosted minimal windows already have zero safe area, so the WorkspaceSplit strip must not be pulled offscreen"
+        )
+
+        XCTAssertEqual(
+            ContentView.effectiveTitlebarPadding(
+                isMinimalMode: true,
+                isFullScreen: false,
+                titlebarPadding: 32,
+                hostingSafeAreaTop: 28
+            ),
+            -28,
+            accuracy: 0.5,
+            "SwiftUI WindowGroup windows still need their native titlebar safe area cancelled"
+        )
+    }
+
+    func testWindowChromeTitlebarHeightClampsToSharedRange() {
+        XCTAssertEqual(WindowChromeMetrics.clampedTitlebarHeight(12), 28)
+        XCTAssertEqual(WindowChromeMetrics.clampedTitlebarHeight(32), 32)
+        XCTAssertEqual(WindowChromeMetrics.clampedTitlebarHeight(96), 72)
+    }
+
+    func testMinimalModeCollapsedSidebarResyncsTrafficLightInsetAfterNewWorkspaceCreation() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let savedMode = defaults.object(forKey: WorkspacePresentationModeSettings.modeKey)
+        defaults.set(WorkspacePresentationModeSettings.Mode.minimal.rawValue, forKey: WorkspacePresentationModeSettings.modeKey)
+        defer {
+            restoreDefaultsValue(savedMode, forKey: WorkspacePresentationModeSettings.modeKey, defaults: defaults)
+        }
+
+        let snapshot = SessionWindowSnapshot(
+            frame: nil,
+            display: nil,
+            tabManager: SessionTabManagerSnapshot(selectedWorkspaceIndex: nil, workspaces: []),
+            sidebar: SessionSidebarSnapshot(isVisible: false, selection: .tabs, width: nil)
+        )
+        let windowId = appDelegate.createMainWindow(sessionWindowSnapshot: snapshot)
+        defer { closeWindow(withId: windowId) }
+
+        guard let manager = appDelegate.tabManagerFor(windowId: windowId) else {
+            XCTFail("Expected tab manager for created window")
+            return
+        }
+
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertEqual(appDelegate.sidebarVisibility(windowId: windowId), false)
+
+        guard let sourceWorkspace = manager.selectedWorkspace else {
+            XCTFail("Expected selected workspace")
+            return
+        }
+
+        // Recreate the regression shape: the window chrome state says minimal +
+        // collapsed sidebar, but the selected workspace's live WorkspaceSplit inset is stale.
+        sourceWorkspace.tabBarLeadingInset = 0
+
+        guard let newWorkspaceId = appDelegate.addWorkspaceInPreferredMainWindow(debugSource: "test.issue2737") else {
+            XCTFail("Expected workspace creation to route to the test window")
+            return
+        }
+
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        guard let newWorkspace = manager.tabs.first(where: { $0.id == newWorkspaceId }) else {
+            XCTFail("Expected new workspace in test window")
+            return
+        }
+
+        XCTAssertEqual(
+            newWorkspace.tabBarLeadingInset,
+            80,
+            accuracy: 0.5,
+            "New minimal-mode workspaces should reserve traffic-light space immediately even when the source workspace inset is stale"
+        )
+    }
+
+    func testMinimalModeCollapsedSidebarSeedsTrafficLightInsetOnNewWindowCreation() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let savedMode = defaults.object(forKey: WorkspacePresentationModeSettings.modeKey)
+        defaults.set(WorkspacePresentationModeSettings.Mode.minimal.rawValue, forKey: WorkspacePresentationModeSettings.modeKey)
+        defer {
+            restoreDefaultsValue(savedMode, forKey: WorkspacePresentationModeSettings.modeKey, defaults: defaults)
+        }
+
+        // Simulate the new-window flow: createMainWindow with a snapshot that forces
+        // sidebar collapsed. The initial workspace is created inside TabManager.init,
+        // before ContentView.onAppear can run syncTrafficLightInset, so the seed in
+        // createMainWindow is what protects the first render.
+        let snapshot = SessionWindowSnapshot(
+            frame: nil,
+            display: nil,
+            tabManager: SessionTabManagerSnapshot(selectedWorkspaceIndex: nil, workspaces: []),
+            sidebar: SessionSidebarSnapshot(isVisible: false, selection: .tabs, width: nil)
+        )
+        let windowId = appDelegate.createMainWindow(sessionWindowSnapshot: snapshot)
+        defer { closeWindow(withId: windowId) }
+
+        guard let manager = appDelegate.tabManagerFor(windowId: windowId) else {
+            XCTFail("Expected tab manager for created window")
+            return
+        }
+
+        XCTAssertEqual(appDelegate.sidebarVisibility(windowId: windowId), false)
+
+        guard let initialWorkspace = manager.selectedWorkspace else {
+            XCTFail("Expected selected workspace in fresh window")
+            return
+        }
+
+        // No RunLoop spin before reading the inset — the seed must be applied by the
+        // time createMainWindow returns, not lazily after onAppear runs.
+        XCTAssertEqual(
+            initialWorkspace.tabBarLeadingInset,
+            80,
+            accuracy: 0.5,
+            "New minimal-mode windows with collapsed sidebar should reserve traffic-light space on the initial workspace before first render"
         )
     }
 

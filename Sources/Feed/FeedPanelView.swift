@@ -1,5 +1,4 @@
 import AppKit
-import Bonsplit
 import CMUXWorkstream
 import SwiftUI
 
@@ -271,7 +270,7 @@ private struct FeedListView: View {
         snapshots: [FeedItemSnapshot],
         actions: FeedRowActions
     ) -> some View {
-        ScrollView {
+        ScrollView(.vertical) {
             LazyVStack(spacing: 0) {
                 ForEach(Array(snapshots.enumerated()), id: \.element.id) { idx, snapshot in
                     rowSurface(

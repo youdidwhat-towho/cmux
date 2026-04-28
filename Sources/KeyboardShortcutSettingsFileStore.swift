@@ -28,6 +28,7 @@ final class CmuxSettingsFileStore {
         "app.language",
         "app.appearance",
         "app.appIcon",
+        "app.menuBarOnly",
         "app.newWorkspacePlacement",
         "app.minimalMode",
         "app.keepWorkspaceOpenWhenClosingLastSurface",
@@ -410,6 +411,9 @@ final class CmuxSettingsFileStore {
                 return
             }
             snapshot.managedUserDefaults[AppIconSettings.modeKey] = .string(mode.rawValue)
+        }
+        if let value = jsonBool(section["menuBarOnly"]) {
+            snapshot.managedUserDefaults[MenuBarOnlySettings.menuBarOnlyKey] = .bool(value)
         }
         if let raw = jsonString(section["newWorkspacePlacement"]) {
             guard let placement = NewWorkspacePlacement(rawValue: raw) else {
@@ -1356,6 +1360,7 @@ final class CmuxSettingsFileStore {
                     "language": LanguageSettings.defaultLanguage.rawValue,
                     "appearance": AppearanceSettings.defaultMode.rawValue,
                     "appIcon": AppIconSettings.defaultMode.rawValue,
+                    "menuBarOnly": MenuBarOnlySettings.defaultMenuBarOnly,
                     "newWorkspacePlacement": WorkspacePlacementSettings.defaultPlacement.rawValue,
                     "minimalMode": false,
                     "keepWorkspaceOpenWhenClosingLastSurface": !LastSurfaceCloseShortcutSettings.defaultValue,

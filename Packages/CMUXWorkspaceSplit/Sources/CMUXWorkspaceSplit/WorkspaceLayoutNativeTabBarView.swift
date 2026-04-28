@@ -212,7 +212,9 @@ final class WorkspaceLayoutNativeTabBarView: NSView {
 
     func rebuildButtons() {
         guard let snapshot, let hostBridge, let presentation else { return }
-        let showsControlShortcutHints = snapshot.isFocused && shortcutHintMonitor.isShortcutHintVisible
+        let showsControlShortcutHints = snapshot.isFocused &&
+            presentation.tabShortcutHintsEnabled &&
+            shortcutHintMonitor.isShortcutHintVisible
 
         let existingById = Dictionary(uniqueKeysWithValues: tabButtons.map { ($0.tab.id, $0) })
         var nextButtons: [WorkspaceLayoutNativeTabButtonView] = []

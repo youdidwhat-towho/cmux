@@ -54,6 +54,14 @@ final class WorkspaceLayoutController {
     /// Current frame of the entire split view container.
     var containerFrame: CGRect = .zero
 
+    /// Whether command-hold shortcut hints should be shown for this workspace.
+    var tabShortcutHintsEnabled: Bool = true {
+        didSet {
+            guard tabShortcutHintsEnabled != oldValue else { return }
+            notifyGeometryChange()
+        }
+    }
+
     /// Flag to prevent notification loops during external updates.
     var isExternalUpdateInProgress: Bool = false
 

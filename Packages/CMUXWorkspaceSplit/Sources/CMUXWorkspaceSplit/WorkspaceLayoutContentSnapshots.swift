@@ -352,6 +352,7 @@ struct WorkspaceLayoutPresentationSnapshot {
     let appearance: WorkspaceLayoutConfiguration.Appearance
     let isInteractive: Bool
     let isMinimalMode: Bool
+    let tabShortcutHintsEnabled: Bool
     let localTabDrag: WorkspaceLayoutLocalDragSnapshot?
 
     var isHandlingLocalTabDrag: Bool {

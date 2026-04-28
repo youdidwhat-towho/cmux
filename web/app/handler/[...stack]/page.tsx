@@ -1,12 +1,10 @@
 import { Suspense } from "react";
-import { notFound } from "next/navigation";
 import { StackHandler } from "@stackframe/stack";
+import { notFound } from "next/navigation";
 import { stackServerApp } from "../../lib/stack";
 
 export default function StackHandlerPage(props: { params: Promise<{ stack: string[] }> }) {
-  if (!stackServerApp) {
-    notFound();
-  }
+  if (!stackServerApp) notFound();
 
   return (
     <Suspense>

@@ -1840,7 +1840,7 @@ final class WindowBrowserHostViewTests: XCTestCase {
         }
     }
 
-    private final class BonsplitMockSplitDelegate: NSObject, NSSplitViewDelegate {}
+    private final class WorkspaceSplitMockSplitDelegate: NSObject, NSSplitViewDelegate {}
 
     private func makeMouseEvent(type: NSEvent.EventType, location: NSPoint, window: NSWindow) -> NSEvent {
         guard let event = NSEvent.mouseEvent(
@@ -1887,7 +1887,7 @@ final class WindowBrowserHostViewTests: XCTestCase {
         splitView.autoresizingMask = [.width, .height]
         splitView.isVertical = true
         splitView.dividerStyle = .thin
-        let splitDelegate = BonsplitMockSplitDelegate()
+        let splitDelegate = WorkspaceSplitMockSplitDelegate()
         splitView.delegate = splitDelegate
         let first = NSView(frame: NSRect(x: 0, y: 0, width: 120, height: contentView.bounds.height))
         let second = NSView(frame: NSRect(x: 121, y: 0, width: 179, height: contentView.bounds.height))
@@ -2038,7 +2038,7 @@ final class WindowBrowserHostViewTests: XCTestCase {
         appSplit.autoresizingMask = [.width, .height]
         appSplit.isVertical = true
         appSplit.dividerStyle = .thin
-        let appSplitDelegate = BonsplitMockSplitDelegate()
+        let appSplitDelegate = WorkspaceSplitMockSplitDelegate()
         appSplit.delegate = appSplitDelegate
         let leading = NSView(frame: NSRect(x: 0, y: 0, width: 210, height: contentView.bounds.height))
         let trailing = NSView(frame: NSRect(x: 211, y: 0, width: 209, height: contentView.bounds.height))
@@ -2058,7 +2058,7 @@ final class WindowBrowserHostViewTests: XCTestCase {
         inspectorSplit.autoresizingMask = [.width, .height]
         inspectorSplit.isVertical = false
         inspectorSplit.dividerStyle = .thin
-        let inspectorDelegate = BonsplitMockSplitDelegate()
+        let inspectorDelegate = WorkspaceSplitMockSplitDelegate()
         inspectorSplit.delegate = inspectorDelegate
         let pageView = CapturingView(frame: NSRect(x: 0, y: 0, width: host.bounds.width, height: 160))
         let consoleView = CapturingView(frame: NSRect(x: 0, y: 161, width: host.bounds.width, height: 99))
@@ -2131,7 +2131,7 @@ final class WindowBrowserHostViewTests: XCTestCase {
         inspectorSplit.autoresizingMask = [.width, .height]
         inspectorSplit.isVertical = true
         inspectorSplit.dividerStyle = .thin
-        let inspectorDelegate = BonsplitMockSplitDelegate()
+        let inspectorDelegate = WorkspaceSplitMockSplitDelegate()
         inspectorSplit.delegate = inspectorDelegate
         let pageView = CapturingView(frame: NSRect(x: 0, y: 0, width: 1, height: slot.bounds.height))
         let inspectorView = CapturingView(

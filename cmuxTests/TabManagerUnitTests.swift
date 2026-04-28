@@ -1110,7 +1110,7 @@ final class TabManagerCloseCurrentPanelTests: XCTestCase {
         XCTAssertEqual(secondWorkspace.panels.count, 1)
 
         guard let secondSurfaceId = secondWorkspace.surfaceIdFromPanelId(secondPanelId) else {
-            XCTFail("Expected bonsplit surface ID for focused panel")
+            XCTFail("Expected WorkspaceSplit surface ID for focused panel")
             return
         }
 
@@ -1148,7 +1148,7 @@ final class TabManagerCloseCurrentPanelTests: XCTestCase {
         }
 
         guard let secondSurfaceId = secondWorkspace.surfaceIdFromPanelId(secondPanelId) else {
-            XCTFail("Expected bonsplit surface ID for focused panel")
+            XCTFail("Expected WorkspaceSplit surface ID for focused panel")
             return
         }
 

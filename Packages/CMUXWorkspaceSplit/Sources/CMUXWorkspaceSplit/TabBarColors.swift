@@ -19,6 +19,46 @@ enum TabBarColors {
         return NSColor(workspaceSplitHex: value)
     }
 
+    static func paneBackgroundColor(
+        for appearance: WorkspaceLayoutConfiguration.Appearance
+    ) -> NSColor? {
+        guard let value = appearance.chromeColors.paneBackgroundHex else {
+            return chromeBackgroundColor(for: appearance)
+        }
+        return NSColor(workspaceSplitHex: value)
+    }
+
+    static func tabBarBackgroundColor(
+        for appearance: WorkspaceLayoutConfiguration.Appearance
+    ) -> NSColor? {
+        guard let value = appearance.chromeColors.tabBarBackgroundHex else {
+            return chromeBackgroundColor(for: appearance)
+        }
+        return NSColor(workspaceSplitHex: value)
+    }
+
+    static func splitButtonBackdropColor(
+        for appearance: WorkspaceLayoutConfiguration.Appearance
+    ) -> NSColor? {
+        guard let value = appearance.chromeColors.splitButtonBackdropHex else {
+            return tabBarBackgroundColor(for: appearance)
+        }
+        return NSColor(workspaceSplitHex: value)
+    }
+
+    static func nonClearColor(_ color: NSColor?) -> NSColor? {
+        guard let color else { return nil }
+        let resolved = color.usingColorSpace(.sRGB) ?? color
+        return resolved.alphaComponent <= 0.001 ? nil : resolved
+    }
+
+    static func semanticTabBarBackgroundColor(
+        for appearance: WorkspaceLayoutConfiguration.Appearance
+    ) -> NSColor? {
+        nonClearColor(tabBarBackgroundColor(for: appearance))
+            ?? nonClearColor(chromeBackgroundColor(for: appearance))
+    }
+
     static func chromeBorderColor(
         for appearance: WorkspaceLayoutConfiguration.Appearance
     ) -> NSColor? {
@@ -37,7 +77,7 @@ enum TabBarColors {
         for appearance: WorkspaceLayoutConfiguration.Appearance,
         secondary: Bool
     ) -> NSColor {
-        guard let custom = chromeBackgroundColor(for: appearance) else {
+        guard let custom = semanticTabBarBackgroundColor(for: appearance) else {
             return secondary ? .secondaryLabelColor : .labelColor
         }
 
@@ -65,11 +105,11 @@ enum TabBarColors {
     }
 
     static func paneBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
-        Color(nsColor: effectiveBackgroundColor(for: appearance, fallback: .textBackgroundColor))
+        Color(nsColor: nsColorPaneBackground(for: appearance))
     }
 
     static func nsColorPaneBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> NSColor {
-        effectiveBackgroundColor(for: appearance, fallback: .textBackgroundColor)
+        paneBackgroundColor(for: appearance) ?? .textBackgroundColor
     }
 
     // MARK: - Tab Bar Background
@@ -79,7 +119,33 @@ enum TabBarColors {
     }
 
     static func barBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
-        Color(nsColor: effectiveBackgroundColor(for: appearance, fallback: .windowBackgroundColor))
+        Color(nsColor: nsColorBarBackground(for: appearance))
+    }
+
+    static func nsColorBarBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> NSColor {
+        tabBarBackgroundColor(for: appearance)
+            ?? effectiveBackgroundColor(for: appearance, fallback: .windowBackgroundColor)
+    }
+
+    static func nsColorChromeBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> NSColor {
+        effectiveBackgroundColor(for: appearance, fallback: .windowBackgroundColor)
+    }
+
+    static func nsColorSplitButtonBackdropSurface(for appearance: WorkspaceLayoutConfiguration.Appearance) -> NSColor {
+        splitButtonBackdropColor(for: appearance) ?? nsColorBarBackground(for: appearance)
+    }
+
+    static func nsColorSplitButtonBackdrop(
+        for appearance: WorkspaceLayoutConfiguration.Appearance,
+        focused: Bool = true
+    ) -> NSColor {
+        precompositedPaneBackground(for: appearance, focused: focused)
+    }
+
+    static func shouldPaintSplitButtonBackdrop(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Bool {
+        splitButtonBackdropColor(for: appearance) != nil
+            || tabBarBackgroundColor(for: appearance) != nil
+            || chromeBackgroundColor(for: appearance) != nil
     }
 
     static var barMaterial: Material {
@@ -93,8 +159,15 @@ enum TabBarColors {
     }
 
     static func activeTabBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
-        guard let custom = chromeBackgroundColor(for: appearance) else {
+        guard let custom = tabBarBackgroundColor(for: appearance) else {
             return activeTabBackground
+        }
+        if appearance.usesSharedBackdrop {
+            let semanticBackground = semanticTabBarBackgroundColor(for: appearance) ?? custom
+            let overlayColor = semanticBackground.isWorkspaceLayoutLightColor
+                ? NSColor.black.withAlphaComponent(0.06)
+                : NSColor.white.withAlphaComponent(0.08)
+            return Color(nsColor: overlayColor)
         }
         let adjusted = custom.isWorkspaceLayoutLightColor
             ? custom.workspaceSplitDarken(by: 0.065)
@@ -107,8 +180,15 @@ enum TabBarColors {
     }
 
     static func hoveredTabBackground(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
-        guard let custom = chromeBackgroundColor(for: appearance) else {
+        guard let custom = tabBarBackgroundColor(for: appearance) else {
             return hoveredTabBackground
+        }
+        if appearance.usesSharedBackdrop {
+            let semanticBackground = semanticTabBarBackgroundColor(for: appearance) ?? custom
+            let overlayColor = semanticBackground.isWorkspaceLayoutLightColor
+                ? NSColor.black.withAlphaComponent(0.055)
+                : NSColor.white.withAlphaComponent(0.075)
+            return Color(nsColor: overlayColor)
         }
         let adjusted = custom.isWorkspaceLayoutLightColor
             ? custom.workspaceSplitDarken(by: 0.03)
@@ -172,7 +252,7 @@ enum TabBarColors {
             return explicit
         }
 
-        guard let custom = chromeBackgroundColor(for: appearance) else {
+        guard let custom = tabBarBackgroundColor(for: appearance) else {
             return .separatorColor
         }
         let alpha: CGFloat = custom.isWorkspaceLayoutLightColor ? 0.26 : 0.36
@@ -220,6 +300,24 @@ enum TabBarColors {
     static func dirtyIndicator(for appearance: WorkspaceLayoutConfiguration.Appearance) -> Color {
         guard chromeBackgroundColor(for: appearance) != nil else { return dirtyIndicator }
         return activeText(for: appearance).opacity(0.72)
+    }
+
+    private static func precompositedPaneBackground(
+        for appearance: WorkspaceLayoutConfiguration.Appearance,
+        focused: Bool
+    ) -> NSColor {
+        let chrome = nsColorPaneBackground(for: appearance)
+        let windowBackground = NSColor.windowBackgroundColor
+        guard let foreground = chrome.usingColorSpace(.sRGB),
+              let background = windowBackground.usingColorSpace(.sRGB) else {
+            return chrome.withAlphaComponent(1.0)
+        }
+        let alpha = focused ? foreground.alphaComponent : foreground.alphaComponent * 0.95
+        let oneMinusAlpha = 1.0 - alpha
+        let red = foreground.redComponent * alpha + background.redComponent * oneMinusAlpha
+        let green = foreground.greenComponent * alpha + background.greenComponent * oneMinusAlpha
+        let blue = foreground.blueComponent * alpha + background.blueComponent * oneMinusAlpha
+        return NSColor(red: red, green: green, blue: blue, alpha: 1.0)
     }
 
     static var notificationBadge: Color {
