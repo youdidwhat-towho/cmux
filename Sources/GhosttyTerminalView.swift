@@ -4115,6 +4115,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private var pendingSocketInputBytes: Int = 0
     private let maxPendingSocketInputBytes = 1_048_576
     private var backgroundSurfaceStartQueued = false
+    private var daemonOpenPaneInFlight = false
     private var surfaceCallbackContext: Unmanaged<GhosttySurfaceCallbackContext>?
     /// The desired focus state for the Ghostty C surface. May be set before the
     /// C surface exists (e.g. during layout restoration); `createSurface`
@@ -4273,6 +4274,242 @@ final class TerminalSurface: Identifiable, ObservableObject {
             merged[key] = value
         }
         return merged
+    }
+
+    private static func daemonShellCommand(
+        environment: [String: String],
+        workingDirectory: String?,
+        command: String?,
+        fallbackShell: String
+    ) -> String {
+        var commands: [String] = []
+        for key in environment.keys.sorted() {
+            guard let value = environment[key],
+                  !value.isEmpty,
+                  isShellEnvironmentName(key) else {
+                continue
+            }
+            commands.append("export \(key)=\(shellSingleQuoted(value))")
+        }
+
+        let trimmedWorkingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedWorkingDirectory, !trimmedWorkingDirectory.isEmpty {
+            commands.append("cd \(shellSingleQuoted(trimmedWorkingDirectory))")
+        }
+
+        let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedCommand, !trimmedCommand.isEmpty {
+            commands.append(trimmedCommand)
+        } else {
+            let trimmedShell = fallbackShell.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shell = trimmedShell.isEmpty ? "/bin/zsh" : trimmedShell
+            commands.append("exec \(shellSingleQuoted(shell)) -l")
+        }
+
+        return "sh -c \(shellSingleQuoted(commands.joined(separator: " && ")))"
+    }
+
+    private static func isShellEnvironmentName(_ key: String) -> Bool {
+        guard let first = key.unicodeScalars.first,
+              first == "_" || CharacterSet.letters.contains(first) else {
+            return false
+        }
+        return key.unicodeScalars.dropFirst().allSatisfy {
+            $0 == "_" || CharacterSet.alphanumerics.contains($0)
+        }
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private func resolvedWorkingDirectory(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
+        if let workingDirectory, !workingDirectory.isEmpty {
+            return workingDirectory
+        }
+        return baseConfig.workingDirectory
+    }
+
+    private func resolvedCommand(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
+        if let initialCommand, !initialCommand.isEmpty {
+            return initialCommand
+        }
+        return baseConfig.command
+    }
+
+    private func startupEnvironment(baseConfig: CmuxSurfaceConfigTemplate) -> [String: String] {
+        var env = baseConfig.environmentVariables
+
+        var protectedStartupEnvironmentKeys: Set<String> = []
+        Self.applyManagedTerminalIdentityEnvironment(
+            to: &env,
+            protectedKeys: &protectedStartupEnvironmentKeys
+        )
+        CmuxBundleTerminalEnvironment.applyCurrentBundle(
+            to: &env,
+            protectedKeys: &protectedStartupEnvironmentKeys
+        )
+        func setManagedEnvironmentValue(_ key: String, _ value: String) {
+            env[key] = value
+            protectedStartupEnvironmentKeys.insert(key)
+        }
+
+        setManagedEnvironmentValue("CMUX_SURFACE_ID", id.uuidString)
+        setManagedEnvironmentValue("CMUX_WORKSPACE_ID", tabId.uuidString)
+        setManagedEnvironmentValue("CMUX_PANEL_ID", id.uuidString)
+        setManagedEnvironmentValue("CMUX_TAB_ID", tabId.uuidString)
+        let socketPath = SocketControlSettings.socketPath()
+        setManagedEnvironmentValue("CMUX_SOCKET_PATH", socketPath)
+        setManagedEnvironmentValue("CMUX_SOCKET", socketPath)
+        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
+            setManagedEnvironmentValue("CMUX_BUNDLE_ID", bundleId)
+        }
+
+        let startPort = Self.sessionPortBase + portOrdinal * Self.sessionPortRangeSize
+        setManagedEnvironmentValue("CMUX_PORT", String(startPort))
+        setManagedEnvironmentValue("CMUX_PORT_END", String(startPort + Self.sessionPortRangeSize - 1))
+        setManagedEnvironmentValue("CMUX_PORT_RANGE", String(Self.sessionPortRangeSize))
+
+        if !ClaudeCodeIntegrationSettings.hooksEnabled() {
+            setManagedEnvironmentValue("CMUX_CLAUDE_HOOKS_DISABLED", "1")
+        }
+        if let customClaudePath = ClaudeCodeIntegrationSettings.customClaudePath() {
+            setManagedEnvironmentValue("CMUX_CUSTOM_CLAUDE_PATH", customClaudePath)
+        }
+        if !CursorIntegrationSettings.hooksEnabled() {
+            setManagedEnvironmentValue("CMUX_CURSOR_HOOKS_DISABLED", "1")
+        }
+        if !GeminiIntegrationSettings.hooksEnabled() {
+            setManagedEnvironmentValue("CMUX_GEMINI_HOOKS_DISABLED", "1")
+        }
+
+        let shellIntegrationEnabled = UserDefaults.standard.object(forKey: "sidebarShellIntegration") as? Bool ?? true
+        if shellIntegrationEnabled,
+           let integrationDir = Bundle.main.resourceURL?.appendingPathComponent("shell-integration").path {
+            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION", "1")
+            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION_DIR", integrationDir)
+
+            let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
+                ?? getenv("SHELL").map { String(cString: $0) }
+                ?? ProcessInfo.processInfo.environment["SHELL"]
+                ?? "/bin/zsh"
+            let shellName = URL(fileURLWithPath: shell).lastPathComponent
+            if shellName == "zsh" {
+                if GhosttyApp.shared.userGhosttyShellIntegrationMode != "none" {
+                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION", "1")
+                }
+                let candidateZdotdir = (env["ZDOTDIR"]?.isEmpty == false ? env["ZDOTDIR"] : nil)
+                    ?? getenv("ZDOTDIR").map { String(cString: $0) }
+                    ?? (ProcessInfo.processInfo.environment["ZDOTDIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["ZDOTDIR"] : nil)
+
+                if let candidateZdotdir, !candidateZdotdir.isEmpty {
+                    var isGhosttyInjected = false
+                    let ghosttyResources = (env["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? env["GHOSTTY_RESOURCES_DIR"] : nil)
+                        ?? getenv("GHOSTTY_RESOURCES_DIR").map { String(cString: $0) }
+                        ?? (ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] : nil)
+                    if let ghosttyResources {
+                        let ghosttyZdotdir = URL(fileURLWithPath: ghosttyResources)
+                            .appendingPathComponent("shell-integration/zsh").path
+                        isGhosttyInjected = (candidateZdotdir == ghosttyZdotdir)
+                    }
+                    if !isGhosttyInjected {
+                        setManagedEnvironmentValue("CMUX_ZSH_ZDOTDIR", candidateZdotdir)
+                    }
+                }
+
+                setManagedEnvironmentValue("ZDOTDIR", integrationDir)
+            } else if shellName == "bash" {
+                if GhosttyApp.shared.userGhosttyShellIntegrationMode != "none" {
+                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_BASH_INTEGRATION", "1")
+                }
+                setManagedEnvironmentValue("PROMPT_COMMAND", """
+                unset PROMPT_COMMAND; \
+                if [[ "${CMUX_LOAD_GHOSTTY_BASH_INTEGRATION:-0}" == "1" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then \
+                _cmux_ghostty_bash="$GHOSTTY_RESOURCES_DIR/shell-integration/bash/ghostty.bash"; \
+                [[ -r "$_cmux_ghostty_bash" ]] && source "$_cmux_ghostty_bash"; \
+                fi; \
+                if [[ "${CMUX_SHELL_INTEGRATION:-1}" != "0" && -n "${CMUX_SHELL_INTEGRATION_DIR:-}" ]]; then \
+                _cmux_bash_integration="$CMUX_SHELL_INTEGRATION_DIR/cmux-bash-integration.bash"; \
+                [[ -r "$_cmux_bash_integration" ]] && source "$_cmux_bash_integration"; \
+                fi; \
+                unset _cmux_ghostty_bash _cmux_bash_integration; \
+                if declare -F _cmux_prompt_command >/dev/null 2>&1; then _cmux_prompt_command; fi
+                """)
+            }
+        }
+
+        return Self.mergedStartupEnvironment(
+            base: env,
+            protectedKeys: protectedStartupEnvironmentKeys,
+            additionalEnvironment: additionalEnvironment,
+            initialEnvironmentOverrides: initialEnvironmentOverrides
+        )
+    }
+
+    private func daemonBootstrapShellCommand(baseConfig: CmuxSurfaceConfigTemplate) -> String {
+        let env = startupEnvironment(baseConfig: baseConfig)
+        let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
+            ?? getenv("SHELL").map { String(cString: $0) }
+            ?? ProcessInfo.processInfo.environment["SHELL"]
+            ?? "/bin/zsh"
+        return Self.daemonShellCommand(
+            environment: env,
+            workingDirectory: resolvedWorkingDirectory(baseConfig: baseConfig),
+            command: resolvedCommand(baseConfig: baseConfig),
+            fallbackShell: shell
+        )
+    }
+
+    func openDaemonPaneHeadlesslyIfNeeded(cols: Int = 80, rows: Int = 24) {
+        if !Thread.isMainThread {
+            DispatchQueue.main.async { [weak self] in
+                self?.openDaemonPaneHeadlesslyIfNeeded(cols: cols, rows: rows)
+            }
+            return
+        }
+        guard savedDaemonSessionID == nil, !daemonOpenPaneInFlight else { return }
+        guard MobileDaemonBridgeInline.shared.isRunning else { return }
+
+        daemonOpenPaneInFlight = true
+        let workspaceID = tabId
+        let surfaceID = id
+        let command = daemonBootstrapShellCommand(baseConfig: configTemplate ?? CmuxSurfaceConfigTemplate())
+        #if DEBUG
+        dlog("surface.openPane.headless.request workspace=\(workspaceID.uuidString.prefix(8)) surface=\(surfaceID.uuidString.prefix(8)) cols=\(cols) rows=\(rows)")
+        #endif
+        DaemonConnection.shared.openPane(
+            workspaceID: workspaceID,
+            command: command,
+            cols: cols,
+            rows: rows
+        ) { [weak self] sid, _ in
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.daemonOpenPaneInFlight = false
+                guard let sid else {
+                    self.daemonBridge?.markBootstrapFailed()
+                    #if DEBUG
+                    dlog("surface.openPane.headless.failed workspace=\(workspaceID.uuidString.prefix(8)) surface=\(surfaceID.uuidString.prefix(8))")
+                    #endif
+                    NotificationCenter.default.post(
+                        name: .terminalSurfaceDaemonSessionAssigned,
+                        object: nil,
+                        userInfo: ["workspaceId": workspaceID, "failed": true]
+                    )
+                    return
+                }
+                self.savedDaemonSessionID = sid
+                self.daemonBridge?.assignSessionID(sid)
+                #if DEBUG
+                dlog("surface.openPane.headless.success workspace=\(workspaceID.uuidString.prefix(8)) surface=\(surfaceID.uuidString.prefix(8)) session=\(sid)")
+                #endif
+                NotificationCenter.default.post(
+                    name: .terminalSurfaceDaemonSessionAssigned,
+                    object: nil,
+                    userInfo: ["workspaceId": workspaceID, "sessionId": sid]
+                )
+            }
+        }
     }
 
     func isAttached(to view: GhosttyNSView) -> Bool {
@@ -4867,122 +5104,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        var env = baseConfig.environmentVariables
-
-        var protectedStartupEnvironmentKeys: Set<String> = []
-        Self.applyManagedTerminalIdentityEnvironment(
-            to: &env,
-            protectedKeys: &protectedStartupEnvironmentKeys
-        )
-        CmuxBundleTerminalEnvironment.applyCurrentBundle(
-            to: &env,
-            protectedKeys: &protectedStartupEnvironmentKeys
-        )
-        func setManagedEnvironmentValue(_ key: String, _ value: String) {
-            env[key] = value
-            protectedStartupEnvironmentKeys.insert(key)
-        }
-
-        setManagedEnvironmentValue("CMUX_SURFACE_ID", id.uuidString)
-        setManagedEnvironmentValue("CMUX_WORKSPACE_ID", tabId.uuidString)
-        // Backward-compatible shell integration keys used by existing scripts/tests.
-        setManagedEnvironmentValue("CMUX_PANEL_ID", id.uuidString)
-        setManagedEnvironmentValue("CMUX_TAB_ID", tabId.uuidString)
-        let socketPath = SocketControlSettings.socketPath()
-        setManagedEnvironmentValue("CMUX_SOCKET_PATH", socketPath)
-        // Backward-compatible alias expected by older scripts and third-party integrations.
-        setManagedEnvironmentValue("CMUX_SOCKET", socketPath)
-        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
-            setManagedEnvironmentValue("CMUX_BUNDLE_ID", bundleId)
-        }
-
-        // Port range for this workspace (base/range snapshotted once per app session)
-        do {
-            let startPort = Self.sessionPortBase + portOrdinal * Self.sessionPortRangeSize
-            setManagedEnvironmentValue("CMUX_PORT", String(startPort))
-            setManagedEnvironmentValue("CMUX_PORT_END", String(startPort + Self.sessionPortRangeSize - 1))
-            setManagedEnvironmentValue("CMUX_PORT_RANGE", String(Self.sessionPortRangeSize))
-        }
-
-        let claudeHooksEnabled = ClaudeCodeIntegrationSettings.hooksEnabled()
-        if !claudeHooksEnabled {
-            setManagedEnvironmentValue("CMUX_CLAUDE_HOOKS_DISABLED", "1")
-        }
-        if let customClaudePath = ClaudeCodeIntegrationSettings.customClaudePath() {
-            setManagedEnvironmentValue("CMUX_CUSTOM_CLAUDE_PATH", customClaudePath)
-        }
-        if !CursorIntegrationSettings.hooksEnabled() {
-            setManagedEnvironmentValue("CMUX_CURSOR_HOOKS_DISABLED", "1")
-        }
-        if !GeminiIntegrationSettings.hooksEnabled() {
-            setManagedEnvironmentValue("CMUX_GEMINI_HOOKS_DISABLED", "1")
-        }
-
-        // Shell integration: inject ZDOTDIR wrapper for zsh shells.
-        let shellIntegrationEnabled = UserDefaults.standard.object(forKey: "sidebarShellIntegration") as? Bool ?? true
-        if shellIntegrationEnabled,
-           let integrationDir = Bundle.main.resourceURL?.appendingPathComponent("shell-integration").path {
-            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION", "1")
-            setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION_DIR", integrationDir)
-
-            let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
-                ?? getenv("SHELL").map { String(cString: $0) }
-                ?? ProcessInfo.processInfo.environment["SHELL"]
-                ?? "/bin/zsh"
-            let shellName = URL(fileURLWithPath: shell).lastPathComponent
-            if shellName == "zsh" {
-                if GhosttyApp.shared.userGhosttyShellIntegrationMode != "none" {
-                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION", "1")
-                }
-                let candidateZdotdir = (env["ZDOTDIR"]?.isEmpty == false ? env["ZDOTDIR"] : nil)
-                    ?? getenv("ZDOTDIR").map { String(cString: $0) }
-                    ?? (ProcessInfo.processInfo.environment["ZDOTDIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["ZDOTDIR"] : nil)
-
-                if let candidateZdotdir, !candidateZdotdir.isEmpty {
-                    var isGhosttyInjected = false
-                    let ghosttyResources = (env["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? env["GHOSTTY_RESOURCES_DIR"] : nil)
-                        ?? getenv("GHOSTTY_RESOURCES_DIR").map { String(cString: $0) }
-                        ?? (ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] : nil)
-                    if let ghosttyResources {
-                        let ghosttyZdotdir = URL(fileURLWithPath: ghosttyResources)
-                            .appendingPathComponent("shell-integration/zsh").path
-                        isGhosttyInjected = (candidateZdotdir == ghosttyZdotdir)
-                    }
-                    if !isGhosttyInjected {
-                        setManagedEnvironmentValue("CMUX_ZSH_ZDOTDIR", candidateZdotdir)
-                    }
-                }
-
-                setManagedEnvironmentValue("ZDOTDIR", integrationDir)
-            } else if shellName == "bash" {
-                if GhosttyApp.shared.userGhosttyShellIntegrationMode != "none" {
-                    setManagedEnvironmentValue("CMUX_LOAD_GHOSTTY_BASH_INTEGRATION", "1")
-                }
-                // macOS ships /bin/bash 3.2, where Ghostty's automatic bash
-                // integration is unsupported and HOME-based wrapper startup is
-                // not reliable. Bootstrap cmux bash integration on the first
-                // interactive prompt instead.
-                setManagedEnvironmentValue("PROMPT_COMMAND", """
-                unset PROMPT_COMMAND; \
-                if [[ "${CMUX_LOAD_GHOSTTY_BASH_INTEGRATION:-0}" == "1" && -n "${GHOSTTY_RESOURCES_DIR:-}" ]]; then \
-                _cmux_ghostty_bash="$GHOSTTY_RESOURCES_DIR/shell-integration/bash/ghostty.bash"; \
-                [[ -r "$_cmux_ghostty_bash" ]] && source "$_cmux_ghostty_bash"; \
-                fi; \
-                if [[ "${CMUX_SHELL_INTEGRATION:-1}" != "0" && -n "${CMUX_SHELL_INTEGRATION_DIR:-}" ]]; then \
-                _cmux_bash_integration="$CMUX_SHELL_INTEGRATION_DIR/cmux-bash-integration.bash"; \
-                [[ -r "$_cmux_bash_integration" ]] && source "$_cmux_bash_integration"; \
-                fi; \
-                unset _cmux_ghostty_bash _cmux_bash_integration; \
-                if declare -F _cmux_prompt_command >/dev/null 2>&1; then _cmux_prompt_command; fi
-                """)
-            }
-        }
-        env = Self.mergedStartupEnvironment(
-            base: env,
-            protectedKeys: protectedStartupEnvironmentKeys,
-            additionalEnvironment: additionalEnvironment,
-            initialEnvironmentOverrides: initialEnvironmentOverrides
-        )
+        let env = startupEnvironment(baseConfig: baseConfig)
 
         if !env.isEmpty {
             envVars.reserveCapacity(env.count)
@@ -5007,18 +5129,8 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        let resolvedWorkingDirectory: String? = {
-            if let workingDirectory, !workingDirectory.isEmpty {
-                return workingDirectory
-            }
-            return baseConfig.workingDirectory
-        }()
-        let resolvedCommand: String? = {
-            if let initialCommand, !initialCommand.isEmpty {
-                return initialCommand
-            }
-            return baseConfig.command
-        }()
+        let resolvedWorkingDirectory = resolvedWorkingDirectory(baseConfig: baseConfig)
+        let resolvedCommand = resolvedCommand(baseConfig: baseConfig)
         let resolvedInitialInput: String? = {
             if let initialInput, !initialInput.isEmpty {
                 return initialInput
@@ -5068,19 +5180,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 ?? getenv("SHELL").map { String(cString: $0) }
                 ?? ProcessInfo.processInfo.environment["SHELL"]
                 ?? "/bin/zsh"
-            // Build an `env` command with all the per-surface vars so the shell
-            // inherits the same environment it would get in Exec mode. This
-            // includes ZDOTDIR (for ghostty/cmux shell integration), CMUX_*
-            // surface IDs, TERM, COLORTERM, etc.
-            var envPairs: [String] = ["TERM=xterm-256color", "COLORTERM=truecolor"]
-            for (key, value) in env {
-                // Skip empty values; shell-escape the value
-                guard !value.isEmpty else { continue }
-                let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
-                envPairs.append("\(key)='\(escaped)'")
-            }
-            let envPrefix = envPairs.joined(separator: " ")
-            let shellCommand = "env \(envPrefix) \(shell) -l"
+            let shellCommand = Self.daemonShellCommand(
+                environment: env,
+                workingDirectory: resolvedWorkingDirectory,
+                command: resolvedCommand,
+                fallbackShell: shell
+            )
 
             let bridge = DaemonTerminalBridge(
                 surfaceID: self.id,
@@ -5111,7 +5216,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
             // terminal rendered at 80x24 inside a full-size container, with
             // a ~500px letterbox.
             if let sid = initialSessionID {
+                daemonOpenPaneInFlight = false
                 dlog("surface.daemonBridge session=\(sid) socket=\(daemonSocket) origin=saved workspace=\(tabId.uuidString.prefix(8))")
+            } else if daemonOpenPaneInFlight {
+                dlog("surface.daemonBridge session=pending socket=\(daemonSocket) origin=headless_in_flight workspace=\(tabId.uuidString.prefix(8)) surface=\(id.uuidString.prefix(8))")
             } else {
                 dlog("surface.daemonBridge session=pending socket=\(daemonSocket) origin=openPane workspace=\(tabId.uuidString.prefix(8)) surface=\(id.uuidString.prefix(8))")
                 let workspaceID = self.tabId
@@ -5119,6 +5227,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 let capturedShellCommand = shellCommand
                 deferredOpenPaneFire = { [weak self, weak bridge] in
                     guard let self else { return }
+                    self.daemonOpenPaneInFlight = true
                     let scale = max(self.hostedView.window?.backingScaleFactor ?? 2.0, 1.0)
                     let hostedBounds = self.hostedView.bounds.size
                     var openCols: Int = 80
@@ -5142,6 +5251,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                     guard let sid else {
                         NSLog("📱 surface.openPane FAILED tab=%@ surface=%@", workspaceID.uuidString, surfaceID.uuidString)
                         DispatchQueue.main.async {
+                            self?.daemonOpenPaneInFlight = false
                             dlog("surface.openPane.failed workspace=\(workspaceID.uuidString.prefix(8)) surface=\(surfaceID.uuidString.prefix(8))")
                             bridge?.markBootstrapFailed()
                             // Wake workspace.sync — this pane is permanently
@@ -5156,6 +5266,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
                         return
                     }
                     DispatchQueue.main.async {
+                        self?.daemonOpenPaneInFlight = false
                         self?.savedDaemonSessionID = sid
                         bridge?.assignSessionID(sid)
                         dlog("surface.openPane.success workspace=\(workspaceID.uuidString.prefix(8)) surface=\(surfaceID.uuidString.prefix(8)) session=\(sid)")
@@ -5235,12 +5346,17 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 // `teardownSurface` runs, which also frees the ghostty
                 // surface in the same function — no window for UAF.
                 self?.daemonBridge?.stop()
-                // Shell exited (Ctrl+D / exit). In Manual IO mode Ghostty
-                // doesn't watch a child process, so we must close the
-                // surface explicitly to match Exec mode behavior.
-                if error == nil, let surface = self?.surface {
+                // Shell exited (Ctrl+D / exit). In Manual IO mode the daemon owns
+                // the process, so close the model directly instead of asking
+                // Ghostty to request a close. The Ghostty close callback can mark
+                // this as needs-confirmation even though the child already exited.
+                if error == nil, let tabId = self?.tabId, let surfaceId = self?.id {
                     DispatchQueue.main.async {
-                        ghostty_surface_request_close(surface)
+                        guard let app = AppDelegate.shared,
+                              let manager = app.tabManagerFor(tabId: tabId) ?? app.tabManager else {
+                            return
+                        }
+                        manager.closeRuntimeSurface(tabId: tabId, surfaceId: surfaceId)
                     }
                 }
             }
@@ -5864,7 +5980,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         cmuxDebugLog("forceRefresh: \(id) reason=\(reason) \(viewState)")
         #endif
         guard let view = attachedView,
-              let surface,
+              surface != nil,
               view.window != nil,
               view.bounds.width > 0,
               view.bounds.height > 0 else {
@@ -5947,6 +6063,10 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
     func sendText(_ text: String) {
         guard let data = text.data(using: .utf8), !data.isEmpty else { return }
+        if let daemonBridge {
+            daemonBridge.writeToSession(data)
+            return
+        }
         guard let surface = surface else {
             enqueuePendingSocketInput(.text(data))
             requestBackgroundSurfaceStartIfNeeded()

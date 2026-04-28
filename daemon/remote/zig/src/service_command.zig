@@ -82,6 +82,8 @@ pub const Command = union(enum) {
     attach_session: AttachSessionCmd,
     resize_session: ResizeSessionCmd,
     detach_session: DetachSessionCmd,
+    session_status: SessionStatusCmd,
+    list_sessions: ListSessionsCmd,
     persist_workspaces: PersistWorkspacesCmd,
     append_history: AppendHistoryCmd,
     history_query: HistoryQueryCmd,
@@ -145,6 +147,15 @@ pub const DetachSessionCmd = struct {
     session_id: []const u8,
     attachment_id: []const u8,
     reply: *PendingReply(SessionStatus),
+};
+
+pub const SessionStatusCmd = struct {
+    session_id: []const u8,
+    reply: *PendingReply(SessionStatus),
+};
+
+pub const ListSessionsCmd = struct {
+    reply: *PendingReply([]@import("session_registry.zig").SessionListEntry),
 };
 
 // persistence types, kept opaque in the command enum to avoid coupling.

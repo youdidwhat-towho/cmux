@@ -89,6 +89,11 @@ pub const PaneNode = union(enum) {
     }
 };
 
+pub const WorkspaceOrigin = enum {
+    daemon_created,
+    mac_sync,
+};
+
 pub const Workspace = struct {
     id: []const u8,
     title: []const u8,
@@ -104,6 +109,7 @@ pub const Workspace = struct {
     focused_pane_id: ?[]const u8 = null,
     created_at: i64,
     last_activity_at: i64,
+    origin: WorkspaceOrigin = .daemon_created,
 };
 
 pub const Registry = struct {
@@ -178,6 +184,7 @@ pub const Registry = struct {
             .focused_pane_id = try self.alloc.dupe(u8, pane_id),
             .created_at = now,
             .last_activity_at = now,
+            .origin = .daemon_created,
         };
 
         const order_id = try self.alloc.dupe(u8, id);
@@ -451,9 +458,11 @@ pub const Registry = struct {
     ///     daemon-owned session bindings survive.
     ///   * Workspaces in the payload that aren't in the registry are
     ///     created.
-    ///   * Workspaces missing from the payload are preserved when they own
-    ///     distinct sessions, which protects iOS-created workspaces that
-    ///     have not round-tripped to mac's TabManager yet.
+    ///   * Daemon-created workspaces missing from the payload are preserved
+    ///     when they own distinct sessions, which protects iOS-created
+    ///     workspaces that have not round-tripped to mac's TabManager yet.
+    ///     Mac-synced workspaces missing from an authoritative sync are
+    ///     pruned, so stale pre-restart mac workspaces cannot live forever.
     ///   * Missing workspaces that duplicate incoming session ids are pruned.
     ///     This handles mac relaunch/session-restore cases where the same
     ///     shells are synced back under freshly minted workspace ids.
@@ -528,6 +537,7 @@ pub const Registry = struct {
                 existing.color = if (ws_data.color.len > 0) try self.alloc.dupe(u8, ws_data.color) else null;
                 existing.unread_count = ws_data.unread_count;
                 existing.pinned = ws_data.pinned;
+                existing.origin = .mac_sync;
                 if (ws_data.session_id) |s| {
                     if (existing.session_id) |old| self.alloc.free(old);
                     existing.session_id = try self.alloc.dupe(u8, s);
@@ -638,6 +648,7 @@ pub const Registry = struct {
                 .root_pane = root,
                 .created_at = std.time.milliTimestamp(),
                 .last_activity_at = std.time.milliTimestamp(),
+                .origin = .mac_sync,
             };
 
             const order_id = try self.alloc.dupe(u8, id);
@@ -666,11 +677,13 @@ pub const Registry = struct {
         now_ms: i64,
         prune_sessionless_missing: bool,
     ) bool {
+        if (workspaceHasOverlappingSession(ws, incoming_session_ids)) return true;
+        if (prune_sessionless_missing and ws.origin == .mac_sync) return true;
         if (!workspaceHasAnySession(ws)) {
             if (prune_sessionless_missing) return true;
             return now_ms - ws.last_activity_at >= sessionless_missing_workspace_prune_grace_ms;
         }
-        return workspaceHasOverlappingSession(ws, incoming_session_ids);
+        return false;
     }
 
     fn workspaceHasAnySession(ws: *const Workspace) bool {
@@ -1091,21 +1104,24 @@ test "syncAll upsert-in-place: metadata-only update keeps existing pane tree" {
     try std.testing.expectEqualStrings("sess-stable", after.root_pane.leaf.session_id.?);
 }
 
-test "syncAll preserves missing workspace with distinct session" {
+test "syncAll preserves missing daemon-created workspace with distinct session" {
     // Regression: workspace.sync used to delete every workspace not in the
     // payload. iOS-created workspaces that hadn't yet round-tripped to mac's
     // TabManager could therefore vanish on the next mac sync. Post-upsert,
-    // missing workspaces with distinct live sessions must survive.
+    // missing daemon-created workspaces with distinct live sessions must survive.
     const alloc = std.testing.allocator;
     var reg = Registry.init(alloc);
     defer reg.deinit();
 
-    // Two workspaces seeded.
-    const initial = [_]Registry.SyncWorkspace{
+    const mac_seed = [_]Registry.SyncWorkspace{
         .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
-        .{ .id = "ws-only-on-phone", .title = "phone", .directory = "", .session_id = "sess-phone" },
     };
-    try reg.syncAll(&initial, null, false);
+    try reg.syncAll(&mac_seed, null, false);
+
+    const phone_id = try reg.createWithId("ws-only-on-phone", "phone", "");
+    const phone = reg.get(phone_id).?;
+    try reg.bindSession(phone_id, phone.focused_pane_id.?, "sess-phone");
+
     try std.testing.expect(reg.get("ws-keep") != null);
     try std.testing.expect(reg.get("ws-only-on-phone") != null);
 
@@ -1116,6 +1132,32 @@ test "syncAll preserves missing workspace with distinct session" {
     try reg.syncAll(&partial, null, false);
     try std.testing.expect(reg.get("ws-keep") != null);
     try std.testing.expect(reg.get("ws-only-on-phone") != null);
+}
+
+test "syncAll authoritative sync prunes missing mac-synced workspace with distinct session" {
+    // Mac-created workspaces are authoritative after they have appeared in a
+    // mac sync. If a later authoritative mac sync omits one, it is stale and
+    // should not keep showing on iOS just because it still has a daemon session.
+    const alloc = std.testing.allocator;
+    var reg = Registry.init(alloc);
+    defer reg.deinit();
+
+    const initial = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
+        .{ .id = "ws-stale", .title = "stale", .directory = "", .session_id = "sess-stale" },
+    };
+    try reg.syncAll(&initial, null, false);
+    try std.testing.expect(reg.get("ws-keep") != null);
+    try std.testing.expect(reg.get("ws-stale") != null);
+
+    const restored = [_]Registry.SyncWorkspace{
+        .{ .id = "ws-keep", .title = "keep", .directory = "", .session_id = "sess-keep" },
+    };
+    try reg.syncAll(&restored, "ws-keep", true);
+
+    try std.testing.expect(reg.get("ws-keep") != null);
+    try std.testing.expect(reg.get("ws-stale") == null);
+    try std.testing.expectEqual(@as(u32, 1), reg.workspaces.count());
 }
 
 test "syncAll prunes missing workspace with duplicate incoming session" {

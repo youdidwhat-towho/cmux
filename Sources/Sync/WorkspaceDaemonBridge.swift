@@ -20,6 +20,7 @@ final class WorkspaceDaemonBridge {
     private var syncScheduled = false
     private(set) var lastSyncTime: Date?
     private(set) var syncCount: Int = 0
+    private var lastSentSyncFingerprint: Data?
 
     /// True while applying a daemon-sourced workspace.changed event. Suppresses
     /// the workspace.sync echo that observing @Published fields would otherwise
@@ -276,7 +277,7 @@ final class WorkspaceDaemonBridge {
         guard !applyingDaemonState else { return }
         guard !syncScheduled else { return }
         syncScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+        DispatchQueue.main.async { [weak self] in
             self?.syncScheduled = false
             self?.performSync()
         }
@@ -302,6 +303,7 @@ final class WorkspaceDaemonBridge {
             return
         }
         guard let params = buildSyncParams() else { return }
+        guard shouldSendSync(params) else { return }
         #if DEBUG
         if let workspaces = params["workspaces"] as? [[String: Any]] {
             let summary = workspaces.map { ws -> String in
@@ -311,43 +313,32 @@ final class WorkspaceDaemonBridge {
                 let sids = panes.compactMap { $0["session_id"] as? String }
                 return "\(id)[\(title)]=\(sids)"
             }.joined(separator: " ")
-            dlog("sync.send.incremental count=\(workspaces.count) \(summary)")
+            dlog("sync.send.full count=\(workspaces.count) \(summary)")
         }
         #endif
 
-        // PR 7 SSOT intent: mac ships incremental RPCs for fields that
-        // have them wired (preview/phase/directory/unread/color), AND
-        // still ships `workspace.sync` as the fallback for everything
-        // else — pane lists, splits, titles, pinned, tab ordering. The
-        // incremental RPCs for pane mutations exist on the wire but
-        // have no mac call sites yet (see DaemonConnection.sendPane*);
-        // until they do, the full sync is the only path that keeps
-        // mac↔daemon pane/layout state in agreement. Removing the full
-        // sync entirely caused silent divergence where pane closes,
-        // split layout changes, focus changes, and pane-title updates
-        // never reached the daemon until reconnect.
-        if let workspaces = params["workspaces"] as? [[String: Any]] {
-            for ws in workspaces {
-                guard let idStr = ws["id"] as? String,
-                      let uuid = UUID(uuidString: idStr) else { continue }
-                if let preview = ws["preview"] as? String, !preview.isEmpty {
-                    connection.sendWorkspaceSetPreview(workspaceID: uuid, preview: preview)
-                }
-                if let phase = ws["phase"] as? String, !phase.isEmpty {
-                    connection.sendWorkspaceSetPhase(workspaceID: uuid, phase: phase)
-                }
-                if let directory = ws["directory"] as? String, !directory.isEmpty {
-                    connection.sendWorkspaceSetDirectory(workspaceID: uuid, directory: directory)
-                }
-                if let unread = ws["unread_count"] as? Int {
-                    connection.sendWorkspaceSetUnread(workspaceID: uuid, unreadCount: unread)
-                }
-            }
-        }
+        // Full sync already carries preview, phase, directory, unread, pane
+        // layout, titles, pinned state, and ordering. Sending incremental
+        // field RPCs immediately before the full sync multiplied daemon
+        // `workspace.changed` broadcasts and could churn the persistent
+        // daemon socket under split/workspace stress.
         connection.sendWorkspaceSync(params)
 
         lastSyncTime = Date()
         syncCount += 1
+    }
+
+    private func shouldSendSync(_ params: [String: Any]) -> Bool {
+        guard JSONSerialization.isValidJSONObject(params),
+              let fingerprint = try? JSONSerialization.data(
+                  withJSONObject: params,
+                  options: [.sortedKeys]
+              ) else {
+            return true
+        }
+        guard fingerprint != lastSentSyncFingerprint else { return false }
+        lastSentSyncFingerprint = fingerprint
+        return true
     }
 
     private func hasPendingDaemonSessionAssignments() -> Bool {
@@ -384,7 +375,9 @@ final class WorkspaceDaemonBridge {
 
         let workspaces: [[String: Any]] = tabManager.tabs.map { workspace in
             let preview = workspacePreview(for: workspace)
-            let terminalPanels = workspace.panels.values.compactMap { $0 as? TerminalPanel }
+            let terminalPanels = workspace.panels.values
+                .compactMap { $0 as? TerminalPanel }
+                .sorted { $0.id.uuidString < $1.id.uuidString }
             // performSync defers while any panel is still waiting on
             // openPane, so every panel we see here has either a
             // daemon-minted id or no daemon bridge at all (release

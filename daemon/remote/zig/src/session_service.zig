@@ -90,8 +90,11 @@ pub const ReadTerminalResult = struct {
 };
 
 const RuntimeSession = struct {
+    alloc: std.mem.Allocator,
     pty: pty_host.PtyHost,
     terminal: terminal_session.TerminalSession,
+    recent_write_ids: std.StringHashMap(void),
+    recent_write_id_order: std.ArrayListUnmanaged([]u8) = .empty,
     /// Serializes pump-thread access to `pty`/`terminal` against any
     /// foreground caller (read/write/history/resize/deinit).
     lock: std.Thread.Mutex = .{},
@@ -132,18 +135,24 @@ const RuntimeSession = struct {
 
     fn init(alloc: std.mem.Allocator, command: []const u8, cols: u16, rows: u16) !RuntimeSession {
         return .{
+            .alloc = alloc,
             .pty = try pty_host.PtyHost.init(alloc, command, cols, rows),
             .terminal = try terminal_session.TerminalSession.init(alloc, .{
                 .cols = cols,
                 .rows = rows,
                 .max_scrollback = 100_000,
             }),
+            .recent_write_ids = std.StringHashMap(void).init(alloc),
         };
     }
 
     fn deinit(self: *RuntimeSession) void {
         self.lock.lock();
         defer self.lock.unlock();
+        var write_id_iter = self.recent_write_ids.keyIterator();
+        while (write_id_iter.next()) |key| self.alloc.free(key.*);
+        self.recent_write_ids.deinit();
+        self.recent_write_id_order.deinit(self.alloc);
         self.terminal.deinit();
         self.pty.deinit();
     }
@@ -202,9 +211,32 @@ const RuntimeSession = struct {
         }
     }
 
-    fn writeDraining(self: *RuntimeSession, data: []const u8) !void {
+    fn writeDraining(self: *RuntimeSession, write_id: ?[]const u8, data: []const u8) !void {
         self.lock.lock();
         defer self.lock.unlock();
+
+        var owned_write_id: ?[]u8 = null;
+        errdefer if (owned_write_id) |owned| self.alloc.free(owned);
+        if (write_id) |id| {
+            if (id.len > 0) {
+                if (self.recent_write_ids.contains(id)) return;
+                try self.recent_write_id_order.ensureUnusedCapacity(self.alloc, 1);
+                try self.recent_write_ids.ensureUnusedCapacity(1);
+                owned_write_id = try self.alloc.dupe(u8, id);
+            }
+        }
+
+        if (owned_write_id) |owned| {
+            self.recent_write_ids.putAssumeCapacity(owned, {});
+            self.recent_write_id_order.appendAssumeCapacity(owned);
+            owned_write_id = null;
+            while (self.recent_write_id_order.items.len > 256) {
+                const evicted = self.recent_write_id_order.orderedRemove(0);
+                _ = self.recent_write_ids.remove(evicted);
+                self.alloc.free(evicted);
+            }
+        }
+
         try self.pty.writeDraining(&self.terminal, data);
     }
 
@@ -353,7 +385,7 @@ pub const Service = struct {
     /// now, so callers see a clean synchronous signature but internally
     /// the write is serialized with all other DB touches.
     pub fn persistWorkspaces(self: *Service) void {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             self.persistWorkspacesImpl();
             return;
         }
@@ -374,7 +406,7 @@ pub const Service = struct {
     /// an arbitrary JSON fragment; caller is responsible for ensuring it
     /// parses as valid JSON. No-op if no DB is attached.
     pub fn appendHistory(self: *Service, workspace_id: []const u8, event_type: []const u8, payload_json: []const u8) void {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             self.appendHistoryImpl(workspace_id, event_type, payload_json);
             return;
         }
@@ -404,7 +436,7 @@ pub const Service = struct {
     /// thread. Caller owns the returned `HistoryList` and must call
     /// `deinit` when done.
     pub fn historyQuery(self: *Service, workspace_id: ?[]const u8, limit: u32, before_seq: ?i64) !persistence.HistoryList {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.historyQueryImpl(workspace_id, limit, before_seq);
         }
         var reply: service_command.PendingReply(persistence.HistoryList) = .{};
@@ -428,7 +460,7 @@ pub const Service = struct {
 
     /// Clear the workspace history log. Routed through the writer thread.
     pub fn historyClear(self: *Service) !void {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.historyClearImpl();
         }
         var reply: service_command.PendingReply(void) = .{};
@@ -456,6 +488,12 @@ pub const Service = struct {
             return;
         };
         self.writer_started.store(true, .seq_cst);
+    }
+
+    fn shouldRunWriterCommandDirectly(self: *Service) bool {
+        if (self.isOnWriterThread()) return true;
+        if (!self.writer_started.load(.seq_cst)) self.ensureWriterStarted();
+        return !self.writer_started.load(.seq_cst);
     }
 
     /// Writer-thread main loop. Drains the command queue until shutdown
@@ -524,6 +562,20 @@ pub const Service = struct {
             },
             .detach_session => |c| {
                 const res = self.detachSessionImpl(c.session_id, c.attachment_id) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .session_status => |c| {
+                const res = self.registry.status(c.session_id) catch |err| {
+                    c.reply.fulfillErr(err);
+                    return;
+                };
+                c.reply.fulfillOk(res);
+            },
+            .list_sessions => |c| {
+                const res = self.registry.list() catch |err| {
                     c.reply.fulfillErr(err);
                     return;
                 };
@@ -733,10 +785,7 @@ pub const Service = struct {
     /// Close a session. Routed through the writer thread so it never
     /// races with openTerminal or other mutators of runtimes/registry.
     pub fn closeSession(self: *Service, session_id: []const u8) !void {
-        // If the writer isn't up yet (smoke tests, etc.), fall back
-        // to direct execution. Path is cleanly removable once the
-        // writer is always-started from transport boot.
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.closeSessionImpl(session_id);
         }
         var reply: service_command.PendingReply(void) = .{};
@@ -756,7 +805,7 @@ pub const Service = struct {
     /// writer thread so it cannot race with openTerminal/closeSession
     /// or other mutators.
     pub fn attachSession(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.attachSessionImpl(session_id, attachment_id, cols, rows);
         }
         var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
@@ -781,7 +830,7 @@ pub const Service = struct {
 
     /// Resize an existing session. Routed through the writer thread.
     pub fn resizeSession(self: *Service, session_id: []const u8, attachment_id: []const u8, cols: u16, rows: u16) !session_registry.SessionStatus {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.resizeSessionImpl(session_id, attachment_id, cols, rows);
         }
         var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
@@ -810,7 +859,7 @@ pub const Service = struct {
 
     /// Detach a client from a session. Routed through the writer thread.
     pub fn detachSession(self: *Service, session_id: []const u8, attachment_id: []const u8) !session_registry.SessionStatus {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.detachSessionImpl(session_id, attachment_id);
         }
         var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
@@ -837,11 +886,26 @@ pub const Service = struct {
     }
 
     pub fn sessionStatus(self: *Service, session_id: []const u8) !session_registry.SessionStatus {
-        return self.registry.status(session_id);
+        if (self.shouldRunWriterCommandDirectly()) {
+            return self.registry.status(session_id);
+        }
+        var reply: service_command.PendingReply(session_registry.SessionStatus) = .{};
+        try self.command_queue.submit(.{ .session_status = .{
+            .session_id = session_id,
+            .reply = &reply,
+        } });
+        return reply.wait();
     }
 
     pub fn listSessions(self: *Service) ![]session_registry.SessionListEntry {
-        return self.registry.list();
+        if (self.shouldRunWriterCommandDirectly()) {
+            return self.registry.list();
+        }
+        var reply: service_command.PendingReply([]session_registry.SessionListEntry) = .{};
+        try self.command_queue.submit(.{ .list_sessions = .{
+            .reply = &reply,
+        } });
+        return reply.wait();
     }
 
     /// Open a new terminal. Routed through the writer thread so it
@@ -861,7 +925,7 @@ pub const Service = struct {
         rows: u16,
         open_options: session_registry.Registry.OpenOptions,
     ) !OpenTerminalResult {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.openTerminalImpl(maybe_session_id, command, cols, rows, open_options);
         }
         var reply: service_command.PendingReply(service_command.OpenTerminalResult) = .{};
@@ -965,10 +1029,10 @@ pub const Service = struct {
         return runtime.read(self.alloc, offset, max_bytes, timeout_ms);
     }
 
-    pub fn writeTerminal(self: *Service, session_id: []const u8, data: []const u8) !usize {
+    pub fn writeTerminal(self: *Service, session_id: []const u8, data: []const u8, write_id: ?[]const u8) !usize {
         const runtime = self.acquireRuntime(session_id) orelse return error.TerminalSessionNotFound;
         defer runtime.release();
-        try runtime.writeDraining(data);
+        try runtime.writeDraining(write_id, data);
         return data.len;
     }
 
@@ -1155,7 +1219,7 @@ pub const Service = struct {
         stream: *std.net.Stream,
         session_id: []const u8,
     ) bool {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             return self.unsubscribeTerminalImpl(stream, session_id);
         }
         var reply: service_command.PendingReply(bool) = .{};
@@ -1197,7 +1261,7 @@ pub const Service = struct {
     /// Called by the WS handler when a connection closes. Routed
     /// through the writer thread.
     pub fn unsubscribeAllForStream(self: *Service, stream: *std.net.Stream) void {
-        if (!self.writer_started.load(.seq_cst) or self.isOnWriterThread()) {
+        if (self.shouldRunWriterCommandDirectly()) {
             self.unsubscribeAllForStreamImpl(stream);
             return;
         }
@@ -2075,6 +2139,34 @@ test "terminal read returns subprocess output" {
     try std.testing.expect(std.mem.indexOf(u8, read.data, "READY") != null);
 }
 
+test "terminal write_id suppresses duplicate retry" {
+    var service = Service.init(std.testing.allocator);
+    defer service.deinit();
+
+    var opened = try service.openTerminal("write-dedupe", "stty -echo; printf READY; cat", 80, 24);
+    defer opened.status.deinit(std.testing.allocator);
+    defer std.testing.allocator.free(opened.attachment_id);
+
+    const ready = try service.readTerminal(opened.status.session_id, 0, 4096, 1000);
+    defer std.testing.allocator.free(ready.data);
+    try std.testing.expect(std.mem.indexOf(u8, ready.data, "READY") != null);
+
+    const token = "CMUX_WRITE_DEDUPE_ONCE\n";
+    try std.testing.expectEqual(token.len, try service.writeTerminal(opened.status.session_id, token, "write-id-1"));
+    try std.testing.expectEqual(token.len, try service.writeTerminal(opened.status.session_id, token, "write-id-1"));
+
+    const read = try service.readTerminal(opened.status.session_id, ready.offset, 4096, 1000);
+    defer std.testing.allocator.free(read.data);
+
+    var occurrences: usize = 0;
+    var search_from: usize = 0;
+    while (std.mem.indexOf(u8, read.data[search_from..], "CMUX_WRITE_DEDUPE_ONCE")) |relative| {
+        occurrences += 1;
+        search_from += relative + 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), occurrences);
+}
+
 test "list sessions retains last known size after final detach" {
     var service = Service.init(std.testing.allocator);
     defer service.deinit();
@@ -2282,7 +2374,7 @@ test "close session removes terminal runtime" {
 
     try std.testing.expectError(error.SessionNotFound, service.sessionStatus("dev"));
     try std.testing.expectError(error.TerminalSessionNotFound, service.readTerminal("dev", 0, 32, 0));
-    try std.testing.expectError(error.TerminalSessionNotFound, service.writeTerminal("dev", "hello"));
+    try std.testing.expectError(error.TerminalSessionNotFound, service.writeTerminal("dev", "hello", null));
     try std.testing.expectError(error.TerminalSessionNotFound, service.history("dev", .plain));
 }
 

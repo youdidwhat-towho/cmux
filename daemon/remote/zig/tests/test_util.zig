@@ -67,14 +67,15 @@ pub const Server = struct {
     }
 
     pub fn deinit(self: *Server) void {
+        const alloc = self.alloc;
         self.shutdown_flag.store(true, .seq_cst);
         std.posix.close(self.listener_fd);
 
         var snapshot: std.ArrayListUnmanaged(*Worker) = .empty;
-        defer snapshot.deinit(self.alloc);
+        defer snapshot.deinit(alloc);
 
         self.workers_mutex.lock();
-        snapshot.appendSlice(self.alloc, self.workers.items) catch {};
+        snapshot.appendSlice(alloc, self.workers.items) catch {};
         self.workers_mutex.unlock();
 
         for (snapshot.items) |w| {
@@ -91,15 +92,15 @@ pub const Server = struct {
         for (snapshot.items) |w| {
             if (w.thread) |t| t.join();
             w.deinit();
-            self.alloc.destroy(w);
+            alloc.destroy(w);
         }
 
         self.workers_mutex.lock();
-        self.workers.deinit(self.alloc);
+        self.workers.deinit(alloc);
         self.workers_mutex.unlock();
 
         std.fs.deleteFileAbsolute(self.socket_path) catch {};
-        self.alloc.destroy(self);
+        alloc.destroy(self);
     }
 
     fn acceptLoop(self: *Server) void {

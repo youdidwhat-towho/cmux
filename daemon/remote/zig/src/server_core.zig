@@ -455,6 +455,7 @@ fn handleTerminalWrite(service: *session_service.Service, req: *const json_rpc.R
     const params = getParamsObject(req) orelse return invalidParams(service.alloc, req.id, "terminal.write requires params");
     const session_id = getRequiredStringParam(params, "session_id", "terminal.write requires session_id") catch |err| return paramError(service.alloc, req.id, err);
     const encoded = getRequiredStringParam(params, "data", "terminal.write requires data") catch |err| return paramError(service.alloc, req.id, err);
+    const write_id = getOptionalStringParam(params, "write_id");
 
     const decoded_len = std.base64.standard.Decoder.calcSizeForSlice(encoded) catch {
         return invalidParams(service.alloc, req.id, "terminal.write data must be base64");
@@ -465,7 +466,7 @@ fn handleTerminalWrite(service: *session_service.Service, req: *const json_rpc.R
         return invalidParams(service.alloc, req.id, "terminal.write data must be base64");
     };
 
-    const written = service.writeTerminal(session_id, decoded) catch |err| switch (err) {
+    const written = service.writeTerminal(session_id, decoded, write_id) catch |err| switch (err) {
         error.TerminalSessionNotFound => return terminalNotFound(service.alloc, req.id),
         else => return internalError(service.alloc, req.id, err),
     };

@@ -164,15 +164,20 @@ fn handleClient(shared: *SharedService, client_fd: std.posix.fd_t) !void {
 
         try pending.appendSlice(alloc, read_buf[0..n]);
         while (std.mem.indexOfScalar(u8, pending.items, '\n')) |newline_index| {
-            try handleLine(
+            const line = pending.items[0..newline_index];
+            handleLine(
                 service,
                 &queue,
                 &stream,
                 &write_mutex,
                 &workspace_subscribed,
                 &attachments,
-                pending.items[0..newline_index],
-            );
+                line,
+            ) catch |err| {
+                logRequestFailure(alloc, line, err);
+                if (queue.isDead()) return;
+                enqueueLineError(&queue, alloc, line, err) catch return;
+            };
 
             const remaining = pending.items[newline_index + 1 ..];
             std.mem.copyForwards(u8, pending.items[0..remaining.len], remaining);
@@ -232,6 +237,42 @@ fn enqueueResponse(queue: *outbound_queue.OutboundQueue, alloc: std.mem.Allocato
         alloc.free(line);
         return err;
     };
+}
+
+fn enqueueLineError(
+    queue: *outbound_queue.OutboundQueue,
+    alloc: std.mem.Allocator,
+    raw_line: []const u8,
+    err: anyerror,
+) !void {
+    const trimmed = std.mem.trimRight(u8, raw_line, "\r");
+    var req = json_rpc.decodeRequest(alloc, trimmed) catch return;
+    defer req.deinit(alloc);
+
+    const resp = try json_rpc.encodeResponse(alloc, .{
+        .id = req.id,
+        .ok = false,
+        .@"error" = .{
+            .code = "internal_error",
+            .message = @errorName(err),
+        },
+    });
+    try enqueueResponse(queue, alloc, resp);
+}
+
+fn logRequestFailure(alloc: std.mem.Allocator, raw_line: []const u8, err: anyerror) void {
+    const trimmed = std.mem.trimRight(u8, raw_line, "\r");
+    var req = json_rpc.decodeRequest(alloc, trimmed) catch {
+        std.log.warn("unix request failed method=<invalid> id=<invalid>: {s}", .{@errorName(err)});
+        return;
+    };
+    defer req.deinit(alloc);
+
+    if (req.id != null) {
+        std.log.warn("unix request failed method={s} id=<present>: {s}", .{ req.method, @errorName(err) });
+    } else {
+        std.log.warn("unix request failed method={s} id=<none>: {s}", .{ req.method, @errorName(err) });
+    }
 }
 
 fn handleTerminalSubscribe(

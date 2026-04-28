@@ -690,9 +690,10 @@ if [[ -x "$GHOSTTY_HELPER_SRC" ]]; then
   cp "$GHOSTTY_HELPER_SRC" "$BIN_DIR/ghostty"
   chmod +x "$BIN_DIR/ghostty"
 fi
-if command -v xattr >/dev/null 2>&1; then
-  xattr -cr "$APP_PATH" || true
-fi
+# macOS 26 can attach provenance/Finder metadata when the tagged .app copy is
+# created. codesign rejects app bundles with that detritus, so clear it before
+# the final ad-hoc signature.
+xattr -cr "$APP_PATH" 2>/dev/null || true
 if ! /usr/bin/codesign --force --sign - --timestamp=none --generate-entitlement-der "$APP_PATH" >/dev/null 2>&1; then
   if [[ "${CMUX_ALLOW_UNSIGNED_DEV_APP:-}" == "1" ]]; then
     echo "warning: codesign failed for $APP_PATH; continuing because CMUX_ALLOW_UNSIGNED_DEV_APP=1" >&2

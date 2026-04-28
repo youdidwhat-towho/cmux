@@ -278,6 +278,7 @@ pub fn hydrateRegistry(db: *persistence.Db, reg: *Registry, alloc: std.mem.Alloc
             .focused_pane_id = focused,
             .created_at = pws.created_at,
             .last_activity_at = pws.last_activity_at,
+            .origin = .mac_sync,
         };
 
         const order_id = reg.alloc.dupe(u8, id) catch return Error.OutOfMemory;

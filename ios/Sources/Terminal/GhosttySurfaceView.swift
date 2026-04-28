@@ -622,6 +622,20 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         inputProxy.onHideKeyboard = { [weak self] in
             self?.inputProxy.resignFirstResponder()
         }
+        inputProxy.accessoryLayoutInsetsProvider = { [weak self] in
+            guard let self,
+                  let window = self.window else {
+                return .zero
+            }
+
+            let terminalFrame = self.convert(self.bounds, to: window)
+            return UIEdgeInsets(
+                top: 0,
+                left: max(0, terminalFrame.minX),
+                bottom: 0,
+                right: max(0, window.bounds.maxX - terminalFrame.maxX)
+            )
+        }
         return inputProxy
     }()
 
@@ -689,6 +703,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     }
 
     private var keyboardHeight: CGFloat = 0
+    var autoFocusOnWindowAttach = true
 
     @objc private func handleKeyboardWillShow(_ notification: Notification) {
         guard let frameEnd = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
@@ -777,6 +792,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         super.layoutSubviews()
         snapshotFallbackView.frame = bounds
         inputProxy.frame = CGRect(x: 0, y: 0, width: bounds.width, height: 1)
+        inputProxy.updateAccessoryLayoutInsets()
         liveAnchormuxLog("surface.layout bounds=\(Int(bounds.width))x\(Int(bounds.height)) window=\(window != nil)")
         syncSurfaceGeometry()
         syncSurfaceVisibility()
@@ -789,7 +805,9 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         if window != nil {
             syncSurfaceGeometry()
             setFocus(true)
-            focusInput()
+            if autoFocusOnWindowAttach {
+                focusInput()
+            }
             startDisplayLink()
         } else {
             stopDisplayLink()
@@ -868,6 +886,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
     func focusInput() {
         onFocusInputRequestedForTesting?()
         syncSurfaceGeometry()
+        inputProxy.updateAccessoryLayoutInsets()
         inputProxy.becomeFirstResponder()
     }
 
@@ -1628,6 +1647,7 @@ final class TerminalInputTextView: UITextView {
     var onEscapeSequence: ((Data) -> Void)?
     var onZoom: ((TerminalFontZoomDirection) -> Void)?
     var onHideKeyboard: (() -> Void)?
+    var accessoryLayoutInsetsProvider: (() -> UIEdgeInsets)?
     private var controlAccessoryArmed = false
     private var alternateAccessoryArmed = false
     private var commandAccessoryArmed = false
@@ -1662,11 +1682,19 @@ final class TerminalInputTextView: UITextView {
     private static let accessoryButtonHeight: CGFloat = 28
     private static let accessoryButtonMinWidth: CGFloat = 44
     private static let accessoryButtonNormalBackground = UIColor(white: 0.35, alpha: 1)
+    private var accessoryBackgroundLeadingConstraint: NSLayoutConstraint?
+    private var accessoryBackgroundTrailingConstraint: NSLayoutConstraint?
+    private var accessoryDismissLeadingConstraint: NSLayoutConstraint?
+    private var accessoryScrollTrailingConstraint: NSLayoutConstraint?
 
     private lazy var terminalAccessoryToolbar: UIView = {
         let container = UIView()
-        container.backgroundColor = Self.monokaiBarColor
-        container.frame = CGRect(x: 0, y: 0, width: UIScreen.main.bounds.width, height: 44)
+        container.backgroundColor = .clear
+        container.frame = CGRect(x: 0, y: 0, width: 0, height: 44)
+
+        let backgroundView = UIView()
+        backgroundView.backgroundColor = Self.monokaiBarColor
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
 
         // Pinned keyboard dismiss button on the left
         let dismissButton = UIButton(type: .system)
@@ -1710,15 +1738,29 @@ final class TerminalInputTextView: UITextView {
         }
         nub.translatesAutoresizingMaskIntoConstraints = false
 
+        container.addSubview(backgroundView)
         container.addSubview(dismissButton)
         container.addSubview(nub)
         container.addSubview(scrollView)
 
+        let backgroundLeadingConstraint = backgroundView.leadingAnchor.constraint(equalTo: container.leadingAnchor)
+        let backgroundTrailingConstraint = backgroundView.trailingAnchor.constraint(equalTo: container.trailingAnchor)
+        let dismissLeadingConstraint = dismissButton.leadingAnchor.constraint(
+            equalTo: container.safeAreaLayoutGuide.leadingAnchor,
+            constant: Self.accessoryHorizontalInset
+        )
+        let scrollTrailingConstraint = scrollView.trailingAnchor.constraint(
+            equalTo: container.safeAreaLayoutGuide.trailingAnchor,
+            constant: -Self.accessoryHorizontalInset
+        )
+
         NSLayoutConstraint.activate([
-            dismissButton.leadingAnchor.constraint(
-                equalTo: container.safeAreaLayoutGuide.leadingAnchor,
-                constant: Self.accessoryHorizontalInset
-            ),
+            backgroundLeadingConstraint,
+            backgroundTrailingConstraint,
+            backgroundView.topAnchor.constraint(equalTo: container.topAnchor),
+            backgroundView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+
+            dismissLeadingConstraint,
             dismissButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             dismissButton.widthAnchor.constraint(equalToConstant: 32),
 
@@ -1728,10 +1770,7 @@ final class TerminalInputTextView: UITextView {
             nub.heightAnchor.constraint(equalToConstant: 34),
 
             scrollView.leadingAnchor.constraint(equalTo: nub.trailingAnchor, constant: 6),
-            scrollView.trailingAnchor.constraint(
-                equalTo: container.safeAreaLayoutGuide.trailingAnchor,
-                constant: -Self.accessoryHorizontalInset
-            ),
+            scrollTrailingConstraint,
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
 
@@ -1742,6 +1781,10 @@ final class TerminalInputTextView: UITextView {
             stack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -8),
         ])
 
+        accessoryBackgroundLeadingConstraint = backgroundLeadingConstraint
+        accessoryBackgroundTrailingConstraint = backgroundTrailingConstraint
+        accessoryDismissLeadingConstraint = dismissLeadingConstraint
+        accessoryScrollTrailingConstraint = scrollTrailingConstraint
         accessoryStackView = stack
         return container
     }()
@@ -1751,6 +1794,22 @@ final class TerminalInputTextView: UITextView {
     // so nothing else retains it.
     private var commandAccessoryButton: UIButton?
     private var isMacRemote = false
+
+    func updateAccessoryLayoutInsets() {
+        let insets = accessoryLayoutInsetsProvider?() ?? .zero
+        let leftInset = max(0, insets.left)
+        let rightInset = max(0, insets.right)
+
+        accessoryBackgroundLeadingConstraint?.constant = leftInset
+        accessoryBackgroundTrailingConstraint?.constant = -rightInset
+        accessoryDismissLeadingConstraint?.constant = Self.accessoryHorizontalInset + leftInset
+        accessoryScrollTrailingConstraint?.constant = -(Self.accessoryHorizontalInset + rightInset)
+
+        if accessoryStackView != nil {
+            terminalAccessoryToolbar.setNeedsLayout()
+            terminalAccessoryToolbar.layoutIfNeeded()
+        }
+    }
 
     func updateModifierLabels(isMacRemote: Bool) {
         guard self.isMacRemote != isMacRemote else { return }

@@ -5,9 +5,12 @@ import UIKit
 private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "terminal.sidebar-view")
 
 struct TerminalSidebarRootView: View {
+    @SwiftUI.Environment(\.horizontalSizeClass) private var horizontalSizeClass: UserInterfaceSizeClass?
     @State private var store: TerminalSidebarStore
     private let routeStore: NotificationRouteStore
     @State private var navigationPath = NavigationPath()
+    @State private var splitColumnVisibility: NavigationSplitViewVisibility = .all
+    @State private var selectedWorkspaceID: TerminalWorkspace.ID?
     @State private var searchText = ""
     @State private var editorDraft: TerminalHostEditorDraft?
     @State private var showScanner = false
@@ -155,246 +158,26 @@ struct TerminalSidebarRootView: View {
     }
 
     var body: some View {
-        NavigationStack(path: $navigationPath) {
-            List {
-                Section {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 14) {
-                            ForEach(visibleHosts) { host in
-                                TerminalServerPinView(
-                                    host: host,
-                                    workspaceCount: store.workspaceCount(for: host),
-                                    isConfigured: store.isConfigured(host)
-                                )
-                                .onTapGesture {
-                                    if store.isConfigured(host) {
-                                        let workspaceID = store.startWorkspace(on: host)
-                                        navigationPath.append(workspaceID)
-                                    } else if host.source == .custom {
-                                        pendingStartHostID = host.id
-                                        editorDraft = TerminalHostEditorDraft(
-                                            host: host,
-                                            credentials: store.credentials(for: host)
-                                        )
-                                    }
-                                }
-                                .contextMenu {
-                                    Button(TerminalHomeStrings.renameServerLabel) {
-                                        renameText = host.name
-                                        renamingHost = host
-                                    }
-                                    if host.source == .custom {
-                                        Button(TerminalHomeStrings.editServerLabel) {
-                                            editorDraft = TerminalHostEditorDraft(
-                                                host: host,
-                                                credentials: store.credentials(for: host)
-                                            )
-                                        }
-                                        Button(TerminalHomeStrings.deleteServerLabel, role: .destructive) {
-                                            store.deleteHost(host)
-                                        }
-                                    }
-                                }
-                                .accessibilityIdentifier("terminal.server.\(host.accessibilityIdentifierSlug)")
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                    }
-                    .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
-                } header: {
-                    HStack {
-                        Text(TerminalHomeStrings.serversHeader)
-
-                        Spacer()
-
-                        Button {
-                            presentNewServerEditor()
-                        } label: {
-                            Label(TerminalHomeStrings.findServersLabel, systemImage: "magnifyingglass")
-                                .labelStyle(.titleAndIcon)
-                        }
-                        .buttonStyle(.plain)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.tint)
-                        .accessibilityIdentifier("terminal.server.find")
-                    }
-                    .textCase(nil)
-                }
-
-                Section {
-                    if filteredWorkspaces.isEmpty {
-                        let configuredHosts = store.hosts.filter { store.isConfigured($0) }
-                        if let firstHost = configuredHosts.first {
-                            ContentUnavailableView {
-                                Label(TerminalHomeStrings.emptyTitle, systemImage: "terminal")
-                            } description: {
-                                Text(TerminalHomeStrings.emptyWithServersDescription(serverName: firstHost.name))
-                            } actions: {
-                                Button {
-                                    let workspaceID = store.startWorkspace(on: firstHost)
-                                    navigationPath.append(workspaceID)
-                                } label: {
-                                    Label(
-                                        TerminalHomeStrings.startWorkspaceOn(serverName: firstHost.name),
-                                        systemImage: "play.fill"
-                                    )
-                                    .labelStyle(.titleAndIcon)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.large)
-                                .accessibilityIdentifier("terminal.empty.start_workspace.\(firstHost.accessibilityIdentifierSlug)")
-                            }
-                            .listRowSeparator(.hidden)
-                        } else {
-                            ContentUnavailableView(
-                                TerminalHomeStrings.emptyTitle,
-                                systemImage: "terminal",
-                                description: Text(TerminalHomeStrings.emptyDescription)
-                            )
-                            .listRowSeparator(.hidden)
-                        }
-                    } else {
-                        ForEach(filteredWorkspaces) { workspace in
-                            if let host = store.server(for: workspace.hostID) {
-                                let row = TerminalWorkspaceConversationRow(
-                                    workspace: workspace,
-                                    host: host
-                                )
-                                Button {
-                                    let workspaceID = store.openWorkspace(workspace)
-                                    navigationPath.append(workspaceID)
-                                } label: {
-                                    row
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityAddTraits(.isButton)
-                                .accessibilityIdentifier("terminal.workspace.\(workspace.id.uuidString)")
-                                .accessibilityLabel(row.accessibilityTitle)
-                                .accessibilityValue(row.accessibilitySummary)
-                                .swipeActions(edge: .leading, allowsFullSwipe: true) {
-                                    Button {
-                                        store.toggleUnread(for: workspace.id)
-                                    } label: {
-                                        Label(
-                                            workspace.unread ? String(localized: "terminal.home.mark_read", defaultValue: "Read") : String(localized: "terminal.home.mark_unread", defaultValue: "Unread"),
-                                            systemImage: workspace.unread ? "message" : "message.badge"
-                                        )
-                                    }
-                                    .tint(.blue)
-                                    .accessibilityIdentifier("terminal.workspace.action.toggleUnread.\(workspace.id.uuidString)")
-
-                                    Button {
-                                        store.togglePinned(for: workspace.id)
-                                    } label: {
-                                        Label(
-                                            workspace.pinned ? TerminalHomeStrings.unpinAction : TerminalHomeStrings.pinAction,
-                                            systemImage: workspace.pinned ? "pin.slash.fill" : "pin.fill"
-                                        )
-                                    }
-                                    .tint(.orange)
-                                    .accessibilityIdentifier("terminal.workspace.action.togglePin.\(workspace.id.uuidString)")
-                                }
-                                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                    Button(role: .destructive) {
-                                        store.closeWorkspace(workspace)
-                                    } label: {
-                                        Label(TerminalHomeStrings.deleteAction, systemImage: "trash")
-                                    }
-                                    .accessibilityIdentifier("terminal.workspace.action.delete.\(workspace.id.uuidString)")
-                                }
-                                .contextMenu {
-                                    Button {
-                                        store.togglePinned(for: workspace.id)
-                                    } label: {
-                                        Label(
-                                            workspace.pinned ? TerminalHomeStrings.unpinAction : TerminalHomeStrings.pinAction,
-                                            systemImage: workspace.pinned ? "pin.slash" : "pin"
-                                        )
-                                    }
-                                    Button {
-                                        workspaceRenameText = workspace.title
-                                        renamingWorkspaceID = workspace.id
-                                    } label: {
-                                        Label(TerminalHomeStrings.renameWorkspaceAction, systemImage: "pencil")
-                                    }
-                                    Button(role: .destructive) {
-                                        store.closeWorkspace(workspace)
-                                    } label: {
-                                        Label(TerminalHomeStrings.deleteAction, systemImage: "trash")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+        Group {
+            if usesSplitLayout {
+                splitLayout
+            } else {
+                stackLayout
             }
-            .listStyle(.plain)
-            .listSectionSpacing(.compact)
-            .refreshable {
-                // Pull-to-refresh waits for every pooled daemon connection
-                // to tear down + reconnect + land its first post-reconnect
-                // workspace.subscribe response, so the spinner only
-                // dismisses after fresh state has actually arrived.
-                await TerminalDaemonConnectionPool.shared.refreshAll()
-            }
-            .accessibilityIdentifier("terminal.home")
-            .navigationTitle(TerminalHomeStrings.navigationTitle)
-            .navigationBarTitleDisplayMode(.inline)
-            .searchable(text: $searchText, prompt: TerminalHomeStrings.searchPrompt)
-            .toolbar {
-                        ToolbarItem(placement: .topBarTrailing) {
-                    Menu {
-                        Button {
-                            presentNewServerEditor()
-                        } label: {
-                            Label(TerminalHomeStrings.findServersLabel, systemImage: "magnifyingglass")
-                        }
-                        NavigationLink(destination: SettingsView()) {
-                            Label(TerminalHomeStrings.settingsLabel, systemImage: "gear")
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                            .accessibilityLabel(TerminalHomeStrings.moreLabel)
-                    }
-                }
-            }
-            .navigationDestination(for: TerminalWorkspace.ID.self) { workspaceID in
-                if let workspace = store.workspaceResolvingReplacement(with: workspaceID),
-                   let host = store.server(for: workspace.hostID) {
-                    TerminalWorkspaceScreen(
-                        workspace: workspace,
-                        host: host,
-                        controller: store.controller(for: workspace),
-                        store: store
-                    )
-                } else {
-                    ContentUnavailableView(
-                        TerminalHomeStrings.missingTitle,
-                        systemImage: "terminal",
-                        description: Text(TerminalHomeStrings.missingDescription)
-                    )
-                }
-            }
-            .sheet(item: $editorDraft) { draft in
-                TerminalHostEditorView(
-                    draft: draft
-                ) { host, credentials in
-                    store.saveHost(host, credentials: credentials)
-                    editorDraft = nil
-                    if pendingStartHostID == host.id, store.isConfigured(host) {
-                        pendingStartHostID = nil
-                        let workspaceID = store.startWorkspace(on: host)
-                        navigationPath.append(workspaceID)
-                    }
-                } onCancel: {
+        }
+        .sheet(item: $editorDraft) { draft in
+            TerminalHostEditorView(
+                draft: draft
+            ) { host, credentials in
+                store.saveHost(host, credentials: credentials)
+                editorDraft = nil
+                if pendingStartHostID == host.id, store.isConfigured(host) {
                     pendingStartHostID = nil
-                    editorDraft = nil
+                    presentWorkspace(store.startWorkspace(on: host))
                 }
+            } onCancel: {
+                pendingStartHostID = nil
+                editorDraft = nil
             }
         }
         .sheet(isPresented: $showScanner) {
@@ -456,6 +239,291 @@ struct TerminalSidebarRootView: View {
         }
     }
 
+    private var usesSplitLayout: Bool {
+        horizontalSizeClass == .regular
+    }
+
+    private var splitSelectedWorkspaceID: TerminalWorkspace.ID? {
+        guard let selectedWorkspaceID,
+              let workspace = store.workspaceResolvingReplacement(with: selectedWorkspaceID),
+              filteredWorkspaces.contains(where: { $0.id == workspace.id }) else {
+            return nil
+        }
+        return workspace.id
+    }
+
+    private var stackLayout: some View {
+        NavigationStack(path: $navigationPath) {
+            workspaceHomeList(selectedWorkspaceID: nil) { workspace in
+                let workspaceID = store.openWorkspace(workspace)
+                navigationPath.append(workspaceID)
+            } startWorkspace: { host in
+                navigationPath.append(store.startWorkspace(on: host))
+            }
+            .navigationDestination(for: TerminalWorkspace.ID.self) { workspaceID in
+                workspaceDestination(for: workspaceID)
+            }
+        }
+    }
+
+    private var splitLayout: some View {
+        NavigationSplitView(columnVisibility: $splitColumnVisibility) {
+            workspaceHomeList(selectedWorkspaceID: splitSelectedWorkspaceID) { workspace in
+                selectedWorkspaceID = store.openWorkspace(workspace)
+            } startWorkspace: { host in
+                selectedWorkspaceID = store.startWorkspace(on: host)
+            }
+            .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 440)
+        } detail: {
+            if let selectedWorkspaceID = splitSelectedWorkspaceID {
+                workspaceDestination(for: selectedWorkspaceID)
+            } else {
+                TerminalWorkspaceEmptyState(
+                    title: TerminalHomeStrings.selectWorkspaceTitle,
+                    description: TerminalHomeStrings.selectWorkspaceDescription
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .navigationTitle(TerminalHomeStrings.navigationTitle)
+                .navigationBarTitleDisplayMode(.inline)
+            }
+        }
+        .navigationSplitViewStyle(.balanced)
+    }
+
+    @ViewBuilder
+    private func workspaceHomeList(
+        selectedWorkspaceID: TerminalWorkspace.ID?,
+        openWorkspace: @escaping (TerminalWorkspace) -> Void,
+        startWorkspace: @escaping (TerminalHost) -> Void
+    ) -> some View {
+        List {
+            Section {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        ForEach(visibleHosts) { host in
+                            TerminalServerPinView(
+                                host: host,
+                                workspaceCount: store.workspaceCount(for: host),
+                                isConfigured: store.isConfigured(host)
+                            )
+                            .onTapGesture {
+                                if store.isConfigured(host) {
+                                    startWorkspace(host)
+                                } else if host.source == .custom {
+                                    pendingStartHostID = host.id
+                                    editorDraft = TerminalHostEditorDraft(
+                                        host: host,
+                                        credentials: store.credentials(for: host)
+                                    )
+                                }
+                            }
+                            .contextMenu {
+                                Button(TerminalHomeStrings.renameServerLabel) {
+                                    renameText = host.name
+                                    renamingHost = host
+                                }
+                                if host.source == .custom {
+                                    Button(TerminalHomeStrings.editServerLabel) {
+                                        editorDraft = TerminalHostEditorDraft(
+                                            host: host,
+                                            credentials: store.credentials(for: host)
+                                        )
+                                    }
+                                    Button(TerminalHomeStrings.deleteServerLabel, role: .destructive) {
+                                        store.deleteHost(host)
+                                    }
+                                }
+                            }
+                            .accessibilityIdentifier("terminal.server.\(host.accessibilityIdentifierSlug)")
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                }
+                .listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+            } header: {
+                HStack {
+                    Text(TerminalHomeStrings.serversHeader)
+
+                    Spacer()
+
+                    Button {
+                        presentNewServerEditor()
+                    } label: {
+                        Label(TerminalHomeStrings.findServersLabel, systemImage: "magnifyingglass")
+                            .labelStyle(.titleAndIcon)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .accessibilityIdentifier("terminal.server.find")
+                }
+                .textCase(nil)
+            }
+
+            Section {
+                if filteredWorkspaces.isEmpty {
+                    let configuredHosts = store.hosts.filter { store.isConfigured($0) }
+                    if !configuredHosts.isEmpty {
+                        TerminalWorkspaceEmptyState(
+                            title: TerminalHomeStrings.emptyTitle,
+                            description: TerminalHomeStrings.serversFooter
+                        )
+                        .listRowSeparator(.hidden)
+                    } else {
+                        TerminalWorkspaceEmptyState(
+                            title: TerminalHomeStrings.emptyTitle,
+                            description: TerminalHomeStrings.emptyDescription
+                        )
+                        .listRowSeparator(.hidden)
+                    }
+                } else {
+                    ForEach(filteredWorkspaces) { workspace in
+                        if let host = store.server(for: workspace.hostID) {
+                            let row = TerminalWorkspaceConversationRow(
+                                workspace: workspace,
+                                host: host
+                            )
+                            let isSelected = selectedWorkspaceID == workspace.id
+                            let showsSelectionStyle = selectedWorkspaceID != nil
+
+                            Button {
+                                openWorkspace(workspace)
+                            } label: {
+                                row
+                                    .padding(.horizontal, showsSelectionStyle ? 12 : 0)
+                                    .background {
+                                        if isSelected {
+                                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                                .fill(Color.accentColor.opacity(0.16))
+                                        }
+                                    }
+                                    .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityIdentifier("terminal.workspace.\(workspace.id.uuidString)")
+                            .accessibilityLabel(row.accessibilityTitle)
+                            .accessibilityValue(row.accessibilitySummary)
+                            .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                                Button {
+                                    store.toggleUnread(for: workspace.id)
+                                } label: {
+                                    Label(
+                                        workspace.unread ? TerminalHomeStrings.markReadAction : TerminalHomeStrings.markUnreadAction,
+                                        systemImage: workspace.unread ? "message" : "message.badge"
+                                    )
+                                }
+                                .tint(.blue)
+                                .accessibilityIdentifier("terminal.workspace.action.toggleUnread.\(workspace.id.uuidString)")
+
+                                Button {
+                                    store.togglePinned(for: workspace.id)
+                                } label: {
+                                    Label(
+                                        workspace.pinned ? TerminalHomeStrings.unpinAction : TerminalHomeStrings.pinAction,
+                                        systemImage: workspace.pinned ? "pin.slash.fill" : "pin.fill"
+                                    )
+                                }
+                                .tint(.orange)
+                                .accessibilityIdentifier("terminal.workspace.action.togglePin.\(workspace.id.uuidString)")
+                            }
+                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                                Button(role: .destructive) {
+                                    store.closeWorkspace(workspace)
+                                } label: {
+                                    Label(TerminalHomeStrings.deleteAction, systemImage: "trash")
+                                }
+                                .accessibilityIdentifier("terminal.workspace.action.delete.\(workspace.id.uuidString)")
+                            }
+                            .contextMenu {
+                                Button {
+                                    store.togglePinned(for: workspace.id)
+                                } label: {
+                                    Label(
+                                        workspace.pinned ? TerminalHomeStrings.unpinAction : TerminalHomeStrings.pinAction,
+                                        systemImage: workspace.pinned ? "pin.slash" : "pin"
+                                    )
+                                }
+                                Button {
+                                    workspaceRenameText = workspace.title
+                                    renamingWorkspaceID = workspace.id
+                                } label: {
+                                    Label(TerminalHomeStrings.renameWorkspaceAction, systemImage: "pencil")
+                                }
+                                Button(role: .destructive) {
+                                    store.closeWorkspace(workspace)
+                                } label: {
+                                    Label(TerminalHomeStrings.deleteAction, systemImage: "trash")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .listSectionSpacing(.compact)
+        .refreshable {
+            // Pull-to-refresh waits for every pooled daemon connection
+            // to tear down + reconnect + land its first post-reconnect
+            // workspace.subscribe response, so the spinner only
+            // dismisses after fresh state has actually arrived.
+            await TerminalDaemonConnectionPool.shared.refreshAll()
+        }
+        .accessibilityIdentifier("terminal.home")
+        .navigationTitle(TerminalHomeStrings.navigationTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $searchText, prompt: TerminalHomeStrings.searchPrompt)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        presentNewServerEditor()
+                    } label: {
+                        Label(TerminalHomeStrings.findServersLabel, systemImage: "magnifyingglass")
+                    }
+                    NavigationLink(destination: SettingsView()) {
+                        Label(TerminalHomeStrings.settingsLabel, systemImage: "gear")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .accessibilityLabel(TerminalHomeStrings.moreLabel)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func workspaceDestination(for workspaceID: TerminalWorkspace.ID) -> some View {
+        if let workspace = store.workspaceResolvingReplacement(with: workspaceID),
+           let host = store.server(for: workspace.hostID) {
+            TerminalWorkspaceScreen(
+                workspace: workspace,
+                host: host,
+                controller: store.controller(for: workspace),
+                store: store
+            )
+        } else {
+            ContentUnavailableView(
+                TerminalHomeStrings.missingTitle,
+                systemImage: "terminal",
+                description: Text(TerminalHomeStrings.missingDescription)
+            )
+        }
+    }
+
+    private func presentWorkspace(_ workspaceID: TerminalWorkspace.ID) {
+        if usesSplitLayout {
+            selectedWorkspaceID = workspaceID
+        } else {
+            navigationPath.append(workspaceID)
+        }
+    }
+
     private func handlePendingRouteIfPossible() {
         guard let route = routeStore.pendingRoute else { return }
         guard route.kind == .workspace else {
@@ -466,7 +534,7 @@ struct TerminalSidebarRootView: View {
         if let cachedItem = cachedWorkspaceItem(for: route),
            let workspaceID = store.openInboxWorkspace(cachedItem, source: .push) {
             routeStore.consume()
-            navigationPath.append(workspaceID)
+            presentWorkspace(workspaceID)
             return
         }
 
@@ -475,7 +543,7 @@ struct TerminalSidebarRootView: View {
         }
 
         routeStore.consume()
-        navigationPath.append(store.openWorkspace(workspace, source: .push))
+        presentWorkspace(store.openWorkspace(workspace, source: .push))
     }
 
     private func cachedWorkspaceItem(for route: NotificationRoute) -> UnifiedInboxItem? {
@@ -554,32 +622,9 @@ private enum TerminalHomeStrings {
     static let workspacesHeader = String(localized: "terminal.home.workspaces_header", defaultValue: "Recent")
     static let emptyTitle = String(localized: "terminal.home.empty_title", defaultValue: "No Workspaces")
     static let emptyDescription = String(localized: "terminal.home.empty_description", defaultValue: "Start a workspace from the pinned servers above.")
+    static let selectWorkspaceTitle = String(localized: "terminal.home.select_workspace_title", defaultValue: "Select a Workspace")
+    static let selectWorkspaceDescription = String(localized: "terminal.home.select_workspace_description", defaultValue: "Choose a workspace from the sidebar.")
 
-    /// Empty-state copy when at least one configured server is pinned. Names
-    /// the server inline so the call to action is explicit ("the button below
-    /// will spin up a workspace on this server").
-    static func emptyWithServersDescription(serverName: String) -> String {
-        String(
-            format: String(
-                localized: "terminal.home.empty_description_with_server",
-                defaultValue: "Tap below to start a workspace on %@."
-            ),
-            serverName
-        )
-    }
-
-    /// Action button label for the empty state when at least one server is
-    /// pinned. Names the server so users know which one will be used when
-    /// multiple are available (we pick the first configured one).
-    static func startWorkspaceOn(serverName: String) -> String {
-        String(
-            format: String(
-                localized: "terminal.home.empty_action.start_on_server",
-                defaultValue: "Start on %@"
-            ),
-            serverName
-        )
-    }
     static let markReadAction = String(localized: "terminal.home.action.mark_read", defaultValue: "Read")
     static let markUnreadAction = String(localized: "terminal.home.action.mark_unread", defaultValue: "Unread")
     static let deleteAction = String(localized: "terminal.home.action.delete", defaultValue: "Delete")
@@ -726,6 +771,28 @@ extension TerminalHostPalette {
         case .amber: return .orange
         case .rose: return .pink
         }
+    }
+}
+
+private struct TerminalWorkspaceEmptyState: View {
+    let title: String
+    let description: String
+
+    var body: some View {
+        VStack(spacing: 5) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.primary)
+                .multilineTextAlignment(.center)
+
+            Text(description)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 20)
+        .padding(.vertical, 28)
     }
 }
 
@@ -1005,6 +1072,7 @@ private struct ArrowNubRepresentable: UIViewRepresentable {
 }
 
 struct TerminalWorkspaceScreen: View {
+    @SwiftUI.Environment(\.horizontalSizeClass) private var horizontalSizeClass: UserInterfaceSizeClass?
     let workspace: TerminalWorkspace
     let host: TerminalHost
     var controller: TerminalSessionController
@@ -1025,16 +1093,24 @@ struct TerminalWorkspaceScreen: View {
         store.workspace(with: workspace.id)?.panes ?? workspace.panes
     }
     private var hasMultiplePanes: Bool { panes.count > 1 }
+    private var shouldAutofocusTerminal: Bool { horizontalSizeClass != .regular }
+    private var terminalFullBleedEdges: Edge.Set {
+        horizontalSizeClass == .regular ? [] : [.horizontal, .bottom]
+    }
 
     var body: some View {
         ZStack {
             resolvedBackground
-                .ignoresSafeArea()
+                .ignoresSafeArea(edges: terminalFullBleedEdges)
 
             if let surfaceView = controller.surfaceView {
-                GhosttySurfaceRepresentable(surfaceView: surfaceView)
+                GhosttySurfaceRepresentable(
+                    surfaceView: surfaceView,
+                    autofocusOnAttach: shouldAutofocusTerminal
+                )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .ignoresSafeArea(edges: [.horizontal, .bottom])
+                    .clipped()
+                    .ignoresSafeArea(edges: terminalFullBleedEdges)
             } else {
                 ProgressView(TerminalHomeStrings.terminalOpening)
                     .tint(.white)
@@ -1109,7 +1185,9 @@ struct TerminalWorkspaceScreen: View {
         }
         .task {
             store.setWorkspaceDetailVisible(workspace.id, visible: true)
-            controller.surfaceView?.focusInput()
+            if shouldAutofocusTerminal {
+                controller.surfaceView?.focusInput()
+            }
         }
         .onDisappear {
             store.setWorkspaceDetailVisible(workspace.id, visible: false)
@@ -1229,14 +1307,17 @@ final class TerminalHostedViewContainer: UIView {
 
 private struct GhosttySurfaceRepresentable: UIViewRepresentable {
     let surfaceView: GhosttySurfaceView
+    let autofocusOnAttach: Bool
 
     func makeUIView(context: Context) -> TerminalHostedViewContainer {
         let container = TerminalHostedViewContainer()
+        surfaceView.autoFocusOnWindowAttach = autofocusOnAttach
         container.setHostedView(surfaceView)
         return container
     }
 
     func updateUIView(_ uiView: TerminalHostedViewContainer, context: Context) {
+        surfaceView.autoFocusOnWindowAttach = autofocusOnAttach
         uiView.setHostedView(surfaceView)
     }
 }

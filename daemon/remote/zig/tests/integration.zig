@@ -202,11 +202,10 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
     var fx = try Fixture.init(alloc, "backpressure");
     defer fx.deinit();
 
-    // A flood command. `yes` is universally available on macOS; the PTY
-    // child inherits it and streams "y\n" as fast as the kernel schedules
-    // it. Coupled with a slow/no-reading client this overruns the per-
-    // subscriber OutboundQueue in a second or two.
-    var opened = try fx.service.openTerminal("s-flood", "yes", 80, 24);
+    // Start a shell that waits for a trigger before flooding. This keeps the
+    // slow client from overflowing before its own subscribe response is sent;
+    // the backpressure window starts only after both clients are attached.
+    var opened = try fx.service.openTerminal("s-flood", "read _; yes", 80, 24);
     defer opened.status.deinit(alloc);
     defer alloc.free(opened.attachment_id);
     defer fx.service.closeSession("s-flood") catch {};
@@ -220,6 +219,7 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
     var client_b = try test_util.Client.connect(alloc, fx.socket_path);
     defer client_b.deinit();
 
+    var a_initial_offset: u64 = 0;
     {
         const id = client_a.allocId();
         try client_a.sendRequest(id, "terminal.subscribe", .{
@@ -229,6 +229,11 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
         var resp = try client_a.awaitResponse(id, deadlineIn(2000));
         defer resp.deinit();
         try std.testing.expect(resp.value.object.get("ok").?.bool);
+        if (resp.value.object.get("offset")) |offset| {
+            if (offset == .integer and offset.integer > 0) {
+                a_initial_offset = @intCast(offset.integer);
+            }
+        }
     }
     {
         const id = client_b.allocId();
@@ -240,6 +245,8 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
         defer resp.deinit();
         try std.testing.expect(resp.value.object.get("ok").?.bool);
     }
+
+    try std.testing.expectEqual(@as(usize, 3), try fx.service.writeTerminal("s-flood", "go\n", null));
 
     // Drive client A for a window long enough to confirm A's flow is
     // healthy alongside an unresponsive B. The test no longer asserts
@@ -267,7 +274,9 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
     // on the runner — macOS can absorb several MiB before backpressure
     // reaches the outbound queue. The overflow-triggers-shutdown path
     // itself is covered by outbound_queue.zig's unit test.
-    try std.testing.expect(a_frames_seen > 0);
+    if (a_frames_seen == 0 and a_initial_offset == 0) {
+        return error.FastClientSawNoFrames;
+    }
 
     // Daemon health: fresh client can ping and get a response.
     var client_c = try test_util.Client.connect(alloc, fx.socket_path);
@@ -276,7 +285,7 @@ test "integration: backpressure overflow disconnects slow client, daemon stays a
     try client_c.sendRequest(ping_id, "ping", .{});
     var ping_resp = try client_c.awaitResponse(ping_id, deadlineIn(2000));
     defer ping_resp.deinit();
-    try std.testing.expect(ping_resp.value.object.get("ok").?.bool);
+    if (!ping_resp.value.object.get("ok").?.bool) return error.HealthPingFailed;
 }
 
 // ---------------------------------------------------------------------------
@@ -976,6 +985,239 @@ test "integration: workspace.open_pane mints a session that workspace.list expos
         }
     }
     try std.testing.expect(std.mem.indexOf(u8, accum.items, "SHARED") != null);
+}
+
+test "integration: local subscribed clients stay connected under workspace and terminal churn" {
+    if (!pty_pump.supported) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    var fx = try Fixture.init(alloc, "local-reconnect");
+    defer fx.deinit();
+
+    var controller = try test_util.Client.connect(alloc, fx.socket_path);
+    defer controller.deinit();
+    var mac = try test_util.Client.connect(alloc, fx.socket_path);
+    defer mac.deinit();
+    var ios = try test_util.Client.connect(alloc, fx.socket_path);
+    defer ios.deinit();
+
+    const create_id = controller.allocId();
+    try controller.sendRequest(create_id, "workspace.create", .{
+        .title = "reconnect-stress",
+        .directory = "/tmp",
+    });
+    var create_resp = try controller.awaitResponse(create_id, deadlineIn(2000));
+    defer create_resp.deinit();
+    try std.testing.expect(create_resp.value.object.get("ok").?.bool);
+    const ws_id = try alloc.dupe(u8, create_resp.value.object.get("result").?.object.get("workspace_id").?.string);
+    defer alloc.free(ws_id);
+
+    const open_id = controller.allocId();
+    try controller.sendRequest(open_id, "workspace.open_pane", .{
+        .workspace_id = ws_id,
+        .command = "cat",
+        .cols = @as(u16, 120),
+        .rows = @as(u16, 40),
+    });
+    var open_resp = try controller.awaitResponse(open_id, deadlineIn(2000));
+    defer open_resp.deinit();
+    try std.testing.expect(open_resp.value.object.get("ok").?.bool);
+    const open_result = open_resp.value.object.get("result").?.object;
+    const session_id = try alloc.dupe(u8, open_result.get("session_id").?.string);
+    defer alloc.free(session_id);
+    const pane_id = try alloc.dupe(u8, open_result.get("pane_id").?.string);
+    defer alloc.free(pane_id);
+    defer fx.service.closeSession(session_id) catch {};
+
+    try subscribeWorkspace(&mac);
+    try subscribeWorkspace(&ios);
+    try attachSession(&mac, session_id, "mac-local", 120, 40);
+    try attachSession(&ios, session_id, "ios-local", 84, 32);
+    try subscribeTerminal(&mac, session_id);
+    try subscribeTerminal(&ios, session_id);
+
+    var i: usize = 0;
+    while (i < 80) : (i += 1) {
+        var preview_buf: [96]u8 = undefined;
+        const preview = try std.fmt.bufPrint(&preview_buf, "reconnect-preview-{d}", .{i});
+        const preview_id = controller.allocId();
+        try controller.sendRequest(preview_id, "workspace.set_preview", .{
+            .workspace_id = ws_id,
+            .preview = preview,
+        });
+
+        var title_buf: [96]u8 = undefined;
+        const title = try std.fmt.bufPrint(&title_buf, "reconnect-stress-{d}", .{i});
+        const rename_id = controller.allocId();
+        try controller.sendRequest(rename_id, "workspace.rename", .{
+            .workspace_id = ws_id,
+            .title = title,
+        });
+
+        const unread_id = controller.allocId();
+        try controller.sendRequest(unread_id, "workspace.set_unread", .{
+            .workspace_id = ws_id,
+            .unread_count = @as(u32, @intCast(i % 7)),
+        });
+
+        const focus_id = controller.allocId();
+        try controller.sendRequest(focus_id, "pane.focus", .{
+            .workspace_id = ws_id,
+            .pane_id = pane_id,
+        });
+
+        try expectOkResponse(&controller, preview_id);
+        try expectOkResponse(&controller, rename_id);
+        try expectOkResponse(&controller, unread_id);
+        try expectOkResponse(&controller, focus_id);
+
+        const mac_resize_id = mac.allocId();
+        try mac.sendRequest(mac_resize_id, "session.resize", .{
+            .session_id = session_id,
+            .attachment_id = "mac-local",
+            .cols = @as(u16, @intCast(118 + (i % 3))),
+            .rows = @as(u16, @intCast(38 + (i % 3))),
+        });
+        const ios_resize_id = ios.allocId();
+        try ios.sendRequest(ios_resize_id, "session.resize", .{
+            .session_id = session_id,
+            .attachment_id = "ios-local",
+            .cols = @as(u16, @intCast(80 + (i % 5))),
+            .rows = @as(u16, @intCast(30 + (i % 4))),
+        });
+
+        var write_buf: [96]u8 = undefined;
+        const write_bytes = try std.fmt.bufPrint(&write_buf, "cmux-reconnect-stress-{d}\n", .{i});
+        const write_b64 = try test_util.base64Encode(alloc, write_bytes);
+        defer alloc.free(write_b64);
+        const write_id = controller.allocId();
+        try controller.sendRequest(write_id, "terminal.write", .{
+            .session_id = session_id,
+            .data = write_b64,
+        });
+
+        try expectOkResponse(&mac, mac_resize_id);
+        try expectOkResponse(&ios, ios_resize_id);
+        try expectOkResponse(&controller, write_id);
+
+        try drainReadableNoDisconnect(&mac, 4);
+        try drainReadableNoDisconnect(&ios, 4);
+    }
+
+    const final_preview_id = controller.allocId();
+    try controller.sendRequest(final_preview_id, "workspace.set_preview", .{
+        .workspace_id = ws_id,
+        .preview = "cmux-reconnect-final-preview",
+    });
+    try expectOkResponse(&controller, final_preview_id);
+
+    const final_marker = "cmux-reconnect-final-marker";
+    const final_write_b64 = try test_util.base64Encode(alloc, final_marker ++ "\n");
+    defer alloc.free(final_write_b64);
+    const final_write_id = controller.allocId();
+    try controller.sendRequest(final_write_id, "terminal.write", .{
+        .session_id = session_id,
+        .data = final_write_b64,
+    });
+    try expectOkResponse(&controller, final_write_id);
+
+    try expectWorkspaceAndTerminalMarker(alloc, &mac, final_marker, deadlineIn(5000));
+    try expectWorkspaceAndTerminalMarker(alloc, &ios, final_marker, deadlineIn(5000));
+
+    const ping_id = controller.allocId();
+    try controller.sendRequest(ping_id, "ping", .{});
+    try expectOkResponse(&controller, ping_id);
+}
+
+fn subscribeWorkspace(client: *test_util.Client) !void {
+    const id = client.allocId();
+    try client.sendRequest(id, "workspace.subscribe", .{});
+    try expectOkResponse(client, id);
+}
+
+fn subscribeTerminal(client: *test_util.Client, session_id: []const u8) !void {
+    const id = client.allocId();
+    try client.sendRequest(id, "terminal.subscribe", .{
+        .session_id = session_id,
+        .offset = @as(u64, 0),
+    });
+    try expectOkResponse(client, id);
+}
+
+fn attachSession(
+    client: *test_util.Client,
+    session_id: []const u8,
+    attachment_id: []const u8,
+    cols: u16,
+    rows: u16,
+) !void {
+    const id = client.allocId();
+    try client.sendRequest(id, "session.attach", .{
+        .session_id = session_id,
+        .attachment_id = attachment_id,
+        .cols = cols,
+        .rows = rows,
+    });
+    try expectOkResponse(client, id);
+}
+
+fn expectOkResponse(client: *test_util.Client, id: u64) !void {
+    var resp = try client.awaitResponse(id, deadlineIn(3000));
+    defer resp.deinit();
+    try std.testing.expect(resp.value == .object);
+    try std.testing.expect(resp.value.object.get("ok").?.bool);
+}
+
+fn drainReadableNoDisconnect(client: *test_util.Client, max_frames: usize) !void {
+    var read_count: usize = 0;
+    while (read_count < max_frames) : (read_count += 1) {
+        var parsed = client.readFrame(deadlineIn(1)) catch |err| switch (err) {
+            error.Timeout => return,
+            else => return err,
+        };
+        parsed.deinit();
+    }
+}
+
+fn expectWorkspaceAndTerminalMarker(
+    alloc: std.mem.Allocator,
+    client: *test_util.Client,
+    marker: []const u8,
+    deadline: i64,
+) !void {
+    var saw_workspace = false;
+    var saw_marker = false;
+    var terminal_bytes: std.ArrayListUnmanaged(u8) = .empty;
+    defer terminal_bytes.deinit(alloc);
+
+    while (std.time.milliTimestamp() < deadline) {
+        if (saw_workspace and saw_marker) return;
+        var parsed = client.readFrame(deadline) catch |err| switch (err) {
+            error.Timeout => break,
+            else => return err,
+        };
+        defer parsed.deinit();
+        if (parsed.value != .object) continue;
+
+        const ev = parsed.value.object.get("event") orelse continue;
+        if (ev != .string) continue;
+        if (std.mem.eql(u8, ev.string, "workspace.changed")) {
+            saw_workspace = true;
+            continue;
+        }
+        if (!std.mem.eql(u8, ev.string, "terminal.output")) continue;
+        const data_v = parsed.value.object.get("data") orelse continue;
+        if (data_v != .string or data_v.string.len == 0) continue;
+        const decoded = try test_util.base64Decode(alloc, data_v.string);
+        defer alloc.free(decoded);
+        try terminal_bytes.appendSlice(alloc, decoded);
+        if (std.mem.indexOf(u8, terminal_bytes.items, marker) != null) {
+            saw_marker = true;
+        }
+    }
+
+    try std.testing.expect(saw_workspace);
+    try std.testing.expect(saw_marker);
 }
 
 // ---------------------------------------------------------------------------

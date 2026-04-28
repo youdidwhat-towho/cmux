@@ -44,6 +44,7 @@ final class TerminalSessionRegistry: @unchecked Sendable {
         let onOutput: (Data) -> Void
         let onDisconnect: (String?) -> Void
         let onViewSize: (Int, Int) -> Void
+        let onReady: () -> Void
         var phase: Phase
         var cols: Int
         var rows: Int
@@ -140,16 +141,19 @@ final class TerminalSessionRegistry: @unchecked Sendable {
 
     /// Mark a binding live (attach RPC completed). No-op if the binding
     /// was removed in the meantime.
-    func markLive(sessionID: String, surfaceID: UUID) {
+    @discardableResult
+    func markLive(sessionID: String, surfaceID: UUID) -> (() -> Void)? {
         lock.lock()
         guard var list = bindingsBySession[sessionID],
               let index = list.firstIndex(where: { $0.surfaceID == surfaceID }) else {
             lock.unlock()
-            return
+            return nil
         }
         list[index].phase = .live
+        let onReady = list[index].onReady
         bindingsBySession[sessionID] = list
         lock.unlock()
+        return onReady
     }
 
     /// Update cols/rows for one binding (reported by this surface).
@@ -256,13 +260,48 @@ final class TerminalSessionRegistry: @unchecked Sendable {
     }
 
     /// Fan an output frame to every binding for this session.
-    func deliverOutput(sessionID: String, data: Data) {
+    ///
+    /// When the daemon includes raw-buffer offsets, use them as the delivery
+    /// cursor before invoking handlers. Reconnect snapshots can overlap bytes
+    /// already rendered on this client; trimming here keeps replay idempotent
+    /// for both full duplicates and partial overlaps.
+    @discardableResult
+    func deliverOutput(sessionID: String, data: Data, offset: UInt64? = nil, baseOffset: UInt64? = nil) -> Bool {
         lock.lock()
-        let handlers = bindingsBySession[sessionID]?.map { $0.onOutput } ?? []
-        lock.unlock()
-        for handler in handlers {
-            handler(data)
+        guard var list = bindingsBySession[sessionID], !list.isEmpty else {
+            lock.unlock()
+            return false
         }
+
+        var payload = data
+        if let offset {
+            let currentOffset = list.map(\.lastOffset).max() ?? 0
+            if currentOffset >= offset {
+                lock.unlock()
+                return false
+            }
+
+            let frameStart = offset >= UInt64(data.count)
+                ? offset - UInt64(data.count)
+                : (baseOffset ?? 0)
+            if currentOffset > frameStart {
+                let dropBytes = min(data.count, Int(currentOffset - frameStart))
+                payload = Data(data.dropFirst(dropBytes))
+            }
+
+            for i in list.indices {
+                list[i].lastOffset = offset
+            }
+            bindingsBySession[sessionID] = list
+        }
+
+        let handlers = list.map { $0.onOutput }
+        lock.unlock()
+        guard !payload.isEmpty else { return true }
+        for handler in handlers {
+            handler(payload)
+        }
+        return true
     }
 
     /// Fan a view-size update to every binding, with generation-based

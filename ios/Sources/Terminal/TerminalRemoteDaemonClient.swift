@@ -638,6 +638,7 @@ actor TerminalRemoteDaemonClient {
             method: "terminal.write",
             params: [
                 "session_id": sessionID,
+                "write_id": "ios-\(UUID().uuidString.lowercased())",
                 "data": data.base64EncodedString(),
             ],
             as: TerminalRemoteDaemonTerminalWriteResult.self

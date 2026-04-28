@@ -126,6 +126,7 @@ final class TerminalRemoteDaemonClientTests: XCTestCase {
         let writtenLines = await transport.recordedLines()
         XCTAssertEqual(writtenLines.count, 2)
         XCTAssertTrue(writtenLines[0].contains(#""method":"terminal.write""#))
+        XCTAssertTrue(writtenLines[0].contains(#""write_id":"ios-"#))
         XCTAssertTrue(writtenLines[0].contains(#""data":"aGVsbG8K""#))
         XCTAssertTrue(writtenLines[1].contains(#""method":"terminal.read""#))
         XCTAssertTrue(writtenLines[1].contains(#""offset":0"#))

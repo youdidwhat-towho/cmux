@@ -36,6 +36,14 @@ final class DaemonConnection: @unchecked Sendable {
     private var nextRpcID: Int = 0
     private let writeQueue = DispatchQueue(label: "cmux.daemon-connection.write", qos: .userInitiated)
     private var pending: [Int: (Result<[String: Any], Error>) -> Void] = [:]
+    private struct QueuedTerminalWrite {
+        let sessionID: String
+        let writeID: String
+        let data: Data
+    }
+    private static let maxQueuedTerminalWriteBytes = 8 * 1024 * 1024
+    private var queuedTerminalWrites: [QueuedTerminalWrite] = []
+    private var queuedTerminalWriteBytes = 0
     /// All per-session mac state (output handler, attachmentID, last offset,
     /// grid generation) now lives in `TerminalSessionRegistry.shared`. That
     /// registry enforces one-surface-per-sessionID, so cross-session
@@ -49,6 +57,11 @@ final class DaemonConnection: @unchecked Sendable {
     /// are still applied. Cleared when the create RPC response arrives (success or
     /// failure) and on workspace.changed consumption.
     private var pendingCreates: Set<String> = []
+    /// Subset of `pendingCreates` whose `workspace.create` RPC has not
+    /// completed yet. `workspace.open_pane` waits on this signal instead of
+    /// racing the daemon with timer-based retries.
+    private var pendingCreateRPCs: Set<String> = []
+    private var pendingCreateWaiters: [String: [() -> Void]] = [:]
     /// Workspace IDs (lowercased UUID strings) for which the macOS app has just
     /// closed locally and sent `workspace.close` to the daemon. While present,
     /// the daemon-authority remove path should NOT close the local workspace
@@ -74,7 +87,9 @@ final class DaemonConnection: @unchecked Sendable {
     /// Mark a workspace id as pending a daemon-side create (RPC in flight).
     func markPendingCreate(workspaceID: UUID) {
         stateLock.lock()
-        pendingCreates.insert(workspaceID.uuidString.lowercased())
+        let key = workspaceID.uuidString.lowercased()
+        pendingCreates.insert(key)
+        pendingCreateRPCs.insert(key)
         stateLock.unlock()
     }
 
@@ -93,9 +108,39 @@ final class DaemonConnection: @unchecked Sendable {
     /// errors or times out (we should let the daemon-authority pipeline handle
     /// the next state arriving naturally).
     func clearPendingCreate(workspaceID: UUID) {
+        let waiters: [() -> Void]
         stateLock.lock()
-        pendingCreates.remove(workspaceID.uuidString.lowercased())
+        let key = workspaceID.uuidString.lowercased()
+        pendingCreates.remove(key)
+        pendingCreateRPCs.remove(key)
+        waiters = pendingCreateWaiters.removeValue(forKey: key) ?? []
         stateLock.unlock()
+        waiters.forEach { $0() }
+    }
+
+    private func completePendingCreateRPC(workspaceID: UUID) {
+        let waiters: [() -> Void]
+        stateLock.lock()
+        let key = workspaceID.uuidString.lowercased()
+        pendingCreateRPCs.remove(key)
+        waiters = pendingCreateWaiters.removeValue(forKey: key) ?? []
+        stateLock.unlock()
+        waiters.forEach { $0() }
+    }
+
+    private func waitForPendingCreateRPCIfNeeded(
+        workspaceID: UUID,
+        action: @escaping () -> Void
+    ) -> Bool {
+        stateLock.lock()
+        let key = workspaceID.uuidString.lowercased()
+        if pendingCreateRPCs.contains(key) {
+            pendingCreateWaiters[key, default: []].append(action)
+            stateLock.unlock()
+            return true
+        }
+        stateLock.unlock()
+        return false
     }
 
     /// Mark a workspace id as pending a daemon-side close (local already gone,
@@ -220,26 +265,41 @@ final class DaemonConnection: @unchecked Sendable {
         direction: String? = nil,
         completion: @escaping (_ sessionID: String?, _ paneID: String?) -> Void
     ) {
-        openPaneWithRetry(
+        if waitForPendingCreateRPCIfNeeded(workspaceID: workspaceID, action: { [weak self] in
+            self?.openPane(
+                workspaceID: workspaceID,
+                command: command,
+                cols: cols,
+                rows: rows,
+                parentPaneID: parentPaneID,
+                direction: direction,
+                completion: completion
+            )
+        }) {
+            #if DEBUG
+            dlog("blank.conn.openPane.defer workspace=\(workspaceID.uuidString.prefix(8)) reason=workspace_create_in_flight")
+            #endif
+            return
+        }
+
+        sendOpenPane(
             workspaceID: workspaceID,
             command: command,
             cols: cols,
             rows: rows,
             parentPaneID: parentPaneID,
             direction: direction,
-            attempt: 0,
             completion: completion
         )
     }
 
-    private func openPaneWithRetry(
+    private func sendOpenPane(
         workspaceID: UUID,
         command: String,
         cols: Int,
         rows: Int,
         parentPaneID: String?,
         direction: String?,
-        attempt: Int,
         completion: @escaping (_ sessionID: String?, _ paneID: String?) -> Void
     ) {
         var params: [String: Any] = [
@@ -250,7 +310,24 @@ final class DaemonConnection: @unchecked Sendable {
         ]
         if let parentPaneID { params["parent_pane_id"] = parentPaneID }
         if let direction { params["direction"] = direction }
-        sendRPCAsync(method: "workspace.open_pane", params: params) { [weak self] result in
+        sendRPCAsync(method: "workspace.open_pane", params: params) { result in
+            #if DEBUG
+            let ok: Bool = {
+                if case .success(let resp) = result, let ok = resp["ok"] as? Bool { return ok }
+                return false
+            }()
+            if !ok {
+                let errorText: String = {
+                    switch result {
+                    case .success(let resp):
+                        return String(describing: resp["error"] ?? resp)
+                    case .failure(let error):
+                        return error.localizedDescription
+                    }
+                }()
+                dlog("blank.conn.openPane.result workspace=\(workspaceID.uuidString.prefix(8)) ok=0 error=\(errorText)")
+            }
+            #endif
             if case .success(let resp) = result,
                let ok = resp["ok"] as? Bool, ok,
                let r = resp["result"] as? [String: Any],
@@ -259,27 +336,7 @@ final class DaemonConnection: @unchecked Sendable {
                 completion(sid, pid)
                 return
             }
-            // Likely `not_found` because workspace.sync / workspace.create
-            // hasn't landed yet on the daemon. Retry a few times with
-            // backoff before giving up. Callers surface failure rather
-            // than fabricating a local id.
-            guard let self, attempt < 5 else {
-                completion(nil, nil)
-                return
-            }
-            let delay = Double(min(attempt + 1, 5)) * 0.1
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                self?.openPaneWithRetry(
-                    workspaceID: workspaceID,
-                    command: command,
-                    cols: cols,
-                    rows: rows,
-                    parentPaneID: parentPaneID,
-                    direction: direction,
-                    attempt: attempt + 1,
-                    completion: completion
-                )
-            }
+            completion(nil, nil)
         }
     }
 
@@ -470,14 +527,16 @@ final class DaemonConnection: @unchecked Sendable {
             "title": title,
             "directory": directory,
         ]) { [weak self] result in
+            guard let self else { return }
             switch result {
             case .success(let resp):
                 if let ok = resp["ok"] as? Bool, ok {
+                    self.completePendingCreateRPC(workspaceID: workspaceID)
                     return
                 }
-                self?.clearPendingCreate(workspaceID: workspaceID)
+                self.clearPendingCreate(workspaceID: workspaceID)
             case .failure:
-                self?.clearPendingCreate(workspaceID: workspaceID)
+                self.clearPendingCreate(workspaceID: workspaceID)
             }
         }
     }
@@ -514,7 +573,8 @@ final class DaemonConnection: @unchecked Sendable {
         rows: Int,
         onOutput: @escaping (Data) -> Void,
         onDisconnect: @escaping (String?) -> Void,
-        onViewSize: @escaping (_ cols: Int, _ rows: Int) -> Void = { _, _ in }
+        onViewSize: @escaping (_ cols: Int, _ rows: Int) -> Void = { _, _ in },
+        onReady: @escaping () -> Void = {}
     ) {
         let attachmentID = "bridge-\(UUID().uuidString.prefix(8).lowercased())"
         let binding = TerminalSessionRegistry.Binding(
@@ -524,6 +584,7 @@ final class DaemonConnection: @unchecked Sendable {
             onOutput: onOutput,
             onDisconnect: onDisconnect,
             onViewSize: onViewSize,
+            onReady: onReady,
             phase: .attaching,
             cols: max(1, cols),
             rows: max(1, rows),
@@ -567,10 +628,98 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     func writeToSession(sessionID: String, data: Data) {
+        let writeID = Self.makeTerminalWriteID()
+        let connected = stateLock.withLock { fd >= 0 }
+        guard connected else {
+            enqueueTerminalWrite(sessionID: sessionID, writeID: writeID, data: data, reason: "disconnected")
+            connectAsync()
+            return
+        }
+        sendTerminalWrite(sessionID: sessionID, writeID: writeID, data: data)
+    }
+
+    private static func makeTerminalWriteID() -> String {
+        "mac-\(UUID().uuidString.lowercased())"
+    }
+
+    private func sendTerminalWrite(sessionID: String, writeID: String, data: Data) {
         sendRPCAsync(method: "terminal.write", params: [
             "session_id": sessionID,
+            "write_id": writeID,
             "data": data.base64EncodedString(),
-        ], completion: nil)
+        ]) { [weak self] result in
+            #if DEBUG
+            switch result {
+            case .success(let resp):
+                let ok = (resp["ok"] as? Bool) ?? false
+                dlog("blank.conn.terminal.write.result sid=\(sessionID) writeID=\(writeID) ok=\(ok)")
+            case .failure(let error):
+                dlog("blank.conn.terminal.write.result sid=\(sessionID) writeID=\(writeID) ok=0 error=\(error.localizedDescription)")
+            }
+            #endif
+            guard case .failure(let error) = result,
+                  Self.shouldRetryTerminalWrite(after: error) else {
+                return
+            }
+            self?.enqueueTerminalWrite(sessionID: sessionID, writeID: writeID, data: data, reason: "write_failure")
+            self?.connectAsync()
+        }
+    }
+
+    private static func shouldRetryTerminalWrite(after error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == "DaemonConnection" else { return false }
+        return nsError.code == -1 || nsError.code == -3 || nsError.code == -10
+    }
+
+    private func enqueueTerminalWrite(sessionID: String, writeID: String, data: Data, reason: String) {
+        guard !data.isEmpty else { return }
+        guard data.count <= Self.maxQueuedTerminalWriteBytes else {
+            #if DEBUG
+            dlog("blank.conn.queueWrite.drop reason=too_large sid=\(sessionID) writeID=\(writeID) bytes=\(data.count)")
+            #endif
+            return
+        }
+
+        stateLock.lock()
+        while queuedTerminalWriteBytes + data.count > Self.maxQueuedTerminalWriteBytes,
+              !queuedTerminalWrites.isEmpty {
+            let removed = queuedTerminalWrites.removeFirst()
+            queuedTerminalWriteBytes -= removed.data.count
+        }
+        queuedTerminalWrites.append(QueuedTerminalWrite(sessionID: sessionID, writeID: writeID, data: data))
+        queuedTerminalWriteBytes += data.count
+        let count = queuedTerminalWrites.count
+        let bytes = queuedTerminalWriteBytes
+        stateLock.unlock()
+
+        #if DEBUG
+        dlog("blank.conn.queueWrite.enqueue reason=\(reason) sid=\(sessionID) writeID=\(writeID) bytes=\(data.count) queued=\(count) queuedBytes=\(bytes)")
+        #endif
+    }
+
+    private func flushQueuedTerminalWrites(for sessionID: String, reason: String) {
+        stateLock.lock()
+        var writes: [QueuedTerminalWrite] = []
+        var remaining: [QueuedTerminalWrite] = []
+        for write in queuedTerminalWrites {
+            if write.sessionID == sessionID {
+                writes.append(write)
+                queuedTerminalWriteBytes -= write.data.count
+            } else {
+                remaining.append(write)
+            }
+        }
+        queuedTerminalWrites = remaining
+        stateLock.unlock()
+
+        guard !writes.isEmpty else { return }
+        #if DEBUG
+        dlog("blank.conn.queueWrite.flush reason=\(reason) sid=\(sessionID) count=\(writes.count)")
+        #endif
+        for write in writes {
+            sendTerminalWrite(sessionID: write.sessionID, writeID: write.writeID, data: write.data)
+        }
     }
 
     func resizeSession(sessionID: String, surfaceID: UUID, cols: Int, rows: Int) {
@@ -603,17 +752,89 @@ final class DaemonConnection: @unchecked Sendable {
 
     private func issueTerminalSubscribe(sessionID: String) {
         guard let binding = TerminalSessionRegistry.shared.firstBinding(for: sessionID) else { return }
-        let attachmentID = binding.attachmentID
-        let cols = binding.cols
-        let rows = binding.rows
-        let shellCommand = binding.shellCommand
-        let lastOffset = binding.lastOffset
-        let owningSurfaceID = binding.surfaceID
+        issueTerminalAttachAndSubscribe(
+            sessionID: sessionID,
+            surfaceID: binding.surfaceID,
+            attachmentID: binding.attachmentID,
+            cols: binding.cols,
+            rows: binding.rows,
+            shellCommand: binding.shellCommand,
+            lastOffset: binding.lastOffset,
+            allowOpenFallback: true
+        )
+    }
 
+    private func issueTerminalAttachAndSubscribe(
+        sessionID: String,
+        surfaceID: UUID,
+        attachmentID: String,
+        cols: Int,
+        rows: Int,
+        shellCommand: String,
+        lastOffset: UInt64,
+        allowOpenFallback: Bool
+    ) {
         #if DEBUG
-        dlog("blank.conn.issueSubscribe sid=\(sessionID) cols=\(cols) rows=\(rows)")
+        dlog("blank.conn.issueSubscribe sid=\(sessionID) cols=\(cols) rows=\(rows) attachFirst=1 allowOpenFallback=\(allowOpenFallback ? 1 : 0)")
         #endif
-        // Ensure the session exists, then attach with our stable ID, then subscribe.
+        sendRPCAsync(method: "session.attach", params: [
+            "session_id": sessionID,
+            "attachment_id": attachmentID,
+            "cols": cols,
+            "rows": rows,
+        ]) { [weak self] attachResult in
+            guard let self else { return }
+            #if DEBUG
+            let attachOK: Bool = {
+                if case .success(let r) = attachResult, let ok = r["ok"] as? Bool { return ok }
+                return false
+            }()
+            dlog("blank.conn.session.attach.result sid=\(sessionID) attachmentID=\(attachmentID) ok=\(attachOK) mode=primary")
+            #endif
+            if case .success(let r) = attachResult,
+               let ok = r["ok"] as? Bool, ok,
+               let result = r["result"] as? [String: Any] {
+                #if DEBUG
+                self.debugRecordSessionStatusResult(
+                    result,
+                    fallbackSessionID: sessionID,
+                    source: "session.attach",
+                    localAttachmentID: attachmentID
+                )
+                #endif
+                if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(result) {
+                    self.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
+                }
+                self.issueTerminalSubscribeAfterAttach(
+                    sessionID: sessionID,
+                    surfaceID: surfaceID,
+                    lastOffset: lastOffset
+                )
+                return
+            }
+
+            guard allowOpenFallback else { return }
+            self.openTerminalThenSubscribe(
+                sessionID: sessionID,
+                surfaceID: surfaceID,
+                attachmentID: attachmentID,
+                cols: cols,
+                rows: rows,
+                shellCommand: shellCommand,
+                lastOffset: lastOffset
+            )
+        }
+    }
+
+    private func openTerminalThenSubscribe(
+        sessionID: String,
+        surfaceID: UUID,
+        attachmentID: String,
+        cols: Int,
+        rows: Int,
+        shellCommand: String,
+        lastOffset: UInt64
+    ) {
         sendRPCAsync(method: "terminal.open", params: [
             "session_id": sessionID,
             "command": shellCommand,
@@ -649,69 +870,59 @@ final class DaemonConnection: @unchecked Sendable {
                     ], completion: nil)
                 }
             }
-            self.sendRPCAsync(method: "session.attach", params: [
-                "session_id": sessionID,
-                "attachment_id": attachmentID,
-                "cols": cols,
-                "rows": rows,
-            ]) { [weak self] attachResult in
-                #if DEBUG
-                let attachOK: Bool = {
-                    if case .success(let r) = attachResult, let ok = r["ok"] as? Bool { return ok }
-                    return false
-                }()
-                dlog("blank.conn.session.attach.result sid=\(sessionID) attachmentID=\(attachmentID) ok=\(attachOK)")
-                #endif
-                if case .success(let r) = attachResult,
-                   let ok = r["ok"] as? Bool, ok,
-                   let result = r["result"] as? [String: Any] {
-                    #if DEBUG
-                    self?.debugRecordSessionStatusResult(
-                        result,
-                        fallbackSessionID: sessionID,
-                        source: "session.attach",
-                        localAttachmentID: attachmentID
-                    )
-                    #endif
-                    // Successful attach — mark binding live so the
-                    // bridge's `phase(for:)` check allows writes.
-                    TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: owningSurfaceID)
-                    if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(result) {
-                        self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
-                    }
+            self.issueTerminalAttachAndSubscribe(
+                sessionID: sessionID,
+                surfaceID: surfaceID,
+                attachmentID: attachmentID,
+                cols: cols,
+                rows: rows,
+                shellCommand: shellCommand,
+                lastOffset: lastOffset,
+                allowOpenFallback: false
+            )
+        }
+    }
+
+    private func issueTerminalSubscribeAfterAttach(
+        sessionID: String,
+        surfaceID: UUID,
+        lastOffset: UInt64
+    ) {
+        sendRPCAsync(method: "terminal.subscribe", params: [
+            "session_id": sessionID,
+            "offset": lastOffset,
+        ]) { [weak self] subResult in
+            guard let self else { return }
+            #if DEBUG
+            var subDataLen = 0
+            var subOK = false
+            if case .success(let r) = subResult, let ok = r["ok"] as? Bool, ok {
+                subOK = true
+                if let result = r["result"] as? [String: Any],
+                   let base64 = result["data"] as? String,
+                   let data = Data(base64Encoded: base64) {
+                    subDataLen = data.count
                 }
             }
-            self.sendRPCAsync(method: "terminal.subscribe", params: [
-                "session_id": sessionID,
-                "offset": lastOffset,
-            ]) { [weak self] subResult in
-                #if DEBUG
-                var subDataLen = 0
-                var subOK = false
-                if case .success(let r) = subResult, let ok = r["ok"] as? Bool, ok {
-                    subOK = true
-                    if let result = r["result"] as? [String: Any],
-                       let base64 = result["data"] as? String,
-                       let data = Data(base64Encoded: base64) {
-                        subDataLen = data.count
-                    }
-                }
-                dlog("blank.conn.terminal.subscribe.result sid=\(sessionID) ok=\(subOK) dataBytes=\(subDataLen)")
-                #endif
-                if case .success(let r) = subResult,
-                   let ok = r["ok"] as? Bool, ok,
-                   let result = r["result"] as? [String: Any] {
-                    if let base64 = result["data"] as? String,
-                       let data = Data(base64Encoded: base64), !data.isEmpty {
-                        self?.deliverTerminalOutput(sessionID: sessionID, data: data)
-                    }
-                    if let off = result["offset"] as? UInt64 {
-                        TerminalSessionRegistry.shared.updateLastOffset(sessionID: sessionID, offset: off)
-                    } else if let off = result["offset"] as? Int {
-                        TerminalSessionRegistry.shared.updateLastOffset(sessionID: sessionID, offset: UInt64(off))
-                    }
-                }
+            dlog("blank.conn.terminal.subscribe.result sid=\(sessionID) ok=\(subOK) dataBytes=\(subDataLen)")
+            #endif
+            guard case .success(let r) = subResult,
+                  let ok = r["ok"] as? Bool, ok,
+                  let result = r["result"] as? [String: Any] else {
+                return
             }
+
+            let offset = DaemonConnection.readUInt64(result["offset"])
+            let baseOffset = DaemonConnection.readUInt64(result["base_offset"])
+            if let base64 = result["data"] as? String,
+               let data = Data(base64Encoded: base64), !data.isEmpty {
+                self.deliverTerminalOutput(sessionID: sessionID, data: data, offset: offset, baseOffset: baseOffset)
+            } else if let offset {
+                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sessionID, offset: offset)
+            }
+            let onReady = TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: surfaceID)
+            self.flushQueuedTerminalWrites(for: sessionID, reason: "terminal.subscribe")
+            onReady?()
         }
     }
 
@@ -758,7 +969,9 @@ final class DaemonConnection: @unchecked Sendable {
                     localAttachmentID: attachmentID
                 )
                 #endif
-                TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: surfaceID)
+                let onReady = TerminalSessionRegistry.shared.markLive(sessionID: sessionID, surfaceID: surfaceID)
+                self?.flushQueuedTerminalWrites(for: sessionID, reason: "session.attach.addl")
+                onReady?()
                 if let (ec, er, gen) = DaemonConnection.effectiveSizeFromResult(result) {
                     self?.dispatchViewSize(sessionID: sessionID, cols: ec, rows: er, generation: gen)
                 }
@@ -901,13 +1114,13 @@ final class DaemonConnection: @unchecked Sendable {
         return nil
     }
 
-    private func deliverTerminalOutput(sessionID: String, data: Data) {
+    private func deliverTerminalOutput(sessionID: String, data: Data, offset: UInt64?, baseOffset: UInt64?) {
         #if DEBUG
         if TerminalSessionRegistry.shared.firstBinding(for: sessionID) == nil {
             dlog("blank.conn.deliverOutput.NO_HANDLER sid=\(sessionID) bytes=\(data.count)")
         }
         #endif
-        TerminalSessionRegistry.shared.deliverOutput(sessionID: sessionID, data: data)
+        TerminalSessionRegistry.shared.deliverOutput(sessionID: sessionID, data: data, offset: offset, baseOffset: baseOffset)
     }
 
     // MARK: - RPC core
@@ -947,13 +1160,32 @@ final class DaemonConnection: @unchecked Sendable {
                 return
             }
             data.append(0x0A)
-            let n = data.withUnsafeBytes { ptr -> Int in
-                Darwin.write(fd, ptr.baseAddress, ptr.count)
-            }
-            if n <= 0 {
+            if !Self.writeAll(fd: fd, data: data) {
+                #if DEBUG
+                dlog("blank.conn.write.failed fd=\(fd) method=\(method) id=\(id) errno=\(errno)")
+                #endif
                 self.fulfill(id: id, with: .failure(NSError(domain: "DaemonConnection", code: -3)))
-                self.handleSocketFailure()
+                self.handleSocketFailure(failedFD: fd)
             }
+        }
+    }
+
+    private static func writeAll(fd: Int32, data: Data) -> Bool {
+        data.withUnsafeBytes { rawBuffer -> Bool in
+            guard let baseAddress = rawBuffer.baseAddress else { return true }
+            var written = 0
+            while written < rawBuffer.count {
+                let n = Darwin.write(fd, baseAddress.advanced(by: written), rawBuffer.count - written)
+                if n > 0 {
+                    written += n
+                    continue
+                }
+                if n < 0, errno == EINTR {
+                    continue
+                }
+                return false
+            }
+            return true
         }
     }
 
@@ -1061,8 +1293,7 @@ final class DaemonConnection: @unchecked Sendable {
         ]
         guard var data = try? JSONSerialization.data(withJSONObject: payload) else { return false }
         data.append(0x0A)
-        let n = data.withUnsafeBytes { ptr -> Int in Darwin.write(fd, ptr.baseAddress, ptr.count) }
-        guard n > 0 else { return false }
+        guard Self.writeAll(fd: fd, data: data) else { return false }
 
         var accumulated = Data()
         var buf = [UInt8](repeating: 0, count: 8192)
@@ -1092,8 +1323,16 @@ final class DaemonConnection: @unchecked Sendable {
         return true
     }
 
-    private func handleSocketFailure() {
+    private func handleSocketFailure(failedFD: Int32) {
         stateLock.lock()
+        guard fd == failedFD else {
+            stateLock.unlock()
+            Darwin.close(failedFD)
+            #if DEBUG
+            dlog("blank.conn.handleSocketFailure.ignore staleFD=\(failedFD)")
+            #endif
+            return
+        }
         if fd >= 0 { Darwin.close(fd); fd = -1 }
         workspaceSubscribed = false
         // Fail all pending RPCs
@@ -1132,8 +1371,22 @@ final class DaemonConnection: @unchecked Sendable {
         var buf = [UInt8](repeating: 0, count: 65536)
         while true {
             let n = Darwin.read(fd, &buf, buf.count)
-            if n <= 0 {
-                handleSocketFailure()
+            if n < 0 {
+                let err = errno
+                if err == EINTR || err == EAGAIN || err == EWOULDBLOCK {
+                    continue
+                }
+                #if DEBUG
+                dlog("blank.conn.reader.error fd=\(fd) errno=\(err)")
+                #endif
+                handleSocketFailure(failedFD: fd)
+                return
+            }
+            if n == 0 {
+                #if DEBUG
+                dlog("blank.conn.reader.eof fd=\(fd)")
+                #endif
+                handleSocketFailure(failedFD: fd)
                 return
             }
             accumulated.append(contentsOf: buf[0..<n])
@@ -1169,14 +1422,13 @@ final class DaemonConnection: @unchecked Sendable {
             // tests in daemon/remote/zig/tests/integration.zig which
             // read session_id/data/offset directly off the object).
             guard let sid = obj["session_id"] as? String else { return }
+            let offset = Self.readUInt64(obj["offset"])
+            let baseOffset = Self.readUInt64(obj["base_offset"])
             if let base64 = obj["data"] as? String,
                let data = Data(base64Encoded: base64), !data.isEmpty {
-                deliverTerminalOutput(sessionID: sid, data: data)
-            }
-            if let off = obj["offset"] as? UInt64 {
-                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sid, offset: off)
-            } else if let off = obj["offset"] as? Int {
-                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sid, offset: UInt64(off))
+                deliverTerminalOutput(sessionID: sid, data: data, offset: offset, baseOffset: baseOffset)
+            } else if let offset {
+                TerminalSessionRegistry.shared.updateLastOffset(sessionID: sid, offset: offset)
             }
             if let eof = obj["eof"] as? Bool, eof {
                 TerminalSessionRegistry.shared.deliverDisconnect(sessionID: sid, reason: nil)

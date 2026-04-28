@@ -13876,7 +13876,10 @@ final class MobileDaemonBridgeInline {
     /// there a daemon I can talk to now" answer. Prefer `healthState`
     /// for UI decisions.
     var isRunning: Bool {
-        process?.isRunning == true
+        if let path = daemonSocketPath {
+            return isReachableSocket(path)
+        }
+        return process?.isRunning == true
     }
 
     var healthState: DaemonHealthState {
@@ -13886,7 +13889,20 @@ final class MobileDaemonBridgeInline {
     private init() {}
 
     func startIfNeeded() {
-        guard process == nil else { return }
+        if let existing = process {
+            guard existing.isRunning else {
+                process = nil
+                wsPort = nil
+                daemonSocketPath = nil
+                wsSecret = nil
+                cleanup()
+                updateHealth(.reconnecting)
+                return startIfNeeded()
+            }
+            if let path = daemonSocketPath, isReachableSocket(path) {
+                return
+            }
+        }
         if spawnDaemon(isRestart: false) {
             startHealthTimer()
         }
@@ -13952,9 +13968,33 @@ final class MobileDaemonBridgeInline {
         var daemonEnvironment = cmuxCurrentProcessEnvironment()
         CmuxBundleTerminalEnvironment.applyCurrentBundle(to: &daemonEnvironment)
         proc.environment = daemonEnvironment
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
-        proc.terminationHandler = { [weak self] _ in self?.cleanup() }
+        let logURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmuxd-\(instanceID).log", isDirectory: false)
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
+        if let logHandle = FileHandle(forWritingAtPath: logURL.path) {
+            try? logHandle.truncate(atOffset: 0)
+            proc.standardOutput = logHandle
+            proc.standardError = logHandle
+        } else {
+            proc.standardOutput = FileHandle.nullDevice
+            proc.standardError = FileHandle.nullDevice
+        }
+        proc.terminationHandler = { [weak self] terminated in
+            guard let self else { return }
+            self.supervisorQueue.async { [weak self] in
+                guard let self else { return }
+                if self.process === terminated {
+                    self.process = nil
+                    self.wsPort = nil
+                    self.daemonSocketPath = nil
+                    self.wsSecret = nil
+                    if self.currentHealth != .notStarted && self.currentHealth != .failed {
+                        self.updateHealth(.reconnecting)
+                    }
+                }
+                self.cleanup()
+            }
+        }
 
         do {
             try proc.run()
@@ -13968,7 +14008,7 @@ final class MobileDaemonBridgeInline {
             try? String(port).write(toFile: wsportPath, atomically: true, encoding: .utf8)
             wsPortFilePath = wsportPath
             let tag = isRestart ? "restarted" : "started"
-            NSLog("📱 MobileBridge: %@ ws://127.0.0.1:%d socket=%@ wsport=%@", tag, port, daemonSocket, wsportPath)
+            NSLog("📱 MobileBridge: %@ ws://127.0.0.1:%d socket=%@ wsport=%@ log=%@", tag, port, daemonSocket, wsportPath, logURL.path)
         } catch {
             NSLog("📱 MobileBridge: spawn failed: %@", error.localizedDescription)
             updateHealth(.failed)

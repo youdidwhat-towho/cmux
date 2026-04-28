@@ -5,29 +5,37 @@ import Bonsplit
 
 struct DaemonInitialWriteGate {
     let enabled: Bool
-    private(set) var hasReceivedOutput = false
+    private(set) var isReady = false
 
     var shouldQueueWrites: Bool {
-        enabled && !hasReceivedOutput
+        enabled && !isReady
     }
 
     mutating func takeWritesForAssignedSession(_ pendingWrites: inout [Data]) -> (writes: [Data], queuedCount: Int) {
-        guard shouldQueueWrites else {
-            let writes = pendingWrites
-            pendingWrites = []
-            return (writes, 0)
-        }
-        return ([], pendingWrites.count)
+        let ready = markReadyAndTakeWrites(&pendingWrites)
+        return (ready.writes, 0)
     }
 
     mutating func takeWritesAfterOutput(_ pendingWrites: inout [Data], outputIsEmpty: Bool) -> (writes: [Data], becameReady: Bool) {
         guard shouldQueueWrites, !outputIsEmpty else {
             return ([], false)
         }
-        hasReceivedOutput = true
+        return takeWritesAfterReady(&pendingWrites)
+    }
+
+    mutating func takeWritesAfterReady(_ pendingWrites: inout [Data]) -> (writes: [Data], becameReady: Bool) {
+        guard shouldQueueWrites else {
+            return ([], false)
+        }
+        return markReadyAndTakeWrites(&pendingWrites)
+    }
+
+    private mutating func markReadyAndTakeWrites(_ pendingWrites: inout [Data]) -> (writes: [Data], becameReady: Bool) {
+        let becameReady = enabled && !isReady
+        isReady = true
         let writes = pendingWrites
         pendingWrites = []
-        return (writes, true)
+        return (writes, becameReady)
     }
 }
 
@@ -38,7 +46,10 @@ struct DaemonInitialWriteGate {
 /// The bridge can be constructed with a nil `sessionID` (daemon hasn't minted
 /// one yet via `workspace.open_pane`). Writes and `start(cols:rows:)` calls
 /// are buffered until `assignSessionID(_:)` lands, at which point the pending
-/// subscription fires and buffered writes flush in order.
+/// subscription fires and buffered writes flush to the PTY in order. Writes do
+/// not wait for scrollback subscription readiness; shell PTYs already accept
+/// input before the first prompt paints, and delaying there can drop automated
+/// split/setup commands behind a stuck initial-output gate.
 final class DaemonTerminalBridge: @unchecked Sendable {
     private(set) var sessionID: String?
     /// Stable UUID of the mac `TerminalSurface` that owns this bridge.
@@ -177,8 +188,27 @@ final class DaemonTerminalBridge: @unchecked Sendable {
                 self?.handleDaemonOutput(data, sessionID: sessionID)
             },
             onDisconnect: { [weak self] err in self?.onDisconnect?(err) },
-            onViewSize: { [weak self] c, r in self?.onViewSize?(c, r) }
+            onViewSize: { [weak self] c, r in self?.onViewSize?(c, r) },
+            onReady: { [weak self] in self?.handleDaemonReady(sessionID: sessionID) }
         )
+    }
+
+    private func handleDaemonReady(sessionID: String) {
+        let writesToFlush: [Data]
+        lock.lock()
+        let flushed = initialWriteGate.takeWritesAfterReady(&pendingWrites)
+        writesToFlush = flushed.writes
+        lock.unlock()
+
+        #if DEBUG
+        if !writesToFlush.isEmpty {
+            dlog("blank.bridge.subscribeReady.flush sid=\(sessionID) pendingWrites=\(writesToFlush.count)")
+        }
+        #endif
+
+        for pending in writesToFlush {
+            DaemonConnection.shared.writeToSession(sessionID: sessionID, data: pending)
+        }
     }
 
     private func handleDaemonOutput(_ data: Data, sessionID: String) {

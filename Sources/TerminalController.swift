@@ -3813,6 +3813,8 @@ class TerminalController {
             ws.setCustomDescription(description)
             if let layoutNode {
                 ws.applyCustomLayout(layoutNode, baseCwd: cwd ?? ws.currentDirectory)
+            } else if !shouldFocus {
+                ws.focusedTerminalPanel?.surface.openDaemonPaneHeadlesslyIfNeeded()
             }
             newId = ws.id
         }
@@ -6182,19 +6184,14 @@ class TerminalController {
             #if DEBUG
             let sendStart = ProcessInfo.processInfo.systemUptime
             #endif
-            let queued: Bool
-            if let surface = terminalPanel.surface.surface {
-                sendSocketText(text, surface: surface)
+            let surfaceWasReady = terminalPanel.surface.surface != nil
+            terminalPanel.sendText(text)
+            let queued = !surfaceWasReady
+            if surfaceWasReady {
                 // Ensure we present a new frame after injecting input so snapshot-based tests (and
                 // socket-driven agents) can observe the updated terminal without requiring a focus
                 // change to trigger a draw.
                 terminalPanel.surface.forceRefresh(reason: "terminalController.v2SurfaceSendText")
-                queued = false
-            } else {
-                // Avoid blocking the main actor waiting for view/surface attachment.
-                terminalPanel.sendText(text)
-                terminalPanel.surface.requestBackgroundSurfaceStartIfNeeded()
-                queued = true
             }
 #if DEBUG
             let sendMs = (ProcessInfo.processInfo.systemUptime - sendStart) * 1000.0

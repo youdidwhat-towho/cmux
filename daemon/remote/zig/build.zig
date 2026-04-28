@@ -11,6 +11,8 @@ pub fn build(b: *std.Build) void {
     // this session would have landed as a named panic).
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "optimization mode") orelse .ReleaseSafe;
     const version = b.option([]const u8, "version", "daemon version string") orelse "dev";
+    const test_filter = b.option([]const u8, "test-filter", "only run tests matching this filter");
+    const test_filters: []const []const u8 = if (test_filter) |filter| &.{filter} else &.{};
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
@@ -45,6 +47,7 @@ pub fn build(b: *std.Build) void {
 
     const unit_tests = b.addTest(.{
         .root_module = mod,
+        .filters = test_filters,
     });
     unit_tests.linkLibC();
     unit_tests.linkSystemLibrary("sqlite3");
@@ -80,6 +83,7 @@ pub fn build(b: *std.Build) void {
 
     const integration_tests = b.addTest(.{
         .root_module = integration_mod,
+        .filters = test_filters,
     });
     integration_tests.linkLibC();
     integration_tests.linkSystemLibrary("sqlite3");
@@ -117,7 +121,7 @@ pub fn build(b: *std.Build) void {
     })) |dep| {
         tsan_mod.addImport("tls", dep.module("tls"));
     }
-    const tsan_unit_tests = b.addTest(.{ .root_module = tsan_mod });
+    const tsan_unit_tests = b.addTest(.{ .root_module = tsan_mod, .filters = test_filters });
     tsan_unit_tests.linkLibC();
     tsan_unit_tests.linkSystemLibrary("sqlite3");
     const run_tsan_unit_tests = b.addRunArtifact(tsan_unit_tests);
@@ -148,7 +152,7 @@ pub fn build(b: *std.Build) void {
         .sanitize_thread = true,
     });
     tsan_integration_mod.addImport("cmuxd_src", tsan_src_mod);
-    const tsan_integration_tests = b.addTest(.{ .root_module = tsan_integration_mod });
+    const tsan_integration_tests = b.addTest(.{ .root_module = tsan_integration_mod, .filters = test_filters });
     tsan_integration_tests.linkLibC();
     tsan_integration_tests.linkSystemLibrary("sqlite3");
     const run_tsan_integration_tests = b.addRunArtifact(tsan_integration_tests);

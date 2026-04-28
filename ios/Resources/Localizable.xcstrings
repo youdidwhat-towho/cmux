@@ -58,25 +58,11 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "サーバーを編集" } }
       }
     },
-    "terminal.home.empty_action.start_on_server" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Start on %@" } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "%@ で開始" } }
-      }
-    },
     "terminal.home.empty_description" : {
       "extractionState" : "manual",
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Start a workspace from the pinned servers above." } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "上の固定サーバーからワークスペースを開始してください。" } }
-      }
-    },
-    "terminal.home.empty_description_with_server" : {
-      "extractionState" : "manual",
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Tap below to start a workspace on %@." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "下のボタンで %@ にワークスペースを作成します。" } }
       }
     },
     "terminal.home.empty_title" : {
@@ -119,6 +105,20 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Search workspaces" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "ワークスペースを検索" } }
+      }
+    },
+    "terminal.home.select_workspace_description" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Choose a workspace from the sidebar." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "サイドバーからワークスペースを選択してください。" } }
+      }
+    },
+    "terminal.home.select_workspace_title" : {
+      "extractionState" : "manual",
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Select a Workspace" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ワークスペースを選択" } }
       }
     },
     "terminal.home.server_not_ready" : {

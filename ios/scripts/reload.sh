@@ -162,6 +162,7 @@ if [ -n "$BOOTED_SIMS" ]; then
     for SIM_ID in $BOOTED_SIMS; do
         SIM_NAME=$(xcrun simctl list devices | grep "$SIM_ID" | sed 's/ (.*//')
         echo "  → $SIM_NAME"
+        xcrun simctl terminate "$SIM_ID" "$BUNDLE_ID" 2>/dev/null || true
         xcrun simctl install "$SIM_ID" "$SIM_APP_PATH" 2>/dev/null || true
         xcrun simctl launch "$SIM_ID" "$BUNDLE_ID" 2>/dev/null || true
     done

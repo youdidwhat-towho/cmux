@@ -144,9 +144,10 @@ pub const OutboundQueue = struct {
             self.total_bytes -= item.len;
             self.mutex.unlock();
 
-            writeAll(self.fd, item) catch {
+            writeAll(self.fd, item) catch |err| {
                 // Socket dead. Mark ourselves dead so further enqueues fail
                 // and the reader unblocks.
+                std.log.warn("outbound queue write failed fd={d} bytes={d}: {s}", .{ self.fd, item.len, @errorName(err) });
                 self.alloc.free(item);
                 self.mutex.lock();
                 self.markDeadLocked();

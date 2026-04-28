@@ -294,6 +294,7 @@ struct SignInView: View {
             .padding(.horizontal, 20)
             .padding(.bottom, 20)
             .padding(.top, 24)
+            .frame(maxWidth: 430)
             .frame(maxWidth: .infinity)
             .opacity(isAuthInProgress ? 0.6 : 1.0)
             // Dismiss keyboard when tapping empty space in the card without stealing taps from controls.
