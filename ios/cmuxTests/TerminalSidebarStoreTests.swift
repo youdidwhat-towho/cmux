@@ -910,6 +910,72 @@ final class TerminalSidebarStoreTests: XCTestCase {
     }
 
     @MainActor
+    func testDaemonSubscriptionConnectedRestoresPersistedRemoteWorkspaceStatus() async throws {
+        let discovery = StubTerminalServerDiscovery()
+        let host = TerminalHost(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000034")!,
+            stableID: "127.0.0.1-52191",
+            name: "Local Dev (:52191)",
+            hostname: "127.0.0.1",
+            username: "cmux",
+            symbolName: "desktopcomputer",
+            palette: .mint,
+            source: .discovered,
+            transportPreference: .remoteDaemon,
+            serverID: "127.0.0.1-52191",
+            wsPort: 52191,
+            wsSecret: "secret",
+            machineStatus: .offline
+        )
+        let liveWorkspace = TerminalWorkspace(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000035")!,
+            hostID: host.id,
+            title: "Live",
+            tmuxSessionName: "sess-live",
+            phase: .disconnected,
+            lastError: "Offline",
+            remoteWorkspaceID: "remote-live"
+        )
+        let pendingWorkspace = TerminalWorkspace(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000036")!,
+            hostID: host.id,
+            title: "Pending",
+            tmuxSessionName: "pending-remote",
+            phase: .disconnected,
+            lastError: "Offline",
+            remoteWorkspaceID: "remote-pending"
+        )
+        let fixture = makeStore(
+            snapshot: TerminalStoreSnapshot(
+                hosts: [host],
+                workspaces: [pendingWorkspace, liveWorkspace],
+                selectedWorkspaceID: liveWorkspace.id
+            ),
+            serverDiscovery: discovery,
+            workspaceSubscriptionStarter: { _, onEvent in
+                onEvent(.connected)
+                return true
+            }
+        )
+
+        var onlineHost = host
+        onlineHost.machineStatus = .online
+        discovery.send([onlineHost])
+
+        try await waitForCondition {
+            fixture.store.workspace(with: liveWorkspace.id)?.phase == .connected
+        }
+
+        XCTAssertEqual(fixture.store.server(for: host.id)?.machineStatus, .online)
+        XCTAssertEqual(fixture.store.workspace(with: liveWorkspace.id)?.phase, .connected)
+        XCTAssertNil(fixture.store.workspace(with: liveWorkspace.id)?.lastError)
+        XCTAssertEqual(fixture.store.workspace(with: pendingWorkspace.id)?.phase, .disconnected)
+        let persistedWorkspace = fixture.snapshotStore.load().workspaces.first { $0.id == liveWorkspace.id }
+        XCTAssertEqual(persistedWorkspace?.phase, .connected)
+        XCTAssertNil(persistedWorkspace?.lastError)
+    }
+
+    @MainActor
     func testApplyDiscoveredHostsReplacesPlaceholderCustomHostWithLiveMachine() throws {
         let placeholderHost = TerminalHost(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000011")!,

@@ -878,7 +878,12 @@ final class TerminalSidebarStore {
         switch event {
         case .connected:
             if let hostIdx = hosts.firstIndex(where: { $0.stableID == stableID }) {
+                let previousStatus = hosts[hostIdx].machineStatus
                 hosts[hostIdx].machineStatus = .online
+                let didUpdateWorkspaces = markKnownRemoteWorkspacesConnected(for: hosts[hostIdx])
+                if previousStatus != .online || didUpdateWorkspaces {
+                    persist()
+                }
             }
         case .connectFailed(let consecutive):
             Self.debugLog("subscription: connect failed (\(consecutive)) for \(hostname):\(port)")
@@ -897,6 +902,36 @@ final class TerminalSidebarStore {
         case .disconnected:
             Self.debugLog("subscription: disconnected from \(hostname):\(port), connection will reconnect")
         }
+    }
+
+    @discardableResult
+    private func markKnownRemoteWorkspacesConnected(for host: TerminalHost) -> Bool {
+        guard host.transportPreference == .remoteDaemon, host.wsPort != nil else {
+            return false
+        }
+
+        var didChange = false
+        for index in workspaces.indices where workspaces[index].hostID == host.id {
+            guard workspaces[index].isRemoteWorkspace,
+                  Self.stableDaemonSessionID(workspaces[index].tmuxSessionName) != nil else {
+                continue
+            }
+
+            switch workspaces[index].phase {
+            case .idle, .disconnected:
+                workspaces[index].phase = .connected
+                workspaces[index].lastError = nil
+                controllers[workspaces[index].id]?.refreshWorkspace(workspaces[index])
+                didChange = true
+            case .needsConfiguration, .connecting, .connected, .reconnecting, .failed:
+                break
+            }
+        }
+
+        if didChange {
+            rememberWorkspaces(workspaces)
+        }
+        return didChange
     }
 
     private func handleWorkspaceResponse(_ response: String, hostname: String, port: Int, secret: String) {
