@@ -420,6 +420,16 @@ private class PopupUIDelegate: NSObject, WKUIDelegate {
             navigationType: navigationAction.navigationType,
             modifierFlags: navigationAction.modifierFlags,
             buttonNumber: navigationAction.buttonNumber,
+            popupFeaturesWereSpecified: browserNavigationPopupFeaturesWereSpecified(
+                x: windowFeatures.x,
+                y: windowFeatures.y,
+                width: windowFeatures.width,
+                height: windowFeatures.height,
+                menuBarVisibility: windowFeatures.menuBarVisibility,
+                statusBarVisibility: windowFeatures.statusBarVisibility,
+                toolbarsVisibility: windowFeatures.toolbarsVisibility,
+                allowsResizing: windowFeatures.allowsResizing
+            ),
             hasRecentMiddleClickIntent: CmuxWebView.hasRecentMiddleClickIntent(for: webView)
         )
 

@@ -6004,6 +6004,7 @@ func browserNavigationShouldCreatePopup(
     navigationType: WKNavigationType,
     modifierFlags: NSEvent.ModifierFlags,
     buttonNumber: Int,
+    popupFeaturesWereSpecified: Bool = false,
     hasRecentMiddleClickIntent: Bool = false,
     currentEventType: NSEvent.EventType? = NSApp.currentEvent?.type,
     currentEventButtonNumber: Int? = NSApp.currentEvent?.buttonNumber
@@ -6016,7 +6017,9 @@ func browserNavigationShouldCreatePopup(
         currentEventType: currentEventType,
         currentEventButtonNumber: currentEventButtonNumber
     )
-    return navigationType == .other && !isUserNewTab
+    return navigationType == .other &&
+        popupFeaturesWereSpecified &&
+        !isUserNewTab
 }
 
 func browserNavigationShouldFallbackNilTargetToNewTab(
@@ -6621,9 +6624,11 @@ private class BrowserUIDelegate: NSObject, WKUIDelegate {
             return nil
         }
 
-        // Classifier: only scripted requests (window.open()) get popup windows.
+        // Classifier: scripted requests only become popup windows when WebKit
+        // surfaces explicit popup/window features. Bare window.open(url, "_blank")
+        // falls through to the existing new-tab path.
         // User-initiated actions (link clicks, context menu "Open Link in New Tab",
-        // Cmd+click, middle-click) fall through to existing new-tab behavior.
+        // Cmd+click, middle-click) also fall through to new-tab behavior.
         //
         // WebKit sometimes delivers .other for Cmd+click / middle-click, so we
         // reuse browserNavigationShouldOpenInNewTab to recover user intent before
@@ -6632,6 +6637,7 @@ private class BrowserUIDelegate: NSObject, WKUIDelegate {
             navigationType: navigationAction.navigationType,
             modifierFlags: navigationAction.modifierFlags,
             buttonNumber: navigationAction.buttonNumber,
+            popupFeaturesWereSpecified: popupFeaturesWereSpecified,
             hasRecentMiddleClickIntent: hasRecentMiddleClickIntent
         )
 
