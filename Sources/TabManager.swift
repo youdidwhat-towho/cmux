@@ -1672,7 +1672,22 @@ class TabManager: ObservableObject {
     }
 
     func refreshTrackedWorkspaceGitMetadataForTesting() {
-        refreshTrackedWorkspaceGitMetadata()
+        for workspace in tabs {
+            for panelId in trackedWorkspaceGitMetadataPollCandidatePanelIds(
+                in: workspace,
+                activeProbeKeys: []
+            ) {
+                let key = WorkspaceGitProbeKey(workspaceId: workspace.id, panelId: panelId)
+                clearWorkspaceGitProbe(key)
+                scheduleWorkspaceGitMetadataRefresh(
+                    workspaceId: workspace.id,
+                    panelId: panelId,
+                    directory: gitProbeDirectory(for: workspace, panelId: panelId) ?? workspace.currentDirectory,
+                    delays: [0],
+                    reason: "testing"
+                )
+            }
+        }
     }
 
     func trackedWorkspaceGitMetadataPollCandidatePanelIdsForTesting(workspaceId: UUID) -> Set<UUID> {
@@ -2973,7 +2988,7 @@ class TabManager: ObservableObject {
         var best: GitHubPullRequestProbeItem?
         for pullRequest in pullRequests {
             guard pullRequestStatus(from: pullRequest.state) != nil,
-                  URL(string: pullRequest.url) != nil else {
+                  isValidPullRequestURL(pullRequest.url) else {
                 continue
             }
             guard let currentBest = best else {
@@ -2985,6 +3000,17 @@ class TabManager: ObservableObject {
             }
         }
         return best
+    }
+
+    private nonisolated static func isValidPullRequestURL(_ rawURL: String) -> Bool {
+        guard let components = URLComponents(string: rawURL),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host,
+              !host.isEmpty else {
+            return false
+        }
+        return true
     }
 
     private nonisolated static func pullRequestStatus(

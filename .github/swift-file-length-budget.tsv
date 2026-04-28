@@ -9,7 +9,7 @@
 13147	Sources/GhosttyTerminalView.swift
 11446	Sources/Panels/BrowserPanel.swift
 8555	Sources/cmuxApp.swift
-7146	Sources/TabManager.swift
+7172	Sources/TabManager.swift
 7070	Sources/Panels/BrowserPanelView.swift
 6474	cmuxTests/WorkspaceUnitTests.swift
 4969	cmuxTests/AppDelegateShortcutRoutingTests.swift
@@ -21,7 +21,7 @@
 3817	Sources/Feed/FeedPanelView.swift
 2999	cmuxTests/WorkspaceRemoteConnectionTests.swift
 2490	Sources/Panels/CmuxWebView.swift
-2183	cmuxTests/TabManagerUnitTests.swift
+2195	cmuxTests/TabManagerUnitTests.swift
 2086	cmuxUITests/BrowserPaneNavigationKeybindUITests.swift
 2054	Sources/TerminalWindowPortal.swift
 1948	Sources/FileExplorerView.swift

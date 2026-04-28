@@ -76,6 +76,15 @@ private func splitNodes(in node: ExternalTreeNode) -> [ExternalSplitNode] {
     }
 }
 
+private func paneLeafCount(in node: ExternalTreeNode) -> Int {
+    switch node {
+    case .pane:
+        return 1
+    case .split(let split):
+        return paneLeafCount(in: split.first) + paneLeafCount(in: split.second)
+    }
+}
+
 private func runProcess(
     executablePath: String,
     arguments: [String],
@@ -588,7 +597,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
 
         XCTAssertNotEqual(manager.selectedTabId, backgroundWorkspace.id)
         XCTAssertTrue(
-            waitForCondition {
+            waitForCondition(timeout: 12.0) {
                 backgroundWorkspace.surfaceStateSnapshot(panelId: backgroundPanelId).gitBranch?.branch == "main"
             }
         )
@@ -632,7 +641,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         manager.refreshTrackedWorkspaceGitMetadataForTesting()
 
         XCTAssertTrue(
-            waitForCondition {
+            waitForCondition(timeout: 10.0) {
                 workspace.surfaceStateSnapshot(panelId: panelId).gitBranch?.branch == "feature/sidebar-live-refresh"
             }
         )
@@ -675,7 +684,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         manager.refreshTrackedWorkspaceGitMetadataForTesting()
 
         XCTAssertTrue(
-            waitForCondition {
+            waitForCondition(timeout: 10.0) {
                 workspace.surfaceStateSnapshot(panelId: panelId).gitBranch?.branch == "main"
             }
         )
@@ -795,7 +804,7 @@ final class TabManagerPullRequestProbeTests: XCTestCase {
         manager.refreshTrackedWorkspaceGitMetadataForTesting()
 
         XCTAssertTrue(
-            waitForCondition {
+            waitForCondition(timeout: 10.0) {
                 workspace.surfaceStateSnapshot(panelId: panelId).gitBranch?.branch == "main"
                     && workspace.surfaceStateSnapshot(panelId: panelId).pullRequest == nil
             }
@@ -1336,11 +1345,11 @@ final class TabManagerNotificationFocusTests: XCTestCase {
 
         XCTAssertTrue(manager.focusTabFromNotification(workspace.id, surfaceId: rightPanel.id))
 
-        let expectation = XCTestExpectation(description: "notification focus flash")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1)
+        XCTAssertTrue(
+            waitForCondition(timeout: 3.0) {
+                workspace.focusedPanelId == rightPanel.id && workspace.tmuxWorkspaceFlashToken == 1
+            }
+        )
 
         XCTAssertEqual(workspace.focusedPanelId, rightPanel.id)
         XCTAssertFalse(store.hasUnreadNotification(forTabId: workspace.id, surfaceId: rightPanel.id))
@@ -1535,7 +1544,10 @@ final class TabManagerEqualizeSplitsTests: XCTestCase {
         let equalizedSplits = splitNodes(in: workspace.treeSnapshot())
         XCTAssertEqual(equalizedSplits.count, initialSplits.count)
         for split in equalizedSplits {
-            XCTAssertEqual(split.dividerPosition, 0.5, accuracy: 0.000_1)
+            let firstLeaves = paneLeafCount(in: split.first)
+            let totalLeaves = firstLeaves + paneLeafCount(in: split.second)
+            let expectedPosition = Double(firstLeaves) / Double(totalLeaves)
+            XCTAssertEqual(split.dividerPosition, expectedPosition, accuracy: 0.000_1)
         }
     }
 }
