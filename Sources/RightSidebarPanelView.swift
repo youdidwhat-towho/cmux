@@ -135,6 +135,7 @@ struct RightSidebarPanelView: View {
     @ObservedObject var fileExplorerStore: FileExplorerStore
     @ObservedObject var fileExplorerState: FileExplorerState
     @ObservedObject var sessionIndexStore: SessionIndexStore
+    let titlebarHeight: CGFloat
     let onResumeSession: ((SessionEntry) -> Void)?
 
     @StateObject private var modeShortcutHintMonitor = WindowScopedShortcutHintModifierMonitor(activation: .commandOrControl) { window in
@@ -216,7 +217,7 @@ struct RightSidebarPanelView: View {
         .padding(.leading, 4)
         .padding(.trailing, 6)
         .padding(.vertical, 4)
-        .frame(height: 31)
+        .frame(height: titlebarHeight)
     }
 
     @ViewBuilder
