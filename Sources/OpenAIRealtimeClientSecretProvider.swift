@@ -14,6 +14,9 @@ struct OpenAIRealtimeSessionConfiguration {
             "output_modalities": ["audio"],
             "audio": [
                 "input": [
+                    "transcription": [
+                        "model": "gpt-4o-transcribe"
+                    ],
                     "turn_detection": [
                         "type": "semantic_vad"
                     ]

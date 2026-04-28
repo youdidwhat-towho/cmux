@@ -7,6 +7,8 @@ final class VoiceAgentViewModel: ObservableObject {
     @Published var promptText: String = ""
     @Published var isMuted: Bool = false
     @Published var currentActivity: String = ""
+    @Published var microphoneLevel: Double = 0
+    @Published var microphoneReady: Bool = false
 
     let bridge = VoiceRealtimeWebRTCBridge()
 
@@ -14,6 +16,7 @@ final class VoiceAgentViewModel: ObservableObject {
     private let toolExecutor = VoiceToolExecutor()
     private var handledCallIDs: Set<String> = []
     private var activeAssistantItemID: UUID?
+    private var userTranscriptItemIDsByRealtimeItemID: [String: UUID] = [:]
 
     init() {
         bridge.delegate = self
@@ -45,6 +48,8 @@ final class VoiceAgentViewModel: ObservableObject {
         state = .disconnected
         currentActivity = ""
         activeAssistantItemID = nil
+        microphoneLevel = 0
+        microphoneReady = false
     }
 
     func toggleMute() {
@@ -98,6 +103,27 @@ final class VoiceAgentViewModel: ObservableObject {
         transcript.append(item)
     }
 
+    private func appendUserTranscriptionDelta(_ delta: VoiceRealtimeTextDelta) {
+        if let id = userTranscriptItemIDsByRealtimeItemID[delta.itemID],
+           let index = transcript.firstIndex(where: { $0.id == id }) {
+            transcript[index].text += delta.text
+            return
+        }
+
+        let item = VoiceTranscriptItem(role: .user, text: delta.text)
+        userTranscriptItemIDsByRealtimeItemID[delta.itemID] = item.id
+        transcript.append(item)
+    }
+
+    private func completeUserTranscription(_ completed: VoiceRealtimeTextDelta) {
+        if let id = userTranscriptItemIDsByRealtimeItemID[completed.itemID],
+           let index = transcript.firstIndex(where: { $0.id == id }) {
+            transcript[index].text = completed.text
+            return
+        }
+        append(.user, completed.text)
+    }
+
     private func finishAssistantMessage() {
         activeAssistantItemID = nil
     }
@@ -124,7 +150,15 @@ final class VoiceAgentViewModel: ObservableObject {
         }
 
         if let userText = VoiceRealtimeEventParser.completedUserText(in: event) {
-            append(.user, userText)
+            if let completed = VoiceRealtimeEventParser.completedUserTranscription(in: event) {
+                completeUserTranscription(completed)
+            } else {
+                append(.user, userText)
+            }
+        }
+
+        if let userDelta = VoiceRealtimeEventParser.userTranscriptionDelta(in: event) {
+            appendUserTranscriptionDelta(userDelta)
         }
 
         if let delta = VoiceRealtimeEventParser.assistantDelta(in: event) {
@@ -200,6 +234,15 @@ extension VoiceAgentViewModel: VoiceRealtimeWebRTCBridgeDelegate {
         case "mute_state":
             if let muted = message["muted"] as? Bool {
                 isMuted = muted
+            }
+        case "microphone_ready":
+            microphoneReady = true
+            append(.system, String(localized: "voice.log.microphoneReady", defaultValue: "Microphone ready."))
+        case "audio_level":
+            if let level = message["level"] as? Double {
+                microphoneLevel = min(1, max(0, level))
+            } else if let level = message["level"] as? NSNumber {
+                microphoneLevel = min(1, max(0, level.doubleValue))
             }
         case "server_event":
             if let event = message["event"] as? [String: Any] {

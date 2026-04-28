@@ -30,6 +30,7 @@ struct VoicePanelView: View {
 
             Spacer(minLength: 0)
 
+            micMeter
             statusPill
 
             Button {
@@ -64,6 +65,30 @@ struct VoicePanelView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
+    }
+
+    private var micMeter: some View {
+        HStack(spacing: 2) {
+            ForEach(0..<4, id: \.self) { index in
+                RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                    .fill(micBarColor(for: index))
+                    .frame(width: 3, height: CGFloat(5 + index * 3))
+            }
+        }
+        .frame(width: 18, height: 16)
+        .help(viewModel.microphoneReady
+            ? String(localized: "voice.microphone.ready", defaultValue: "Microphone active")
+            : String(localized: "voice.microphone.waiting", defaultValue: "Waiting for microphone")
+        )
+        .accessibilityIdentifier("VoiceMicrophoneMeter")
+    }
+
+    private func micBarColor(for index: Int) -> Color {
+        guard viewModel.microphoneReady, viewModel.state.isConnected || viewModel.state == .connecting else {
+            return .secondary.opacity(0.25)
+        }
+        let threshold = Double(index + 1) / 4.0
+        return viewModel.microphoneLevel >= threshold ? .green : .secondary.opacity(0.25)
     }
 
     private var statusPill: some View {

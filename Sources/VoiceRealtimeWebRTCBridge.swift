@@ -111,6 +111,62 @@ final class VoiceRealtimeWebRTCBridge: NSObject {
           let pc = null;
           let dc = null;
           let localStream = null;
+          const meter = (() => {
+            let state = {
+              audioContext: null,
+              analyser: null,
+              source: null,
+              timer: null,
+              buffer: null
+            };
+
+            const stop = () => {
+              if (state.timer) window.clearInterval(state.timer);
+              state.timer = null;
+              try {
+                if (state.source) state.source.disconnect();
+              } catch (_) {}
+              state.source = null;
+              try {
+                if (state.audioContext) state.audioContext.close();
+              } catch (_) {}
+              state.audioContext = null;
+              state.analyser = null;
+              state.buffer = null;
+            };
+
+            const start = (stream) => {
+              stop();
+              const AudioContextType = window.AudioContext || window.webkitAudioContext;
+              if (!AudioContextType) return;
+              try {
+                state.audioContext = new AudioContextType();
+                if (state.audioContext.state === "suspended") {
+                  state.audioContext.resume().catch(() => {});
+                }
+                state.analyser = state.audioContext.createAnalyser();
+                state.analyser.fftSize = 512;
+                state.buffer = new Uint8Array(state.analyser.fftSize);
+                state.source = state.audioContext.createMediaStreamSource(stream);
+                state.source.connect(state.analyser);
+                state.timer = window.setInterval(() => {
+                  if (!state.analyser || !state.buffer) return;
+                  state.analyser.getByteTimeDomainData(state.buffer);
+                  let sum = 0;
+                  for (const value of state.buffer) {
+                    const centered = (value - 128) / 128;
+                    sum += centered * centered;
+                  }
+                  const rms = Math.sqrt(sum / state.buffer.length);
+                  post({ kind: "audio_level", level: Math.min(1, rms * 8) });
+                }, 150);
+              } catch (error) {
+                post({ kind: "log", message: String(error && error.message ? error.message : error) });
+              }
+            };
+
+            return { start, stop };
+          })();
 
           const post = (message) => {
             try {
@@ -139,6 +195,7 @@ final class VoiceRealtimeWebRTCBridge: NSObject {
           };
 
           const closeCurrent = () => {
+            meter.stop();
             try {
               if (dc) dc.close();
             } catch (_) {}
@@ -189,6 +246,8 @@ final class VoiceRealtimeWebRTCBridge: NSObject {
                   autoGainControl: true
                 }
               });
+              post({ kind: "microphone_ready" });
+              meter.start(localStream);
               for (const track of localStream.getTracks()) {
                 pc.addTrack(track, localStream);
               }

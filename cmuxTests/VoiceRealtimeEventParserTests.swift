@@ -51,4 +51,17 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
 
         XCTAssertEqual(VoiceRealtimeEventParser.assistantDelta(in: event), "hello")
     }
+
+    func testReadsUserTranscriptionDelta() {
+        let event: [String: Any] = [
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item_123",
+            "delta": "open"
+        ]
+
+        XCTAssertEqual(
+            VoiceRealtimeEventParser.userTranscriptionDelta(in: event),
+            VoiceRealtimeTextDelta(itemID: "item_123", text: "open")
+        )
+    }
 }

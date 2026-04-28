@@ -45,7 +45,7 @@ enum RightSidebarMode: String, CaseIterable {
         case .find: return .switchRightSidebarToFind
         case .sessions: return .switchRightSidebarToSessions
         case .feed: return .switchRightSidebarToFeed
-        case .voice: return nil
+        case .voice: return .switchRightSidebarToVoice
         }
     }
 }
@@ -64,6 +64,9 @@ extension RightSidebarMode {
         }
         if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToFeed).matches(event: event) {
             return .feed
+        }
+        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToVoice).matches(event: event) {
+            return .voice
         }
         return nil
     }

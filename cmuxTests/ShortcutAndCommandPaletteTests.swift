@@ -1081,6 +1081,7 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
         .switchRightSidebarToFind,
         .switchRightSidebarToSessions,
         .switchRightSidebarToFeed,
+        .switchRightSidebarToVoice,
     ]
     private var originalSettingsFileStore: KeyboardShortcutSettingsFileStore!
     private var savedShortcutData: [KeyboardShortcutSettings.Action: Data?] = [:]
@@ -1131,6 +1132,7 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
         XCTAssertEqual(RightSidebarMode.find.shortcutAction, .switchRightSidebarToFind)
         XCTAssertEqual(RightSidebarMode.sessions.shortcutAction, .switchRightSidebarToSessions)
         XCTAssertEqual(RightSidebarMode.feed.shortcutAction, .switchRightSidebarToFeed)
+        XCTAssertEqual(RightSidebarMode.voice.shortcutAction, .switchRightSidebarToVoice)
     }
 
     func testModeShortcutUsesConfiguredBindings() {
@@ -1149,6 +1151,13 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
         )
         XCTAssertNil(
             RightSidebarMode.modeShortcut(for: makeKeyDownEvent(key: "1", modifiers: [.control], keyCode: 18))
+        )
+    }
+
+    func testVoiceModeDefaultShortcutUsesControlFive() {
+        XCTAssertEqual(
+            RightSidebarMode.modeShortcut(for: makeKeyDownEvent(key: "5", modifiers: [.control], keyCode: 23)),
+            .voice
         )
     }
 

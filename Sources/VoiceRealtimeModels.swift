@@ -95,6 +95,11 @@ struct VoiceRealtimeFunctionCall: Equatable {
     let arguments: String
 }
 
+struct VoiceRealtimeTextDelta: Equatable {
+    let itemID: String
+    let text: String
+}
+
 enum VoiceJSON {
     enum Error: Swift.Error, LocalizedError {
         case invalidJSONObject
@@ -182,8 +187,8 @@ enum VoiceRealtimeEventParser {
     }
 
     static func completedUserText(in event: [String: Any]) -> String? {
-        if eventType(in: event) == "conversation.item.input_audio_transcription.completed" {
-            return nonEmptyString(event["transcript"])
+        if let completed = completedUserTranscription(in: event) {
+            return completed.text
         }
 
         guard eventType(in: event) == "conversation.item.done",
@@ -199,6 +204,24 @@ enum VoiceRealtimeEventParser {
             }
         }
         return nil
+    }
+
+    static func userTranscriptionDelta(in event: [String: Any]) -> VoiceRealtimeTextDelta? {
+        guard eventType(in: event) == "conversation.item.input_audio_transcription.delta",
+              let itemID = nonEmptyString(event["item_id"]),
+              let delta = nonEmptyString(event["delta"]) else {
+            return nil
+        }
+        return VoiceRealtimeTextDelta(itemID: itemID, text: delta)
+    }
+
+    static func completedUserTranscription(in event: [String: Any]) -> VoiceRealtimeTextDelta? {
+        guard eventType(in: event) == "conversation.item.input_audio_transcription.completed",
+              let itemID = nonEmptyString(event["item_id"]),
+              let transcript = nonEmptyString(event["transcript"]) else {
+            return nil
+        }
+        return VoiceRealtimeTextDelta(itemID: itemID, text: transcript)
     }
 
     static func errorMessage(in event: [String: Any]) -> String? {
