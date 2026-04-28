@@ -439,6 +439,120 @@ private struct CodexComposerSurfaceContent: View {
     }
 }
 
+private struct CodexModelPickerButton: View {
+    let modelDisplayName: String
+    let metadataText: String
+    let models: [CodexAppServerModelInfo]
+    let selectedModelId: String?
+    let fastModeEnabled: Bool
+    let canEnableFastMode: Bool
+    let metrics: CodexComposerMetrics
+    let onSelectModel: (String) -> Void
+    let onSetFastMode: (Bool) -> Void
+
+    @State private var isPresented = false
+
+    var body: some View {
+        Button {
+            isPresented.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Text(modelDisplayName)
+                    .font(.system(size: metrics.statusFont, weight: .semibold))
+                    .foregroundStyle(.primary.opacity(0.76))
+                    .lineLimit(1)
+
+                if !metadataText.isEmpty {
+                    Text(metadataText)
+                        .font(.system(size: max(9.5, metrics.statusFont - 0.5), weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8.5, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $isPresented, arrowEdge: .bottom) {
+            popoverContent
+        }
+        .accessibilityLabel(String(localized: "codexAppServer.modelPicker.title", defaultValue: "Model"))
+    }
+
+    private var popoverContent: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(String(localized: "codexAppServer.modelPicker.title", defaultValue: "Model"))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            if models.isEmpty {
+                Text(String(localized: "codexAppServer.modelPicker.empty", defaultValue: "Models unavailable"))
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 2) {
+                        ForEach(models) { model in
+                            modelRow(model)
+                        }
+                    }
+                }
+                .frame(maxHeight: 280)
+            }
+
+            Divider()
+
+            Toggle(
+                String(localized: "codexAppServer.modelPicker.fastMode", defaultValue: "Fast mode"),
+                isOn: Binding(
+                    get: { fastModeEnabled },
+                    set: { onSetFastMode($0) }
+                )
+            )
+            .disabled(!canEnableFastMode)
+            .toggleStyle(.switch)
+            .font(.system(size: 12, weight: .medium))
+        }
+        .padding(12)
+        .frame(width: 340)
+    }
+
+    private func modelRow(_ model: CodexAppServerModelInfo) -> some View {
+        Button {
+            onSelectModel(model.id)
+            isPresented = false
+        } label: {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(model.pickerTitle)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.primary)
+                    if !model.description.isEmpty {
+                        Text(model.description)
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+                Spacer(minLength: 8)
+                if selectedModelId == model.id || selectedModelId == model.model {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+            .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 private struct CodexComposerSendButton: View {
     let metrics: CodexComposerMetrics
     let canSend: Bool
@@ -820,9 +934,16 @@ private struct CodexComposerDebugVariantView: View {
                     isFocused: $focused,
                     measuredHeight: $measuredHeight,
                     metrics: .micro,
-                    statusText: String(localized: "codexAppServer.composer.status.thinking", defaultValue: "5.5 Thinking"),
+                    modelDisplayName: "GPT-5.5 Codex",
+                    metadataText: String(localized: "codexAppServer.composer.status.thinking", defaultValue: "Thinking"),
+                    models: [],
+                    selectedModelId: nil,
+                    fastModeEnabled: false,
+                    canEnableFastMode: false,
                     canSend: text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
                     layoutMode: layoutMode,
+                    onSelectModel: { _ in },
+                    onSetFastMode: { _ in },
                     onSubmit: {},
                     onQueueFollowUp: {},
                     onInterrupt: { false },
@@ -871,7 +992,7 @@ private struct CodexQueuedPromptDebugLabView: View {
 
 private struct CodexComposerMetrics {
     static let maxWidth: CGFloat = 740
-    static let queuedPromptWidth = maxWidth * 0.8
+    static let queuedPromptWidth = maxWidth - 44
     static let micro = CodexComposerMetrics(
         minHeight: 76,
         cornerRadius: 22,
