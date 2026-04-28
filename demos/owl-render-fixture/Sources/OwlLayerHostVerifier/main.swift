@@ -3,6 +3,7 @@ import CoreGraphics
 import Darwin
 import Foundation
 import ImageIO
+import OwlBrowserCore
 import OwlMojoBindingsGenerated
 import QuartzCore
 
@@ -127,17 +128,10 @@ private struct CaptureResult: Codable {
     let preInputScreenshotPath: String?
     let stats: PixelStats
     let profileHadDevToolsActivePort: Bool
-    let sessionEvents: SessionEventSnapshot
+    let sessionEvents: OwlBrowserSessionEventSnapshot
     let surfaceTree: OwlFreshSurfaceTree?
     let generatedTransportTracePath: String
     let generatedTransportCallCount: Int
-}
-
-private struct MojoSurfaceCapture {
-    let path: String
-    let mode: String
-    let width: UInt32
-    let height: UInt32
 }
 
 private struct Summary: Codable {
@@ -162,7 +156,7 @@ private struct CaptureFailureSnapshot: Codable {
     let lastWindowID: UInt32?
     let lastError: String
     let lastStats: PixelStats?
-    let sessionEvents: SessionEventSnapshot
+    let sessionEvents: OwlBrowserSessionEventSnapshot
 }
 
 private enum VerifierError: Error, CustomStringConvertible {
@@ -192,121 +186,6 @@ private enum VerifierError: Error, CustomStringConvertible {
             return message
         }
     }
-}
-
-private struct SessionEventSnapshot: Codable {
-    let ready: Bool
-    let disconnected: Bool
-    let contextID: UInt32
-    let contextGeneration: UInt64
-    let hostPID: Int32
-    let loading: Bool
-    let url: String
-    let title: String
-    let surfaceTree: OwlFreshSurfaceTree?
-    let logs: [String]
-}
-
-private struct OwlFreshEvent {
-    let kind: Int32
-    let contextID: UInt32
-    let hostPID: Int32
-    let loading: Bool
-    let url: UnsafePointer<CChar>?
-    let title: UnsafePointer<CChar>?
-    let message: UnsafePointer<CChar>?
-}
-
-private typealias OwlFreshEventCallback = @convention(c) (
-    UnsafeRawPointer?,
-    UnsafeMutableRawPointer?
-) -> Void
-
-private final class SessionEvents {
-    private let lock = NSLock()
-    private var ready = false
-    private var disconnected = false
-    private var contextID: UInt32 = 0
-    private var contextGeneration: UInt64 = 0
-    private var hostPID: Int32 = -1
-    private var loading = true
-    private var url = ""
-    private var title = ""
-    private var surfaceTree: OwlFreshSurfaceTree?
-    private var logs: [String] = []
-
-    func record(_ event: OwlFreshEvent) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        switch event.kind {
-        case 1:
-            if let message = event.message {
-                logs.append(String(cString: message))
-                if logs.count > 30 {
-                    logs.removeFirst(logs.count - 30)
-                }
-            }
-        case 2:
-            ready = true
-            hostPID = event.hostPID
-            updateContextID(event.contextID)
-        case 3:
-            updateContextID(event.contextID)
-        case 4:
-            loading = event.loading
-            if let eventURL = event.url {
-                url = String(cString: eventURL)
-            }
-            if let eventTitle = event.title {
-                title = String(cString: eventTitle)
-            }
-        case 5:
-            disconnected = true
-        case 6:
-            if let message = event.message,
-               let data = String(cString: message).data(using: .utf8),
-               let tree = try? JSONDecoder().decode(OwlFreshSurfaceTree.self, from: data) {
-                surfaceTree = tree
-            }
-        default:
-            break
-        }
-    }
-
-    private func updateContextID(_ id: UInt32) {
-        guard id != 0 else {
-            return
-        }
-        contextID = id
-        contextGeneration += 1
-    }
-
-    func snapshot() -> SessionEventSnapshot {
-        lock.lock()
-        defer { lock.unlock() }
-
-        return SessionEventSnapshot(
-            ready: ready,
-            disconnected: disconnected,
-            contextID: contextID,
-            contextGeneration: contextGeneration,
-            hostPID: hostPID,
-            loading: loading,
-            url: url,
-            title: title,
-            surfaceTree: surfaceTree,
-            logs: logs
-        )
-    }
-}
-
-private let owlFreshEventCallback: OwlFreshEventCallback = { eventPointer, userData in
-    guard let eventPointer, let userData else {
-        return
-    }
-    let events = Unmanaged<SessionEvents>.fromOpaque(userData).takeUnretainedValue()
-    events.record(eventPointer.assumingMemoryBound(to: OwlFreshEvent.self).pointee)
 }
 
 struct OwlLayerHostVerifier {
@@ -1009,7 +888,7 @@ private final class LayerHostRunner {
         app.setActivationPolicy(.regular)
         app.finishLaunching()
 
-        let runtime = try OwlFreshMojoRuntime(path: options.mojoRuntimePath)
+        let runtime = try OwlBrowserRuntime(path: options.mojoRuntimePath)
         try runtime.initialize()
 
         var captures: [CaptureResult] = []
@@ -1073,7 +952,7 @@ private final class LayerHostRunner {
 
     private func runCapture(
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         app: NSApplication
     ) throws -> CaptureResult {
         let profileDirectory = options.outputDirectory
@@ -1083,7 +962,7 @@ private final class LayerHostRunner {
 
         let useLayerFixture = ProcessInfo.processInfo.environment["OWL_FRESH_LAYER_FIXTURE"] != nil
         let initialURL = useLayerFixture ? target.url : "about:blank"
-        let sessionEvents = SessionEvents()
+        let sessionEvents = OwlBrowserSessionEvents()
         let session = try runtime.createSession(
             chromiumHost: options.chromiumHost,
             initialURL: initialURL,
@@ -1096,8 +975,8 @@ private final class LayerHostRunner {
             terminateHostProcessIfNeeded(pid: hostPID)
             pumpApp(app, for: 0.2)
         }
-        let hostController = try OwlFreshMojoHostController(
-            runtime: runtime,
+        let hostController = try OwlBrowserSessionController(
+            pipe: runtime,
             session: session
         )
 
@@ -1304,8 +1183,8 @@ private final class LayerHostRunner {
 
     private func waitForContextID(
         name: String,
-        events: SessionEvents,
-        runtime: OwlFreshMojoRuntime,
+        events: OwlBrowserSessionEvents,
+        runtime: OwlBrowserRuntime,
         app: NSApplication,
         afterGeneration: UInt64,
         rejectingContextID: UInt32?
@@ -1330,9 +1209,9 @@ private final class LayerHostRunner {
 
     private func waitForInitialReadinessIfPresent(
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer,
-        events: SessionEvents,
+        events: OwlBrowserSessionEvents,
         app: NSApplication
     ) throws {
         guard case .waitForJavaScript(let label, let script, let expectations) = target.inputActions.first else {
@@ -1351,9 +1230,9 @@ private final class LayerHostRunner {
 
     private func waitForInitialWebViewContextID(
         name: String,
-        events: SessionEvents,
-        runtime: OwlFreshMojoRuntime,
-        hostController: OwlFreshMojoHostController,
+        events: OwlBrowserSessionEvents,
+        runtime: OwlBrowserRuntime,
+        hostController: OwlBrowserSessionController,
         app: NSApplication
     ) throws -> UInt32 {
         let deadline = Date().addingTimeInterval(min(10, options.timeout))
@@ -1381,8 +1260,8 @@ private final class LayerHostRunner {
 
     private func waitForReady(
         name: String,
-        events: SessionEvents,
-        runtime: OwlFreshMojoRuntime,
+        events: OwlBrowserSessionEvents,
+        runtime: OwlBrowserRuntime,
         app: NSApplication
     ) throws {
         let deadline = Date().addingTimeInterval(min(10, options.timeout))
@@ -1416,10 +1295,10 @@ private final class LayerHostRunner {
     private func performInputActions(
         _ actions: [InputAction],
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
-        hostController: OwlFreshMojoHostController,
+        runtime: OwlBrowserRuntime,
+        hostController: OwlBrowserSessionController,
         session: OpaquePointer,
-        events: SessionEvents,
+        events: OwlBrowserSessionEvents,
         window: LayerHostWindow,
         app: NSApplication,
         currentSize: inout CGSize
@@ -1587,9 +1466,9 @@ private final class LayerHostRunner {
         label: String,
         script: String,
         expectations: [JavaScriptExpectation],
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer,
-        events: SessionEvents,
+        events: OwlBrowserSessionEvents,
         app: NSApplication
     ) throws {
         let deadline = Date().addingTimeInterval(10)
@@ -1619,10 +1498,10 @@ private final class LayerHostRunner {
     private func waitForSurfaceTreeExpectations(
         label: String,
         expectations: [SurfaceTreeExpectation],
-        runtime: OwlFreshMojoRuntime,
-        hostController: OwlFreshMojoHostController,
+        runtime: OwlBrowserRuntime,
+        hostController: OwlBrowserSessionController,
         session: OpaquePointer,
-        events: SessionEvents,
+        events: OwlBrowserSessionEvents,
         window: LayerHostWindow,
         app: NSApplication
     ) throws -> OwlFreshSurfaceTree {
@@ -1670,7 +1549,7 @@ private final class LayerHostRunner {
     }
 
     private func waitForHostFlush(
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer,
         app: NSApplication
     ) throws {
@@ -1694,9 +1573,9 @@ private final class LayerHostRunner {
 
     private func waitForResizeMode(
         _ expectedMode: String,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer,
-        events: SessionEvents,
+        events: OwlBrowserSessionEvents,
         app: NSApplication
     ) throws {
         let script = """
@@ -1734,8 +1613,8 @@ private final class LayerHostRunner {
 
     private func sendKeyStroke(
         _ stroke: OwlFreshKeyEvent,
-        runtime: OwlFreshMojoRuntime,
-        hostController: OwlFreshMojoHostController
+        runtime: OwlBrowserRuntime,
+        hostController: OwlBrowserSessionController
     ) throws {
         try hostController.sendKey(stroke)
         runtime.pollEvents(milliseconds: 10)
@@ -1750,7 +1629,7 @@ private final class LayerHostRunner {
 
     private func verifyPostInputStateIfNeeded(
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer
     ) throws {
         guard !target.postInputExpectations.isEmpty else {
@@ -1769,7 +1648,7 @@ private final class LayerHostRunner {
 
     private func writePostInputDiagnostics(
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer
     ) {
         writePostInputDOMState(target: target, runtime: runtime, session: session)
@@ -1799,7 +1678,7 @@ private final class LayerHostRunner {
 
     private func writePostInputDOMState(
         target: RenderTarget,
-        runtime: OwlFreshMojoRuntime,
+        runtime: OwlBrowserRuntime,
         session: OpaquePointer
     ) {
         if let script = target.postInputDiagnosticScript {
@@ -2244,537 +2123,6 @@ private func makeCALayerHost(contextID: UInt32) throws -> CALayer {
     return layer
 }
 
-private final class OwlFreshMojoRuntime: OwlFreshMojoPipeBindings {
-    private typealias GlobalInit = @convention(c) () -> Int32
-    private typealias SessionCreate = @convention(c) (
-        UnsafePointer<CChar>,
-        UnsafePointer<CChar>?,
-        UnsafePointer<CChar>?,
-        OwlFreshEventCallback?,
-        UnsafeMutableRawPointer?
-    ) -> OpaquePointer?
-    private typealias SessionDestroy = @convention(c) (OpaquePointer?) -> Void
-    private typealias HostPID = @convention(c) (OpaquePointer?) -> Int32
-    private typealias StringInputResult = @convention(c) (
-        OpaquePointer?,
-        UnsafePointer<CChar>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias StringOut = @convention(c) (
-        OpaquePointer?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias BoolOut = @convention(c) (
-        OpaquePointer?,
-        UnsafeMutablePointer<Bool>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias VoidUInt64 = @convention(c) (
-        OpaquePointer?,
-        UInt64,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias VoidString = @convention(c) (
-        OpaquePointer?,
-        UnsafePointer<CChar>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias VoidBool = @convention(c) (
-        OpaquePointer?,
-        Bool,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias WebViewResize = @convention(c) (
-        OpaquePointer?,
-        UInt32,
-        UInt32,
-        Float,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias InputSendMouse = @convention(c) (
-        OpaquePointer?,
-        UInt32,
-        Float,
-        Float,
-        UInt32,
-        UInt32,
-        Float,
-        Float,
-        UInt32,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias InputSendKey = @convention(c) (
-        OpaquePointer?,
-        Bool,
-        UInt32,
-        UnsafePointer<CChar>?,
-        UInt32,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias NativeSurfaceAccept = @convention(c) (
-        OpaquePointer?,
-        UInt32,
-        UnsafeMutablePointer<Bool>?,
-        UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-    ) -> Int32
-    private typealias PollEvents = @convention(c) (UInt32) -> Void
-    private typealias FreeBuffer = @convention(c) (UnsafeMutableRawPointer?) -> Void
-
-    private let handle: UnsafeMutableRawPointer
-    private let globalInit: GlobalInit
-    private let sessionCreate: SessionCreate
-    private let sessionDestroy: SessionDestroy
-    private let sessionHostPID: HostPID
-    private let shellExecuteJavaScript: StringInputResult
-    private let sessionSetClientSymbol: VoidUInt64
-    private let sessionBindProfileSymbol: VoidUInt64
-    private let sessionBindWebViewSymbol: VoidUInt64
-    private let sessionBindInputSymbol: VoidUInt64
-    private let sessionBindSurfaceTreeSymbol: VoidUInt64
-    private let sessionBindNativeSurfaceHostSymbol: VoidUInt64
-    private let sessionFlushSymbol: BoolOut
-    private let profileGetPathSymbol: StringOut
-    private let webViewNavigateSymbol: VoidString
-    private let webViewResizeSymbol: WebViewResize
-    private let webViewSetFocusSymbol: VoidBool
-    private let inputSendMouseSymbol: InputSendMouse
-    private let inputSendKeySymbol: InputSendKey
-    private let surfaceTreeCaptureSurfaceJSON: StringOut
-    private let surfaceTreeGetJSON: StringOut
-    private let nativeSurfaceAcceptSymbol: NativeSurfaceAccept
-    private let nativeSurfaceCancelSymbol: BoolOut
-    private let eventPoll: PollEvents
-    private let freeBuffer: FreeBuffer
-
-    init(path: String) throws {
-        guard let handle = dlopen(path, RTLD_NOW | RTLD_LOCAL) else {
-            throw VerifierError.bridge("dlopen failed for \(path): \(dlerrorString())")
-        }
-        self.handle = handle
-        self.globalInit = try loadSymbol(handle, "owl_fresh_mojo_global_init", as: GlobalInit.self)
-        self.sessionCreate = try loadSymbol(handle, "owl_fresh_mojo_session_create", as: SessionCreate.self)
-        self.sessionDestroy = try loadSymbol(handle, "owl_fresh_mojo_session_destroy", as: SessionDestroy.self)
-        self.sessionHostPID = try loadSymbol(handle, "owl_fresh_mojo_session_host_pid", as: HostPID.self)
-        self.shellExecuteJavaScript = try loadSymbol(handle, "owl_fresh_mojo_shell_execute_javascript", as: StringInputResult.self)
-        self.sessionSetClientSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_set_client",
-            as: VoidUInt64.self
-        )
-        self.sessionBindProfileSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_bind_profile",
-            as: VoidUInt64.self
-        )
-        self.sessionBindWebViewSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_bind_web_view",
-            as: VoidUInt64.self
-        )
-        self.sessionBindInputSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_bind_input",
-            as: VoidUInt64.self
-        )
-        self.sessionBindSurfaceTreeSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_bind_surface_tree",
-            as: VoidUInt64.self
-        )
-        self.sessionBindNativeSurfaceHostSymbol = try loadSymbol(
-            handle,
-            "owl_fresh_mojo_session_bind_native_surface_host",
-            as: VoidUInt64.self
-        )
-        self.sessionFlushSymbol = try loadSymbol(handle, "owl_fresh_mojo_session_flush", as: BoolOut.self)
-        self.profileGetPathSymbol = try loadSymbol(handle, "owl_fresh_mojo_profile_get_path", as: StringOut.self)
-        self.webViewNavigateSymbol = try loadSymbol(handle, "owl_fresh_mojo_web_view_navigate", as: VoidString.self)
-        self.webViewResizeSymbol = try loadSymbol(handle, "owl_fresh_mojo_web_view_resize", as: WebViewResize.self)
-        self.webViewSetFocusSymbol = try loadSymbol(handle, "owl_fresh_mojo_web_view_set_focus", as: VoidBool.self)
-        self.inputSendMouseSymbol = try loadSymbol(handle, "owl_fresh_mojo_input_send_mouse", as: InputSendMouse.self)
-        self.inputSendKeySymbol = try loadSymbol(handle, "owl_fresh_mojo_input_send_key", as: InputSendKey.self)
-        self.surfaceTreeCaptureSurfaceJSON = try loadSymbol(handle, "owl_fresh_mojo_surface_tree_capture_surface_json", as: StringOut.self)
-        self.surfaceTreeGetJSON = try loadSymbol(handle, "owl_fresh_mojo_surface_tree_get_json", as: StringOut.self)
-        self.nativeSurfaceAcceptSymbol = try loadSymbol(handle, "owl_fresh_mojo_native_surface_accept_active_popup_menu_item", as: NativeSurfaceAccept.self)
-        self.nativeSurfaceCancelSymbol = try loadSymbol(handle, "owl_fresh_mojo_native_surface_cancel_active_popup", as: BoolOut.self)
-        self.eventPoll = try loadSymbol(handle, "owl_fresh_mojo_poll_events", as: PollEvents.self)
-        self.freeBuffer = try loadSymbol(handle, "owl_fresh_mojo_free_buffer", as: FreeBuffer.self)
-    }
-
-    deinit {
-        dlclose(handle)
-    }
-
-    func initialize() throws {
-        let status = globalInit()
-        guard status == 0 else {
-            throw VerifierError.bridge("owl_fresh_mojo_global_init failed with status \(status)")
-        }
-    }
-
-    func createSession(
-        chromiumHost: String,
-        initialURL: String,
-        userDataDirectory: String,
-        events: SessionEvents
-    ) throws -> OpaquePointer {
-        let userData = Unmanaged.passUnretained(events).toOpaque()
-        let session = chromiumHost.withCString { hostPointer in
-            initialURL.withCString { urlPointer in
-                userDataDirectory.withCString { profilePointer in
-                    sessionCreate(hostPointer, urlPointer, profilePointer, owlFreshEventCallback, userData)
-                }
-            }
-        }
-        guard let session else {
-            throw VerifierError.launch("owl_fresh_mojo_session_create returned null")
-        }
-        return session
-    }
-
-    func destroy(_ session: OpaquePointer?) {
-        sessionDestroy(session)
-    }
-
-    func hostPID(_ session: OpaquePointer?) -> Int32 {
-        sessionHostPID(session)
-    }
-
-    func pollEvents(milliseconds: UInt32) {
-        eventPoll(milliseconds)
-    }
-
-    func executeJavaScript(_ session: OpaquePointer?, script: String) throws -> String {
-        try script.withCString { scriptPointer in
-            try callStringResult("ShellController.executeJavaScript") { resultPointer, errorPointer in
-                shellExecuteJavaScript(session, scriptPointer, resultPointer, errorPointer)
-            }
-        }
-    }
-
-    func sessionSetClient(_ session: OpaquePointer?, client: OwlFreshClientRemote) throws {
-        try callVoidResult("OwlFreshSession.setClient") { errorPointer in
-            sessionSetClientSymbol(session, client.handle, errorPointer)
-        }
-    }
-
-    func sessionBindProfile(_ session: OpaquePointer?, profile: OwlFreshProfileReceiver) throws {
-        try callVoidResult("OwlFreshSession.bindProfile") { errorPointer in
-            sessionBindProfileSymbol(session, profile.handle, errorPointer)
-        }
-    }
-
-    func sessionBindWebView(_ session: OpaquePointer?, webView: OwlFreshWebViewReceiver) throws {
-        try callVoidResult("OwlFreshSession.bindWebView") { errorPointer in
-            sessionBindWebViewSymbol(session, webView.handle, errorPointer)
-        }
-    }
-
-    func sessionBindInput(_ session: OpaquePointer?, input: OwlFreshInputReceiver) throws {
-        try callVoidResult("OwlFreshSession.bindInput") { errorPointer in
-            sessionBindInputSymbol(session, input.handle, errorPointer)
-        }
-    }
-
-    func sessionBindSurfaceTree(
-        _ session: OpaquePointer?,
-        surfaceTree: OwlFreshSurfaceTreeHostReceiver
-    ) throws {
-        try callVoidResult("OwlFreshSession.bindSurfaceTree") { errorPointer in
-            sessionBindSurfaceTreeSymbol(session, surfaceTree.handle, errorPointer)
-        }
-    }
-
-    func sessionBindNativeSurfaceHost(
-        _ session: OpaquePointer?,
-        nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver
-    ) throws {
-        try callVoidResult("OwlFreshSession.bindNativeSurfaceHost") { errorPointer in
-            sessionBindNativeSurfaceHostSymbol(session, nativeSurfaceHost.handle, errorPointer)
-        }
-    }
-
-    func captureSurfacePNG(_ session: OpaquePointer?, to url: URL) throws -> MojoSurfaceCapture {
-        let result = try surfaceTreeHostCaptureSurface(session)
-        guard result.error.isEmpty else {
-            throw VerifierError.capture("CaptureSurface failed: \(result.error)")
-        }
-        let data = Data(result.png)
-        guard !data.isEmpty else {
-            throw VerifierError.capture("CaptureSurface returned empty PNG data")
-        }
-        try data.write(to: url)
-        return MojoSurfaceCapture(path: url.path, mode: result.captureMode, width: result.width, height: result.height)
-    }
-
-    func sessionFlush(_ session: OpaquePointer?) throws -> Bool {
-        try callBoolResult("OwlFreshSession.flush") { okPointer, errorPointer in
-            sessionFlushSymbol(session, okPointer, errorPointer)
-        }
-    }
-
-    func profileGetPath(_ session: OpaquePointer?) throws -> String {
-        try callStringResult("OwlFreshProfile.getPath") { resultPointer, errorPointer in
-            profileGetPathSymbol(session, resultPointer, errorPointer)
-        }
-    }
-
-    func webViewNavigate(_ session: OpaquePointer?, url: String) throws {
-        try url.withCString { urlPointer in
-            try callVoidResult("OwlFreshWebView.navigate") { errorPointer in
-                webViewNavigateSymbol(session, urlPointer, errorPointer)
-            }
-        }
-    }
-
-    func webViewResize(_ session: OpaquePointer?, request: OwlFreshWebViewResizeRequest) throws {
-        try callVoidResult("OwlFreshWebView.resize") { errorPointer in
-            webViewResizeSymbol(session, request.width, request.height, request.scale, errorPointer)
-        }
-    }
-
-    func webViewSetFocus(_ session: OpaquePointer?, focused: Bool) throws {
-        try callVoidResult("OwlFreshWebView.setFocus") { errorPointer in
-            webViewSetFocusSymbol(session, focused, errorPointer)
-        }
-    }
-
-    func inputSendMouse(_ session: OpaquePointer?, event: OwlFreshMouseEvent) throws {
-        try callVoidResult("OwlFreshInput.sendMouse") { errorPointer in
-            inputSendMouseSymbol(
-                session,
-                event.kind.rawValue,
-                event.x,
-                event.y,
-                event.button,
-                event.clickCount,
-                event.deltaX,
-                event.deltaY,
-                event.modifiers,
-                errorPointer
-            )
-        }
-    }
-
-    func inputSendKey(_ session: OpaquePointer?, event: OwlFreshKeyEvent) throws {
-        try event.text.withCString { textPointer in
-            try callVoidResult("OwlFreshInput.sendKey") { errorPointer in
-                inputSendKeySymbol(
-                    session,
-                    event.keyDown,
-                    event.keyCode,
-                    textPointer,
-                    event.modifiers,
-                    errorPointer
-                )
-            }
-        }
-    }
-
-    func surfaceTreeHostCaptureSurface(_ session: OpaquePointer?) throws -> OwlFreshCaptureResult {
-        let json = try callStringResult("OwlFreshSurfaceTreeHost.captureSurface") { resultPointer, errorPointer in
-            surfaceTreeCaptureSurfaceJSON(session, resultPointer, errorPointer)
-        }
-        let result = try JSONDecoder().decode(RuntimeCaptureSurfaceResult.self, from: Data(json.utf8))
-        let png = Data(base64Encoded: result.pngBase64).map(Array.init) ?? []
-        return OwlFreshCaptureResult(
-            png: png,
-            width: result.width,
-            height: result.height,
-            captureMode: result.captureMode,
-            error: result.error
-        )
-    }
-
-    func surfaceTreeHostGetSurfaceTree(_ session: OpaquePointer?) throws -> OwlFreshSurfaceTree {
-        let json = try callStringResult("OwlFreshSurfaceTreeHost.getSurfaceTree") { resultPointer, errorPointer in
-            surfaceTreeGetJSON(session, resultPointer, errorPointer)
-        }
-        return try JSONDecoder().decode(OwlFreshSurfaceTree.self, from: Data(json.utf8))
-    }
-
-    func nativeSurfaceHostAcceptActivePopupMenuItem(_ session: OpaquePointer?, index: UInt32) throws -> Bool {
-        try callBoolResult("OwlFreshNativeSurfaceHost.acceptActivePopupMenuItem") { okPointer, errorPointer in
-            nativeSurfaceAcceptSymbol(session, index, okPointer, errorPointer)
-        }
-    }
-
-    func nativeSurfaceHostCancelActivePopup(_ session: OpaquePointer?) throws -> Bool {
-        try callBoolResult("OwlFreshNativeSurfaceHost.cancelActivePopup") { okPointer, errorPointer in
-            nativeSurfaceCancelSymbol(session, okPointer, errorPointer)
-        }
-    }
-
-    private func callStringResult(
-        _ context: String,
-        _ body: (
-            UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
-            UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-        ) -> Int32
-    ) throws -> String {
-        var resultPointer: UnsafeMutablePointer<CChar>?
-        var errorPointer: UnsafeMutablePointer<CChar>?
-        let status = body(&resultPointer, &errorPointer)
-        defer {
-            if let resultPointer {
-                freeBuffer(UnsafeMutableRawPointer(resultPointer))
-            }
-            if let errorPointer {
-                freeBuffer(UnsafeMutableRawPointer(errorPointer))
-            }
-        }
-        if status != 0 {
-            let message = errorPointer.map { String(cString: $0) } ?? "unknown Mojo runtime error"
-            throw VerifierError.bridge("\(context) failed: \(message)")
-        }
-        return resultPointer.map { String(cString: $0) } ?? ""
-    }
-
-    private func callBoolResult(
-        _ context: String,
-        _ body: (
-            UnsafeMutablePointer<Bool>,
-            UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
-        ) -> Int32
-    ) throws -> Bool {
-        var ok = false
-        try callVoidResult(context) { errorPointer in
-            body(&ok, errorPointer)
-        }
-        return ok
-    }
-
-    private func callVoidResult(
-        _ context: String,
-        _ body: (UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> Int32
-    ) throws {
-        var errorPointer: UnsafeMutablePointer<CChar>?
-        let status = body(&errorPointer)
-        defer {
-            if let errorPointer {
-                freeBuffer(UnsafeMutableRawPointer(errorPointer))
-            }
-        }
-        if status != 0 {
-            let message = errorPointer.map { String(cString: $0) } ?? "unknown Mojo runtime error"
-            throw VerifierError.bridge("\(context) failed: \(message)")
-        }
-    }
-}
-
-private struct RuntimeCaptureSurfaceResult: Decodable {
-    let pngBase64: String
-    let width: UInt32
-    let height: UInt32
-    let captureMode: String
-    let error: String
-}
-
-private final class OwlFreshMojoHostController {
-    private let runtime: OwlFreshMojoRuntime
-    private let session: OpaquePointer
-    private let sink: GeneratedOwlFreshMojoPipeBoundSinks
-    private let recorder: OwlFreshMojoTransportRecorder
-    private let sessionTransport: GeneratedOwlFreshSessionMojoTransport
-    private let webViewTransport: GeneratedOwlFreshWebViewMojoTransport
-    private let inputTransport: GeneratedOwlFreshInputMojoTransport
-    private let surfaceTreeTransport: GeneratedOwlFreshSurfaceTreeHostMojoTransport
-
-    init(runtime: OwlFreshMojoRuntime, session: OpaquePointer) throws {
-        self.runtime = runtime
-        self.session = session
-        self.sink = GeneratedOwlFreshMojoPipeBoundSinks(session: session, pipe: runtime)
-        self.recorder = OwlFreshMojoTransportRecorder()
-        self.sessionTransport = GeneratedOwlFreshSessionMojoTransport(sink: sink, recorder: recorder)
-        self.webViewTransport = GeneratedOwlFreshWebViewMojoTransport(sink: sink, recorder: recorder)
-        self.inputTransport = GeneratedOwlFreshInputMojoTransport(sink: sink, recorder: recorder)
-        self.surfaceTreeTransport = GeneratedOwlFreshSurfaceTreeHostMojoTransport(sink: sink, recorder: recorder)
-        try bindSessionInterfaces()
-    }
-
-    var recordedCalls: [OwlFreshMojoTransportCall] {
-        recorder.recordedCalls
-    }
-
-    func navigate(_ url: String) throws {
-        webViewTransport.navigate(url)
-        try sink.throwIfFailed()
-    }
-
-    func resize(_ request: OwlFreshWebViewResizeRequest) throws {
-        webViewTransport.resize(request)
-        try sink.throwIfFailed()
-    }
-
-    func setFocus(_ focused: Bool) throws {
-        webViewTransport.setFocus(focused)
-        try sink.throwIfFailed()
-    }
-
-    func sendMouse(_ event: OwlFreshMouseEvent) throws {
-        inputTransport.sendMouse(event)
-        try sink.throwIfFailed()
-    }
-
-    func sendKey(_ event: OwlFreshKeyEvent) throws {
-        inputTransport.sendKey(event)
-        try sink.throwIfFailed()
-    }
-
-    func flush() async throws -> Bool {
-        let result = try await sessionTransport.flush()
-        try sink.throwIfFailed()
-        return result
-    }
-
-    func captureSurface() async throws -> OwlFreshCaptureResult {
-        let result = try await surfaceTreeTransport.captureSurface()
-        try sink.throwIfFailed()
-        return result
-    }
-
-    func getSurfaceTree() throws -> OwlFreshSurfaceTree {
-        try runtime.surfaceTreeHostGetSurfaceTree(session)
-    }
-
-    func acceptActivePopupMenuItem(_ index: UInt32) throws -> Bool {
-        try runtime.nativeSurfaceHostAcceptActivePopupMenuItem(session, index: index)
-    }
-
-    func cancelActivePopup() throws -> Bool {
-        try runtime.nativeSurfaceHostCancelActivePopup(session)
-    }
-
-    private func bindSessionInterfaces() throws {
-        let allocator = OwlFreshMojoPipeHandleAllocator()
-        let profile: OwlFreshProfileReceiver = allocator.makeReceiver(OwlFreshProfileMojoInterfaceMarker.self)
-        let webView: OwlFreshWebViewReceiver = allocator.makeReceiver(OwlFreshWebViewMojoInterfaceMarker.self)
-        let input: OwlFreshInputReceiver = allocator.makeReceiver(OwlFreshInputMojoInterfaceMarker.self)
-        let surfaceTree: OwlFreshSurfaceTreeHostReceiver = allocator.makeReceiver(
-            OwlFreshSurfaceTreeHostMojoInterfaceMarker.self
-        )
-        let nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver = allocator.makeReceiver(
-            OwlFreshNativeSurfaceHostMojoInterfaceMarker.self
-        )
-        let client: OwlFreshClientRemote = allocator.makeRemote(OwlFreshClientMojoInterfaceMarker.self)
-
-        sessionTransport.bindProfile(profile)
-        try sink.throwIfFailed()
-        sessionTransport.bindWebView(webView)
-        try sink.throwIfFailed()
-        sessionTransport.bindInput(input)
-        try sink.throwIfFailed()
-        sessionTransport.bindSurfaceTree(surfaceTree)
-        try sink.throwIfFailed()
-        sessionTransport.bindNativeSurfaceHost(nativeSurfaceHost)
-        try sink.throwIfFailed()
-        sessionTransport.setClient(client)
-        try sink.throwIfFailed()
-    }
-}
-
 private extension String {
     func jsonObjectStringValue(for key: String) throws -> String {
         let data = Data(utf8)
@@ -2993,13 +2341,6 @@ private func pngData(from image: CGImage) throws -> Data {
     return data as Data
 }
 
-private func loadSymbol<T>(_ handle: UnsafeMutableRawPointer, _ name: String, as _: T.Type) throws -> T {
-    guard let symbol = dlsym(handle, name) else {
-        throw VerifierError.bridge("missing symbol \(name): \(dlerrorString())")
-    }
-    return unsafeBitCast(symbol, to: T.self)
-}
-
 private enum ExpectedPixel: Hashable {
     case red
     case green
@@ -3145,13 +2486,6 @@ private func hasDevToolsActivePort(profileDirectory: URL) -> Bool {
     FileManager.default.fileExists(
         atPath: profileDirectory.appendingPathComponent("DevToolsActivePort").path
     )
-}
-
-private func dlerrorString() -> String {
-    guard let error = dlerror() else {
-        return "unknown dynamic loader error"
-    }
-    return String(cString: error)
 }
 
 private func terminateHostProcessIfNeeded(pid: Int32) {

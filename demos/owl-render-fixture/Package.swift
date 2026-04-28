@@ -7,6 +7,10 @@ let package = Package(
         .macOS(.v13)
     ],
     products: [
+        .library(
+            name: "OwlBrowserCore",
+            targets: ["OwlBrowserCore"]
+        ),
         .executable(
             name: "OwlLayerHostVerifier",
             targets: ["OwlLayerHostVerifier"]
@@ -29,6 +33,11 @@ let package = Package(
             name: "OwlMojoBindingsGenerated",
             path: "Sources/OwlMojoBindingsGenerated"
         ),
+        .target(
+            name: "OwlBrowserCore",
+            dependencies: ["OwlMojoBindingsGenerated"],
+            path: "Sources/OwlBrowserCore"
+        ),
         .executableTarget(
             name: "OwlMojoBindingsGenerator",
             dependencies: ["OwlMojoBindingsGeneratorCore"],
@@ -36,7 +45,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "OwlLayerHostVerifier",
-            dependencies: ["OwlMojoBindingsGenerated"],
+            dependencies: [
+                "OwlBrowserCore",
+                "OwlMojoBindingsGenerated",
+            ],
             path: "Sources/OwlLayerHostVerifier"
         ),
         .executableTarget(
@@ -50,6 +62,14 @@ let package = Package(
                 "OwlMojoBindingsGeneratorCore",
             ],
             path: "Tests/OwlMojoBindingsGeneratorTests"
+        ),
+        .testTarget(
+            name: "OwlBrowserCoreTests",
+            dependencies: [
+                "OwlBrowserCore",
+                "OwlMojoBindingsGenerated",
+            ],
+            path: "Tests/OwlBrowserCoreTests"
         )
     ]
 )
