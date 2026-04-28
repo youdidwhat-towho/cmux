@@ -93,7 +93,7 @@ final class WorkspaceLayoutRootHostView: NSView {
         self.hostBridge = hostBridge
         desiredRenderSnapshot = renderSnapshot
         syncLocalTabDragIfNeeded(from: renderSnapshot)
-        isHidden = !renderSnapshot.presentation.isInteractive
+        isHidden = false
         refreshPresentation()
         syncContainerFrameIfNeeded(isDragging: false)
     }

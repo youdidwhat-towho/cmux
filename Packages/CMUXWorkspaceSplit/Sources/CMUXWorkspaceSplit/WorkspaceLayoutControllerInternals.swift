@@ -193,7 +193,15 @@ extension WorkspaceLayoutController {
     }
 
     func performClosePane(_ paneId: PaneID) {
-        guard rootNode.allPaneIds.count > 1 else { return }
+        guard rootNode.findPane(paneId) != nil else { return }
+        if rootNode.allPaneIds.count <= 1 {
+            guard configuration.allowCloseLastPane else { return }
+            let replacementPane = PaneState()
+            rootNode = .pane(replacementPane)
+            focusedPaneId = replacementPane.id
+            zoomedPaneId = nil
+            return
+        }
 
         let (newRoot, siblingPaneId) = closePaneRecursively(node: rootNode, targetPaneId: paneId)
 
@@ -288,7 +296,9 @@ extension WorkspaceLayoutController {
 
         setFocusedPane(targetPaneId)
 
-        if rootNode.findPane(sourcePaneId)?.tabIds.isEmpty == true && rootNode.allPaneIds.count > 1 {
+        if configuration.autoCloseEmptyPanes,
+           rootNode.findPane(sourcePaneId)?.tabIds.isEmpty == true,
+           rootNode.allPaneIds.count > 1 {
             performClosePane(sourcePaneId)
         }
     }
@@ -300,7 +310,9 @@ extension WorkspaceLayoutController {
             pane.removeTab(tabId)
         }
 
-        if rootNode.findPane(paneId)?.tabIds.isEmpty == true && rootNode.allPaneIds.count > 1 {
+        if configuration.autoCloseEmptyPanes,
+           rootNode.findPane(paneId)?.tabIds.isEmpty == true,
+           (configuration.allowCloseLastPane || rootNode.allPaneIds.count > 1) {
             performClosePane(paneId)
         }
     }

@@ -498,7 +498,8 @@ final class WorkspaceLayoutController {
         }
 
         let updatedSourcePane = rootNode.findPane(sourcePaneId)
-        if updatedSourcePane?.tabIds.isEmpty == true,
+        if configuration.autoCloseEmptyPanes,
+           updatedSourcePane?.tabIds.isEmpty == true,
            sourcePaneId != targetPaneId,
            rootNode.allPaneIds.count > 1 {
             // If the source pane is now empty, close it after the split succeeds.

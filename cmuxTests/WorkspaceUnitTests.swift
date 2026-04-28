@@ -101,6 +101,53 @@ final class WorkspaceSplitPolicyTests: XCTestCase {
         XCTAssertEqual(controller.rootNode.findPane(sourcePaneId)?.tabIds, [tab.id])
         XCTAssertEqual(controller.rootNode.findPane(targetPaneId)?.tabIds, [])
     }
+
+    func testCrossPaneMovePreservesEmptySourcePaneWhenAutoCloseDisabled() throws {
+        let controller = WorkspaceLayoutController(
+            configuration: WorkspaceLayoutConfiguration(autoCloseEmptyPanes: false)
+        )
+        let tab = try XCTUnwrap(controller.createTab(title: "One"))
+        let sourcePaneId = try XCTUnwrap(controller.focusedPaneId)
+        let targetPaneId = try XCTUnwrap(
+            controller.splitPane(sourcePaneId, orientation: .horizontal)
+        )
+
+        XCTAssertTrue(controller.moveTab(tab, toPane: targetPaneId))
+        XCTAssertEqual(controller.rootNode.findPane(sourcePaneId)?.tabIds, [])
+        XCTAssertEqual(controller.rootNode.findPane(targetPaneId)?.tabIds, [tab.id])
+        XCTAssertEqual(Set(controller.allPaneIds), Set([sourcePaneId, targetPaneId]))
+    }
+
+    func testCloseTabPreservesEmptyPaneWhenAutoCloseDisabled() throws {
+        let controller = WorkspaceLayoutController(
+            configuration: WorkspaceLayoutConfiguration(autoCloseEmptyPanes: false)
+        )
+        let tab = try XCTUnwrap(controller.createTab(title: "One"))
+        let sourcePaneId = try XCTUnwrap(controller.focusedPaneId)
+        let targetPaneId = try XCTUnwrap(
+            controller.splitPane(sourcePaneId, orientation: .horizontal)
+        )
+
+        XCTAssertTrue(controller.closeTab(tab, inPane: sourcePaneId))
+        XCTAssertEqual(controller.rootNode.findPane(sourcePaneId)?.tabIds, [])
+        XCTAssertNotNil(controller.rootNode.findPane(targetPaneId))
+        XCTAssertEqual(Set(controller.allPaneIds), Set([sourcePaneId, targetPaneId]))
+    }
+
+    func testCloseLastPaneReplacesItWithEmptyPaneWhenAllowed() throws {
+        let controller = WorkspaceLayoutController(
+            configuration: WorkspaceLayoutConfiguration(allowCloseLastPane: true)
+        )
+        let originalPaneId = try XCTUnwrap(controller.focusedPaneId)
+
+        XCTAssertTrue(controller.closePane(originalPaneId))
+        XCTAssertNil(controller.rootNode.findPane(originalPaneId))
+        XCTAssertEqual(controller.allPaneIds.count, 1)
+
+        let replacementPaneId = try XCTUnwrap(controller.focusedPaneId)
+        XCTAssertNotEqual(replacementPaneId, originalPaneId)
+        XCTAssertEqual(controller.rootNode.findPane(replacementPaneId)?.tabIds, [])
+    }
 }
 
 
