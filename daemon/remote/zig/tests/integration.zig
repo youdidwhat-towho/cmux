@@ -987,6 +987,83 @@ test "integration: workspace.open_pane mints a session that workspace.list expos
     try std.testing.expect(std.mem.indexOf(u8, accum.items, "SHARED") != null);
 }
 
+test "integration: workspace.open_pane with parent pane keeps split pane id stable" {
+    if (!pty_pump.supported) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    var fx = try Fixture.init(alloc, "openpane-split");
+    defer fx.deinit();
+
+    var client = try test_util.Client.connect(alloc, fx.socket_path);
+    defer client.deinit();
+
+    const create_id = client.allocId();
+    try client.sendRequest(create_id, "workspace.create", .{
+        .title = "split-openpane",
+        .directory = "/tmp",
+    });
+    var create_resp = try client.awaitResponse(create_id, deadlineIn(2000));
+    defer create_resp.deinit();
+    try std.testing.expect(create_resp.value.object.get("ok").?.bool);
+    const ws_id_str = create_resp.value.object.get("result").?.object.get("workspace_id").?.string;
+    const ws_id = try alloc.dupe(u8, ws_id_str);
+    defer alloc.free(ws_id);
+
+    const first_id = client.allocId();
+    try client.sendRequest(first_id, "workspace.open_pane", .{
+        .workspace_id = ws_id,
+        .command = "cat",
+        .cols = @as(u16, 80),
+        .rows = @as(u16, 24),
+    });
+    var first_resp = try client.awaitResponse(first_id, deadlineIn(2000));
+    defer first_resp.deinit();
+    try std.testing.expect(first_resp.value.object.get("ok").?.bool);
+    const first_result = first_resp.value.object.get("result").?.object;
+    const first_pane_id = try alloc.dupe(u8, first_result.get("pane_id").?.string);
+    defer alloc.free(first_pane_id);
+
+    const split_id = client.allocId();
+    try client.sendRequest(split_id, "workspace.open_pane", .{
+        .workspace_id = ws_id,
+        .parent_pane_id = first_pane_id,
+        .direction = "horizontal",
+        .command = "cat",
+        .cols = @as(u16, 40),
+        .rows = @as(u16, 24),
+    });
+    var split_resp = try client.awaitResponse(split_id, deadlineIn(2000));
+    defer split_resp.deinit();
+    try std.testing.expect(split_resp.value.object.get("ok").?.bool);
+    const split_result = split_resp.value.object.get("result").?.object;
+    const split_pane_id = try alloc.dupe(u8, split_result.get("pane_id").?.string);
+    defer alloc.free(split_pane_id);
+    try std.testing.expect(split_pane_id.len > 0);
+
+    const list_id = client.allocId();
+    try client.sendRequest(list_id, "workspace.list", .{});
+    var list_resp = try client.awaitResponse(list_id, deadlineIn(2000));
+    defer list_resp.deinit();
+    try std.testing.expect(list_resp.value.object.get("ok").?.bool);
+
+    const workspaces = list_resp.value.object.get("result").?.object.get("workspaces").?.array;
+    var found_split_pane = false;
+    for (workspaces.items) |ws| {
+        const wid = ws.object.get("id").?.string;
+        if (!std.mem.eql(u8, wid, ws_id)) continue;
+        const panes = ws.object.get("panes").?.array;
+        try std.testing.expectEqual(@as(usize, 2), panes.items.len);
+        for (panes.items) |pane| {
+            const id_value = pane.object.get("id") orelse return error.MissingPaneID;
+            try std.testing.expect(id_value == .string);
+            if (std.mem.eql(u8, id_value.string, split_pane_id)) {
+                found_split_pane = true;
+            }
+        }
+    }
+    try std.testing.expect(found_split_pane);
+}
+
 test "integration: local subscribed clients stay connected under workspace and terminal churn" {
     if (!pty_pump.supported) return error.SkipZigTest;
 
