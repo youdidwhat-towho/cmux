@@ -84,6 +84,36 @@ public final class OwlBrowserSessionController {
         try pipe.nativeSurfaceHostCancelActiveFilePicker(session)
     }
 
+    public func openDevTools(_ mode: OwlFreshDevToolsMode) throws -> Bool {
+        recorder.record(
+            interface: "OwlFreshDevToolsHost",
+            method: "openDevTools",
+            payloadType: "OwlFreshDevToolsMode",
+            payloadSummary: String(describing: mode)
+        )
+        return try pipe.devToolsHostOpenDevTools(session, mode: mode)
+    }
+
+    public func closeDevTools() throws -> Bool {
+        recorder.record(
+            interface: "OwlFreshDevToolsHost",
+            method: "closeDevTools",
+            payloadType: "Void",
+            payloadSummary: ""
+        )
+        return try pipe.devToolsHostCloseDevTools(session)
+    }
+
+    public func evaluateDevToolsJavaScript(_ script: String) throws -> String {
+        recorder.record(
+            interface: "OwlFreshDevToolsHost",
+            method: "evaluateDevToolsJavaScript",
+            payloadType: "String",
+            payloadSummary: String(describing: script)
+        )
+        return try pipe.devToolsHostEvaluateDevToolsJavaScript(session, script: script)
+    }
+
     private func bindSessionInterfaces() throws {
         let allocator = OwlFreshMojoPipeHandleAllocator()
         let profile: OwlFreshProfileReceiver = allocator.makeReceiver(OwlFreshProfileMojoInterfaceMarker.self)
@@ -94,6 +124,9 @@ public final class OwlBrowserSessionController {
         )
         let nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver = allocator.makeReceiver(
             OwlFreshNativeSurfaceHostMojoInterfaceMarker.self
+        )
+        let devToolsHost: OwlFreshDevToolsHostReceiver = allocator.makeReceiver(
+            OwlFreshDevToolsHostMojoInterfaceMarker.self
         )
         let client: OwlFreshClientRemote = allocator.makeRemote(OwlFreshClientMojoInterfaceMarker.self)
 
@@ -106,6 +139,8 @@ public final class OwlBrowserSessionController {
         sessionTransport.bindSurfaceTree(surfaceTree)
         try sink.throwIfFailed()
         sessionTransport.bindNativeSurfaceHost(nativeSurfaceHost)
+        try sink.throwIfFailed()
+        sessionTransport.bindDevToolsHost(devToolsHost)
         try sink.throwIfFailed()
         sessionTransport.setClient(client)
         try sink.throwIfFailed()

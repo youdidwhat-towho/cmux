@@ -22,6 +22,7 @@ private struct Options {
     var includeFilePicker: Bool
     var includeGoogle: Bool
     var includeWidgets: Bool
+    var includeDevTools: Bool
     var inputDiagnosticCapture: Bool
     var onlyTargets: Set<String>
 }
@@ -36,6 +37,31 @@ private struct RenderTarget {
     let inputActions: [InputAction]
     let postInputDiagnosticScript: String?
     let postInputExpectations: [JavaScriptExpectation]
+    let completeAfterInputActions: Bool
+
+    init(
+        name: String,
+        url: String,
+        screenshotName: String,
+        expected: Set<ExpectedPixel>,
+        preInputScreenshotName: String?,
+        preInputExpected: Set<ExpectedPixel>?,
+        inputActions: [InputAction],
+        postInputDiagnosticScript: String?,
+        postInputExpectations: [JavaScriptExpectation],
+        completeAfterInputActions: Bool = false
+    ) {
+        self.name = name
+        self.url = url
+        self.screenshotName = screenshotName
+        self.expected = expected
+        self.preInputScreenshotName = preInputScreenshotName
+        self.preInputExpected = preInputExpected
+        self.inputActions = inputActions
+        self.postInputDiagnosticScript = postInputDiagnosticScript
+        self.postInputExpectations = postInputExpectations
+        self.completeAfterInputActions = completeAfterInputActions
+    }
 }
 
 private struct MouseClick {
@@ -59,6 +85,7 @@ private enum InputAction {
     case resize(OwlFreshWebViewResizeRequest, waitForMode: String)
     case text(String)
     case waitForJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
+    case waitForDevToolsJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
     case waitForSurfaceTree(label: String, expectations: [SurfaceTreeExpectation])
     case captureWindow(name: String, expected: Set<ExpectedPixel>)
     case detachReattachHost(name: String, expected: Set<ExpectedPixel>)
@@ -67,6 +94,9 @@ private enum InputAction {
     case verifyWindowEdgeCoverage(name: String)
     case captureNativeMenu(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeMenuResponse)
     case captureNativeFilePicker(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeFilePickerResponse)
+    case openDevTools(OwlFreshDevToolsMode)
+    case evaluateDevToolsJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
+    case captureDetachedSurface(label: String, name: String, expected: Set<ExpectedPixel>)
     case acceptActivePopupMenuItem(UInt32)
     case cancelActivePopup
 }
@@ -191,6 +221,7 @@ private struct Summary: Codable {
     let mojoRuntime: String
     let mojoBindingSourceChecksum: String
     let mojoBindingDeclarationCount: Int
+    let devToolsFrontendHTTPAllowed: Bool
     let devToolsActivePortFound: Bool
     let remoteDebuggingArgumentFound: Bool
     let crashRecovery: CrashRecoveryResult?
@@ -270,6 +301,7 @@ struct OwlLayerHostVerifier {
         var includeFilePicker = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_FILE_PICKER_CHECK"] == "1"
         var includeGoogle = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_GOOGLE_CHECK"] == "1"
         var includeWidgets = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_WIDGET_CHECK"] == "1"
+        var includeDevTools = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_DEVTOOLS_CHECK"] == "1"
         var inputDiagnosticCapture = false
         var onlyTargets = Set(
             (ProcessInfo.processInfo.environment["OWL_LAYER_HOST_ONLY_TARGETS"] ?? "")
@@ -326,6 +358,8 @@ struct OwlLayerHostVerifier {
                 includeGoogle = true
             case "--widget-check":
                 includeWidgets = true
+            case "--devtools-check":
+                includeDevTools = true
             case "--input-diagnostic-capture":
                 inputDiagnosticCapture = true
             case "--only-target":
@@ -336,7 +370,7 @@ struct OwlLayerHostVerifier {
                 onlyTargets.insert(arguments[index])
             case "--help":
                 print("""
-                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--lifecycle-check] [--scale-check] [--recovery-check] [--file-picker-check] [--google-check] [--widget-check] [--input-diagnostic-capture] [--only-target <name>]
+                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--lifecycle-check] [--scale-check] [--recovery-check] [--file-picker-check] [--google-check] [--widget-check] [--devtools-check] [--input-diagnostic-capture] [--only-target <name>]
                 """)
                 exit(0)
             default:
@@ -367,6 +401,7 @@ struct OwlLayerHostVerifier {
             includeFilePicker: includeFilePicker,
             includeGoogle: includeGoogle,
             includeWidgets: includeWidgets,
+            includeDevTools: includeDevTools,
             inputDiagnosticCapture: inputDiagnosticCapture,
             onlyTargets: onlyTargets
         )
@@ -383,6 +418,76 @@ private func writeFatalError(_ message: String, outputDirectory: URL?) {
         atomically: true,
         encoding: .utf8
     )
+}
+
+private func devToolsBadgeScript(text: String) -> String {
+    let quotedText = String(decoding: try! JSONEncoder().encode(text), as: UTF8.self)
+    return """
+    (() => {
+      const proof = \(quotedText);
+      const id = "owl-devtools-proof";
+      let badge = document.getElementById(id);
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.id = id;
+        Object.assign(badge.style, {
+          alignItems: "center",
+          background: "rgb(0,210,90)",
+          border: "3px solid rgb(10,10,10)",
+          boxSizing: "border-box",
+          color: "rgb(10,10,10)",
+          display: "flex",
+          font: "700 22px -apple-system, BlinkMacSystemFont, sans-serif",
+          height: "72px",
+          justifyContent: "center",
+          left: "40px",
+          position: "fixed",
+          top: "24px",
+          width: "460px",
+          zIndex: "2147483647"
+        });
+        document.documentElement.appendChild(badge);
+      }
+      badge.textContent = proof;
+      return {
+        bodyReady: !!document.body,
+        proof
+      };
+    })()
+    """
+}
+
+private func devToolsFrontendReadyScript() -> String {
+    """
+    (() => {
+      const textFrom = root => {
+        let out = "";
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+        for (let node = walker.currentNode; node; node = walker.nextNode()) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            out += ` ${node.nodeValue}`;
+          } else if (node.shadowRoot) {
+            out += ` ${textFrom(node.shadowRoot)}`;
+          }
+        }
+        return out.replace(/\\s+/g, " ").trim();
+      };
+      const textSample = document.body ? textFrom(document.body).slice(0, 2000) : "";
+      const hasDevToolsChrome =
+        !!document.querySelector(".inspector-view, .tabbed-pane-header, .toolbar, .main-tabbed-pane") ||
+        /\\b(Elements|Console|Sources|Network)\\b/.test(textSample);
+      return {
+        path: location.pathname,
+        readyState: document.readyState,
+        bodyReady: !!document.body,
+        runtimeReady: !!globalThis.runtime,
+        hasDevToolsChrome,
+        title: document.title,
+        textSample,
+        bodyHTMLSample: document.body ? document.body.innerHTML.slice(0, 500) : ""
+      };
+    })()
+    """
 }
 
 OwlLayerHostVerifier.main()
@@ -461,6 +566,11 @@ private final class LayerHostRunner {
         let filePickerFixture = try writeFixture(
             name: "file-picker-fixture",
             html: Fixtures.filePickerFixture,
+            directory: fixtureDirectory
+        )
+        let devToolsFixture = try writeFixture(
+            name: "devtools-fixture",
+            html: Fixtures.devToolsFixture,
             directory: fixtureDirectory
         )
         let filePickerUpload = fixtureDirectory.appendingPathComponent("owl-upload.txt")
@@ -1094,6 +1204,104 @@ private final class LayerHostRunner {
                 )
             )
         }
+        let requestedDevToolsTargets = options.onlyTargets.contains("devtools-inline-fixture")
+            || options.onlyTargets.contains("devtools-window-fixture")
+        if options.includeDevTools || requestedDevToolsTargets {
+            let inlineProof = "OWL_DEVTOOLS_INLINE_OK"
+            let windowProof = "OWL_DEVTOOLS_WINDOW_OK"
+            targets.append(
+                RenderTarget(
+                    name: "devtools-inline-fixture",
+                    url: devToolsFixture.absoluteString,
+                    screenshotName: "devtools-inline-proof.png",
+                    expected: [.green, .dark, .nonWhite],
+                    preInputScreenshotName: "devtools-inline-before-open.png",
+                    preInputExpected: [.blue, .dark, .light],
+                    inputActions: [
+                        .openDevTools(.inline),
+                        .waitForSurfaceTree(
+                            label: "inline DevTools surface",
+                            expectations: [
+                                SurfaceTreeExpectation(kind: .devTools, label: "devtools-inline"),
+                            ]
+                        ),
+                        .waitForDevToolsJavaScript(
+                            label: "inline DevTools frontend",
+                            script: devToolsFrontendReadyScript(),
+                            expectations: [
+                                JavaScriptExpectation(key: "path", value: .string("/devtools/devtools_app.html")),
+                                JavaScriptExpectation(key: "readyState", value: .string("complete")),
+                                JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
+                                JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
+                                JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
+                            ]
+                        ),
+                        .captureWindow(name: "devtools-inline-ui.png", expected: [.nonWhite]),
+                        .evaluateDevToolsJavaScript(
+                            label: "inline DevTools JavaScript proof",
+                            script: devToolsBadgeScript(text: inlineProof),
+                            expectations: [
+                                JavaScriptExpectation(key: "proof", value: .string(inlineProof)),
+                            ]
+                        ),
+                        .captureWindow(name: "devtools-inline-proof.png", expected: [.green, .dark, .nonWhite]),
+                    ],
+                    postInputDiagnosticScript: nil,
+                    postInputExpectations: [],
+                    completeAfterInputActions: true
+                )
+            )
+            targets.append(
+                RenderTarget(
+                    name: "devtools-window-fixture",
+                    url: devToolsFixture.absoluteString,
+                    screenshotName: "devtools-window-after-open.png",
+                    expected: [.green, .dark, .nonWhite],
+                    preInputScreenshotName: "devtools-window-before-open.png",
+                    preInputExpected: [.blue, .dark, .light],
+                    inputActions: [
+                        .openDevTools(.window),
+                        .waitForSurfaceTree(
+                            label: "window DevTools surface",
+                            expectations: [
+                                SurfaceTreeExpectation(kind: .devTools, label: "devtools-window"),
+                            ]
+                        ),
+                        .waitForDevToolsJavaScript(
+                            label: "window DevTools frontend",
+                            script: devToolsFrontendReadyScript(),
+                            expectations: [
+                                JavaScriptExpectation(key: "path", value: .string("/devtools/devtools_app.html")),
+                                JavaScriptExpectation(key: "readyState", value: .string("complete")),
+                                JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
+                                JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
+                                JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
+                            ]
+                        ),
+                        .captureDetachedSurface(
+                            label: "devtools-window",
+                            name: "devtools-window-ui.png",
+                            expected: [.nonWhite]
+                        ),
+                        .evaluateDevToolsJavaScript(
+                            label: "window DevTools JavaScript proof",
+                            script: devToolsBadgeScript(text: windowProof),
+                            expectations: [
+                                JavaScriptExpectation(key: "proof", value: .string(windowProof)),
+                            ]
+                        ),
+                        .captureDetachedSurface(
+                            label: "devtools-window",
+                            name: "devtools-window-after-open.png",
+                            expected: [.green, .dark, .nonWhite]
+                        ),
+                    ],
+                    postInputDiagnosticScript: nil,
+                    postInputExpectations: [],
+                    completeAfterInputActions: true
+                )
+            )
+        }
         let recoveryTargetName = "crash-recovery-fixture"
         let requestedRecoveryTarget = options.onlyTargets.contains(recoveryTargetName)
         var runCrashRecovery = options.includeRecovery || requestedRecoveryTarget
@@ -1146,13 +1354,14 @@ private final class LayerHostRunner {
             mojoRuntime: runtime.runtimeDescription,
             mojoBindingSourceChecksum: OwlFreshMojoSchema.sourceChecksum,
             mojoBindingDeclarationCount: OwlFreshMojoSchema.declarations.count,
+            devToolsFrontendHTTPAllowed: options.includeDevTools,
             devToolsActivePortFound: captures.contains(where: \.profileHadDevToolsActivePort),
             remoteDebuggingArgumentFound: captures.contains { containsRemoteDebuggingArgument($0.hostCommand) },
             crashRecovery: crashRecovery,
             captures: captures
         )
 
-        guard !summary.devToolsActivePortFound else {
+        guard options.includeDevTools || !summary.devToolsActivePortFound else {
             throw VerifierError.forbiddenPath("DevToolsActivePort was created during layer host verification")
         }
         guard !summary.remoteDebuggingArgumentFound else {
@@ -1175,6 +1384,7 @@ private final class LayerHostRunner {
         print("Control transport: \(summary.controlTransport)")
         print("Display path: \(summary.displayPath)")
         print("Context source: \(summary.contextSource)")
+        print("DevTools frontend HTTP allowed: \(summary.devToolsFrontendHTTPAllowed)")
         print("DevToolsActivePort found: \(summary.devToolsActivePortFound)")
         print("Remote debugging args found: \(summary.remoteDebuggingArgumentFound)")
         for capture in captures {
@@ -1284,6 +1494,7 @@ private final class LayerHostRunner {
         var capturedPreInputPath: String?
         var postInputStateVerified = false
         var postInputDiagnosticsWritten = false
+        var abortCurrentVerifierError = false
 
         while Date() < deadline {
             runtime.pollEvents(milliseconds: 50)
@@ -1340,6 +1551,7 @@ private final class LayerHostRunner {
                     if !inputSent {
                         capturedPreInputPath = captureURL.path
                         try hostController.setFocus(true)
+                        abortCurrentVerifierError = true
                         try performInputActions(
                             target.inputActions,
                             target: target,
@@ -1355,6 +1567,48 @@ private final class LayerHostRunner {
                         if options.inputDiagnosticCapture {
                             writePostInputDOMState(target: target, runtime: runtime, session: session)
                         }
+                        if target.completeAfterInputActions {
+                            let data = try Data(contentsOf: screenshotURL)
+                            guard let image = loadImage(from: data) else {
+                                throw VerifierError.capture("could not load completed action screenshot \(screenshotURL.path)")
+                            }
+                            let stats = analyze(image: image)
+                            guard target.expected.isSatisfied(by: stats) else {
+                                throw VerifierError.pixelCheck(
+                                    "\(target.name) completed action screenshot did not match \(target.expected): \(stats)"
+                                )
+                            }
+                            let hostCommand = processCommandLine(pid: hostPID)
+                            try rejectForbiddenRuntimePaths(
+                                processCommand: hostCommand,
+                                profileDirectory: profileDirectory,
+                                name: target.name
+                            )
+                            let traceURL = options.outputDirectory.appendingPathComponent(
+                                "\(target.name)-generated-transport-trace.json"
+                            )
+                            try JSONEncoder.pretty.encode(hostController.recordedCalls).write(to: traceURL)
+                            let finalEventSnapshot = sessionEvents.snapshot()
+                            let finalSurfaceTree = (try? hostController.getSurfaceTree())
+                                ?? finalEventSnapshot.surfaceTree
+                            return CaptureResult(
+                                name: target.name,
+                                url: target.url,
+                                hostPID: hostPID,
+                                hostCommand: hostCommand,
+                                contextID: contextID,
+                                swiftWindowID: windowID,
+                                screenshotPath: screenshotURL.path,
+                                preInputScreenshotPath: capturedPreInputPath,
+                                stats: stats,
+                                profileHadDevToolsActivePort: hasDevToolsActivePort(profileDirectory: profileDirectory),
+                                sessionEvents: finalEventSnapshot,
+                                surfaceTree: finalSurfaceTree,
+                                generatedTransportTracePath: traceURL.path,
+                                generatedTransportCallCount: hostController.recordedCalls.count
+                            )
+                        }
+                        abortCurrentVerifierError = false
                         inputSent = true
                         currentExpected = target.expected
                         lastError = "input actions sent through Mojo; waiting for post-input pixels"
@@ -1399,12 +1653,18 @@ private final class LayerHostRunner {
                 }
                 lastError = "pixel stats did not match expected set \(currentExpected): \(stats)"
             } catch let error as VerifierError {
+                if abortCurrentVerifierError {
+                    throw error
+                }
                 if case .input(let message) = error,
                    message.hasPrefix("expected resize mode ") {
                     throw error
                 }
                 lastError = error.description
             } catch {
+                if abortCurrentVerifierError {
+                    throw error
+                }
                 lastError = String(describing: error)
             }
         }
@@ -1734,7 +1994,7 @@ private final class LayerHostRunner {
         if containsRemoteDebuggingArgument(processCommand) {
             throw VerifierError.forbiddenPath("\(name) host command contains remote debugging: \(processCommand)")
         }
-        if hasDevToolsActivePort(profileDirectory: profileDirectory) {
+        if !options.includeDevTools && hasDevToolsActivePort(profileDirectory: profileDirectory) {
             throw VerifierError.forbiddenPath("\(name) profile created DevToolsActivePort")
         }
     }
@@ -1830,6 +2090,15 @@ private final class LayerHostRunner {
                     events: events,
                     app: app
                 )
+            case .waitForDevToolsJavaScript(let label, let script, let expectations):
+                try waitForDevToolsJavaScriptExpectations(
+                    label: label,
+                    script: script,
+                    expectations: expectations,
+                    hostController: hostController,
+                    events: events,
+                    app: app
+                )
             case .waitForSurfaceTree(let label, let expectations):
                 let tree = try waitForSurfaceTreeExpectations(
                     label: label,
@@ -1842,6 +2111,46 @@ private final class LayerHostRunner {
                     app: app
                 )
                 window.update(surfaceTree: tree)
+            case .openDevTools(let mode):
+                guard try hostController.openDevTools(mode) else {
+                    throw VerifierError.input("host did not open DevTools in mode \(mode)")
+                }
+                runtime.pollEvents(milliseconds: 50)
+                try waitForHostFlush(runtime: runtime, session: session, app: app)
+                window.update(surfaceTree: try hostController.getSurfaceTree())
+                window.flushHostedLayer()
+            case .evaluateDevToolsJavaScript(let label, let script, let expectations):
+                let result = try hostController.evaluateDevToolsJavaScript(script)
+                try verifyJavaScriptExpectations(
+                    result: result,
+                    expectations: expectations,
+                    targetName: label
+                )
+                runtime.pollEvents(milliseconds: 50)
+                window.update(surfaceTree: try hostController.getSurfaceTree())
+                window.flushHostedLayer()
+            case .captureDetachedSurface(let label, let name, let expected):
+                let tree = try hostController.getSurfaceTree()
+                window.update(surfaceTree: tree)
+                window.flushHostedLayer()
+                guard let surface = tree.surfaces.first(where: {
+                    $0.visible && $0.kind == .devTools && $0.label == label && $0.contextId != 0
+                }) else {
+                    throw VerifierError.input("\(target.name) missing detached DevTools surface \(label): \(tree)")
+                }
+                guard surface.width > 0, surface.height > 0 else {
+                    throw VerifierError.input("\(target.name) detached DevTools surface has empty bounds: \(surface)")
+                }
+                let captureURL = options.outputDirectory.appendingPathComponent(name)
+                let capture = try window.captureDetachedSurface(
+                    label: label,
+                    minimumSize: CGSize(width: CGFloat(surface.width), height: CGFloat(surface.height)),
+                    to: captureURL
+                )
+                let stats = analyze(image: capture.image)
+                guard expected.isSatisfied(by: stats) else {
+                    throw VerifierError.pixelCheck("\(target.name) \(name) detached surface pixels did not match \(expected): \(stats)")
+                }
             case .captureWindow(let name, let expected):
                 window.update(surfaceTree: try hostController.getSurfaceTree())
                 window.flushHostedLayer()
@@ -2031,6 +2340,37 @@ private final class LayerHostRunner {
             pumpApp(app, for: 0.02)
             do {
                 let result = try runtime.executeJavaScript(session, script: script)
+                lastResult = result
+                try verifyJavaScriptExpectations(
+                    result: result,
+                    expectations: expectations,
+                    targetName: label
+                )
+                return
+            } catch {
+                lastError = String(describing: error)
+            }
+        }
+        throw VerifierError.input(
+            "timed out waiting for \(label); lastResult=\(lastResult); lastError=\(lastError); logs=\(events.snapshot().logs)"
+        )
+    }
+
+    private func waitForDevToolsJavaScriptExpectations(
+        label: String,
+        script: String,
+        expectations: [JavaScriptExpectation],
+        hostController: OwlBrowserSessionController,
+        events: OwlBrowserSessionEvents,
+        app: NSApplication
+    ) throws {
+        let deadline = Date().addingTimeInterval(10)
+        var lastResult = ""
+        var lastError = ""
+        while Date() < deadline {
+            pumpApp(app, for: 0.02)
+            do {
+                let result = try hostController.evaluateDevToolsJavaScript(script)
                 lastResult = result
                 try verifyJavaScriptExpectations(
                     result: result,
@@ -2323,6 +2663,7 @@ private final class LayerHostWindow {
     private var primaryContentsScale: CGFloat
     private var popupHostLayers: [UInt64: CALayer] = [:]
     private var popupContextIDs: [UInt64: UInt32] = [:]
+    private var detachedSurfaceWindows: [UInt64: DetachedSurfaceHostWindow] = [:]
 
     init(title: String, contextID: UInt32, size: CGSize) throws {
         self.title = title
@@ -2374,6 +2715,10 @@ private final class LayerHostWindow {
     }
 
     func close() {
+        for detachedWindow in detachedSurfaceWindows.values {
+            detachedWindow.close()
+        }
+        detachedSurfaceWindows.removeAll()
         window.close()
     }
 
@@ -2392,6 +2737,9 @@ private final class LayerHostWindow {
         hostLayer.position = CGPoint.zero
         for layer in popupHostLayers.values {
             layer.setNeedsLayout()
+        }
+        for detachedWindow in detachedSurfaceWindows.values {
+            detachedWindow.flushHostedLayer()
         }
         CATransaction.commit()
         flushHostedLayer()
@@ -2438,8 +2786,18 @@ private final class LayerHostWindow {
         hostLayer.zPosition = CGFloat(primary.zIndex)
         primaryContentsScale = primaryScale
 
+        let detachedSurfaces = visibleSurfaces.filter { surface in
+            surface.contextId != 0 && isDetachedSurface(surface)
+        }
+        let activeDetachedIDs = Set(detachedSurfaces.map(\.surfaceId))
+        for staleID in detachedSurfaceWindows.keys where !activeDetachedIDs.contains(staleID) {
+            detachedSurfaceWindows[staleID]?.close()
+            detachedSurfaceWindows[staleID] = nil
+        }
+
         let renderPopupSurfaces = visibleSurfaces.filter { surface in
             surface.contextId != 0 && surface.surfaceId != primary.surfaceId
+                && !isDetachedSurface(surface)
         }
         let activePopupIDs = Set(renderPopupSurfaces.map(\.surfaceId))
         for staleID in popupHostLayers.keys where !activePopupIDs.contains(staleID) {
@@ -2472,6 +2830,22 @@ private final class LayerHostWindow {
             layer.position = layer.frame.origin
             layer.zPosition = CGFloat(surface.zIndex)
             layer.isHidden = false
+        }
+        for surface in detachedSurfaces {
+            let detachedWindow: DetachedSurfaceHostWindow
+            if let existing = detachedSurfaceWindows[surface.surfaceId] {
+                detachedWindow = existing
+            } else {
+                do {
+                    detachedWindow = try DetachedSurfaceHostWindow(surface: surface)
+                    detachedSurfaceWindows[surface.surfaceId] = detachedWindow
+                    detachedWindow.show()
+                } catch {
+                    continue
+                }
+            }
+            detachedWindow.update(surface: surface)
+            detachedWindow.show()
         }
         CATransaction.commit()
 
@@ -2565,6 +2939,22 @@ private final class LayerHostWindow {
         )
     }
 
+    func captureDetachedSurface(
+        label: String,
+        minimumSize: CGSize,
+        to url: URL
+    ) throws -> CapturedWindow {
+        guard let detachedWindow = detachedSurfaceWindows.values.first(where: { $0.label == label }) else {
+            throw VerifierError.capture("detached surface window \(label) is not hosted")
+        }
+        detachedWindow.show()
+        detachedWindow.flushHostedLayer()
+        guard let windowID = swiftHostWindowID(title: detachedWindow.title, minimumSize: minimumSize) else {
+            throw VerifierError.capture("detached surface window \(label) was not visible in CGWindowList")
+        }
+        return try captureWindow(windowID: windowID, to: url)
+    }
+
     func presentNativeFilePickerAndCapture(
         surface: OwlFreshSurfaceInfo,
         windowID: UInt32,
@@ -2627,7 +3017,16 @@ private final class LayerHostWindow {
     }
 
     private func frame(for surface: OwlFreshSurfaceInfo, origin: CGPoint) -> CGRect {
-        CGRect(
+        if surface.kind == .devTools, surface.label == "devtools-inline" {
+            let height = min(CGFloat(surface.height), rootLayer.bounds.height * 0.5)
+            return CGRect(
+                x: 0,
+                y: rootLayer.bounds.height - height,
+                width: rootLayer.bounds.width,
+                height: height
+            )
+        }
+        return CGRect(
             x: CGFloat(surface.x) - origin.x,
             y: CGFloat(surface.y) - origin.y,
             width: CGFloat(surface.width),
@@ -2645,6 +3044,10 @@ private final class LayerHostWindow {
         max(CGFloat(surface.scale), 1.0)
     }
 
+    private func isDetachedSurface(_ surface: OwlFreshSurfaceInfo) -> Bool {
+        surface.kind == .devTools && surface.label == "devtools-window"
+    }
+
     func flushHostedLayer() {
         hostLayer.setNeedsDisplay()
         hostLayer.displayIfNeeded()
@@ -2652,9 +3055,105 @@ private final class LayerHostWindow {
             layer.setNeedsDisplay()
             layer.displayIfNeeded()
         }
+        for detachedWindow in detachedSurfaceWindows.values {
+            detachedWindow.flushHostedLayer()
+        }
         CATransaction.flush()
     }
 
+}
+
+private final class DetachedSurfaceHostWindow {
+    let label: String
+    let title: String
+    private let window: NSWindow
+    private let contentView: NSView
+    private let rootLayer: CALayer
+    private let hostLayer: CALayer
+    private var contextID: UInt32
+
+    init(surface: OwlFreshSurfaceInfo) throws {
+        self.label = surface.label
+        self.title = "OWL LayerHost \(surface.label)"
+        self.contextID = surface.contextId
+
+        let size = CGSize(width: CGFloat(surface.width), height: CGFloat(surface.height))
+        let frame = NSRect(origin: .zero, size: size)
+        let contentView = NSView(frame: frame)
+        contentView.wantsLayer = true
+        let rootLayer = CALayer()
+        rootLayer.isGeometryFlipped = true
+        rootLayer.backgroundColor = NSColor.white.cgColor
+        rootLayer.frame = CGRect(origin: .zero, size: size)
+        contentView.layer = rootLayer
+        self.contentView = contentView
+        self.rootLayer = rootLayer
+
+        let hostLayer = try makeCALayerHost(contextID: surface.contextId)
+        hostLayer.anchorPoint = CGPoint.zero
+        hostLayer.autoresizingMask = [.layerWidthSizable, .layerHeightSizable]
+        hostLayer.contentsScale = max(CGFloat(surface.scale), 1.0)
+        hostLayer.frame = rootLayer.bounds
+        hostLayer.bounds = rootLayer.bounds
+        hostLayer.position = CGPoint.zero
+        rootLayer.addSublayer(hostLayer)
+        self.hostLayer = hostLayer
+
+        window = NSWindow(
+            contentRect: frame,
+            styleMask: [.titled, .closable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = title
+        window.contentView = contentView
+        window.backgroundColor = .white
+        window.isOpaque = true
+        window.hasShadow = false
+        window.isReleasedWhenClosed = false
+        window.sharingType = .readOnly
+        window.level = .normal
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        window.center()
+    }
+
+    func update(surface: OwlFreshSurfaceInfo) {
+        let size = CGSize(width: CGFloat(surface.width), height: CGFloat(surface.height))
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if window.contentView?.bounds.size != size {
+            window.setContentSize(size)
+            contentView.setFrameSize(size)
+            rootLayer.frame = CGRect(origin: .zero, size: size)
+            rootLayer.bounds = CGRect(origin: .zero, size: size)
+        }
+        hostLayer.contentsScale = max(CGFloat(surface.scale), 1.0)
+        hostLayer.frame = rootLayer.bounds
+        hostLayer.bounds = rootLayer.bounds
+        hostLayer.position = CGPoint.zero
+        if contextID != surface.contextId {
+            contextID = surface.contextId
+            hostLayer.setValue(NSNumber(value: surface.contextId), forKey: "contextId")
+        }
+        CATransaction.commit()
+        flushHostedLayer()
+    }
+
+    func show() {
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        window.sharingType = .readOnly
+    }
+
+    func close() {
+        window.close()
+    }
+
+    func flushHostedLayer() {
+        hostLayer.setNeedsDisplay()
+        hostLayer.displayIfNeeded()
+        CATransaction.flush()
+    }
 }
 
 private func validateNativeMenuSurface(_ surface: OwlFreshSurfaceInfo, targetName: String) throws {
@@ -4853,6 +5352,73 @@ private enum Fixtures {
           status.textContent = "OWL_FILE_PICKER_SELECTED";
           details.textContent = "selection changed, files=" + input.files.length;
         });
+      </script>
+    </body>
+    </html>
+    """
+
+    static let devToolsFixture = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>OWL DevTools Fixture</title>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgb(248,248,248); }
+        body { color: rgb(20,20,20); font: 18px -apple-system, BlinkMacSystemFont, sans-serif; }
+        #banner {
+          position: absolute;
+          left: 48px;
+          top: 44px;
+          width: 864px;
+          height: 82px;
+          background: rgb(0, 92, 230);
+          color: white;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-size: 34px;
+          font-weight: 900;
+        }
+        #status {
+          position: absolute;
+          left: 48px;
+          top: 156px;
+          width: 864px;
+          height: 92px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: white;
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-size: 32px;
+          font-weight: 900;
+        }
+        #target {
+          position: absolute;
+          left: 48px;
+          top: 286px;
+          width: 864px;
+          height: 220px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: rgb(255, 255, 255);
+          padding: 24px;
+          font-size: 24px;
+          font-weight: 800;
+        }
+      </style>
+    </head>
+    <body>
+      <div id="banner">OWL_DEVTOOLS_PAGE_READY</div>
+      <div id="status">OWL_DEVTOOLS_WAITING</div>
+      <div id="target">DevTools should attach to this page and appear as a separate OWL surface.</div>
+      <script>
+        window.owlDevToolsFixture = { ready: true };
+        document.getElementById("status").textContent = "OWL_DEVTOOLS_READY";
       </script>
     </body>
     </html>

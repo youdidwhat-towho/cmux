@@ -18,17 +18,19 @@ final class OwlBrowserCoreTests: XCTestCase {
             "bindInput:3",
             "bindSurfaceTree:4",
             "bindNativeSurfaceHost:5",
-            "setClient:6",
+            "bindDevToolsHost:6",
+            "setClient:7",
             "resize:960x640@1.0",
             "key:13:\n",
             "surfaceTree",
         ])
-        XCTAssertEqual(controller.recordedCalls.prefix(6).map(\.method), [
+        XCTAssertEqual(controller.recordedCalls.prefix(7).map(\.method), [
             "bindProfile",
             "bindWebView",
             "bindInput",
             "bindSurfaceTree",
             "bindNativeSurfaceHost",
+            "bindDevToolsHost",
             "setClient",
         ])
     }
@@ -83,6 +85,12 @@ final class OwlBrowserCoreTests: XCTestCase {
         XCTAssertTrue(try controller.cancelActivePopup())
         XCTAssertTrue(try controller.selectActiveFilePickerFiles(["/tmp/owl-file.txt"]))
         XCTAssertTrue(try controller.cancelActiveFilePicker())
+        let devToolsOpened = try controller.openDevTools(.inline)
+        let devToolsResult = try controller.evaluateDevToolsJavaScript("window.owlDevTools")
+        let devToolsClosed = try controller.closeDevTools()
+        XCTAssertTrue(devToolsOpened)
+        XCTAssertEqual(devToolsResult, "{\"proof\":true}")
+        XCTAssertTrue(devToolsClosed)
         runtime.destroy(session)
 
         XCTAssertEqual(FakeRuntimeCABI.calls, [
@@ -95,7 +103,8 @@ final class OwlBrowserCoreTests: XCTestCase {
             "bindInput:3",
             "bindSurfaceTree:4",
             "bindNativeSurfaceHost:5",
-            "setClient:6",
+            "bindDevToolsHost:6",
+            "setClient:7",
             "navigate:https://example.com",
             "resize:800x600@2.0",
             "focus:true",
@@ -109,6 +118,9 @@ final class OwlBrowserCoreTests: XCTestCase {
             "cancel",
             #"filePickerSelect:["\/tmp\/owl-file.txt"]"#,
             "filePickerCancel",
+            "devToolsOpen:0",
+            "devToolsJS:window.owlDevTools",
+            "devToolsClose",
             "destroy",
         ])
     }
@@ -142,6 +154,13 @@ private final class FakeBrowserPipe: OwlFreshMojoPipeBindings {
         nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver
     ) throws {
         calls.append("bindNativeSurfaceHost:\(nativeSurfaceHost.handle)")
+    }
+
+    func sessionBindDevToolsHost(
+        _ session: OpaquePointer?,
+        devtoolsHost: OwlFreshDevToolsHostReceiver
+    ) throws {
+        calls.append("bindDevToolsHost:\(devtoolsHost.handle)")
     }
 
     func sessionFlush(_ session: OpaquePointer?) throws -> Bool {
@@ -203,6 +222,21 @@ private final class FakeBrowserPipe: OwlFreshMojoPipeBindings {
         calls.append("filePickerCancel")
         return true
     }
+
+    func devToolsHostOpenDevTools(_ session: OpaquePointer?, mode: OwlFreshDevToolsMode) throws -> Bool {
+        calls.append("devToolsOpen:\(mode.rawValue)")
+        return true
+    }
+
+    func devToolsHostCloseDevTools(_ session: OpaquePointer?) throws -> Bool {
+        calls.append("devToolsClose")
+        return true
+    }
+
+    func devToolsHostEvaluateDevToolsJavaScript(_ session: OpaquePointer?, script: String) throws -> String {
+        calls.append("devToolsJS:\(script)")
+        return "{\"proof\":true}"
+    }
 }
 
 private enum FakeRuntimeCABI {
@@ -226,6 +260,7 @@ private enum FakeRuntimeCABI {
             sessionBindInput: fakeRuntimeSessionBindInput,
             sessionBindSurfaceTree: fakeRuntimeSessionBindSurfaceTree,
             sessionBindNativeSurfaceHost: fakeRuntimeSessionBindNativeSurfaceHost,
+            sessionBindDevToolsHost: fakeRuntimeSessionBindDevToolsHost,
             sessionFlush: fakeRuntimeSessionFlush,
             profileGetPath: fakeRuntimeProfileGetPath,
             webViewNavigate: fakeRuntimeWebViewNavigate,
@@ -239,6 +274,9 @@ private enum FakeRuntimeCABI {
             nativeSurfaceCancel: fakeRuntimeNativeSurfaceCancel,
             nativeSurfaceSelectFilePickerFilesJSON: fakeRuntimeNativeSurfaceSelectFilePickerFilesJSON,
             nativeSurfaceCancelFilePicker: fakeRuntimeNativeSurfaceCancelFilePicker,
+            devToolsOpen: fakeRuntimeDevToolsOpen,
+            devToolsClose: fakeRuntimeDevToolsClose,
+            devToolsEvaluateJavaScript: fakeRuntimeDevToolsEvaluateJavaScript,
             eventPoll: fakeRuntimeEventPoll,
             freeBuffer: fakeRuntimeFreeBuffer
         )
@@ -317,6 +355,11 @@ private let fakeRuntimeSessionBindNativeSurfaceHost: OwlBrowserRuntimeVoidUInt64
     return 0
 }
 
+private let fakeRuntimeSessionBindDevToolsHost: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindDevToolsHost:\(handle)")
+    return 0
+}
+
 private let fakeRuntimeSessionFlush: OwlBrowserRuntimeBoolOut = { _, ok, _ in
     FakeRuntimeCABI.calls.append("flush")
     ok?.pointee = true
@@ -390,6 +433,24 @@ private let fakeRuntimeNativeSurfaceSelectFilePickerFilesJSON: OwlBrowserRuntime
 private let fakeRuntimeNativeSurfaceCancelFilePicker: OwlBrowserRuntimeBoolOut = { _, ok, _ in
     FakeRuntimeCABI.calls.append("filePickerCancel")
     ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeDevToolsOpen: OwlBrowserRuntimeDevToolsOpen = { _, mode, ok, _ in
+    FakeRuntimeCABI.calls.append("devToolsOpen:\(mode)")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeDevToolsClose: OwlBrowserRuntimeBoolOut = { _, ok, _ in
+    FakeRuntimeCABI.calls.append("devToolsClose")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeDevToolsEvaluateJavaScript: OwlBrowserRuntimeStringInputResult = { _, script, result, _ in
+    FakeRuntimeCABI.calls.append("devToolsJS:\(FakeRuntimeCABI.string(script))")
+    FakeRuntimeCABI.writeCString("{\"proof\":true}", to: result)
     return 0
 }
 

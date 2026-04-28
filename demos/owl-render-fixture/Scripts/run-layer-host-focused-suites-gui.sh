@@ -16,7 +16,7 @@ fi
 expanded_suites=()
 for suite in "${suites[@]}"; do
   if [ "$suite" = "all" ]; then
-    expanded_suites+=(render input resize lifecycle scale recovery file-picker scroll-text widgets google)
+    expanded_suites+=(render input resize lifecycle scale recovery file-picker scroll-text widgets google devtools)
   else
     expanded_suites+=("$suite")
   fi
@@ -86,6 +86,15 @@ run_suite() {
       OWL_LAYER_HOST_ONLY_TARGETS="file-picker-fixture" \
         "$RUN_SCRIPT"
       ;;
+    devtools)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_FRESH_ENABLE_DEVTOOLS=1 \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_DEVTOOLS_CHECK=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="devtools-inline-fixture,devtools-window-fixture" \
+        "$RUN_SCRIPT"
+      ;;
     scroll-text)
       OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
       OWL_LAYER_HOST_INPUT_CHECK=1 \
@@ -111,7 +120,7 @@ run_suite() {
       ;;
     *)
       echo "unknown focused suite: $suite" >&2
-      echo "usage: $0 [all|render|input|resize|lifecycle|scale|recovery|file-picker|scroll-text|widgets|google ...]" >&2
+      echo "usage: $0 [all|render|input|resize|lifecycle|scale|recovery|file-picker|scroll-text|widgets|google|devtools ...]" >&2
       exit 2
       ;;
   esac

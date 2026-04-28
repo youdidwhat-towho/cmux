@@ -34,6 +34,12 @@ enum OwlFreshSurfaceKind {
   kPopupWidget = 1,
   kNativeMenu = 2,
   kNativeFilePicker = 3,
+  kDevTools = 4,
+};
+
+enum OwlFreshDevToolsMode {
+  kInline = 0,
+  kWindow = 1,
 };
 
 struct OwlFreshNativeMenuItem {
@@ -98,6 +104,7 @@ interface OwlFreshSession {
   BindInput(pending_receiver<OwlFreshInput> input);
   BindSurfaceTree(pending_receiver<OwlFreshSurfaceTreeHost> surface_tree);
   BindNativeSurfaceHost(pending_receiver<OwlFreshNativeSurfaceHost> native_surface_host);
+  BindDevToolsHost(pending_receiver<OwlFreshDevToolsHost> devtools_host);
   Flush() => (bool ok);
 };
 
@@ -126,4 +133,10 @@ interface OwlFreshNativeSurfaceHost {
   CancelActivePopup() => (bool ok);
   SelectActiveFilePickerFiles(array<string> paths) => (bool ok);
   CancelActiveFilePicker() => (bool ok);
+};
+
+interface OwlFreshDevToolsHost {
+  OpenDevTools(OwlFreshDevToolsMode mode) => (bool ok);
+  CloseDevTools() => (bool ok);
+  EvaluateDevToolsJavaScript(string script) => (string result_json);
 };

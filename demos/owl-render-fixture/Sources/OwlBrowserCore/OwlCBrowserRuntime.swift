@@ -13,6 +13,7 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     private let sessionBindInputSymbol: OwlBrowserRuntimeVoidUInt64
     private let sessionBindSurfaceTreeSymbol: OwlBrowserRuntimeVoidUInt64
     private let sessionBindNativeSurfaceHostSymbol: OwlBrowserRuntimeVoidUInt64
+    private let sessionBindDevToolsHostSymbol: OwlBrowserRuntimeVoidUInt64
     private let sessionFlushSymbol: OwlBrowserRuntimeBoolOut
     private let profileGetPathSymbol: OwlBrowserRuntimeStringOut
     private let webViewNavigateSymbol: OwlBrowserRuntimeVoidString
@@ -26,6 +27,9 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     private let nativeSurfaceCancelSymbol: OwlBrowserRuntimeBoolOut
     private let nativeSurfaceSelectFilePickerFilesJSONSymbol: OwlBrowserRuntimeStringInputBoolOut
     private let nativeSurfaceCancelFilePickerSymbol: OwlBrowserRuntimeBoolOut
+    private let devToolsOpenSymbol: OwlBrowserRuntimeDevToolsOpen
+    private let devToolsCloseSymbol: OwlBrowserRuntimeBoolOut
+    private let devToolsEvaluateJavaScriptSymbol: OwlBrowserRuntimeStringInputResult
     private let eventPoll: OwlBrowserRuntimePollEvents
     private let freeBuffer: OwlBrowserRuntimeFreeBuffer
 
@@ -45,6 +49,7 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
         self.sessionBindInputSymbol = symbols.sessionBindInput
         self.sessionBindSurfaceTreeSymbol = symbols.sessionBindSurfaceTree
         self.sessionBindNativeSurfaceHostSymbol = symbols.sessionBindNativeSurfaceHost
+        self.sessionBindDevToolsHostSymbol = symbols.sessionBindDevToolsHost
         self.sessionFlushSymbol = symbols.sessionFlush
         self.profileGetPathSymbol = symbols.profileGetPath
         self.webViewNavigateSymbol = symbols.webViewNavigate
@@ -58,6 +63,9 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
         self.nativeSurfaceCancelSymbol = symbols.nativeSurfaceCancel
         self.nativeSurfaceSelectFilePickerFilesJSONSymbol = symbols.nativeSurfaceSelectFilePickerFilesJSON
         self.nativeSurfaceCancelFilePickerSymbol = symbols.nativeSurfaceCancelFilePicker
+        self.devToolsOpenSymbol = symbols.devToolsOpen
+        self.devToolsCloseSymbol = symbols.devToolsClose
+        self.devToolsEvaluateJavaScriptSymbol = symbols.devToolsEvaluateJavaScript
         self.eventPoll = symbols.eventPoll
         self.freeBuffer = symbols.freeBuffer
     }
@@ -148,6 +156,15 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     ) throws {
         try callVoidResult("OwlFreshSession.bindNativeSurfaceHost") { errorPointer in
             sessionBindNativeSurfaceHostSymbol(session, nativeSurfaceHost.handle, errorPointer)
+        }
+    }
+
+    public func sessionBindDevToolsHost(
+        _ session: OpaquePointer?,
+        devtoolsHost: OwlFreshDevToolsHostReceiver
+    ) throws {
+        try callVoidResult("OwlFreshSession.bindDevToolsHost") { errorPointer in
+            sessionBindDevToolsHostSymbol(session, devtoolsHost.handle, errorPointer)
         }
     }
 
@@ -265,6 +282,32 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     public func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool {
         try callBoolResult("OwlFreshNativeSurfaceHost.cancelActiveFilePicker") { okPointer, errorPointer in
             nativeSurfaceCancelFilePickerSymbol(session, okPointer, errorPointer)
+        }
+    }
+
+    public func devToolsHostOpenDevTools(
+        _ session: OpaquePointer?,
+        mode: OwlFreshDevToolsMode
+    ) throws -> Bool {
+        try callBoolResult("OwlFreshDevToolsHost.openDevTools") { okPointer, errorPointer in
+            devToolsOpenSymbol(session, mode.rawValue, okPointer, errorPointer)
+        }
+    }
+
+    public func devToolsHostCloseDevTools(_ session: OpaquePointer?) throws -> Bool {
+        try callBoolResult("OwlFreshDevToolsHost.closeDevTools") { okPointer, errorPointer in
+            devToolsCloseSymbol(session, okPointer, errorPointer)
+        }
+    }
+
+    public func devToolsHostEvaluateDevToolsJavaScript(
+        _ session: OpaquePointer?,
+        script: String
+    ) throws -> String {
+        try script.withCString { scriptPointer in
+            try callStringResult("OwlFreshDevToolsHost.evaluateDevToolsJavaScript") { resultPointer, errorPointer in
+                devToolsEvaluateJavaScriptSymbol(session, scriptPointer, resultPointer, errorPointer)
+            }
         }
     }
 

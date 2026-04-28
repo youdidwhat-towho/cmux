@@ -80,6 +80,12 @@ public typealias OwlBrowserRuntimeStringInputBoolOut = @convention(c) (
     UnsafeMutablePointer<Bool>?,
     UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32
+public typealias OwlBrowserRuntimeDevToolsOpen = @convention(c) (
+    OpaquePointer?,
+    UInt32,
+    UnsafeMutablePointer<Bool>?,
+    UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
 public typealias OwlBrowserRuntimePollEvents = @convention(c) (UInt32) -> Void
 public typealias OwlBrowserRuntimeFreeBuffer = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
@@ -95,6 +101,7 @@ public struct OwlBrowserRuntimeSymbols {
     public let sessionBindInput: OwlBrowserRuntimeVoidUInt64
     public let sessionBindSurfaceTree: OwlBrowserRuntimeVoidUInt64
     public let sessionBindNativeSurfaceHost: OwlBrowserRuntimeVoidUInt64
+    public let sessionBindDevToolsHost: OwlBrowserRuntimeVoidUInt64
     public let sessionFlush: OwlBrowserRuntimeBoolOut
     public let profileGetPath: OwlBrowserRuntimeStringOut
     public let webViewNavigate: OwlBrowserRuntimeVoidString
@@ -108,6 +115,9 @@ public struct OwlBrowserRuntimeSymbols {
     public let nativeSurfaceCancel: OwlBrowserRuntimeBoolOut
     public let nativeSurfaceSelectFilePickerFilesJSON: OwlBrowserRuntimeStringInputBoolOut
     public let nativeSurfaceCancelFilePicker: OwlBrowserRuntimeBoolOut
+    public let devToolsOpen: OwlBrowserRuntimeDevToolsOpen
+    public let devToolsClose: OwlBrowserRuntimeBoolOut
+    public let devToolsEvaluateJavaScript: OwlBrowserRuntimeStringInputResult
     public let eventPoll: OwlBrowserRuntimePollEvents
     public let freeBuffer: OwlBrowserRuntimeFreeBuffer
 
@@ -123,6 +133,7 @@ public struct OwlBrowserRuntimeSymbols {
         sessionBindInput: @escaping OwlBrowserRuntimeVoidUInt64,
         sessionBindSurfaceTree: @escaping OwlBrowserRuntimeVoidUInt64,
         sessionBindNativeSurfaceHost: @escaping OwlBrowserRuntimeVoidUInt64,
+        sessionBindDevToolsHost: @escaping OwlBrowserRuntimeVoidUInt64,
         sessionFlush: @escaping OwlBrowserRuntimeBoolOut,
         profileGetPath: @escaping OwlBrowserRuntimeStringOut,
         webViewNavigate: @escaping OwlBrowserRuntimeVoidString,
@@ -136,6 +147,9 @@ public struct OwlBrowserRuntimeSymbols {
         nativeSurfaceCancel: @escaping OwlBrowserRuntimeBoolOut,
         nativeSurfaceSelectFilePickerFilesJSON: @escaping OwlBrowserRuntimeStringInputBoolOut,
         nativeSurfaceCancelFilePicker: @escaping OwlBrowserRuntimeBoolOut,
+        devToolsOpen: @escaping OwlBrowserRuntimeDevToolsOpen,
+        devToolsClose: @escaping OwlBrowserRuntimeBoolOut,
+        devToolsEvaluateJavaScript: @escaping OwlBrowserRuntimeStringInputResult,
         eventPoll: @escaping OwlBrowserRuntimePollEvents,
         freeBuffer: @escaping OwlBrowserRuntimeFreeBuffer
     ) {
@@ -150,6 +164,7 @@ public struct OwlBrowserRuntimeSymbols {
         self.sessionBindInput = sessionBindInput
         self.sessionBindSurfaceTree = sessionBindSurfaceTree
         self.sessionBindNativeSurfaceHost = sessionBindNativeSurfaceHost
+        self.sessionBindDevToolsHost = sessionBindDevToolsHost
         self.sessionFlush = sessionFlush
         self.profileGetPath = profileGetPath
         self.webViewNavigate = webViewNavigate
@@ -163,6 +178,9 @@ public struct OwlBrowserRuntimeSymbols {
         self.nativeSurfaceCancel = nativeSurfaceCancel
         self.nativeSurfaceSelectFilePickerFilesJSON = nativeSurfaceSelectFilePickerFilesJSON
         self.nativeSurfaceCancelFilePicker = nativeSurfaceCancelFilePicker
+        self.devToolsOpen = devToolsOpen
+        self.devToolsClose = devToolsClose
+        self.devToolsEvaluateJavaScript = devToolsEvaluateJavaScript
         self.eventPoll = eventPoll
         self.freeBuffer = freeBuffer
     }

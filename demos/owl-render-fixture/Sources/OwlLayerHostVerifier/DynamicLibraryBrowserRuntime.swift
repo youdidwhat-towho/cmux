@@ -70,6 +70,11 @@ private func loadRuntimeSymbols(_ handle: UnsafeMutableRawPointer) throws -> Owl
             "owl_fresh_mojo_session_bind_native_surface_host",
             as: OwlBrowserRuntimeVoidUInt64.self
         ),
+        sessionBindDevToolsHost: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_session_bind_devtools_host",
+            as: OwlBrowserRuntimeVoidUInt64.self
+        ),
         sessionFlush: try loadSymbol(handle, "owl_fresh_mojo_session_flush", as: OwlBrowserRuntimeBoolOut.self),
         profileGetPath: try loadSymbol(handle, "owl_fresh_mojo_profile_get_path", as: OwlBrowserRuntimeStringOut.self),
         webViewNavigate: try loadSymbol(handle, "owl_fresh_mojo_web_view_navigate", as: OwlBrowserRuntimeVoidString.self),
@@ -106,6 +111,21 @@ private func loadRuntimeSymbols(_ handle: UnsafeMutableRawPointer) throws -> Owl
             handle,
             "owl_fresh_mojo_native_surface_cancel_active_file_picker",
             as: OwlBrowserRuntimeBoolOut.self
+        ),
+        devToolsOpen: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_devtools_open",
+            as: OwlBrowserRuntimeDevToolsOpen.self
+        ),
+        devToolsClose: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_devtools_close",
+            as: OwlBrowserRuntimeBoolOut.self
+        ),
+        devToolsEvaluateJavaScript: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_devtools_evaluate_javascript",
+            as: OwlBrowserRuntimeStringInputResult.self
         ),
         eventPoll: try loadSymbol(handle, "owl_fresh_mojo_poll_events", as: OwlBrowserRuntimePollEvents.self),
         freeBuffer: try loadSymbol(handle, "owl_fresh_mojo_free_buffer", as: OwlBrowserRuntimeFreeBuffer.self)

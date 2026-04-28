@@ -24,6 +24,7 @@ private enum OwlLinkedBrowserRuntimeSymbols {
         sessionBindInput: owl_fresh_mojo_session_bind_input,
         sessionBindSurfaceTree: owl_fresh_mojo_session_bind_surface_tree,
         sessionBindNativeSurfaceHost: owl_fresh_mojo_session_bind_native_surface_host,
+        sessionBindDevToolsHost: owl_fresh_mojo_session_bind_devtools_host,
         sessionFlush: owl_fresh_mojo_session_flush,
         profileGetPath: owl_fresh_mojo_profile_get_path,
         webViewNavigate: owl_fresh_mojo_web_view_navigate,
@@ -37,6 +38,9 @@ private enum OwlLinkedBrowserRuntimeSymbols {
         nativeSurfaceCancel: owl_fresh_mojo_native_surface_cancel_active_popup,
         nativeSurfaceSelectFilePickerFilesJSON: owl_fresh_mojo_native_surface_select_active_file_picker_files_json,
         nativeSurfaceCancelFilePicker: owl_fresh_mojo_native_surface_cancel_active_file_picker,
+        devToolsOpen: owl_fresh_mojo_devtools_open,
+        devToolsClose: owl_fresh_mojo_devtools_close,
+        devToolsEvaluateJavaScript: owl_fresh_mojo_devtools_evaluate_javascript,
         eventPoll: owl_fresh_mojo_poll_events,
         freeBuffer: owl_fresh_mojo_free_buffer
     )
@@ -107,6 +111,13 @@ private func owl_fresh_mojo_session_bind_surface_tree(
 private func owl_fresh_mojo_session_bind_native_surface_host(
     _ session: OpaquePointer?,
     _ nativeSurfaceHost: UInt64,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_session_bind_devtools_host")
+private func owl_fresh_mojo_session_bind_devtools_host(
+    _ session: OpaquePointer?,
+    _ devToolsHost: UInt64,
     _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32
 
@@ -212,6 +223,29 @@ private func owl_fresh_mojo_native_surface_select_active_file_picker_files_json(
 private func owl_fresh_mojo_native_surface_cancel_active_file_picker(
     _ session: OpaquePointer?,
     _ ok: UnsafeMutablePointer<Bool>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_devtools_open")
+private func owl_fresh_mojo_devtools_open(
+    _ session: OpaquePointer?,
+    _ mode: UInt32,
+    _ ok: UnsafeMutablePointer<Bool>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_devtools_close")
+private func owl_fresh_mojo_devtools_close(
+    _ session: OpaquePointer?,
+    _ ok: UnsafeMutablePointer<Bool>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_devtools_evaluate_javascript")
+private func owl_fresh_mojo_devtools_evaluate_javascript(
+    _ session: OpaquePointer?,
+    _ script: UnsafePointer<CChar>?,
+    _ result: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
     _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32
 

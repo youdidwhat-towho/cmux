@@ -86,6 +86,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let input = GeneratedOwlFreshInputMojoTransport(sink: sink, recorder: recorder)
         let surfaceTree = GeneratedOwlFreshSurfaceTreeHostMojoTransport(sink: sink, recorder: recorder)
         let nativeSurface = GeneratedOwlFreshNativeSurfaceHostMojoTransport(sink: sink, recorder: recorder)
+        let devTools = GeneratedOwlFreshDevToolsHostMojoTransport(sink: sink, recorder: recorder)
 
         session.bindWebView(OwlFreshWebViewReceiver(handle: 10))
         webView.navigate("https://example.com/")
@@ -107,6 +108,9 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let canceled = try await nativeSurface.cancelActivePopup()
         let fileSelected = try await nativeSurface.selectActiveFilePickerFiles(["/tmp/owl.txt"])
         let fileCanceled = try await nativeSurface.cancelActiveFilePicker()
+        let devToolsOpened = try await devTools.openDevTools(.inline)
+        let devToolsResult = try await devTools.evaluateDevToolsJavaScript("window.owlDevTools")
+        let devToolsClosed = try await devTools.closeDevTools()
 
         XCTAssertTrue(flushed)
         XCTAssertEqual(tree.generation, 7)
@@ -114,6 +118,9 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         XCTAssertTrue(canceled)
         XCTAssertTrue(fileSelected)
         XCTAssertTrue(fileCanceled)
+        XCTAssertTrue(devToolsOpened)
+        XCTAssertEqual(devToolsResult, "{\"proof\":true}")
+        XCTAssertTrue(devToolsClosed)
         XCTAssertEqual(sink.calls, [
             "bindWebView",
             "navigate",
@@ -126,6 +133,9 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "cancelActivePopup",
             "selectActiveFilePickerFiles",
             "cancelActiveFilePicker",
+            "openDevTools",
+            "evaluateDevToolsJavaScript",
+            "closeDevTools",
         ])
         XCTAssertEqual(session.recordedCalls.map(\.method), [
             "bindWebView",
@@ -139,6 +149,9 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "cancelActivePopup",
             "selectActiveFilePickerFiles",
             "cancelActiveFilePicker",
+            "openDevTools",
+            "evaluateDevToolsJavaScript",
+            "closeDevTools",
         ])
         XCTAssertEqual(session.recordedCalls.map(\.interface), [
             "OwlFreshSession",
@@ -152,6 +165,9 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "OwlFreshNativeSurfaceHost",
             "OwlFreshNativeSurfaceHost",
             "OwlFreshNativeSurfaceHost",
+            "OwlFreshDevToolsHost",
+            "OwlFreshDevToolsHost",
+            "OwlFreshDevToolsHost",
         ])
         XCTAssertEqual(webView.recordedCalls, session.recordedCalls)
         XCTAssertEqual(session.recordedCalls[0].payloadType, "OwlFreshWebViewReceiver")
@@ -162,6 +178,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         XCTAssertEqual(session.recordedCalls[6].payloadType, "Void")
         XCTAssertEqual(session.recordedCalls[7].payloadType, "UInt32")
         XCTAssertEqual(session.recordedCalls[9].payloadType, "[String]")
+        XCTAssertEqual(session.recordedCalls[11].payloadType, "OwlFreshDevToolsMode")
+        XCTAssertEqual(session.recordedCalls[12].payloadType, "String")
     }
 
     func testGeneratedPipeBoundSinksForwardTypedCalls() async throws {
@@ -174,12 +192,14 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let input = GeneratedOwlFreshInputMojoTransport(sink: sinks, recorder: recorder)
         let surfaceTree = GeneratedOwlFreshSurfaceTreeHostMojoTransport(sink: sinks, recorder: recorder)
         let nativeSurface = GeneratedOwlFreshNativeSurfaceHostMojoTransport(sink: sinks, recorder: recorder)
+        let devTools = GeneratedOwlFreshDevToolsHostMojoTransport(sink: sinks, recorder: recorder)
 
         let profile: OwlFreshProfileReceiver = allocator.makeReceiver(OwlFreshProfileMojoInterfaceMarker.self)
         let webViewReceiver: OwlFreshWebViewReceiver = allocator.makeReceiver(OwlFreshWebViewMojoInterfaceMarker.self)
         let inputReceiver: OwlFreshInputReceiver = allocator.makeReceiver(OwlFreshInputMojoInterfaceMarker.self)
         let surfaceTreeReceiver: OwlFreshSurfaceTreeHostReceiver = allocator.makeReceiver(OwlFreshSurfaceTreeHostMojoInterfaceMarker.self)
         let nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver = allocator.makeReceiver(OwlFreshNativeSurfaceHostMojoInterfaceMarker.self)
+        let devToolsHost: OwlFreshDevToolsHostReceiver = allocator.makeReceiver(OwlFreshDevToolsHostMojoInterfaceMarker.self)
         let client: OwlFreshClientRemote = allocator.makeRemote(OwlFreshClientMojoInterfaceMarker.self)
 
         session.bindProfile(profile)
@@ -191,6 +211,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         session.bindSurfaceTree(surfaceTreeReceiver)
         try sinks.throwIfFailed()
         session.bindNativeSurfaceHost(nativeSurfaceHost)
+        try sinks.throwIfFailed()
+        session.bindDevToolsHost(devToolsHost)
         try sinks.throwIfFailed()
         session.setClient(client)
         try sinks.throwIfFailed()
@@ -204,11 +226,15 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let tree = try await surfaceTree.getSurfaceTree()
         let accepted = try await nativeSurface.acceptActivePopupMenuItem(2)
         let selected = try await nativeSurface.selectActiveFilePickerFiles(["/tmp/owl.txt"])
+        let devToolsOpened = try await devTools.openDevTools(.window)
+        let devToolsResult = try await devTools.evaluateDevToolsJavaScript("window.owlDevTools")
 
         XCTAssertTrue(ok)
         XCTAssertEqual(tree.generation, 42)
         XCTAssertTrue(accepted)
         XCTAssertTrue(selected)
+        XCTAssertTrue(devToolsOpened)
+        XCTAssertEqual(devToolsResult, "{\"proof\":true}")
         XCTAssertEqual(
             [
                 profile.handle,
@@ -216,9 +242,10 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
                 inputReceiver.handle,
                 surfaceTreeReceiver.handle,
                 nativeSurfaceHost.handle,
+                devToolsHost.handle,
                 client.handle,
             ],
-            [1, 2, 3, 4, 5, 6]
+            [1, 2, 3, 4, 5, 6, 7]
         )
         XCTAssertEqual(pipe.calls, [
             "sessionBindProfile:1",
@@ -226,7 +253,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "sessionBindInput:3",
             "sessionBindSurfaceTree:4",
             "sessionBindNativeSurfaceHost:5",
-            "sessionSetClient:6",
+            "sessionBindDevToolsHost:6",
+            "sessionSetClient:7",
             "webViewNavigate:https://example.com/",
             "webViewResize:640x480@2.0",
             "inputSendKey:36:\n",
@@ -234,8 +262,11 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "surfaceTreeHostGetSurfaceTree",
             "nativeSurfaceHostAcceptActivePopupMenuItem:2",
             "nativeSurfaceHostSelectActiveFilePickerFiles:/tmp/owl.txt",
+            "devToolsHostOpenDevTools:1",
+            "devToolsHostEvaluateDevToolsJavaScript:window.owlDevTools",
         ])
         XCTAssertEqual(recorder.recordedCalls.map(\.interface), [
+            "OwlFreshSession",
             "OwlFreshSession",
             "OwlFreshSession",
             "OwlFreshSession",
@@ -249,6 +280,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "OwlFreshSurfaceTreeHost",
             "OwlFreshNativeSurfaceHost",
             "OwlFreshNativeSurfaceHost",
+            "OwlFreshDevToolsHost",
+            "OwlFreshDevToolsHost",
         ])
     }
 
@@ -326,7 +359,8 @@ private final class FakeOwlFreshSink:
     OwlFreshWebViewMojoSink,
     OwlFreshInputMojoSink,
     OwlFreshSurfaceTreeHostMojoSink,
-    OwlFreshNativeSurfaceHostMojoSink
+    OwlFreshNativeSurfaceHostMojoSink,
+    OwlFreshDevToolsHostMojoSink
 {
     var calls: [String] = []
 
@@ -352,6 +386,10 @@ private final class FakeOwlFreshSink:
 
     func bindNativeSurfaceHost(_ nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver) {
         calls.append("bindNativeSurfaceHost")
+    }
+
+    func bindDevToolsHost(_ devtoolsHost: OwlFreshDevToolsHostReceiver) {
+        calls.append("bindDevToolsHost")
     }
 
     func navigate(_ url: String) {
@@ -413,6 +451,21 @@ private final class FakeOwlFreshSink:
         calls.append("cancelActiveFilePicker")
         return true
     }
+
+    func openDevTools(_ mode: OwlFreshDevToolsMode) async throws -> Bool {
+        calls.append("openDevTools")
+        return true
+    }
+
+    func closeDevTools() async throws -> Bool {
+        calls.append("closeDevTools")
+        return true
+    }
+
+    func evaluateDevToolsJavaScript(_ script: String) async throws -> String {
+        calls.append("evaluateDevToolsJavaScript")
+        return "{\"proof\":true}"
+    }
 }
 
 private final class FakePipeBindings: OwlFreshMojoPipeBindings {
@@ -440,6 +493,10 @@ private final class FakePipeBindings: OwlFreshMojoPipeBindings {
 
     func sessionBindNativeSurfaceHost(_ session: OpaquePointer?, nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver) throws {
         calls.append("sessionBindNativeSurfaceHost:\(nativeSurfaceHost.handle)")
+    }
+
+    func sessionBindDevToolsHost(_ session: OpaquePointer?, devtoolsHost: OwlFreshDevToolsHostReceiver) throws {
+        calls.append("sessionBindDevToolsHost:\(devtoolsHost.handle)")
     }
 
     func sessionFlush(_ session: OpaquePointer?) throws -> Bool {
@@ -500,5 +557,20 @@ private final class FakePipeBindings: OwlFreshMojoPipeBindings {
     func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool {
         calls.append("nativeSurfaceHostCancelActiveFilePicker")
         return true
+    }
+
+    func devToolsHostOpenDevTools(_ session: OpaquePointer?, mode: OwlFreshDevToolsMode) throws -> Bool {
+        calls.append("devToolsHostOpenDevTools:\(mode.rawValue)")
+        return true
+    }
+
+    func devToolsHostCloseDevTools(_ session: OpaquePointer?) throws -> Bool {
+        calls.append("devToolsHostCloseDevTools")
+        return true
+    }
+
+    func devToolsHostEvaluateDevToolsJavaScript(_ session: OpaquePointer?, script: String) throws -> String {
+        calls.append("devToolsHostEvaluateDevToolsJavaScript:\(script)")
+        return "{\"proof\":true}"
     }
 }

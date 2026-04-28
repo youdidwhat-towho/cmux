@@ -261,6 +261,12 @@ public enum OwlFreshSurfaceKind: UInt32, Codable, CaseIterable {
     case popupWidget = 1
     case nativeMenu = 2
     case nativeFilePicker = 3
+    case devTools = 4
+}
+
+public enum OwlFreshDevToolsMode: UInt32, Codable, CaseIterable {
+    case inline = 0
+    case window = 1
 }
 
 public struct OwlFreshNativeMenuItem: Equatable, Codable {
@@ -645,6 +651,7 @@ public protocol OwlFreshSessionMojoInterface {
     func bindInput(_ input: OwlFreshInputReceiver)
     func bindSurfaceTree(_ surfaceTree: OwlFreshSurfaceTreeHostReceiver)
     func bindNativeSurfaceHost(_ nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver)
+    func bindDevToolsHost(_ devtoolsHost: OwlFreshDevToolsHostReceiver)
     func flush() async throws -> Bool
 }
 
@@ -655,6 +662,7 @@ public protocol OwlFreshSessionMojoSink: AnyObject {
     func bindInput(_ input: OwlFreshInputReceiver)
     func bindSurfaceTree(_ surfaceTree: OwlFreshSurfaceTreeHostReceiver)
     func bindNativeSurfaceHost(_ nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver)
+    func bindDevToolsHost(_ devtoolsHost: OwlFreshDevToolsHostReceiver)
     func flush() async throws -> Bool
 }
 
@@ -709,6 +717,11 @@ public final class GeneratedOwlFreshSessionMojoTransport: OwlFreshSessionMojoInt
     public func bindNativeSurfaceHost(_ nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver) {
         record(method: "bindNativeSurfaceHost", payloadType: "OwlFreshNativeSurfaceHostReceiver", payloadSummary: String(describing: nativeSurfaceHost))
         sink.bindNativeSurfaceHost(nativeSurfaceHost)
+    }
+
+    public func bindDevToolsHost(_ devtoolsHost: OwlFreshDevToolsHostReceiver) {
+        record(method: "bindDevToolsHost", payloadType: "OwlFreshDevToolsHostReceiver", payloadSummary: String(describing: devtoolsHost))
+        sink.bindDevToolsHost(devtoolsHost)
     }
 
     public func flush() async throws -> Bool {
@@ -1003,6 +1016,61 @@ public final class GeneratedOwlFreshNativeSurfaceHostMojoTransport: OwlFreshNati
     }
 }
 
+public enum OwlFreshDevToolsHostMojoInterfaceMarker {}
+public typealias OwlFreshDevToolsHostRemote = MojoPendingRemote<OwlFreshDevToolsHostMojoInterfaceMarker>
+public typealias OwlFreshDevToolsHostReceiver = MojoPendingReceiver<OwlFreshDevToolsHostMojoInterfaceMarker>
+
+public protocol OwlFreshDevToolsHostMojoInterface {
+    func openDevTools(_ mode: OwlFreshDevToolsMode) async throws -> Bool
+    func closeDevTools() async throws -> Bool
+    func evaluateDevToolsJavaScript(_ script: String) async throws -> String
+}
+
+public protocol OwlFreshDevToolsHostMojoSink: AnyObject {
+    func openDevTools(_ mode: OwlFreshDevToolsMode) async throws -> Bool
+    func closeDevTools() async throws -> Bool
+    func evaluateDevToolsJavaScript(_ script: String) async throws -> String
+}
+
+public final class GeneratedOwlFreshDevToolsHostMojoTransport: OwlFreshDevToolsHostMojoInterface {
+    public var recordedCalls: [OwlFreshMojoTransportCall] { recorder.recordedCalls }
+    private let sink: OwlFreshDevToolsHostMojoSink
+    private let recorder: OwlFreshMojoTransportRecorder
+
+    public init(sink: OwlFreshDevToolsHostMojoSink, recorder: OwlFreshMojoTransportRecorder = OwlFreshMojoTransportRecorder()) {
+        self.sink = sink
+        self.recorder = recorder
+    }
+
+    public func resetRecordedCalls() {
+        recorder.reset()
+    }
+
+    private func record(method: String, payloadType: String, payloadSummary: String) {
+        recorder.record(
+            interface: "OwlFreshDevToolsHost",
+            method: method,
+            payloadType: payloadType,
+            payloadSummary: payloadSummary
+        )
+    }
+
+    public func openDevTools(_ mode: OwlFreshDevToolsMode) async throws -> Bool {
+        record(method: "openDevTools", payloadType: "OwlFreshDevToolsMode", payloadSummary: String(describing: mode))
+        return try await sink.openDevTools(mode)
+    }
+
+    public func closeDevTools() async throws -> Bool {
+        record(method: "closeDevTools", payloadType: "Void", payloadSummary: "")
+        return try await sink.closeDevTools()
+    }
+
+    public func evaluateDevToolsJavaScript(_ script: String) async throws -> String {
+        record(method: "evaluateDevToolsJavaScript", payloadType: "String", payloadSummary: String(describing: script))
+        return try await sink.evaluateDevToolsJavaScript(script)
+    }
+}
+
 public protocol OwlFreshMojoPipeBindings: AnyObject {
     func sessionSetClient(_ session: OpaquePointer?, client: OwlFreshClientRemote) throws
     func sessionBindProfile(_ session: OpaquePointer?, profile: OwlFreshProfileReceiver) throws
@@ -1010,6 +1078,7 @@ public protocol OwlFreshMojoPipeBindings: AnyObject {
     func sessionBindInput(_ session: OpaquePointer?, input: OwlFreshInputReceiver) throws
     func sessionBindSurfaceTree(_ session: OpaquePointer?, surfaceTree: OwlFreshSurfaceTreeHostReceiver) throws
     func sessionBindNativeSurfaceHost(_ session: OpaquePointer?, nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver) throws
+    func sessionBindDevToolsHost(_ session: OpaquePointer?, devtoolsHost: OwlFreshDevToolsHostReceiver) throws
     func sessionFlush(_ session: OpaquePointer?) throws -> Bool
     func profileGetPath(_ session: OpaquePointer?) throws -> String
     func webViewNavigate(_ session: OpaquePointer?, url: String) throws
@@ -1023,6 +1092,9 @@ public protocol OwlFreshMojoPipeBindings: AnyObject {
     func nativeSurfaceHostCancelActivePopup(_ session: OpaquePointer?) throws -> Bool
     func nativeSurfaceHostSelectActiveFilePickerFiles(_ session: OpaquePointer?, paths: [String]) throws -> Bool
     func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool
+    func devToolsHostOpenDevTools(_ session: OpaquePointer?, mode: OwlFreshDevToolsMode) throws -> Bool
+    func devToolsHostCloseDevTools(_ session: OpaquePointer?) throws -> Bool
+    func devToolsHostEvaluateDevToolsJavaScript(_ session: OpaquePointer?, script: String) throws -> String
 }
 
 public final class GeneratedOwlFreshMojoPipeBoundSinks:
@@ -1031,7 +1103,8 @@ public final class GeneratedOwlFreshMojoPipeBoundSinks:
     OwlFreshWebViewMojoSink,
     OwlFreshInputMojoSink,
     OwlFreshSurfaceTreeHostMojoSink,
-    OwlFreshNativeSurfaceHostMojoSink
+    OwlFreshNativeSurfaceHostMojoSink,
+    OwlFreshDevToolsHostMojoSink
 {
     private let session: OpaquePointer?
     private let pipe: OwlFreshMojoPipeBindings
@@ -1090,6 +1163,12 @@ public final class GeneratedOwlFreshMojoPipeBoundSinks:
     public func bindNativeSurfaceHost(_ nativeSurfaceHost: OwlFreshNativeSurfaceHostReceiver) {
         forward {
             try pipe.sessionBindNativeSurfaceHost(session, nativeSurfaceHost: nativeSurfaceHost)
+        }
+    }
+
+    public func bindDevToolsHost(_ devtoolsHost: OwlFreshDevToolsHostReceiver) {
+        forward {
+            try pipe.sessionBindDevToolsHost(session, devtoolsHost: devtoolsHost)
         }
     }
 
@@ -1154,6 +1233,18 @@ public final class GeneratedOwlFreshMojoPipeBoundSinks:
     public func cancelActiveFilePicker() async throws -> Bool {
         return try pipe.nativeSurfaceHostCancelActiveFilePicker(session)
     }
+
+    public func openDevTools(_ mode: OwlFreshDevToolsMode) async throws -> Bool {
+        return try pipe.devToolsHostOpenDevTools(session, mode: mode)
+    }
+
+    public func closeDevTools() async throws -> Bool {
+        return try pipe.devToolsHostCloseDevTools(session)
+    }
+
+    public func evaluateDevToolsJavaScript(_ script: String) async throws -> String {
+        return try pipe.devToolsHostEvaluateDevToolsJavaScript(session, script: script)
+    }
 }
 
 public struct MojoSchemaDeclaration: Equatable, Codable {
@@ -1163,13 +1254,14 @@ public struct MojoSchemaDeclaration: Equatable, Codable {
 
 public enum OwlFreshMojoSchema {
     public static let module = "content.mojom"
-    public static let sourceChecksum = "fnv1a64:3412aed9fd7f2841"
+    public static let sourceChecksum = "fnv1a64:2118eb8adbed0132"
     public static let declarations: [MojoSchemaDeclaration] = [
         MojoSchemaDeclaration(kind: "enum", name: "OwlFreshMouseKind"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshMouseEvent"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshKeyEvent"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshCompositorInfo"),
         MojoSchemaDeclaration(kind: "enum", name: "OwlFreshSurfaceKind"),
+        MojoSchemaDeclaration(kind: "enum", name: "OwlFreshDevToolsMode"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshNativeMenuItem"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshSurfaceInfo"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshSurfaceTree"),
@@ -1180,6 +1272,7 @@ public enum OwlFreshMojoSchema {
         MojoSchemaDeclaration(kind: "interface", name: "OwlFreshWebView"),
         MojoSchemaDeclaration(kind: "interface", name: "OwlFreshInput"),
         MojoSchemaDeclaration(kind: "interface", name: "OwlFreshSurfaceTreeHost"),
-        MojoSchemaDeclaration(kind: "interface", name: "OwlFreshNativeSurfaceHost")
+        MojoSchemaDeclaration(kind: "interface", name: "OwlFreshNativeSurfaceHost"),
+        MojoSchemaDeclaration(kind: "interface", name: "OwlFreshDevToolsHost")
     ]
 }
