@@ -98,7 +98,10 @@ func cmuxSurfacePointerAppearsLive(_ surface: ghostty_surface_t) -> Bool {
     // Best-effort check: reject pointers that no longer belong to an active
     // malloc zone allocation. A Swift wrapper around `ghostty_surface_t` can
     // remain non-nil after the backing native surface has already been freed.
-    cmuxPointerAppearsLive(surface)
+    guard TerminalSurfaceRegistry.shared.runtimeSurfaceOwnerId(surface) != nil else {
+        return false
+    }
+    return cmuxPointerAppearsLive(surface)
 }
 
 func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
@@ -119,7 +122,11 @@ func cmuxCurrentSurfaceFontSizePoints(_ surface: ghostty_surface_t) -> Float? {
 func cmuxInheritedSurfaceConfig(
     sourceSurface: ghostty_surface_t,
     context: ghostty_surface_context_e
-) -> CmuxSurfaceConfigTemplate {
+) -> CmuxSurfaceConfigTemplate? {
+    guard cmuxSurfacePointerAppearsLive(sourceSurface) else {
+        return nil
+    }
+
     let inherited = ghostty_surface_inherited_config(sourceSurface, context)
     var config = CmuxSurfaceConfigTemplate(cConfig: inherited)
 
@@ -230,7 +237,7 @@ struct WorkspaceTabChromeProjectionState {
         let hasCustomTitle: Bool
         let icon: String?
         let iconImageData: Data?
-        let kind: PanelType?
+        let kind: WorkspaceLayoutTabKind?
         let isDirty: Bool
         let showsNotificationBadge: Bool
         let isLoading: Bool
@@ -241,7 +248,7 @@ struct WorkspaceTabChromeProjectionState {
 }
 
 @MainActor
-final class WorkspaceSurfaceRegistry {
+final class WorkspaceSurfaceRegistry: WorkspaceSurfaceRegistryProtocol {
     private unowned let workspace: Workspace
     private var retainedHosts: [WorkspacePaneMountIdentity: any WorkspaceRetainedSurfaceHost] = [:]
 
@@ -7172,6 +7179,53 @@ private struct WorkspaceFocusTransactionCoordinator {
     }
 }
 
+enum WorkspaceSurfaceIdentifierClipboardText {
+    static func make(workspaceId: UUID, workspaceRef: String? = nil) -> String {
+        var lines: [String] = []
+        if let workspaceRef {
+            lines.append("workspace_ref=\(workspaceRef)")
+        }
+        lines.append("workspace_id=\(workspaceId.uuidString)")
+        return lines.joined(separator: "\n")
+    }
+
+    static func make(workspaceIds: [UUID]) -> String {
+        workspaceIds.map { make(workspaceId: $0) }.joined(separator: "\n\n")
+    }
+
+    static func make(workspaces: [(id: UUID, ref: String?)]) -> String {
+        workspaces
+            .map { make(workspaceId: $0.id, workspaceRef: $0.ref) }
+            .joined(separator: "\n\n")
+    }
+
+    static func make(
+        workspaceId: UUID,
+        paneId: UUID? = nil,
+        surfaceId: UUID,
+        workspaceRef: String? = nil,
+        paneRef: String? = nil,
+        surfaceRef: String? = nil
+    ) -> String {
+        var lines: [String] = []
+        if let workspaceRef {
+            lines.append("workspace_ref=\(workspaceRef)")
+        }
+        lines.append("workspace_id=\(workspaceId.uuidString)")
+        if let paneRef {
+            lines.append("pane_ref=\(paneRef)")
+        }
+        if let paneId {
+            lines.append("pane_id=\(paneId.uuidString)")
+        }
+        if let surfaceRef {
+            lines.append("surface_ref=\(surfaceRef)")
+        }
+        lines.append("surface_id=\(surfaceId.uuidString)")
+        return lines.joined(separator: "\n")
+    }
+}
+
 /// Workspace represents a sidebar tab.
 /// Each workspace contains one WorkspaceLayoutController that manages split panes and nested surfaces.
 @MainActor
@@ -7505,12 +7559,24 @@ final class Workspace: Identifiable, ObservableObject {
     // MARK: - Initialization
 
     private static func currentSplitButtonTooltips() -> WorkspaceLayoutConfiguration.SplitButtonTooltips {
-        WorkspaceLayoutConfiguration.SplitButtonTooltips(
+        configureWorkspaceSplitShortcutHints()
+        return WorkspaceLayoutConfiguration.SplitButtonTooltips(
             newTerminal: KeyboardShortcutSettings.Action.newSurface.tooltip("New Terminal"),
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
             splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down")
         )
+    }
+
+    private static func configureWorkspaceSplitShortcutHints() {
+        WorkspaceLayoutShortcutHintSettings.selectSurfaceByNumberShortcutProvider = {
+            let shortcut = KeyboardShortcutSettings.selectSurfaceByNumberShortcut()
+            return WorkspaceLayoutNumberedShortcutHint(
+                hasChord: shortcut.hasChord,
+                modifierFlags: shortcut.modifierFlags,
+                modifierDisplayString: shortcut.modifierDisplayString
+            )
+        }
     }
 
     private static func splitAppearance(from config: GhosttyConfig) -> WorkspaceLayoutConfiguration.Appearance {
@@ -8239,7 +8305,7 @@ final class Workspace: Identifiable, ObservableObject {
             hasCustomTitle: surfaceState.customTitle != nil,
             icon: panel.displayIcon,
             iconImageData: browserState?.iconImageData,
-            kind: surfaceKind(for: panel),
+            kind: WorkspaceLayoutTabKind(surfaceKind(for: panel)),
             isDirty: panel.isDirty,
             showsNotificationBadge: Self.shouldShowUnreadIndicator(
                 hasUnreadNotification: hasUnreadNotification,
@@ -8419,7 +8485,7 @@ final class Workspace: Identifiable, ObservableObject {
                     isFocused: presentationFacts.isFocused,
                     isVisibleInUI: presentationFacts.isVisibleInUI,
                     isSplit: splitController.allPaneIds.count > 1 || panels.count > 1,
-                    appearance: context.appearance,
+                    appearance: WorkspaceTerminalPaneAppearance(context.appearance),
                     hasUnreadNotification: showsNotificationRing && !context.usesWorkspacePaneOverlay,
                     onFocus: { [weak self, weak terminalPanel] in
                         guard let self, let terminalPanel else { return }
@@ -10005,7 +10071,9 @@ final class Workspace: Identifiable, ObservableObject {
 
     private func rememberTerminalConfigInheritanceSource(_ terminalPanel: TerminalPanel) {
         lastTerminalConfigInheritancePanelId = terminalPanel.id
-        if let sourceSurface = terminalPanel.surface.surface,
+        if let sourceSurface = terminalPanel.surface.liveSurfaceForGhosttyAccess(
+            reason: "terminal.config.rememberInheritance"
+        ),
            let runtimePoints = cmuxCurrentSurfaceFontSizePoints(sourceSurface) {
             let existing = terminalInheritanceFontPointsByPanelId[terminalPanel.id]
             if existing == nil || abs((existing ?? runtimePoints) - runtimePoints) > 0.05 {
@@ -10096,7 +10164,7 @@ final class Workspace: Identifiable, ObservableObject {
         inPane preferredPaneId: PaneID? = nil
     ) -> CmuxSurfaceConfigTemplate? {
         // Walk candidates in priority order and use the first panel that still exposes
-        // a runtime surface pointer.
+        // a registered live runtime surface pointer.
         for terminalPanel in terminalPanelConfigInheritanceCandidates(
             preferredPanelId: preferredPanelId,
             inPane: preferredPaneId
@@ -10107,11 +10175,13 @@ final class Workspace: Identifiable, ObservableObject {
             // ghostty_surface_inherited_config or cmuxCurrentSurfaceFontSizePoints
             // is still reading through the pointer.
             let surface = terminalPanel.surface
-            guard let sourceSurface = surface.surface else { continue }
-            var config = cmuxInheritedSurfaceConfig(
+            guard let sourceSurface = surface.liveSurfaceForGhosttyAccess(
+                reason: "terminal.config.inherit"
+            ) else { continue }
+            guard var config = cmuxInheritedSurfaceConfig(
                 sourceSurface: sourceSurface,
                 context: GHOSTTY_SURFACE_CONTEXT_SPLIT
-            )
+            ) else { continue }
             if let rootedFontPoints = resolvedTerminalInheritanceFontPoints(
                 for: terminalPanel,
                 sourceSurface: sourceSurface,
@@ -11717,6 +11787,28 @@ final class Workspace: Identifiable, ObservableObject {
         return shortcuts
     }
 
+    private func copyIdentifiersToPasteboard(surfaceId: UUID) {
+        let paneId = paneId(forPanelId: surfaceId)?.id
+        let refs = TerminalController.shared.v2WorkspacePaneAndSurfaceRefs(
+            workspaceId: id,
+            paneId: paneId,
+            surfaceId: surfaceId
+        )
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(
+            WorkspaceSurfaceIdentifierClipboardText.make(
+                workspaceId: id,
+                paneId: paneId,
+                surfaceId: surfaceId,
+                workspaceRef: refs.workspaceRef,
+                paneRef: refs.paneRef,
+                surfaceRef: refs.surfaceRef
+            ),
+            forType: .string
+        )
+    }
+
     // MARK: - Flash/Notification Support
 
     func triggerFocusFlash(panelId: UUID) {
@@ -13083,8 +13175,8 @@ extension Workspace: WorkspaceLayoutDelegate {
         }
     }
 
-    func workspaceSplit(didRequestNewTab kind: PanelType, inPane pane: PaneID) {
-        switch kind {
+    func workspaceSplit(didRequestNewTab kind: WorkspaceLayoutTabKind, inPane pane: PaneID) {
+        switch kind.panelType {
         case .terminal:
             _ = performLayoutCommand(.createTerminal(inPane: pane))
         case .browser:
@@ -13101,6 +13193,9 @@ extension Workspace: WorkspaceLayoutDelegate {
         case .clearName:
             guard hasLivePanel(for: tabId) else { return }
             setPanelCustomTitle(panelId: tabId.id, title: nil)
+        case .copyIdentifiers:
+            guard hasLivePanel(for: tabId) else { return }
+            copyIdentifiersToPasteboard(surfaceId: tabId.id)
         case .closeToLeft:
             closeTabs(tabIdsToLeft(of: tabId, inPane: pane))
         case .closeToRight:

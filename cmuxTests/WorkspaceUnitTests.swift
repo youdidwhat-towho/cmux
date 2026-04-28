@@ -3800,11 +3800,11 @@ final class WorkspaceSurfaceRegistryTests: XCTestCase {
             isFocused: true,
             isVisibleInUI: true,
             isSplit: false,
-            appearance: PanelAppearance(
+            appearance: WorkspaceTerminalPaneAppearance(PanelAppearance(
                 dividerColor: .clear,
                 unfocusedOverlayNSColor: .clear,
                 unfocusedOverlayOpacity: 0
-            ),
+            )),
             hasUnreadNotification: false,
             onFocus: {},
             onTriggerFlash: {}
@@ -4114,11 +4114,11 @@ final class WorkspaceSurfaceRegistryTests: XCTestCase {
             isFocused: false,
             isVisibleInUI: false,
             isSplit: false,
-            appearance: PanelAppearance(
+            appearance: WorkspaceTerminalPaneAppearance(PanelAppearance(
                 dividerColor: .clear,
                 unfocusedOverlayNSColor: .clear,
                 unfocusedOverlayOpacity: 0
-            ),
+            )),
             hasUnreadNotification: false,
             onFocus: {},
             onTriggerFlash: {}

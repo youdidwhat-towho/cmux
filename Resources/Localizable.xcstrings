@@ -20844,6 +20844,29 @@
         }
       }
     },
+    "command.copyIdentifiers.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Copy IDs"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "IDをコピー"
+          }
+        },
+        "ko": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ID 복사"
+          }
+        }
+      }
+    },
     "command.pinTab.title": {
       "extractionState": "manual",
       "localizations": {

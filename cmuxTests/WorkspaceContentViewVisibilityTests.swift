@@ -10,6 +10,26 @@ import AppKit
 #endif
 
 final class WorkspaceContentViewVisibilityTests: XCTestCase {
+    private func terminalLifecycleFacts(
+        isVisibleInUI: Bool,
+        isWindowed: Bool,
+        hasUsableGeometry: Bool,
+        hasRuntime: Bool,
+        hasPresentedFrame: Bool,
+        isActive: Bool
+    ) -> WorkspaceSurfaceLifecycleFacts {
+        WorkspaceSurfaceLifecycleFacts(
+            TerminalViewportLifecycleFacts(
+                isVisibleInUI: isVisibleInUI,
+                isWindowed: isWindowed,
+                hasUsableGeometry: hasUsableGeometry,
+                hasRuntime: hasRuntime,
+                hasPresentedFrame: hasPresentedFrame,
+                isActive: isActive
+            )
+        )
+    }
+
     @MainActor
     private func terminalViewport(
         paneId: PaneID,
@@ -21,11 +41,11 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
                 isFocused: true,
                 isVisibleInUI: true,
                 isSplit: false,
-                appearance: PanelAppearance(
+                appearance: WorkspaceTerminalPaneAppearance(PanelAppearance(
                     dividerColor: .clear,
                     unfocusedOverlayNSColor: .clear,
                     unfocusedOverlayOpacity: 0
-                ),
+                )),
                 hasUnreadNotification: false,
                 onFocus: {},
                 onTriggerFlash: {}
@@ -350,7 +370,7 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
     func testTerminalRevealPhaseWaitsForFirstPresentedFrame() {
         XCTAssertEqual(
             WorkspaceSurfaceRevealPhase(
-                terminalFacts: TerminalViewportLifecycleFacts(
+                lifecycleFacts: terminalLifecycleFacts(
                     isVisibleInUI: true,
                     isWindowed: false,
                     hasUsableGeometry: false,
@@ -364,7 +384,7 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
 
         XCTAssertEqual(
             WorkspaceSurfaceRevealPhase(
-                terminalFacts: TerminalViewportLifecycleFacts(
+                lifecycleFacts: terminalLifecycleFacts(
                     isVisibleInUI: true,
                     isWindowed: true,
                     hasUsableGeometry: false,
@@ -378,7 +398,7 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
 
         XCTAssertEqual(
             WorkspaceSurfaceRevealPhase(
-                terminalFacts: TerminalViewportLifecycleFacts(
+                lifecycleFacts: terminalLifecycleFacts(
                     isVisibleInUI: true,
                     isWindowed: true,
                     hasUsableGeometry: true,
@@ -392,7 +412,7 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
 
         XCTAssertEqual(
             WorkspaceSurfaceRevealPhase(
-                terminalFacts: TerminalViewportLifecycleFacts(
+                lifecycleFacts: terminalLifecycleFacts(
                     isVisibleInUI: true,
                     isWindowed: true,
                     hasUsableGeometry: true,
@@ -406,7 +426,7 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
 
         XCTAssertEqual(
             WorkspaceSurfaceRevealPhase(
-                terminalFacts: TerminalViewportLifecycleFacts(
+                lifecycleFacts: terminalLifecycleFacts(
                     isVisibleInUI: true,
                     isWindowed: true,
                     hasUsableGeometry: true,
