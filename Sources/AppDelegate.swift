@@ -6588,7 +6588,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            self?.scheduleTabCloseButtonPositionRefreshAcrossWorkspaces()
+            Task { @MainActor [weak self] in
+                self?.scheduleTabCloseButtonPositionRefreshAcrossWorkspaces()
+            }
         }
     }
 
