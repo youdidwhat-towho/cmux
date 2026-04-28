@@ -6946,14 +6946,11 @@ struct WebViewRepresentable: NSViewRepresentable {
                 return
             }
             if window.firstResponder === webView {
-                let promoted = panel.promoteWebContentFirstResponderIfPossible(
-                    in: window,
-                    reason: "content.apply.wrapper"
-                )
+                panel.noteWebViewFocused()
 #if DEBUG
                 dlog(
                     "browser.focus.content.apply panel=\(panel.id.uuidString.prefix(5)) " +
-                    "action=promoteWrapper result=\(promoted ? 1 : 0) " +
+                    "action=observeWrapper " +
                     "actual=\(panel.actualFocus(in: window).debugDescription) " +
                     "fr=\(responderDescription(window.firstResponder))"
                 )

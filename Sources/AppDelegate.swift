@@ -5954,8 +5954,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         let actualFocus = browserPanel.actualFocus(in: window)
         switch actualFocus {
-        case let .browserWebContent(actualPanelId) where actualPanelId == panelId,
-             let .browserAddressBar(actualPanelId) where actualPanelId == panelId,
+        case let .browserAddressBar(actualPanelId) where actualPanelId == panelId,
              let .browserFindField(actualPanelId) where actualPanelId == panelId:
             return
         default:

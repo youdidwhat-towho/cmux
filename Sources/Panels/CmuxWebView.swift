@@ -192,6 +192,7 @@ final class CmuxWebView: WKWebView {
     /// BrowserPanel owns this policy and updates it before app-initiated focus handoffs.
     var allowsFirstResponderAcquisition: Bool = false
     private var pointerFocusAllowanceDepth: Int = 0
+    private var spaceContentCandidateForwardingDepth: Int = 0
     private var lastPasteAsPlainTextPerformKeyEventTimestamp: TimeInterval?
     var allowsFirstResponderAcquisitionEffective: Bool {
         allowsFirstResponderAcquisition || pointerFocusAllowanceDepth > 0
@@ -286,19 +287,6 @@ final class CmuxWebView: WKWebView {
     }
 
     @discardableResult
-    func promoteWebContentFirstResponderIfPossible(
-        in window: NSWindow,
-        reason: String
-    ) -> CmuxWebContentFirstResponderResult {
-        focusWebContentCandidateFirstResponder(
-            in: window,
-            event: "browser.focus.promoteWebContent",
-            reason: reason,
-            mode: "content_candidate"
-        )
-    }
-
-    @discardableResult
     private func focusWrapperFirstResponder(
         in window: NSWindow,
         event: String,
@@ -308,6 +296,13 @@ final class CmuxWebView: WKWebView {
         if let firstResponderView = window.firstResponder as? NSView,
            firstResponderView !== self,
            firstResponderView.isDescendant(of: self) {
+            if forceWrapperReactivation {
+                let focusedWrapper = window.makeFirstResponder(self)
+                if focusedWrapper {
+                    NotificationCenter.default.post(name: .browserDidBecomeFirstResponderWebView, object: self)
+                }
+                return focusedWrapper ? .wrapperOnly : .failed
+            }
 #if DEBUG
             dlog(
                 "\(event) web=\(ObjectIdentifier(self)) " +
@@ -321,44 +316,9 @@ final class CmuxWebView: WKWebView {
             return .content
         }
 
-        let contentFocusResult = focusWebContentCandidateFirstResponder(
-            in: window,
-            event: event,
-            reason: reason,
-            mode: "content_candidate"
-        )
-        if contentFocusResult.didFocusContent {
-            return .content
-        }
-
         if window.firstResponder === self {
             if forceWrapperReactivation {
-                let cleared = window.makeFirstResponder(nil)
-                let focusedWrapper = window.makeFirstResponder(self)
-                if focusedWrapper {
-                    let reactivatedContentFocusResult = focusWebContentCandidateFirstResponder(
-                        in: window,
-                        event: event,
-                        reason: reason,
-                        mode: "content_candidate_after_wrapper_reactivate"
-                    )
-                    if reactivatedContentFocusResult.didFocusContent {
-                        return .content
-                    }
-                }
-#if DEBUG
-                dlog(
-                    "\(event) web=\(ObjectIdentifier(self)) " +
-                    "\(reason.map { "reason=\($0) " } ?? "")" +
-                    "mode=wrapper_reactivate " +
-                    "cleared=\(cleared ? 1 : 0) result=\(focusedWrapper ? 1 : 0) " +
-                    "candidates=\(debugWebContentFocusCandidateSummary(in: window))"
-                )
-#endif
-                if focusedWrapper {
-                    NotificationCenter.default.post(name: .browserDidBecomeFirstResponderWebView, object: self)
-                }
-                return focusedWrapper ? .wrapperOnly : .failed
+                return .wrapperOnly
             }
 #if DEBUG
             dlog(
@@ -376,17 +336,6 @@ final class CmuxWebView: WKWebView {
         let previousResponder = window.firstResponder
 #endif
         let focusedWrapper = window.makeFirstResponder(self)
-        if focusedWrapper {
-            let wrappedContentFocusResult = focusWebContentCandidateFirstResponder(
-                in: window,
-                event: event,
-                reason: reason,
-                mode: "content_candidate_after_wrapper"
-            )
-            if wrappedContentFocusResult.didFocusContent {
-                return .content
-            }
-        }
 #if DEBUG
         dlog(
             "\(event) web=\(ObjectIdentifier(self)) " +
@@ -401,59 +350,6 @@ final class CmuxWebView: WKWebView {
             NotificationCenter.default.post(name: .browserDidBecomeFirstResponderWebView, object: self)
         }
         return focusedWrapper ? .wrapperOnly : .failed
-    }
-
-    @discardableResult
-    private func focusWebContentCandidateFirstResponder(
-        in window: NSWindow,
-        event: String,
-        reason: String?,
-        mode: String
-    ) -> CmuxWebContentFirstResponderResult {
-        let previousFocusPolicy = allowsFirstResponderAcquisition
-        if !previousFocusPolicy {
-            allowsFirstResponderAcquisition = true
-        }
-        defer {
-            allowsFirstResponderAcquisition = previousFocusPolicy
-        }
-
-        let candidates = webContentFirstResponderCandidates(in: window)
-        guard !candidates.isEmpty else {
-#if DEBUG
-            dlog(
-                "\(event) web=\(ObjectIdentifier(self)) " +
-                "\(reason.map { "reason=\($0) " } ?? "")" +
-                "mode=\(mode) result=failed cause=no_candidates " +
-                "candidates=\(debugWebContentFocusCandidateSummary(in: window))"
-            )
-#endif
-            return .failed
-        }
-
-        for candidate in candidates {
-            let focused = window.makeFirstResponder(candidate)
-            let firstResponderView = window.firstResponder as? NSView
-            let focusedContent = firstResponderView.map {
-                $0 !== self && ($0 === candidate || $0.isDescendant(of: self))
-            } ?? false
-#if DEBUG
-            dlog(
-                "\(event) web=\(ObjectIdentifier(self)) " +
-                "\(reason.map { "reason=\($0) " } ?? "")" +
-                "mode=\(mode) candidate=\(String(describing: type(of: candidate))) " +
-                "result=\(focused ? 1 : 0) content=\(focusedContent ? 1 : 0) " +
-                "fr=\(window.firstResponder.map { String(describing: type(of: $0)) } ?? "nil") " +
-                "candidates=\(debugWebContentFocusCandidateSummary(in: window))"
-            )
-#endif
-            if focusedContent {
-                NotificationCenter.default.post(name: .browserDidBecomeFirstResponderWebView, object: self)
-                return .content
-            }
-        }
-
-        return .failed
     }
 
     private struct WebContentFirstResponderCandidate {
@@ -693,6 +589,7 @@ final class CmuxWebView: WKWebView {
                 "mods=\(event.modifierFlags.rawValue) repeat=0"
         }
     }
+
 #endif
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -855,6 +752,13 @@ final class CmuxWebView: WKWebView {
             }
         }
 
+        if dispatchPlainSpaceKeyDownToWebContentCandidateIfNeeded(event) {
+#if DEBUG
+            route = "contentCandidate.spaceKeyDown"
+#endif
+            return
+        }
+
         // Some Cmd-based key paths in WebKit don't consistently invoke performKeyEquivalent.
         // Route them through the same app-level shortcut handler as a fallback.
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask).contains(.command),
@@ -866,6 +770,33 @@ final class CmuxWebView: WKWebView {
         }
 
         super.keyDown(with: event)
+    }
+
+    @discardableResult
+    private func dispatchPlainSpaceKeyDownToWebContentCandidateIfNeeded(_ event: NSEvent) -> Bool {
+        guard shouldDispatchBrowserSpaceViaFirstResponderKeyDown(
+            keyCode: event.keyCode,
+            firstResponderIsBrowser: true,
+            firstResponderHasMarkedText: browserResponderHasMarkedText(self),
+            flags: event.modifierFlags
+        ) else {
+            return false
+        }
+        guard spaceContentCandidateForwardingDepth == 0 else {
+            return false
+        }
+        guard let currentWindow = window,
+              let candidate = webContentFirstResponderCandidates(in: currentWindow).first else {
+            return false
+        }
+
+        spaceContentCandidateForwardingDepth += 1
+        defer {
+            spaceContentCandidateForwardingDepth = max(0, spaceContentCandidateForwardingDepth - 1)
+        }
+
+        candidate.keyDown(with: event)
+        return true
     }
 
     override func insertText(_ insertString: Any) {
