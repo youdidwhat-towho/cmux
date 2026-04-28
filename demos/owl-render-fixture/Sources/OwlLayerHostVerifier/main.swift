@@ -888,7 +888,7 @@ private final class LayerHostRunner {
         app.setActivationPolicy(.regular)
         app.finishLaunching()
 
-        let runtime = try OwlBrowserRuntime(path: options.mojoRuntimePath)
+        let runtime = try OwlDynamicLibraryBrowserRuntime(path: options.mojoRuntimePath)
         try runtime.initialize()
 
         var captures: [CaptureResult] = []
@@ -906,7 +906,7 @@ private final class LayerHostRunner {
                 : "chromium-layer-fixture-ca-context",
             controlTransport: "mojo",
             swiftHostTransport: OwlFreshGeneratedMojoTransport.name,
-            mojoRuntime: "owl_fresh generated Mojo pipe bindings runtime",
+            mojoRuntime: "OwlDynamicLibraryBrowserRuntime over OwlCBrowserRuntime generated Mojo pipe bindings",
             mojoBindingSourceChecksum: OwlFreshMojoSchema.sourceChecksum,
             mojoBindingDeclarationCount: OwlFreshMojoSchema.declarations.count,
             devToolsActivePortFound: captures.contains(where: \.profileHadDevToolsActivePort),
@@ -952,7 +952,7 @@ private final class LayerHostRunner {
 
     private func runCapture(
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         app: NSApplication
     ) throws -> CaptureResult {
         let profileDirectory = options.outputDirectory
@@ -1184,7 +1184,7 @@ private final class LayerHostRunner {
     private func waitForContextID(
         name: String,
         events: OwlBrowserSessionEvents,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         app: NSApplication,
         afterGeneration: UInt64,
         rejectingContextID: UInt32?
@@ -1209,7 +1209,7 @@ private final class LayerHostRunner {
 
     private func waitForInitialReadinessIfPresent(
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer,
         events: OwlBrowserSessionEvents,
         app: NSApplication
@@ -1231,7 +1231,7 @@ private final class LayerHostRunner {
     private func waitForInitialWebViewContextID(
         name: String,
         events: OwlBrowserSessionEvents,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         hostController: OwlBrowserSessionController,
         app: NSApplication
     ) throws -> UInt32 {
@@ -1261,7 +1261,7 @@ private final class LayerHostRunner {
     private func waitForReady(
         name: String,
         events: OwlBrowserSessionEvents,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         app: NSApplication
     ) throws {
         let deadline = Date().addingTimeInterval(min(10, options.timeout))
@@ -1295,7 +1295,7 @@ private final class LayerHostRunner {
     private func performInputActions(
         _ actions: [InputAction],
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         hostController: OwlBrowserSessionController,
         session: OpaquePointer,
         events: OwlBrowserSessionEvents,
@@ -1466,7 +1466,7 @@ private final class LayerHostRunner {
         label: String,
         script: String,
         expectations: [JavaScriptExpectation],
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer,
         events: OwlBrowserSessionEvents,
         app: NSApplication
@@ -1498,7 +1498,7 @@ private final class LayerHostRunner {
     private func waitForSurfaceTreeExpectations(
         label: String,
         expectations: [SurfaceTreeExpectation],
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         hostController: OwlBrowserSessionController,
         session: OpaquePointer,
         events: OwlBrowserSessionEvents,
@@ -1549,7 +1549,7 @@ private final class LayerHostRunner {
     }
 
     private func waitForHostFlush(
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer,
         app: NSApplication
     ) throws {
@@ -1573,7 +1573,7 @@ private final class LayerHostRunner {
 
     private func waitForResizeMode(
         _ expectedMode: String,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer,
         events: OwlBrowserSessionEvents,
         app: NSApplication
@@ -1613,7 +1613,7 @@ private final class LayerHostRunner {
 
     private func sendKeyStroke(
         _ stroke: OwlFreshKeyEvent,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         hostController: OwlBrowserSessionController
     ) throws {
         try hostController.sendKey(stroke)
@@ -1629,7 +1629,7 @@ private final class LayerHostRunner {
 
     private func verifyPostInputStateIfNeeded(
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer
     ) throws {
         guard !target.postInputExpectations.isEmpty else {
@@ -1648,7 +1648,7 @@ private final class LayerHostRunner {
 
     private func writePostInputDiagnostics(
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer
     ) {
         writePostInputDOMState(target: target, runtime: runtime, session: session)
@@ -1678,7 +1678,7 @@ private final class LayerHostRunner {
 
     private func writePostInputDOMState(
         target: RenderTarget,
-        runtime: OwlBrowserRuntime,
+        runtime: any OwlBrowserRuntime,
         session: OpaquePointer
     ) {
         if let script = target.postInputDiagnosticScript {

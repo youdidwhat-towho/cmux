@@ -24,7 +24,7 @@ private struct OwlFreshEvent {
     let message: UnsafePointer<CChar>?
 }
 
-typealias OwlFreshEventCallback = @convention(c) (
+public typealias OwlFreshEventCallback = @convention(c) (
     UnsafeRawPointer?,
     UnsafeMutableRawPointer?
 ) -> Void

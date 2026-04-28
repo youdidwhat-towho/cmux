@@ -32,11 +32,12 @@ then Swift hosts the portal id in `CALayerHost`.
 `OwlFreshInput`, `OwlFreshSurfaceTreeHost`, and `OwlFreshNativeSurfaceHost`
 surfaces. `OwlMojoBindingsGenerator` emits
 `Sources/OwlMojoBindingsGenerated/OwlFresh.generated.swift`. `OwlBrowserCore`
-owns the Swift runtime loader, session events, generated pending-handle bind
-graph, and typed browser commands before calling typed runtime symbols. The
-verifier imports `OwlBrowserCore` and owns only AppKit hosting, screenshots,
-fixtures, and artifact reporting. The old generic `interface + method + JSON`
-invoke bridge is not used.
+owns the Swift runtime protocol, typed C-ABI symbol-table bridge, session
+events, generated pending-handle bind graph, and typed browser commands before
+calling typed runtime symbols. The verifier imports `OwlBrowserCore`, uses the
+dynamic-library adapter for the current AWS Chromium build, and owns only AppKit
+hosting, screenshots, fixtures, and artifact reporting. The old generic
+`interface + method + JSON` invoke bridge is not used.
 
 The verified gate now includes input. `run-layer-host-verifier-gui.sh` can run
 the real Chromium compositor input fixtures with `OWL_LAYER_HOST_INPUT_CHECK=1`;

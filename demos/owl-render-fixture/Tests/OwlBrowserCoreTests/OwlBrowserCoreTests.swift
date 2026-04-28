@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 import OwlBrowserCore
 import OwlMojoBindingsGenerated
@@ -29,6 +30,78 @@ final class OwlBrowserCoreTests: XCTestCase {
             "bindSurfaceTree",
             "bindNativeSurfaceHost",
             "setClient",
+        ])
+    }
+
+    func testCBrowserRuntimeConsumesInjectedSymbolsWithoutDynamicLibrary() async throws {
+        FakeRuntimeCABI.reset()
+        let runtime = OwlCBrowserRuntime(symbols: FakeRuntimeCABI.symbols())
+        try runtime.initialize()
+        let events = OwlBrowserSessionEvents()
+        let session = try runtime.createSession(
+            chromiumHost: "content_shell",
+            initialURL: "https://example.com",
+            userDataDirectory: "/tmp/owl-profile",
+            events: events
+        )
+        XCTAssertEqual(runtime.hostPID(session), 4242)
+        runtime.pollEvents(milliseconds: 7)
+
+        let controller = try OwlBrowserSessionController(pipe: runtime, session: session)
+        try controller.navigate("https://example.com")
+        try controller.resize(OwlFreshWebViewResizeRequest(width: 800, height: 600, scale: 2.0))
+        try controller.setFocus(true)
+        try controller.sendMouse(OwlFreshMouseEvent(
+            kind: .down,
+            x: 12,
+            y: 34,
+            button: 1,
+            clickCount: 1,
+            deltaX: 0,
+            deltaY: 0,
+            modifiers: 0
+        ))
+        try controller.sendKey(OwlFreshKeyEvent(keyDown: true, keyCode: 36, text: "\n", modifiers: 8))
+        let flushed = try await controller.flush()
+        XCTAssertTrue(flushed)
+        XCTAssertEqual(try controller.getSurfaceTree().generation, 99)
+        XCTAssertEqual(try runtime.executeJavaScript(session, script: "window.owl"), "{\"ok\":true}")
+
+        let captureURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("owl-c-runtime-\(UUID().uuidString).png")
+        let capture = try runtime.captureSurfacePNG(session, to: captureURL)
+        defer { try? FileManager.default.removeItem(at: captureURL) }
+        XCTAssertEqual(capture.width, 2)
+        XCTAssertEqual(capture.height, 1)
+        XCTAssertEqual(try Data(contentsOf: captureURL), Data([1, 2, 3]))
+
+        XCTAssertTrue(try controller.acceptActivePopupMenuItem(2))
+        XCTAssertTrue(try controller.cancelActivePopup())
+        runtime.destroy(session)
+
+        XCTAssertEqual(FakeRuntimeCABI.calls, [
+            "globalInit",
+            "create:content_shell:https://example.com:/tmp/owl-profile",
+            "hostPID",
+            "poll:7",
+            "bindProfile:1",
+            "bindWebView:2",
+            "bindInput:3",
+            "bindSurfaceTree:4",
+            "bindNativeSurfaceHost:5",
+            "setClient:6",
+            "navigate:https://example.com",
+            "resize:800x600@2.0",
+            "focus:true",
+            "mouse:down:12.0:34.0",
+            "key:36:\n:8",
+            "flush",
+            "surfaceTree",
+            "js:window.owl",
+            "capture",
+            "accept:2",
+            "cancel",
+            "destroy",
         ])
     }
 }
@@ -112,4 +185,186 @@ private final class FakeBrowserPipe: OwlFreshMojoPipeBindings {
         calls.append("cancel")
         return true
     }
+}
+
+private enum FakeRuntimeCABI {
+    static var calls: [String] = []
+    static let session = OpaquePointer(bitPattern: 0xCAFE)!
+
+    static func reset() {
+        calls = []
+    }
+
+    static func symbols() -> OwlBrowserRuntimeSymbols {
+        OwlBrowserRuntimeSymbols(
+            globalInit: fakeRuntimeGlobalInit,
+            sessionCreate: fakeRuntimeSessionCreate,
+            sessionDestroy: fakeRuntimeSessionDestroy,
+            sessionHostPID: fakeRuntimeSessionHostPID,
+            shellExecuteJavaScript: fakeRuntimeShellExecuteJavaScript,
+            sessionSetClient: fakeRuntimeSessionSetClient,
+            sessionBindProfile: fakeRuntimeSessionBindProfile,
+            sessionBindWebView: fakeRuntimeSessionBindWebView,
+            sessionBindInput: fakeRuntimeSessionBindInput,
+            sessionBindSurfaceTree: fakeRuntimeSessionBindSurfaceTree,
+            sessionBindNativeSurfaceHost: fakeRuntimeSessionBindNativeSurfaceHost,
+            sessionFlush: fakeRuntimeSessionFlush,
+            profileGetPath: fakeRuntimeProfileGetPath,
+            webViewNavigate: fakeRuntimeWebViewNavigate,
+            webViewResize: fakeRuntimeWebViewResize,
+            webViewSetFocus: fakeRuntimeWebViewSetFocus,
+            inputSendMouse: fakeRuntimeInputSendMouse,
+            inputSendKey: fakeRuntimeInputSendKey,
+            surfaceTreeCaptureSurfaceJSON: fakeRuntimeSurfaceTreeCaptureSurfaceJSON,
+            surfaceTreeGetJSON: fakeRuntimeSurfaceTreeGetJSON,
+            nativeSurfaceAccept: fakeRuntimeNativeSurfaceAccept,
+            nativeSurfaceCancel: fakeRuntimeNativeSurfaceCancel,
+            eventPoll: fakeRuntimeEventPoll,
+            freeBuffer: fakeRuntimeFreeBuffer
+        )
+    }
+
+    fileprivate static func string(_ pointer: UnsafePointer<CChar>?) -> String {
+        pointer.map { String(cString: $0) } ?? ""
+    }
+
+    fileprivate static func writeCString(
+        _ value: String,
+        to output: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+    ) {
+        output?.pointee = strdup(value)
+    }
+
+    fileprivate static func mouseKind(_ rawValue: UInt32) -> String {
+        OwlFreshMouseKind(rawValue: rawValue).map(String.init(describing:)) ?? String(rawValue)
+    }
+}
+
+private let fakeRuntimeGlobalInit: OwlBrowserRuntimeGlobalInit = {
+    FakeRuntimeCABI.calls.append("globalInit")
+    return 0
+}
+
+private let fakeRuntimeSessionCreate: OwlBrowserRuntimeSessionCreate = { host, url, profile, _, _ in
+    FakeRuntimeCABI.calls.append(
+        "create:\(FakeRuntimeCABI.string(host)):\(FakeRuntimeCABI.string(url)):\(FakeRuntimeCABI.string(profile))"
+    )
+    return FakeRuntimeCABI.session
+}
+
+private let fakeRuntimeSessionDestroy: OwlBrowserRuntimeSessionDestroy = { _ in
+    FakeRuntimeCABI.calls.append("destroy")
+}
+
+private let fakeRuntimeSessionHostPID: OwlBrowserRuntimeHostPID = { _ in
+    FakeRuntimeCABI.calls.append("hostPID")
+    return 4242
+}
+
+private let fakeRuntimeShellExecuteJavaScript: OwlBrowserRuntimeStringInputResult = { _, script, result, _ in
+    FakeRuntimeCABI.calls.append("js:\(FakeRuntimeCABI.string(script))")
+    FakeRuntimeCABI.writeCString("{\"ok\":true}", to: result)
+    return 0
+}
+
+private let fakeRuntimeSessionSetClient: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("setClient:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionBindProfile: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindProfile:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionBindWebView: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindWebView:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionBindInput: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindInput:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionBindSurfaceTree: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindSurfaceTree:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionBindNativeSurfaceHost: OwlBrowserRuntimeVoidUInt64 = { _, handle, _ in
+    FakeRuntimeCABI.calls.append("bindNativeSurfaceHost:\(handle)")
+    return 0
+}
+
+private let fakeRuntimeSessionFlush: OwlBrowserRuntimeBoolOut = { _, ok, _ in
+    FakeRuntimeCABI.calls.append("flush")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeProfileGetPath: OwlBrowserRuntimeStringOut = { _, result, _ in
+    FakeRuntimeCABI.calls.append("profilePath")
+    FakeRuntimeCABI.writeCString("/tmp/owl-profile", to: result)
+    return 0
+}
+
+private let fakeRuntimeWebViewNavigate: OwlBrowserRuntimeVoidString = { _, url, _ in
+    FakeRuntimeCABI.calls.append("navigate:\(FakeRuntimeCABI.string(url))")
+    return 0
+}
+
+private let fakeRuntimeWebViewResize: OwlBrowserRuntimeWebViewResize = { _, width, height, scale, _ in
+    FakeRuntimeCABI.calls.append("resize:\(width)x\(height)@\(scale)")
+    return 0
+}
+
+private let fakeRuntimeWebViewSetFocus: OwlBrowserRuntimeVoidBool = { _, focused, _ in
+    FakeRuntimeCABI.calls.append("focus:\(focused)")
+    return 0
+}
+
+private let fakeRuntimeInputSendMouse: OwlBrowserRuntimeInputSendMouse = { _, kind, x, y, _, _, _, _, _, _ in
+    FakeRuntimeCABI.calls.append("mouse:\(FakeRuntimeCABI.mouseKind(kind)):\(x):\(y)")
+    return 0
+}
+
+private let fakeRuntimeInputSendKey: OwlBrowserRuntimeInputSendKey = { _, _, keyCode, text, modifiers, _ in
+    FakeRuntimeCABI.calls.append("key:\(keyCode):\(FakeRuntimeCABI.string(text)):\(modifiers)")
+    return 0
+}
+
+private let fakeRuntimeSurfaceTreeCaptureSurfaceJSON: OwlBrowserRuntimeStringOut = { _, result, _ in
+    FakeRuntimeCABI.calls.append("capture")
+    FakeRuntimeCABI.writeCString(
+        #"{"pngBase64":"AQID","width":2,"height":1,"captureMode":"fake","error":""}"#,
+        to: result
+    )
+    return 0
+}
+
+private let fakeRuntimeSurfaceTreeGetJSON: OwlBrowserRuntimeStringOut = { _, result, _ in
+    FakeRuntimeCABI.calls.append("surfaceTree")
+    FakeRuntimeCABI.writeCString(#"{"generation":99,"surfaces":[]}"#, to: result)
+    return 0
+}
+
+private let fakeRuntimeNativeSurfaceAccept: OwlBrowserRuntimeNativeSurfaceAccept = { _, index, ok, _ in
+    FakeRuntimeCABI.calls.append("accept:\(index)")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeNativeSurfaceCancel: OwlBrowserRuntimeBoolOut = { _, ok, _ in
+    FakeRuntimeCABI.calls.append("cancel")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeEventPoll: OwlBrowserRuntimePollEvents = { milliseconds in
+    FakeRuntimeCABI.calls.append("poll:\(milliseconds)")
+}
+
+private let fakeRuntimeFreeBuffer: OwlBrowserRuntimeFreeBuffer = { pointer in
+    free(pointer)
 }
