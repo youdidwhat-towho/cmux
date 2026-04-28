@@ -134,6 +134,7 @@ the current cmux pin is the head listed above.
 - Summary:
   - Snapshots page contents before `SlidingWindow` runs `PageFormatter`, so background search never formats from live page storage that `PageList.resizeCols` can free or recycle.
   - Caches page row counts alongside flattened search chunks so later highlight assembly no longer dereferences live page nodes after the source screen has mutated.
+  - Coverage note: snapshot capture still happens while the search thread holds `renderer_state.mutex`, and the practical page writers (pty output, resize/reflow, viewport updates) also funnel through that mutex, so io-thread resize, window zoom, and display-cycle resize commits all land in the same synchronized writer class.
   - Adds a regression test that destroys the source screen after taking search snapshots and verifies the retained search data still produces the expected cross-page match.
   - Fixes the nested `PageSnapshot` test reference and preserves the existing `Allocator.Error` contract when cloning pages for retained snapshots.
 
@@ -202,5 +203,7 @@ These files change frequently upstream; be careful when rebasing the fork:
   - Keep the retained-page search path copying from snapshots rather than live page storage, and
     preserve the cached `rows` metadata on flattened chunks so reverse-search fixups never have to
     dereference invalidated page nodes.
+  - Do not move snapshot capture out from under the search-thread terminal mutex unless every
+    `PageList` writer is also re-routed through a stronger synchronization scheme.
 
 If you resolve a conflict, update this doc with what changed.
