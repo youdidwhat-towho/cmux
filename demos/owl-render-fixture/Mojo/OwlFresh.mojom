@@ -33,6 +33,7 @@ enum OwlFreshSurfaceKind {
   kWebView = 0,
   kPopupWidget = 1,
   kNativeMenu = 2,
+  kNativeFilePicker = 3,
 };
 
 struct OwlFreshNativeMenuItem {
@@ -62,6 +63,10 @@ struct OwlFreshSurfaceInfo {
   int32 selected_index;
   float item_font_size;
   bool right_aligned;
+  string file_picker_mode;
+  array<string> file_picker_accept_types;
+  bool file_picker_allows_multiple;
+  bool file_picker_upload_folder;
   string label;
 };
 
@@ -119,4 +124,6 @@ interface OwlFreshSurfaceTreeHost {
 interface OwlFreshNativeSurfaceHost {
   AcceptActivePopupMenuItem(uint32 index) => (bool ok);
   CancelActivePopup() => (bool ok);
+  SelectActiveFilePickerFiles(array<string> paths) => (bool ok);
+  CancelActiveFilePicker() => (bool ok);
 };

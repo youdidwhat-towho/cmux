@@ -97,6 +97,16 @@ private func loadRuntimeSymbols(_ handle: UnsafeMutableRawPointer) throws -> Owl
             "owl_fresh_mojo_native_surface_cancel_active_popup",
             as: OwlBrowserRuntimeBoolOut.self
         ),
+        nativeSurfaceSelectFilePickerFilesJSON: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_native_surface_select_active_file_picker_files_json",
+            as: OwlBrowserRuntimeStringInputBoolOut.self
+        ),
+        nativeSurfaceCancelFilePicker: try loadSymbol(
+            handle,
+            "owl_fresh_mojo_native_surface_cancel_active_file_picker",
+            as: OwlBrowserRuntimeBoolOut.self
+        ),
         eventPoll: try loadSymbol(handle, "owl_fresh_mojo_poll_events", as: OwlBrowserRuntimePollEvents.self),
         freeBuffer: try loadSymbol(handle, "owl_fresh_mojo_free_buffer", as: OwlBrowserRuntimeFreeBuffer.self)
     )

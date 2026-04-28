@@ -74,6 +74,12 @@ public typealias OwlBrowserRuntimeNativeSurfaceAccept = @convention(c) (
     UnsafeMutablePointer<Bool>?,
     UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32
+public typealias OwlBrowserRuntimeStringInputBoolOut = @convention(c) (
+    OpaquePointer?,
+    UnsafePointer<CChar>?,
+    UnsafeMutablePointer<Bool>?,
+    UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
 public typealias OwlBrowserRuntimePollEvents = @convention(c) (UInt32) -> Void
 public typealias OwlBrowserRuntimeFreeBuffer = @convention(c) (UnsafeMutableRawPointer?) -> Void
 
@@ -100,6 +106,8 @@ public struct OwlBrowserRuntimeSymbols {
     public let surfaceTreeGetJSON: OwlBrowserRuntimeStringOut
     public let nativeSurfaceAccept: OwlBrowserRuntimeNativeSurfaceAccept
     public let nativeSurfaceCancel: OwlBrowserRuntimeBoolOut
+    public let nativeSurfaceSelectFilePickerFilesJSON: OwlBrowserRuntimeStringInputBoolOut
+    public let nativeSurfaceCancelFilePicker: OwlBrowserRuntimeBoolOut
     public let eventPoll: OwlBrowserRuntimePollEvents
     public let freeBuffer: OwlBrowserRuntimeFreeBuffer
 
@@ -126,6 +134,8 @@ public struct OwlBrowserRuntimeSymbols {
         surfaceTreeGetJSON: @escaping OwlBrowserRuntimeStringOut,
         nativeSurfaceAccept: @escaping OwlBrowserRuntimeNativeSurfaceAccept,
         nativeSurfaceCancel: @escaping OwlBrowserRuntimeBoolOut,
+        nativeSurfaceSelectFilePickerFilesJSON: @escaping OwlBrowserRuntimeStringInputBoolOut,
+        nativeSurfaceCancelFilePicker: @escaping OwlBrowserRuntimeBoolOut,
         eventPoll: @escaping OwlBrowserRuntimePollEvents,
         freeBuffer: @escaping OwlBrowserRuntimeFreeBuffer
     ) {
@@ -151,6 +161,8 @@ public struct OwlBrowserRuntimeSymbols {
         self.surfaceTreeGetJSON = surfaceTreeGetJSON
         self.nativeSurfaceAccept = nativeSurfaceAccept
         self.nativeSurfaceCancel = nativeSurfaceCancel
+        self.nativeSurfaceSelectFilePickerFilesJSON = nativeSurfaceSelectFilePickerFilesJSON
+        self.nativeSurfaceCancelFilePicker = nativeSurfaceCancelFilePicker
         self.eventPoll = eventPoll
         self.freeBuffer = freeBuffer
     }

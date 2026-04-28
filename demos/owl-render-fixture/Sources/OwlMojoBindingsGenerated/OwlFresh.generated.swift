@@ -260,6 +260,7 @@ public enum OwlFreshSurfaceKind: UInt32, Codable, CaseIterable {
     case webView = 0
     case popupWidget = 1
     case nativeMenu = 2
+    case nativeFilePicker = 3
 }
 
 public struct OwlFreshNativeMenuItem: Equatable, Codable {
@@ -331,9 +332,13 @@ public struct OwlFreshSurfaceInfo: Equatable, Codable {
     public let selectedIndex: Int32
     public let itemFontSize: Float
     public let rightAligned: Bool
+    public let filePickerMode: String
+    public let filePickerAcceptTypes: [String]
+    public let filePickerAllowsMultiple: Bool
+    public let filePickerUploadFolder: Bool
     public let label: String
 
-    public init(surfaceId: UInt64, parentSurfaceId: UInt64, kind: OwlFreshSurfaceKind, contextId: UInt32, x: Int32, y: Int32, width: UInt32, height: UInt32, scale: Float, zIndex: Int32, visible: Bool, menuItems: [String], nativeMenuItems: [OwlFreshNativeMenuItem], selectedIndex: Int32, itemFontSize: Float, rightAligned: Bool, label: String) {
+    public init(surfaceId: UInt64, parentSurfaceId: UInt64, kind: OwlFreshSurfaceKind, contextId: UInt32, x: Int32, y: Int32, width: UInt32, height: UInt32, scale: Float, zIndex: Int32, visible: Bool, menuItems: [String], nativeMenuItems: [OwlFreshNativeMenuItem], selectedIndex: Int32, itemFontSize: Float, rightAligned: Bool, filePickerMode: String, filePickerAcceptTypes: [String], filePickerAllowsMultiple: Bool, filePickerUploadFolder: Bool, label: String) {
         self.surfaceId = surfaceId
         self.parentSurfaceId = parentSurfaceId
         self.kind = kind
@@ -350,6 +355,10 @@ public struct OwlFreshSurfaceInfo: Equatable, Codable {
         self.selectedIndex = selectedIndex
         self.itemFontSize = itemFontSize
         self.rightAligned = rightAligned
+        self.filePickerMode = filePickerMode
+        self.filePickerAcceptTypes = filePickerAcceptTypes
+        self.filePickerAllowsMultiple = filePickerAllowsMultiple
+        self.filePickerUploadFolder = filePickerUploadFolder
         self.label = label
     }
 
@@ -371,6 +380,10 @@ public struct OwlFreshSurfaceInfo: Equatable, Codable {
         self.selectedIndex = try container.decode(Int32.self, forKey: .selectedIndex)
         self.itemFontSize = try container.decode(Float.self, forKey: .itemFontSize)
         self.rightAligned = try container.decode(Bool.self, forKey: .rightAligned)
+        self.filePickerMode = try container.decode(String.self, forKey: .filePickerMode)
+        self.filePickerAcceptTypes = try container.decode([String].self, forKey: .filePickerAcceptTypes)
+        self.filePickerAllowsMultiple = try container.decode(Bool.self, forKey: .filePickerAllowsMultiple)
+        self.filePickerUploadFolder = try container.decode(Bool.self, forKey: .filePickerUploadFolder)
         self.label = try container.decode(String.self, forKey: .label)
     }
 
@@ -392,6 +405,10 @@ public struct OwlFreshSurfaceInfo: Equatable, Codable {
         try container.encode(selectedIndex, forKey: .selectedIndex)
         try container.encode(itemFontSize, forKey: .itemFontSize)
         try container.encode(rightAligned, forKey: .rightAligned)
+        try container.encode(filePickerMode, forKey: .filePickerMode)
+        try container.encode(filePickerAcceptTypes, forKey: .filePickerAcceptTypes)
+        try container.encode(filePickerAllowsMultiple, forKey: .filePickerAllowsMultiple)
+        try container.encode(filePickerUploadFolder, forKey: .filePickerUploadFolder)
         try container.encode(label, forKey: .label)
     }
 
@@ -412,6 +429,10 @@ public struct OwlFreshSurfaceInfo: Equatable, Codable {
         case selectedIndex
         case itemFontSize
         case rightAligned
+        case filePickerMode
+        case filePickerAcceptTypes
+        case filePickerAllowsMultiple
+        case filePickerUploadFolder
         case label
     }
 }
@@ -927,11 +948,15 @@ public typealias OwlFreshNativeSurfaceHostReceiver = MojoPendingReceiver<OwlFres
 public protocol OwlFreshNativeSurfaceHostMojoInterface {
     func acceptActivePopupMenuItem(_ index: UInt32) async throws -> Bool
     func cancelActivePopup() async throws -> Bool
+    func selectActiveFilePickerFiles(_ paths: [String]) async throws -> Bool
+    func cancelActiveFilePicker() async throws -> Bool
 }
 
 public protocol OwlFreshNativeSurfaceHostMojoSink: AnyObject {
     func acceptActivePopupMenuItem(_ index: UInt32) async throws -> Bool
     func cancelActivePopup() async throws -> Bool
+    func selectActiveFilePickerFiles(_ paths: [String]) async throws -> Bool
+    func cancelActiveFilePicker() async throws -> Bool
 }
 
 public final class GeneratedOwlFreshNativeSurfaceHostMojoTransport: OwlFreshNativeSurfaceHostMojoInterface {
@@ -966,6 +991,16 @@ public final class GeneratedOwlFreshNativeSurfaceHostMojoTransport: OwlFreshNati
         record(method: "cancelActivePopup", payloadType: "Void", payloadSummary: "")
         return try await sink.cancelActivePopup()
     }
+
+    public func selectActiveFilePickerFiles(_ paths: [String]) async throws -> Bool {
+        record(method: "selectActiveFilePickerFiles", payloadType: "[String]", payloadSummary: String(describing: paths))
+        return try await sink.selectActiveFilePickerFiles(paths)
+    }
+
+    public func cancelActiveFilePicker() async throws -> Bool {
+        record(method: "cancelActiveFilePicker", payloadType: "Void", payloadSummary: "")
+        return try await sink.cancelActiveFilePicker()
+    }
 }
 
 public protocol OwlFreshMojoPipeBindings: AnyObject {
@@ -986,6 +1021,8 @@ public protocol OwlFreshMojoPipeBindings: AnyObject {
     func surfaceTreeHostGetSurfaceTree(_ session: OpaquePointer?) throws -> OwlFreshSurfaceTree
     func nativeSurfaceHostAcceptActivePopupMenuItem(_ session: OpaquePointer?, index: UInt32) throws -> Bool
     func nativeSurfaceHostCancelActivePopup(_ session: OpaquePointer?) throws -> Bool
+    func nativeSurfaceHostSelectActiveFilePickerFiles(_ session: OpaquePointer?, paths: [String]) throws -> Bool
+    func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool
 }
 
 public final class GeneratedOwlFreshMojoPipeBoundSinks:
@@ -1109,6 +1146,14 @@ public final class GeneratedOwlFreshMojoPipeBoundSinks:
     public func cancelActivePopup() async throws -> Bool {
         return try pipe.nativeSurfaceHostCancelActivePopup(session)
     }
+
+    public func selectActiveFilePickerFiles(_ paths: [String]) async throws -> Bool {
+        return try pipe.nativeSurfaceHostSelectActiveFilePickerFiles(session, paths: paths)
+    }
+
+    public func cancelActiveFilePicker() async throws -> Bool {
+        return try pipe.nativeSurfaceHostCancelActiveFilePicker(session)
+    }
 }
 
 public struct MojoSchemaDeclaration: Equatable, Codable {
@@ -1118,7 +1163,7 @@ public struct MojoSchemaDeclaration: Equatable, Codable {
 
 public enum OwlFreshMojoSchema {
     public static let module = "content.mojom"
-    public static let sourceChecksum = "fnv1a64:b97ac780ba2c98b1"
+    public static let sourceChecksum = "fnv1a64:3412aed9fd7f2841"
     public static let declarations: [MojoSchemaDeclaration] = [
         MojoSchemaDeclaration(kind: "enum", name: "OwlFreshMouseKind"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshMouseEvent"),

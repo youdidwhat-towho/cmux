@@ -19,6 +19,7 @@ private struct Options {
     var includeLifecycle: Bool
     var includeScale: Bool
     var includeRecovery: Bool
+    var includeFilePicker: Bool
     var includeGoogle: Bool
     var includeWidgets: Bool
     var inputDiagnosticCapture: Bool
@@ -65,12 +66,18 @@ private enum InputAction {
     case verifySurfaceScale(name: String, minimumScale: Float)
     case verifyWindowEdgeCoverage(name: String)
     case captureNativeMenu(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeMenuResponse)
+    case captureNativeFilePicker(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeFilePickerResponse)
     case acceptActivePopupMenuItem(UInt32)
     case cancelActivePopup
 }
 
 private enum NativeMenuResponse {
     case accept(UInt32)
+    case cancel
+}
+
+private enum NativeFilePickerResponse {
+    case select([String])
     case cancel
 }
 
@@ -83,11 +90,21 @@ private struct SurfaceTreeExpectation {
     let kind: OwlFreshSurfaceKind
     let label: String?
     let menuItem: String?
+    let filePickerMode: String?
+    let filePickerAcceptType: String?
 
-    init(kind: OwlFreshSurfaceKind, label: String? = nil, menuItem: String? = nil) {
+    init(
+        kind: OwlFreshSurfaceKind,
+        label: String? = nil,
+        menuItem: String? = nil,
+        filePickerMode: String? = nil,
+        filePickerAcceptType: String? = nil
+    ) {
         self.kind = kind
         self.label = label
         self.menuItem = menuItem
+        self.filePickerMode = filePickerMode
+        self.filePickerAcceptType = filePickerAcceptType
     }
 }
 
@@ -250,6 +267,7 @@ struct OwlLayerHostVerifier {
         var includeLifecycle = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_LIFECYCLE_CHECK"] == "1"
         var includeScale = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_SCALE_CHECK"] == "1"
         var includeRecovery = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_RECOVERY_CHECK"] == "1"
+        var includeFilePicker = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_FILE_PICKER_CHECK"] == "1"
         var includeGoogle = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_GOOGLE_CHECK"] == "1"
         var includeWidgets = ProcessInfo.processInfo.environment["OWL_LAYER_HOST_WIDGET_CHECK"] == "1"
         var inputDiagnosticCapture = false
@@ -302,6 +320,8 @@ struct OwlLayerHostVerifier {
                 includeScale = true
             case "--recovery-check":
                 includeRecovery = true
+            case "--file-picker-check":
+                includeFilePicker = true
             case "--google-check":
                 includeGoogle = true
             case "--widget-check":
@@ -316,7 +336,7 @@ struct OwlLayerHostVerifier {
                 onlyTargets.insert(arguments[index])
             case "--help":
                 print("""
-                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--lifecycle-check] [--scale-check] [--recovery-check] [--google-check] [--widget-check] [--input-diagnostic-capture] [--only-target <name>]
+                Usage: OwlLayerHostVerifier --chromium-host <path> --mojo-runtime <path> [--output-dir <dir>] [--timeout <seconds>] [--skip-canvas] [--skip-example] [--input-check] [--resize-check] [--lifecycle-check] [--scale-check] [--recovery-check] [--file-picker-check] [--google-check] [--widget-check] [--input-diagnostic-capture] [--only-target <name>]
                 """)
                 exit(0)
             default:
@@ -344,6 +364,7 @@ struct OwlLayerHostVerifier {
             includeLifecycle: includeLifecycle,
             includeScale: includeScale,
             includeRecovery: includeRecovery,
+            includeFilePicker: includeFilePicker,
             includeGoogle: includeGoogle,
             includeWidgets: includeWidgets,
             inputDiagnosticCapture: inputDiagnosticCapture,
@@ -437,6 +458,13 @@ private final class LayerHostRunner {
             html: Fixtures.plainNativeSelectFixture,
             directory: fixtureDirectory
         )
+        let filePickerFixture = try writeFixture(
+            name: "file-picker-fixture",
+            html: Fixtures.filePickerFixture,
+            directory: fixtureDirectory
+        )
+        let filePickerUpload = fixtureDirectory.appendingPathComponent("owl-upload.txt")
+        try "OWL file picker upload\n".write(to: filePickerUpload, atomically: true, encoding: .utf8)
         let crashRecoveryFixture = try writeFixture(
             name: "crash-recovery-fixture",
             html: Fixtures.canvasFixture,
@@ -1009,6 +1037,63 @@ private final class LayerHostRunner {
                 )
             )
         }
+        let requestedFilePickerTargets = options.onlyTargets.contains("file-picker-fixture")
+        if options.includeFilePicker || requestedFilePickerTargets {
+            targets.append(
+                RenderTarget(
+                    name: "file-picker-fixture",
+                    url: filePickerFixture.absoluteString,
+                    screenshotName: "file-picker-after-select.png",
+                    expected: [.green, .blue, .dark, .light],
+                    preInputScreenshotName: "file-picker-before-open.png",
+                    preInputExpected: [.blue, .dark, .light],
+                    inputActions: [
+                        .waitForJavaScript(
+                            label: "file picker fixture ready",
+                            script: """
+                            ({
+                              hit: document.elementFromPoint(190, 168)?.id || "",
+                              ready: window.owlFilePickerState?.ready === true
+                            })
+                            """,
+                            expectations: [
+                                JavaScriptExpectation(key: "hit", value: .string("fileInput")),
+                                JavaScriptExpectation(key: "ready", value: .bool(true)),
+                            ]
+                        ),
+                        .mouseClick(MouseClick(x: 190, y: 168)),
+                        .waitForSurfaceTree(
+                            label: "native file picker surface",
+                            expectations: [
+                                SurfaceTreeExpectation(
+                                    kind: .nativeFilePicker,
+                                    label: "file-picker",
+                                    filePickerMode: "open",
+                                    filePickerAcceptType: ".txt"
+                                ),
+                            ]
+                        ),
+                        .captureNativeFilePicker(
+                            label: "file-picker",
+                            name: "file-picker-native-panel-open.png",
+                            expected: [.dark, .light, .nonWhite],
+                            response: .select([filePickerUpload.path])
+                        ),
+                    ],
+                    postInputDiagnosticScript: """
+                    ({
+                      changeSeen: window.owlFilePickerState?.changeSeen === true,
+                      filesLength: document.getElementById("fileInput")?.files?.length ?? -1,
+                      status: document.getElementById("status")?.textContent || ""
+                    })
+                    """,
+                    postInputExpectations: [
+                        JavaScriptExpectation(key: "changeSeen", value: .bool(true)),
+                        JavaScriptExpectation(key: "status", value: .string("OWL_FILE_PICKER_SELECTED")),
+                    ]
+                )
+            )
+        }
         let recoveryTargetName = "crash-recovery-fixture"
         let requestedRecoveryTarget = options.onlyTargets.contains(recoveryTargetName)
         var runCrashRecovery = options.includeRecovery || requestedRecoveryTarget
@@ -1219,6 +1304,10 @@ private final class LayerHostRunner {
                 do {
                     try verifyPostInputStateIfNeeded(target: target, runtime: runtime, session: session)
                     postInputStateVerified = true
+                    if options.inputDiagnosticCapture, !postInputDiagnosticsWritten {
+                        writePostInputDiagnostics(target: target, runtime: runtime, session: session)
+                        postInputDiagnosticsWritten = true
+                    }
                     try hostController.setFocus(true)
                     runtime.pollEvents(milliseconds: 10)
                 } catch let error as VerifierError {
@@ -1838,7 +1927,7 @@ private final class LayerHostRunner {
                     throw VerifierError.input("\(target.name) missing native menu surface \(label): \(tree)")
                 }
                 try validateNativeMenuSurface(surface, targetName: target.name)
-                try writeNativeMenuSurface(surface, screenshotName: name, outputDirectory: options.outputDirectory)
+                try writeNativeSurface(surface, screenshotName: name, outputDirectory: options.outputDirectory)
                 guard let windowID = swiftHostWindowID(title: window.title, minimumSize: currentSize) else {
                     throw VerifierError.capture("Swift LayerHost window was not visible for \(name)")
                 }
@@ -1859,6 +1948,49 @@ private final class LayerHostRunner {
                     }
                 case .cancel:
                     _ = try hostController.cancelActivePopup()
+                }
+                runtime.pollEvents(milliseconds: 50)
+                let refreshedTree = try hostController.getSurfaceTree()
+                window.update(surfaceTree: refreshedTree)
+                window.flushHostedLayer()
+                try waitForHostFlush(runtime: runtime, session: session, app: app)
+            case .captureNativeFilePicker(let label, let name, let expected, let response):
+                let tree = try hostController.getSurfaceTree()
+                window.update(surfaceTree: tree)
+                window.flushHostedLayer()
+                guard let surface = tree.surfaces.first(where: {
+                    $0.visible && $0.kind == .nativeFilePicker && $0.label == label
+                }) else {
+                    throw VerifierError.input("\(target.name) missing native file picker surface \(label): \(tree)")
+                }
+                try validateNativeFilePickerSurface(surface, targetName: target.name)
+                try writeNativeSurface(surface, screenshotName: name, outputDirectory: options.outputDirectory)
+                guard let windowID = swiftHostWindowID(title: window.title, minimumSize: currentSize) else {
+                    throw VerifierError.capture("Swift LayerHost window was not visible for \(name)")
+                }
+                let captureURL = options.outputDirectory.appendingPathComponent(name)
+                let capture = try window.presentNativeFilePickerAndCapture(
+                    surface: surface,
+                    windowID: windowID,
+                    to: captureURL
+                )
+                let stats = analyze(image: capture.image)
+                guard expected.isSatisfied(by: stats) else {
+                    throw VerifierError.pixelCheck("\(target.name) \(name) native file picker pixels did not match \(expected): \(stats)")
+                }
+                let afterPanelCloseURL = options.outputDirectory.appendingPathComponent(
+                    nativeSurfaceDiagnosticName(baseName: name, suffix: "after-panel-close-before-response")
+                )
+                _ = try captureWindow(windowID: windowID, to: afterPanelCloseURL)
+                switch response {
+                case .select(let paths):
+                    guard try hostController.selectActiveFilePickerFiles(paths) else {
+                        throw VerifierError.input("host did not accept active file picker paths \(paths)")
+                    }
+                case .cancel:
+                    guard try hostController.cancelActiveFilePicker() else {
+                        throw VerifierError.input("host did not cancel active file picker")
+                    }
                 }
                 runtime.pollEvents(milliseconds: 50)
                 window.update(surfaceTree: try hostController.getSurfaceTree())
@@ -1961,6 +2093,14 @@ private final class LayerHostRunner {
                 }
                 if let menuItem = expectation.menuItem,
                    !surface.menuItems.contains(where: { $0.contains(menuItem) }) {
+                    return false
+                }
+                if let mode = expectation.filePickerMode,
+                   surface.filePickerMode != mode {
+                    return false
+                }
+                if let acceptType = expectation.filePickerAcceptType,
+                   !surface.filePickerAcceptTypes.contains(acceptType) {
                     return false
                 }
                 return true
@@ -2179,8 +2319,10 @@ private final class LayerHostWindow {
     private let contentView: NSView
     private let rootLayer: CALayer
     private var hostLayer: CALayer
+    private var primaryContextID: UInt32
     private var primaryContentsScale: CGFloat
     private var popupHostLayers: [UInt64: CALayer] = [:]
+    private var popupContextIDs: [UInt64: UInt32] = [:]
 
     init(title: String, contextID: UInt32, size: CGSize) throws {
         self.title = title
@@ -2204,6 +2346,7 @@ private final class LayerHostWindow {
         hostLayer.zPosition = 0
         rootLayer.addSublayer(hostLayer)
         self.hostLayer = hostLayer
+        self.primaryContextID = contextID
         self.primaryContentsScale = hostLayer.contentsScale
 
         window = NSWindow(
@@ -2255,6 +2398,11 @@ private final class LayerHostWindow {
     }
 
     func update(contextID: UInt32) {
+        guard contextID != primaryContextID else {
+            flushHostedLayer()
+            return
+        }
+        primaryContextID = contextID
         hostLayer.setValue(NSNumber(value: contextID), forKey: "contextId")
         flushHostedLayer()
     }
@@ -2280,7 +2428,10 @@ private final class LayerHostWindow {
         CATransaction.setDisableActions(true)
         hostLayer.isHidden = false
         hostLayer.contentsScale = primaryScale
-        hostLayer.setValue(NSNumber(value: primary.contextId), forKey: "contextId")
+        if primary.contextId != primaryContextID {
+            primaryContextID = primary.contextId
+            hostLayer.setValue(NSNumber(value: primary.contextId), forKey: "contextId")
+        }
         hostLayer.frame = CGRect(origin: .zero, size: rootLayer.bounds.size)
         hostLayer.bounds = rootLayer.bounds
         hostLayer.position = CGPoint.zero
@@ -2294,18 +2445,23 @@ private final class LayerHostWindow {
         for staleID in popupHostLayers.keys where !activePopupIDs.contains(staleID) {
             popupHostLayers[staleID]?.removeFromSuperlayer()
             popupHostLayers[staleID] = nil
+            popupContextIDs[staleID] = nil
         }
         for surface in renderPopupSurfaces {
             let layer: CALayer
             if let existing = popupHostLayers[surface.surfaceId] {
                 layer = existing
-                layer.setValue(NSNumber(value: surface.contextId), forKey: "contextId")
+                if popupContextIDs[surface.surfaceId] != surface.contextId {
+                    popupContextIDs[surface.surfaceId] = surface.contextId
+                    layer.setValue(NSNumber(value: surface.contextId), forKey: "contextId")
+                }
             } else {
                 do {
                     layer = try makeCALayerHost(contextID: surface.contextId)
                     layer.anchorPoint = CGPoint.zero
                     rootLayer.addSublayer(layer)
                     popupHostLayers[surface.surfaceId] = layer
+                    popupContextIDs[surface.surfaceId] = surface.contextId
                 } catch {
                     continue
                 }
@@ -2320,6 +2476,19 @@ private final class LayerHostWindow {
         CATransaction.commit()
 
         flushHostedLayer()
+    }
+
+    func surfaceScaleSnapshot(surfaceTree: OwlFreshSurfaceTree) throws -> SurfaceScaleSnapshot {
+        guard let primary = primarySurface(in: surfaceTree) else {
+            throw VerifierError.layerHost("cannot verify surface scale without a visible web-view surface")
+        }
+        return SurfaceScaleSnapshot(
+            surfaceID: primary.surfaceId,
+            contextID: primary.contextId,
+            surfaceScale: primary.scale,
+            hostedLayerContentsScale: Double(primaryContentsScale),
+            popupLayerCount: popupHostLayers.count
+        )
     }
 
     func detachAndReattachPrimaryHost(surfaceTree: OwlFreshSurfaceTree) throws {
@@ -2340,22 +2509,10 @@ private final class LayerHostWindow {
         hostLayer.removeFromSuperlayer()
         rootLayer.insertSublayer(replacement, at: 0)
         hostLayer = replacement
+        primaryContextID = primary.contextId
         primaryContentsScale = replacement.contentsScale
         CATransaction.commit()
         flushHostedLayer()
-    }
-
-    func surfaceScaleSnapshot(surfaceTree: OwlFreshSurfaceTree) throws -> SurfaceScaleSnapshot {
-        guard let primary = primarySurface(in: surfaceTree) else {
-            throw VerifierError.layerHost("cannot verify surface scale without a visible web-view surface")
-        }
-        return SurfaceScaleSnapshot(
-            surfaceID: primary.surfaceId,
-            contextID: primary.contextId,
-            surfaceScale: primary.scale,
-            hostedLayerContentsScale: Double(primaryContentsScale),
-            popupLayerCount: popupHostLayers.count
-        )
     }
 
     func presentNativeMenuAndCapture(
@@ -2396,6 +2553,67 @@ private final class LayerHostWindow {
         }
         RunLoop.current.add(captureTimer, forMode: .eventTracking)
         runner.run(in: contentView, bounds: controlFrame)
+
+        if let result = box.result {
+            return try result.get()
+        }
+
+        return try captureScreenRegion(
+            aroundWindowID: windowID,
+            nativeSurfaceFrame: surfaceFrame,
+            to: url
+        )
+    }
+
+    func presentNativeFilePickerAndCapture(
+        surface: OwlFreshSurfaceInfo,
+        windowID: UInt32,
+        to url: URL
+    ) throws -> CapturedWindow {
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+
+        let panel = NSOpenPanel()
+        panel.title = "OWL File Picker"
+        panel.message = "Choose a file for OWL verification"
+        panel.prompt = "Choose"
+        panel.canChooseFiles = !surface.filePickerUploadFolder
+        panel.canChooseDirectories = surface.filePickerUploadFolder
+        panel.allowsMultipleSelection = surface.filePickerAllowsMultiple
+        panel.canCreateDirectories = false
+        panel.treatsFilePackagesAsDirectories = false
+        panel.directoryURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+
+        let box = NativeFilePickerCaptureBox()
+        panel.beginSheetModal(for: window) { _ in
+            box.finished = true
+        }
+
+        let surfaceFrame = frame(for: surface, origin: .zero)
+        let deadline = Date().addingTimeInterval(5)
+        let captureTimer = Timer(timeInterval: 0.5, repeats: false) { _ in
+            box.result = Result {
+                try captureScreenRegion(
+                    aroundWindowID: windowID,
+                    nativeSurfaceFrame: surfaceFrame,
+                    to: url
+                )
+            }
+            panel.cancel(nil)
+        }
+        RunLoop.current.add(captureTimer, forMode: .default)
+        while box.result == nil && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            RunLoop.current.run(mode: .modalPanel, before: Date().addingTimeInterval(0.05))
+        }
+
+        if box.result == nil {
+            panel.cancel(nil)
+        }
+        while !box.finished && Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+            RunLoop.current.run(mode: .modalPanel, before: Date().addingTimeInterval(0.05))
+        }
 
         if let result = box.result {
             return try result.get()
@@ -2459,7 +2677,25 @@ private func validateNativeMenuSurface(_ surface: OwlFreshSurfaceInfo, targetNam
     }
 }
 
-private func writeNativeMenuSurface(
+private func validateNativeFilePickerSurface(_ surface: OwlFreshSurfaceInfo, targetName: String) throws {
+    guard surface.label == "file-picker" else {
+        throw VerifierError.input("\(targetName) native file picker has unexpected label: \(surface)")
+    }
+    guard surface.filePickerMode == "open" else {
+        throw VerifierError.input("\(targetName) native file picker has unexpected mode: \(surface)")
+    }
+    guard surface.filePickerAcceptTypes.contains(".txt") else {
+        throw VerifierError.input("\(targetName) native file picker missing .txt accept type: \(surface)")
+    }
+    guard !surface.filePickerAllowsMultiple else {
+        throw VerifierError.input("\(targetName) native file picker unexpectedly allows multiple selection: \(surface)")
+    }
+    guard !surface.filePickerUploadFolder else {
+        throw VerifierError.input("\(targetName) native file picker unexpectedly requests folder upload: \(surface)")
+    }
+}
+
+private func writeNativeSurface(
     _ surface: OwlFreshSurfaceInfo,
     screenshotName: String,
     outputDirectory: URL
@@ -2471,6 +2707,11 @@ private func writeNativeMenuSurface(
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
     try encoder.encode(surface).write(to: url)
+}
+
+private func nativeSurfaceDiagnosticName(baseName: String, suffix: String) -> String {
+    let stem = baseName.hasSuffix(".png") ? String(baseName.dropLast(4)) : baseName
+    return "\(stem)-\(suffix).png"
 }
 
 private final class NativeMenuRunner: NSObject {
@@ -2582,6 +2823,11 @@ private final class NativeMenuCaptureBox {
     var result: Result<CapturedWindow, Error>?
 }
 
+private final class NativeFilePickerCaptureBox {
+    var result: Result<CapturedWindow, Error>?
+    var finished = false
+}
+
 private struct CapturedWindow {
     let image: CGImage
 }
@@ -2664,10 +2910,15 @@ private func windowNumber(from window: [String: Any]) -> UInt32? {
 private func captureWindow(windowID: UInt32, to url: URL) throws -> CapturedWindow {
     do {
         let capture = try captureWindowWithScreencapture(windowID: windowID, to: url)
-        if isMostlyBlack(capture.image),
-           let fallback = try? captureWindowWithCoreGraphics(windowID: windowID, to: url),
-           !isMostlyBlack(fallback.image) {
-            return fallback
+        if isMostlyBlack(capture.image) {
+            if let fallback = try? captureWindowWithOnScreenBounds(windowID: windowID, to: url),
+               !isMostlyBlack(fallback.image) {
+                return fallback
+            }
+            if let fallback = try? captureWindowWithCoreGraphics(windowID: windowID, to: url),
+               !isMostlyBlack(fallback.image) {
+                return fallback
+            }
         }
         return capture
     } catch {
@@ -2708,6 +2959,22 @@ private func captureScreenRegion(
         [.bestResolution]
     ) else {
         throw VerifierError.capture("CGWindowListCreateImage returned nil for screen bounds \(captureBounds)")
+    }
+    try pngData(from: image).write(to: url)
+    return CapturedWindow(image: image)
+}
+
+private func captureWindowWithOnScreenBounds(windowID: UInt32, to url: URL) throws -> CapturedWindow {
+    guard let bounds = screenBounds(windowID: windowID) else {
+        throw VerifierError.capture("could not resolve screen bounds for windowID=\(windowID)")
+    }
+    guard let image = CGWindowListCreateImage(
+        bounds.integral,
+        [.optionOnScreenOnly],
+        kCGNullWindowID,
+        [.bestResolution]
+    ) else {
+        throw VerifierError.capture("CGWindowListCreateImage returned nil for on-screen bounds \(bounds)")
     }
     try pngData(from: image).write(to: url)
     return CapturedWindow(image: image)
@@ -4477,6 +4744,116 @@ private enum Fixtures {
           select.addEventListener("input", render);
           render();
         </script>
+    </body>
+    </html>
+    """
+
+    static let filePickerFixture = """
+    <!doctype html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <title>OWL native file picker fixture</title>
+      <style>
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgb(248,248,248); }
+        body { font: 28px -apple-system, BlinkMacSystemFont, sans-serif; color: rgb(20,20,20); }
+        #banner {
+          position: absolute;
+          left: 48px;
+          top: 40px;
+          width: 864px;
+          height: 58px;
+          background: rgb(0, 89, 255);
+          color: white;
+          display: flex;
+          align-items: center;
+          padding-left: 22px;
+          box-sizing: border-box;
+          font-weight: 900;
+        }
+        #fileLabel {
+          position: absolute;
+          left: 48px;
+          top: 124px;
+          font-weight: 900;
+        }
+        #fileInput {
+          position: absolute;
+          left: 48px;
+          top: 152px;
+          width: 460px;
+          height: 42px;
+          font: 20px -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        #status {
+          position: absolute;
+          left: 48px;
+          top: 258px;
+          width: 864px;
+          height: 92px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: rgb(255, 210, 0);
+          display: flex;
+          align-items: center;
+          padding-left: 24px;
+          font-size: 36px;
+          font-weight: 900;
+        }
+        #details {
+          position: absolute;
+          left: 48px;
+          top: 388px;
+          width: 864px;
+          height: 120px;
+          border: 4px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background: white;
+          padding: 18px 24px;
+          font-weight: 800;
+        }
+        body.ready #status {
+          background: rgb(255, 210, 0);
+        }
+        body.canceled #status,
+        body.selected #status {
+          background: rgb(0, 204, 82);
+        }
+      </style>
+    </head>
+    <body class="ready">
+      <div id="banner">OWL_FILE_PICKER_READY</div>
+      <label id="fileLabel" for="fileInput">native file picker</label>
+      <input id="fileInput" type="file" accept=".txt,text/plain">
+      <div id="status">OWL_FILE_PICKER_WAITING</div>
+      <div id="details">accept: .txt, text/plain<br>selection: empty</div>
+      <script>
+        const input = document.getElementById("fileInput");
+        const status = document.getElementById("status");
+        const details = document.getElementById("details");
+        const state = {
+          ready: true,
+          cancelSeen: false,
+          changeSeen: false
+        };
+        window.owlFilePickerState = state;
+
+        input.addEventListener("click", () => {
+          status.textContent = "OWL_FILE_PICKER_OPENING";
+        });
+        input.addEventListener("cancel", () => {
+          state.cancelSeen = true;
+          document.body.classList.add("canceled");
+          status.textContent = "OWL_FILE_PICKER_CANCELED";
+          details.textContent = "selection: canceled, files=" + input.files.length;
+        });
+        input.addEventListener("change", () => {
+          state.changeSeen = true;
+          document.body.classList.add("selected");
+          status.textContent = "OWL_FILE_PICKER_SELECTED";
+          details.textContent = "selection changed, files=" + input.files.length;
+        });
+      </script>
     </body>
     </html>
     """

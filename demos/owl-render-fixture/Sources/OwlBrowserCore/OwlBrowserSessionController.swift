@@ -76,6 +76,14 @@ public final class OwlBrowserSessionController {
         try pipe.nativeSurfaceHostCancelActivePopup(session)
     }
 
+    public func selectActiveFilePickerFiles(_ paths: [String]) throws -> Bool {
+        try pipe.nativeSurfaceHostSelectActiveFilePickerFiles(session, paths: paths)
+    }
+
+    public func cancelActiveFilePicker() throws -> Bool {
+        try pipe.nativeSurfaceHostCancelActiveFilePicker(session)
+    }
+
     private func bindSessionInterfaces() throws {
         let allocator = OwlFreshMojoPipeHandleAllocator()
         let profile: OwlFreshProfileReceiver = allocator.makeReceiver(OwlFreshProfileMojoInterfaceMarker.self)

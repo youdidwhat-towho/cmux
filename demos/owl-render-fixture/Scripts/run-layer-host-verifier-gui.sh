@@ -85,6 +85,7 @@ for env_name in \
   OWL_FRESH_NO_EMBED \
   OWL_FRESH_NO_IN_PROCESS_GPU \
   OWL_FRESH_WINDOW_SNAPSHOT \
+  OWL_LAYER_HOST_FILE_PICKER_CHECK \
   OWL_LAYER_HOST_GOOGLE_CHECK \
   OWL_LAYER_HOST_LIFECYCLE_CHECK \
   OWL_LAYER_HOST_ONLY_TARGETS \
@@ -162,6 +163,11 @@ fi
 if [ "${OWL_LAYER_HOST_RECOVERY_CHECK:-}" = "1" ]; then
   cat >> "$PLIST" <<PLIST
     <string>--recovery-check</string>
+PLIST
+fi
+if [ "${OWL_LAYER_HOST_FILE_PICKER_CHECK:-}" = "1" ]; then
+  cat >> "$PLIST" <<PLIST
+    <string>--file-picker-check</string>
 PLIST
 fi
 if [ "${OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE:-}" = "1" ]; then

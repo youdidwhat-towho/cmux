@@ -35,6 +35,8 @@ private enum OwlLinkedBrowserRuntimeSymbols {
         surfaceTreeGetJSON: owl_fresh_mojo_surface_tree_get_json,
         nativeSurfaceAccept: owl_fresh_mojo_native_surface_accept_active_popup_menu_item,
         nativeSurfaceCancel: owl_fresh_mojo_native_surface_cancel_active_popup,
+        nativeSurfaceSelectFilePickerFilesJSON: owl_fresh_mojo_native_surface_select_active_file_picker_files_json,
+        nativeSurfaceCancelFilePicker: owl_fresh_mojo_native_surface_cancel_active_file_picker,
         eventPoll: owl_fresh_mojo_poll_events,
         freeBuffer: owl_fresh_mojo_free_buffer
     )
@@ -193,6 +195,21 @@ private func owl_fresh_mojo_native_surface_accept_active_popup_menu_item(
 
 @_silgen_name("owl_fresh_mojo_native_surface_cancel_active_popup")
 private func owl_fresh_mojo_native_surface_cancel_active_popup(
+    _ session: OpaquePointer?,
+    _ ok: UnsafeMutablePointer<Bool>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_native_surface_select_active_file_picker_files_json")
+private func owl_fresh_mojo_native_surface_select_active_file_picker_files_json(
+    _ session: OpaquePointer?,
+    _ pathsJSON: UnsafePointer<CChar>?,
+    _ ok: UnsafeMutablePointer<Bool>?,
+    _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+) -> Int32
+
+@_silgen_name("owl_fresh_mojo_native_surface_cancel_active_file_picker")
+private func owl_fresh_mojo_native_surface_cancel_active_file_picker(
     _ session: OpaquePointer?,
     _ ok: UnsafeMutablePointer<Bool>?,
     _ error: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?

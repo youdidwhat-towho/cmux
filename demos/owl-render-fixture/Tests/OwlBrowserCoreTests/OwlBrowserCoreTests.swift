@@ -81,6 +81,8 @@ final class OwlBrowserCoreTests: XCTestCase {
 
         XCTAssertTrue(try controller.acceptActivePopupMenuItem(2))
         XCTAssertTrue(try controller.cancelActivePopup())
+        XCTAssertTrue(try controller.selectActiveFilePickerFiles(["/tmp/owl-file.txt"]))
+        XCTAssertTrue(try controller.cancelActiveFilePicker())
         runtime.destroy(session)
 
         XCTAssertEqual(FakeRuntimeCABI.calls, [
@@ -105,6 +107,8 @@ final class OwlBrowserCoreTests: XCTestCase {
             "capture",
             "accept:2",
             "cancel",
+            #"filePickerSelect:["\/tmp\/owl-file.txt"]"#,
+            "filePickerCancel",
             "destroy",
         ])
     }
@@ -189,6 +193,16 @@ private final class FakeBrowserPipe: OwlFreshMojoPipeBindings {
         calls.append("cancel")
         return true
     }
+
+    func nativeSurfaceHostSelectActiveFilePickerFiles(_ session: OpaquePointer?, paths: [String]) throws -> Bool {
+        calls.append("filePickerSelect:\(paths.joined(separator: ","))")
+        return true
+    }
+
+    func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool {
+        calls.append("filePickerCancel")
+        return true
+    }
 }
 
 private enum FakeRuntimeCABI {
@@ -223,6 +237,8 @@ private enum FakeRuntimeCABI {
             surfaceTreeGetJSON: fakeRuntimeSurfaceTreeGetJSON,
             nativeSurfaceAccept: fakeRuntimeNativeSurfaceAccept,
             nativeSurfaceCancel: fakeRuntimeNativeSurfaceCancel,
+            nativeSurfaceSelectFilePickerFilesJSON: fakeRuntimeNativeSurfaceSelectFilePickerFilesJSON,
+            nativeSurfaceCancelFilePicker: fakeRuntimeNativeSurfaceCancelFilePicker,
             eventPoll: fakeRuntimeEventPoll,
             freeBuffer: fakeRuntimeFreeBuffer
         )
@@ -361,6 +377,18 @@ private let fakeRuntimeNativeSurfaceAccept: OwlBrowserRuntimeNativeSurfaceAccept
 
 private let fakeRuntimeNativeSurfaceCancel: OwlBrowserRuntimeBoolOut = { _, ok, _ in
     FakeRuntimeCABI.calls.append("cancel")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeNativeSurfaceSelectFilePickerFilesJSON: OwlBrowserRuntimeStringInputBoolOut = { _, paths, ok, _ in
+    FakeRuntimeCABI.calls.append("filePickerSelect:\(FakeRuntimeCABI.string(paths))")
+    ok?.pointee = true
+    return 0
+}
+
+private let fakeRuntimeNativeSurfaceCancelFilePicker: OwlBrowserRuntimeBoolOut = { _, ok, _ in
+    FakeRuntimeCABI.calls.append("filePickerCancel")
     ok?.pointee = true
     return 0
 }

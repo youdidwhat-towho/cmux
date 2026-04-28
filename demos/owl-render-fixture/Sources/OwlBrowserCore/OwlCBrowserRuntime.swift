@@ -24,6 +24,8 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     private let surfaceTreeGetJSON: OwlBrowserRuntimeStringOut
     private let nativeSurfaceAcceptSymbol: OwlBrowserRuntimeNativeSurfaceAccept
     private let nativeSurfaceCancelSymbol: OwlBrowserRuntimeBoolOut
+    private let nativeSurfaceSelectFilePickerFilesJSONSymbol: OwlBrowserRuntimeStringInputBoolOut
+    private let nativeSurfaceCancelFilePickerSymbol: OwlBrowserRuntimeBoolOut
     private let eventPoll: OwlBrowserRuntimePollEvents
     private let freeBuffer: OwlBrowserRuntimeFreeBuffer
 
@@ -54,6 +56,8 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
         self.surfaceTreeGetJSON = symbols.surfaceTreeGetJSON
         self.nativeSurfaceAcceptSymbol = symbols.nativeSurfaceAccept
         self.nativeSurfaceCancelSymbol = symbols.nativeSurfaceCancel
+        self.nativeSurfaceSelectFilePickerFilesJSONSymbol = symbols.nativeSurfaceSelectFilePickerFilesJSON
+        self.nativeSurfaceCancelFilePickerSymbol = symbols.nativeSurfaceCancelFilePicker
         self.eventPoll = symbols.eventPoll
         self.freeBuffer = symbols.freeBuffer
     }
@@ -242,6 +246,25 @@ open class OwlCBrowserRuntime: OwlBrowserRuntime {
     public func nativeSurfaceHostCancelActivePopup(_ session: OpaquePointer?) throws -> Bool {
         try callBoolResult("OwlFreshNativeSurfaceHost.cancelActivePopup") { okPointer, errorPointer in
             nativeSurfaceCancelSymbol(session, okPointer, errorPointer)
+        }
+    }
+
+    public func nativeSurfaceHostSelectActiveFilePickerFiles(
+        _ session: OpaquePointer?,
+        paths: [String]
+    ) throws -> Bool {
+        let data = try JSONEncoder().encode(paths)
+        let json = String(decoding: data, as: UTF8.self)
+        return try json.withCString { jsonPointer in
+            try callBoolResult("OwlFreshNativeSurfaceHost.selectActiveFilePickerFiles") { okPointer, errorPointer in
+                nativeSurfaceSelectFilePickerFilesJSONSymbol(session, jsonPointer, okPointer, errorPointer)
+            }
+        }
+    }
+
+    public func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool {
+        try callBoolResult("OwlFreshNativeSurfaceHost.cancelActiveFilePicker") { okPointer, errorPointer in
+            nativeSurfaceCancelFilePickerSymbol(session, okPointer, errorPointer)
         }
     }
 

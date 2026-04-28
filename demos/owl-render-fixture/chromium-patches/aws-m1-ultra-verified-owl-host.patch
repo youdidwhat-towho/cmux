@@ -399,17 +399,27 @@ index 462cfd3ef3..cdb2ef0ef6 100644
 +}
 diff --git a/content/shell/browser/owl_fresh_host_mac.h b/content/shell/browser/owl_fresh_host_mac.h
 new file mode 100644
-index 0000000000..4db9e0ece0
+index 0000000000..960251dda6
 --- /dev/null
 +++ b/content/shell/browser/owl_fresh_host_mac.h
-@@ -0,0 +1,14 @@
+@@ -0,0 +1,24 @@
 +#ifndef CONTENT_SHELL_BROWSER_OWL_FRESH_HOST_MAC_H_
 +#define CONTENT_SHELL_BROWSER_OWL_FRESH_HOST_MAC_H_
 +
++#include "base/memory/scoped_refptr.h"
 +#include "content/shell/common/shell_controller.test-mojom.h"
 +#include "mojo/public/cpp/bindings/pending_receiver.h"
++#include "third_party/blink/public/mojom/choosers/file_chooser.mojom-forward.h"
 +
 +namespace content {
++
++class FileSelectListener;
++class RenderFrameHost;
++
++bool OwlFreshMaybeRunFileChooser(
++    RenderFrameHost* render_frame_host,
++    scoped_refptr<FileSelectListener> listener,
++    const blink::mojom::FileChooserParams& params);
 +
 +void BindOwlFreshSessionForCurrentShell(
 +    mojo::PendingReceiver<mojom::OwlFreshSession> receiver);
@@ -419,10 +429,10 @@ index 0000000000..4db9e0ece0
 +#endif
 diff --git a/content/shell/browser/owl_fresh_host_mac.mm b/content/shell/browser/owl_fresh_host_mac.mm
 new file mode 100644
-index 0000000000..fda22c6b17
+index 0000000000..5d6b5b2c31
 --- /dev/null
 +++ b/content/shell/browser/owl_fresh_host_mac.mm
-@@ -0,0 +1,1104 @@
+@@ -0,0 +1,1259 @@
 +#include "content/shell/browser/owl_fresh_host_mac.h"
 +
 +#import <Cocoa/Cocoa.h>
@@ -435,6 +445,7 @@ index 0000000000..fda22c6b17
 +#include <vector>
 +
 +#include "base/containers/span.h"
++#include "base/files/file_path.h"
 +#include "base/functional/bind.h"
 +#include "base/memory/weak_ptr.h"
 +#include "base/command_line.h"
@@ -442,6 +453,7 @@ index 0000000000..fda22c6b17
 +#include "base/strings/strcat.h"
 +#include "base/strings/stringprintf.h"
 +#include "base/strings/sys_string_conversions.h"
++#include "base/strings/utf_string_conversions.h"
 +#include "base/task/single_thread_task_runner.h"
 +#include "base/time/time.h"
 +#include "components/viz/common/frame_sinks/copy_output_result.h"
@@ -454,6 +466,8 @@ index 0000000000..fda22c6b17
 +#include "content/browser/web_contents/web_contents_impl.h"
 +#include "components/input/native_web_keyboard_event.h"
 +#include "content/public/browser/browser_context.h"
++#include "content/public/browser/file_select_listener.h"
++#include "content/public/browser/render_frame_host.h"
 +#include "content/public/browser/render_widget_host_view.h"
 +#include "content/public/browser/navigation_controller.h"
 +#include "content/public/browser/render_widget_host.h"
@@ -468,6 +482,7 @@ index 0000000000..fda22c6b17
 +#include "mojo/public/cpp/bindings/self_owned_receiver.h"
 +#include "third_party/skia/include/core/SkBitmap.h"
 +#include "third_party/blink/public/common/input/web_input_event.h"
++#include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
 +#include "third_party/blink/public/common/input/web_mouse_event.h"
 +#include "third_party/blink/public/common/input/web_mouse_wheel_event.h"
 +#include "ui/accelerated_widget_mac/owl_fresh_context.h"
@@ -489,6 +504,22 @@ index 0000000000..fda22c6b17
 +
 +int g_owl_fresh_force_redraw_id = 1;
 +
++struct OwlFreshPendingFilePicker {
++  scoped_refptr<FileSelectListener> listener;
++  blink::mojom::FileChooserParams::Mode mode =
++      blink::mojom::FileChooserParams::Mode::kOpen;
++  uint64_t surface_key = 0;
++};
++
++OwlFreshPendingFilePicker& ActiveFilePicker() {
++  static base::NoDestructor<OwlFreshPendingFilePicker> picker;
++  return *picker;
++}
++
++bool OwlFreshSelectActiveFilePickerFiles(
++    const std::vector<std::string>& paths);
++bool OwlFreshCancelActiveFilePicker();
++
 +Shell* CurrentShell() {
 +  if (Shell::windows().empty()) {
 +    return nullptr;
@@ -499,6 +530,50 @@ index 0000000000..fda22c6b17
 +WebContents* CurrentWebContents() {
 +  Shell* shell = CurrentShell();
 +  return shell ? shell->web_contents() : nullptr;
++}
++
++std::string FilePickerModeToString(
++    blink::mojom::FileChooserParams::Mode mode) {
++  switch (mode) {
++    case blink::mojom::FileChooserParams::Mode::kOpen:
++      return "open";
++    case blink::mojom::FileChooserParams::Mode::kOpenMultiple:
++      return "open-multiple";
++    case blink::mojom::FileChooserParams::Mode::kOpenDirectory:
++      return "open-directory";
++    case blink::mojom::FileChooserParams::Mode::kUploadFolder:
++      return "upload-folder";
++    case blink::mojom::FileChooserParams::Mode::kSave:
++      return "save";
++  }
++}
++
++bool FilePickerAllowsMultiple(blink::mojom::FileChooserParams::Mode mode) {
++  return mode == blink::mojom::FileChooserParams::Mode::kOpenMultiple;
++}
++
++bool FilePickerUploadsFolder(blink::mojom::FileChooserParams::Mode mode) {
++  return mode == blink::mojom::FileChooserParams::Mode::kUploadFolder;
++}
++
++std::vector<std::string> AcceptTypesToUTF8(
++    const std::vector<std::u16string>& accept_types) {
++  std::vector<std::string> result;
++  result.reserve(accept_types.size());
++  for (const std::u16string& accept_type : accept_types) {
++    result.push_back(base::UTF16ToUTF8(accept_type));
++  }
++  return result;
++}
++
++CGRect FilePickerSurfaceBounds() {
++  WebContents* contents = CurrentWebContents();
++  if (!contents) {
++    return CGRectMake(64, 64, 720, 420);
++  }
++  gfx::Rect bounds = contents->GetContainerBounds();
++  return CGRectMake(0, 0, std::max(bounds.width(), 480),
++                    std::max(bounds.height(), 320));
 +}
 +
 +NSWindow* CurrentWindow() {
@@ -803,6 +878,8 @@ index 0000000000..fda22c6b17
 +      return mojom::OwlFreshSurfaceKind::kPopupWidget;
 +    case ui::OwlFreshSurfaceKind::kNativeMenu:
 +      return mojom::OwlFreshSurfaceKind::kNativeMenu;
++    case ui::OwlFreshSurfaceKind::kNativeFilePicker:
++      return mojom::OwlFreshSurfaceKind::kNativeFilePicker;
 +  }
 +}
 +
@@ -840,6 +917,10 @@ index 0000000000..fda22c6b17
 +    surface->selected_index = snapshot.selected_index;
 +    surface->item_font_size = snapshot.item_font_size;
 +    surface->right_aligned = snapshot.right_aligned;
++    surface->file_picker_mode = snapshot.file_picker_mode;
++    surface->file_picker_accept_types = snapshot.file_picker_accept_types;
++    surface->file_picker_allows_multiple = snapshot.file_picker_allows_multiple;
++    surface->file_picker_upload_folder = snapshot.file_picker_upload_folder;
 +    surface->label = snapshot.label;
 +    tree->surfaces.push_back(std::move(surface));
 +  }
@@ -1206,6 +1287,26 @@ index 0000000000..fda22c6b17
 +    std::move(callback).Run(ok);
 +  }
 +
++  void SelectActiveFilePickerFiles(
++      const std::vector<std::string>& paths,
++      SelectActiveFilePickerFilesCallback callback) override {
++    const bool ok = OwlFreshSelectActiveFilePickerFiles(paths);
++    ui::OwlFreshClearNativeFilePickerSurfaces();
++    if (client_) {
++      client_->OnSurfaceTreeChanged(SurfaceTreeFromRegistry());
++    }
++    std::move(callback).Run(ok);
++  }
++
++  void CancelActiveFilePicker(CancelActiveFilePickerCallback callback) override {
++    const bool ok = OwlFreshCancelActiveFilePicker();
++    ui::OwlFreshClearNativeFilePickerSurfaces();
++    if (client_) {
++      client_->OnSurfaceTreeChanged(SurfaceTreeFromRegistry());
++    }
++    std::move(callback).Run(ok);
++  }
++
 + private:
 +  void CopyText(const std::string& text,
 +                input::NativeWebKeyboardEvent* event) {
@@ -1517,8 +1618,72 @@ index 0000000000..fda22c6b17
 +  mojo::ReceiverSet<mojom::OwlFreshNativeSurfaceHost> native_surface_receivers_;
 +  base::WeakPtrFactory<OwlFreshSessionImpl> weak_factory_{this};
 +};
++bool OwlFreshSelectActiveFilePickerFiles(
++    const std::vector<std::string>& paths) {
++  OwlFreshPendingFilePicker& pending = ActiveFilePicker();
++  if (!pending.listener || paths.empty()) {
++    return false;
++  }
++
++  std::vector<blink::mojom::FileChooserFileInfoPtr> files;
++  files.reserve(paths.size());
++  for (const std::string& path : paths) {
++    base::FilePath file_path(path);
++    files.push_back(blink::mojom::FileChooserFileInfo::NewNativeFile(
++        blink::mojom::NativeFileInfo::New(
++            file_path, file_path.BaseName().AsUTF16Unsafe(),
++            std::vector<std::u16string>())));
++  }
++
++  scoped_refptr<FileSelectListener> listener = std::move(pending.listener);
++  blink::mojom::FileChooserParams::Mode mode = pending.mode;
++  pending.surface_key = 0;
++  listener->FileSelected(std::move(files), base::FilePath(), mode);
++  return true;
++}
++
++bool OwlFreshCancelActiveFilePicker() {
++  OwlFreshPendingFilePicker& pending = ActiveFilePicker();
++  if (!pending.listener) {
++    return false;
++  }
++  scoped_refptr<FileSelectListener> listener = std::move(pending.listener);
++  pending.surface_key = 0;
++  listener->FileSelectionCanceled();
++  return true;
++}
++
 +
 +}  // namespace
++
++bool OwlFreshMaybeRunFileChooser(
++    RenderFrameHost* render_frame_host,
++    scoped_refptr<FileSelectListener> listener,
++    const blink::mojom::FileChooserParams& params) {
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("fresh-owl-embed")) {
++    return false;
++  }
++  if (!render_frame_host || !listener) {
++    return false;
++  }
++
++  OwlFreshPendingFilePicker& pending = ActiveFilePicker();
++  if (pending.listener) {
++    pending.listener->FileSelectionCanceled();
++  }
++
++  pending.listener = std::move(listener);
++  pending.mode = params.mode;
++  pending.surface_key = reinterpret_cast<uint64_t>(pending.listener.get());
++
++  ui::OwlFreshPublishNativeFilePickerSurface(
++      pending.surface_key, 0, FilePickerSurfaceBounds(),
++      [NSScreen mainScreen].backingScaleFactor, FilePickerModeToString(params.mode),
++      AcceptTypesToUTF8(params.accept_types), FilePickerAllowsMultiple(params.mode),
++      FilePickerUploadsFolder(params.mode), "file-picker");
++  return true;
++}
++
 +
 +void BindOwlFreshSessionForCurrentShell(
 +    mojo::PendingReceiver<mojom::OwlFreshSession> receiver) {
@@ -1575,6 +1740,33 @@ index a926ca5c57..80a6ca2739 100644
  };
  
  void BindNetworkHintsHandler(
+diff --git a/content/shell/browser/shell_platform_delegate.cc b/content/shell/browser/shell_platform_delegate.cc
+index 922e418e78..e132416dbf 100644
+--- a/content/shell/browser/shell_platform_delegate.cc
++++ b/content/shell/browser/shell_platform_delegate.cc
+@@ -9,6 +9,10 @@
+ #include "content/public/browser/web_contents.h"
+ #include "content/shell/browser/shell.h"
+ 
++#if BUILDFLAG(IS_MAC)
++#include "content/shell/browser/owl_fresh_host_mac.h"
++#endif
++
+ #if !BUILDFLAG(IS_IOS)
+ #include "content/public/browser/color_chooser.h"
+ #endif
+@@ -52,6 +56,11 @@ void ShellPlatformDelegate::RunFileChooser(
+     RenderFrameHost* render_frame_host,
+     scoped_refptr<FileSelectListener> listener,
+     const blink::mojom::FileChooserParams& params) {
++#if BUILDFLAG(IS_MAC)
++  if (OwlFreshMaybeRunFileChooser(render_frame_host, listener, params)) {
++    return;
++  }
++#endif
+   listener->FileSelectionCanceled();
+ }
+ #endif
 diff --git a/content/shell/browser/shell_platform_delegate_mac.mm b/content/shell/browser/shell_platform_delegate_mac.mm
 index 274dffa179..1cc5a230f0 100644
 --- a/content/shell/browser/shell_platform_delegate_mac.mm
@@ -1684,10 +1876,10 @@ index b11f388bcd..3cc18e5cdf 100644
    NSPoint position = parent_view.window.mouseLocationOutsideOfEventStream;
    NSTimeInterval eventTime = NSApp.currentEvent.timestamp;
 diff --git a/content/shell/common/shell_controller.test-mojom b/content/shell/common/shell_controller.test-mojom
-index 53b2a8b770..1a80b09670 100644
+index 53b2a8b770..432366a1f7 100644
 --- a/content/shell/common/shell_controller.test-mojom
 +++ b/content/shell/common/shell_controller.test-mojom
-@@ -7,6 +7,127 @@ module content.mojom;
+@@ -7,6 +7,134 @@ module content.mojom;
  import "mojo/public/mojom/base/string16.mojom";
  import "mojo/public/mojom/base/values.mojom";
  
@@ -1724,6 +1916,7 @@ index 53b2a8b770..1a80b09670 100644
 +  kWebView = 0,
 +  kPopupWidget = 1,
 +  kNativeMenu = 2,
++  kNativeFilePicker = 3,
 +};
 +
 +struct OwlFreshNativeMenuItem {
@@ -1753,6 +1946,10 @@ index 53b2a8b770..1a80b09670 100644
 +  int32 selected_index;
 +  float item_font_size;
 +  bool right_aligned;
++  string file_picker_mode;
++  array<string> file_picker_accept_types;
++  bool file_picker_allows_multiple;
++  bool file_picker_upload_folder;
 +  string label;
 +};
 +
@@ -1810,12 +2007,14 @@ index 53b2a8b770..1a80b09670 100644
 +interface OwlFreshNativeSurfaceHost {
 +  AcceptActivePopupMenuItem(uint32 index) => (bool ok);
 +  CancelActivePopup() => (bool ok);
++  SelectActiveFilePickerFiles(array<string> paths) => (bool ok);
++  CancelActiveFilePicker() => (bool ok);
 +};
 +
  // A control interface which can be accessed by clients launching Content Shell
  // with a Mojo invitation on the command line. This is used by
  // LaunchAsMojoClientBrowserTest to exercise that mode of execution.
-@@ -21,7 +142,10 @@ interface ShellController {
+@@ -21,7 +149,10 @@ interface ShellController {
        => (mojo_base.mojom.Value value);
  
    // Tells Content Shell to close all windows and shut down. After sending this
@@ -1866,10 +2065,10 @@ index 0000000000..ab883e226a
 +}
 diff --git a/fresh_owl/owl_fresh_mojo_runtime.cc b/fresh_owl/owl_fresh_mojo_runtime.cc
 new file mode 100644
-index 0000000000..62f90c44ac
+index 0000000000..02481ca92b
 --- /dev/null
 +++ b/fresh_owl/owl_fresh_mojo_runtime.cc
-@@ -0,0 +1,890 @@
+@@ -0,0 +1,983 @@
 +#include "fresh_owl/owl_fresh_mojo_runtime.h"
 +
 +#include <cstdlib>
@@ -1886,6 +2085,7 @@ index 0000000000..62f90c44ac
 +#include "base/containers/span.h"
 +#include "base/files/file_path.h"
 +#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
 +#include "base/json/json_writer.h"
 +#include "base/logging.h"
 +#include "base/memory/raw_ptr.h"
@@ -2014,6 +2214,17 @@ index 0000000000..62f90c44ac
 +      surface_dict.Set("selectedIndex", surface->selected_index);
 +      surface_dict.Set("itemFontSize", surface->item_font_size);
 +      surface_dict.Set("rightAligned", surface->right_aligned);
++      surface_dict.Set("filePickerMode", surface->file_picker_mode);
++      base::ListValue file_picker_accept_types;
++      for (const std::string& accept_type : surface->file_picker_accept_types) {
++        file_picker_accept_types.Append(accept_type);
++      }
++      surface_dict.Set("filePickerAcceptTypes",
++                       std::move(file_picker_accept_types));
++      surface_dict.Set("filePickerAllowsMultiple",
++                       surface->file_picker_allows_multiple);
++      surface_dict.Set("filePickerUploadFolder",
++                       surface->file_picker_upload_folder);
 +      surface_dict.Set("label", surface->label);
 +      surfaces.Append(std::move(surface_dict));
 +    }
@@ -2750,6 +2961,87 @@ index 0000000000..62f90c44ac
 +  return status;
 +}
 +
++extern "C" int
++owl_fresh_mojo_native_surface_select_active_file_picker_files_json(
++    OwlFreshMojoSession* session,
++    const char* paths_json,
++    bool* ok,
++    char** error) {
++  if (ok) {
++    *ok = false;
++  }
++  if (error) {
++    *error = nullptr;
++  }
++  if (!session) {
++    return Fail(error, "session is null");
++  }
++  if (!session->native_surface_host.is_bound()) {
++    return Fail(error, "OwlFreshNativeSurfaceHost is not bound");
++  }
++
++  std::optional<base::Value> value = base::JSONReader::Read(
++      paths_json ? std::string_view(paths_json) : std::string_view("[]"),
++      base::JSON_PARSE_RFC);
++  if (!value || !value->is_list()) {
++    return Fail(error, "file picker paths JSON must be an array");
++  }
++  std::vector<std::string> paths;
++  for (const base::Value& item : value->GetList()) {
++    if (!item.is_string()) {
++      return Fail(error, "file picker paths JSON contains non-string item");
++    }
++    paths.push_back(item.GetString());
++  }
++
++  int status = 1;
++  base::RunLoop loop;
++  session->native_surface_host->SelectActiveFilePickerFiles(
++      paths,
++      base::BindOnce(
++          [](base::OnceClosure quit, int* status, bool* ok, bool result) {
++            if (ok) {
++              *ok = result;
++            }
++            *status = 0;
++            std::move(quit).Run();
++          },
++          loop.QuitClosure(), &status, ok));
++  loop.Run();
++  return status;
++}
++
++extern "C" int owl_fresh_mojo_native_surface_cancel_active_file_picker(
++    OwlFreshMojoSession* session,
++    bool* ok,
++    char** error) {
++  if (ok) {
++    *ok = false;
++  }
++  if (error) {
++    *error = nullptr;
++  }
++  if (!session) {
++    return Fail(error, "session is null");
++  }
++  if (!session->native_surface_host.is_bound()) {
++    return Fail(error, "OwlFreshNativeSurfaceHost is not bound");
++  }
++  int status = 1;
++  base::RunLoop loop;
++  session->native_surface_host->CancelActiveFilePicker(base::BindOnce(
++      [](base::OnceClosure quit, int* status, bool* ok, bool result) {
++        if (ok) {
++          *ok = result;
++        }
++        *status = 0;
++        std::move(quit).Run();
++      },
++      loop.QuitClosure(), &status, ok));
++  loop.Run();
++  return status;
++}
++
 +extern "C" void owl_fresh_mojo_poll_events(uint32_t timeout_ms) {
 +  base::RunLoop loop;
 +  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
@@ -2762,10 +3054,10 @@ index 0000000000..62f90c44ac
 +}
 diff --git a/fresh_owl/owl_fresh_mojo_runtime.h b/fresh_owl/owl_fresh_mojo_runtime.h
 new file mode 100644
-index 0000000000..65e5e7b549
+index 0000000000..c1ab473227
 --- /dev/null
 +++ b/fresh_owl/owl_fresh_mojo_runtime.h
-@@ -0,0 +1,147 @@
+@@ -0,0 +1,158 @@
 +#ifndef FRESH_OWL_OWL_FRESH_MOJO_RUNTIME_H_
 +#define FRESH_OWL_OWL_FRESH_MOJO_RUNTIME_H_
 +
@@ -2905,6 +3197,17 @@ index 0000000000..65e5e7b549
 +owl_fresh_mojo_native_surface_cancel_active_popup(OwlFreshMojoSession* session,
 +                                                  bool* ok,
 +                                                  char** error);
++OWL_FRESH_MOJO_EXPORT int
++owl_fresh_mojo_native_surface_select_active_file_picker_files_json(
++    OwlFreshMojoSession* session,
++    const char* paths_json,
++    bool* ok,
++    char** error);
++OWL_FRESH_MOJO_EXPORT int
++owl_fresh_mojo_native_surface_cancel_active_file_picker(
++    OwlFreshMojoSession* session,
++    bool* ok,
++    char** error);
 +OWL_FRESH_MOJO_EXPORT void owl_fresh_mojo_poll_events(uint32_t timeout_ms);
 +OWL_FRESH_MOJO_EXPORT void owl_fresh_mojo_free_buffer(void* buffer);
 +
@@ -3090,10 +3393,10 @@ index dcf493d629..8648983f2b 100644
  }  // namespace ui
 diff --git a/ui/accelerated_widget_mac/owl_fresh_context.h b/ui/accelerated_widget_mac/owl_fresh_context.h
 new file mode 100644
-index 0000000000..3ff0a37888
+index 0000000000..2e7018a70e
 --- /dev/null
 +++ b/ui/accelerated_widget_mac/owl_fresh_context.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,127 @@
 +#ifndef UI_ACCELERATED_WIDGET_MAC_OWL_FRESH_CONTEXT_H_
 +#define UI_ACCELERATED_WIDGET_MAC_OWL_FRESH_CONTEXT_H_
 +
@@ -3121,6 +3424,7 @@ index 0000000000..3ff0a37888
 +  kWebView = 0,
 +  kPopupWidget = 1,
 +  kNativeMenu = 2,
++  kNativeFilePicker = 3,
 +};
 +
 +struct OwlFreshNativeMenuItem {
@@ -3157,6 +3461,10 @@ index 0000000000..3ff0a37888
 +  int32_t selected_index = -1;
 +  float item_font_size = 0.0f;
 +  bool right_aligned = false;
++  std::string file_picker_mode;
++  std::vector<std::string> file_picker_accept_types;
++  bool file_picker_allows_multiple = false;
++  bool file_picker_upload_folder = false;
 +  std::string label;
 +};
 +
@@ -3188,9 +3496,20 @@ index 0000000000..3ff0a37888
 +    float item_font_size,
 +    bool right_aligned,
 +    const std::string& label);
++ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshPublishNativeFilePickerSurface(
++    uint64_t surface_key,
++    uint64_t parent_surface_key,
++    CGRect bounds,
++    float scale,
++    const std::string& mode,
++    const std::vector<std::string>& accept_types,
++    bool allows_multiple,
++    bool upload_folder,
++    const std::string& label);
 +ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshMarkSurfaceHidden(
 +    uint64_t surface_key);
 +ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshClearNativeMenuSurfaces();
++ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshClearNativeFilePickerSurfaces();
 +ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshDisplayPortalPresentIOSurface(
 +    IOSurfaceRef io_surface,
 +    const gfx::Size& dip_size,
@@ -3207,10 +3526,10 @@ index 0000000000..3ff0a37888
 +#endif
 diff --git a/ui/accelerated_widget_mac/owl_fresh_context.mm b/ui/accelerated_widget_mac/owl_fresh_context.mm
 new file mode 100644
-index 0000000000..2747b052b6
+index 0000000000..52f07323e1
 --- /dev/null
 +++ b/ui/accelerated_widget_mac/owl_fresh_context.mm
-@@ -0,0 +1,431 @@
+@@ -0,0 +1,497 @@
 +#include "ui/accelerated_widget_mac/owl_fresh_context.h"
 +
 +#include <algorithm>
@@ -3255,6 +3574,10 @@ index 0000000000..2747b052b6
 +  int32_t selected_index = -1;
 +  float item_font_size = 0.0f;
 +  bool right_aligned = false;
++  std::string file_picker_mode;
++  std::vector<std::string> file_picker_accept_types;
++  bool file_picker_allows_multiple = false;
++  bool file_picker_upload_folder = false;
 +  std::string label;
 +};
 +
@@ -3427,6 +3750,10 @@ index 0000000000..2747b052b6
 +    snapshot.selected_index = record.selected_index;
 +    snapshot.item_font_size = record.item_font_size;
 +    snapshot.right_aligned = record.right_aligned;
++    snapshot.file_picker_mode = record.file_picker_mode;
++    snapshot.file_picker_accept_types = record.file_picker_accept_types;
++    snapshot.file_picker_allows_multiple = record.file_picker_allows_multiple;
++    snapshot.file_picker_upload_folder = record.file_picker_upload_folder;
 +    snapshot.label = record.label;
 +    snapshots.push_back(std::move(snapshot));
 +  }
@@ -3489,6 +3816,10 @@ index 0000000000..2747b052b6
 +  record.selected_index = -1;
 +  record.item_font_size = 0.0f;
 +  record.right_aligned = false;
++  record.file_picker_mode.clear();
++  record.file_picker_accept_types.clear();
++  record.file_picker_allows_multiple = false;
++  record.file_picker_upload_folder = false;
 +  record.label = label;
 +
 +  if (kind == OwlFreshSurfaceKind::kWebView) {
@@ -3543,6 +3874,47 @@ index 0000000000..2747b052b6
 +  record.selected_index = selected_index;
 +  record.item_font_size = item_font_size;
 +  record.right_aligned = right_aligned;
++  record.file_picker_mode.clear();
++  record.file_picker_accept_types.clear();
++  record.file_picker_allows_multiple = false;
++  record.file_picker_upload_folder = false;
++  record.label = label;
++  g_portal_generation.fetch_add(1, std::memory_order_relaxed);
++}
++
++void OwlFreshPublishNativeFilePickerSurface(
++    uint64_t surface_key,
++    uint64_t parent_surface_key,
++    CGRect bounds,
++    float scale,
++    const std::string& mode,
++    const std::vector<std::string>& accept_types,
++    bool allows_multiple,
++    bool upload_folder,
++    const std::string& label) {
++  if (surface_key == 0) {
++    return;
++  }
++  OwlFreshSurfaceRecord& record = EnsureSurfaceRecord(surface_key);
++  record.parent_surface_key = parent_surface_key;
++  record.kind = OwlFreshSurfaceKind::kNativeFilePicker;
++  record.context_id = 0;
++  record.context = nil;
++  record.root_layer = nil;
++  record.host_layer = nil;
++  record.bounds = NormalizedFrame(bounds);
++  record.scale = scale <= 0 ? 1.0f : scale;
++  record.z_index = 250;
++  record.visible = true;
++  record.menu_items.clear();
++  record.native_menu_items.clear();
++  record.selected_index = -1;
++  record.item_font_size = 0.0f;
++  record.right_aligned = false;
++  record.file_picker_mode = mode;
++  record.file_picker_accept_types = accept_types;
++  record.file_picker_allows_multiple = allows_multiple;
++  record.file_picker_upload_folder = upload_folder;
 +  record.label = label;
 +  g_portal_generation.fetch_add(1, std::memory_order_relaxed);
 +}
@@ -3560,6 +3932,19 @@ index 0000000000..2747b052b6
 +  bool changed = false;
 +  for (auto& [key, record] : SurfaceRecords()) {
 +    if (record.kind == OwlFreshSurfaceKind::kNativeMenu && record.visible) {
++      record.visible = false;
++      changed = true;
++    }
++  }
++  if (changed) {
++    g_portal_generation.fetch_add(1, std::memory_order_relaxed);
++  }
++}
++
++void OwlFreshClearNativeFilePickerSurfaces() {
++  bool changed = false;
++  for (auto& [key, record] : SurfaceRecords()) {
++    if (record.kind == OwlFreshSurfaceKind::kNativeFilePicker && record.visible) {
 +      record.visible = false;
 +      changed = true;
 +    }

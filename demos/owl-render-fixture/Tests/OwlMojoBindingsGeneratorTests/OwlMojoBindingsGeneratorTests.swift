@@ -105,11 +105,15 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let tree = try await surfaceTree.getSurfaceTree()
         let accepted = try await nativeSurface.acceptActivePopupMenuItem(1)
         let canceled = try await nativeSurface.cancelActivePopup()
+        let fileSelected = try await nativeSurface.selectActiveFilePickerFiles(["/tmp/owl.txt"])
+        let fileCanceled = try await nativeSurface.cancelActiveFilePicker()
 
         XCTAssertTrue(flushed)
         XCTAssertEqual(tree.generation, 7)
         XCTAssertTrue(accepted)
         XCTAssertTrue(canceled)
+        XCTAssertTrue(fileSelected)
+        XCTAssertTrue(fileCanceled)
         XCTAssertEqual(sink.calls, [
             "bindWebView",
             "navigate",
@@ -120,6 +124,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "getSurfaceTree",
             "acceptActivePopupMenuItem",
             "cancelActivePopup",
+            "selectActiveFilePickerFiles",
+            "cancelActiveFilePicker",
         ])
         XCTAssertEqual(session.recordedCalls.map(\.method), [
             "bindWebView",
@@ -131,6 +137,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "getSurfaceTree",
             "acceptActivePopupMenuItem",
             "cancelActivePopup",
+            "selectActiveFilePickerFiles",
+            "cancelActiveFilePicker",
         ])
         XCTAssertEqual(session.recordedCalls.map(\.interface), [
             "OwlFreshSession",
@@ -142,6 +150,8 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "OwlFreshSurfaceTreeHost",
             "OwlFreshNativeSurfaceHost",
             "OwlFreshNativeSurfaceHost",
+            "OwlFreshNativeSurfaceHost",
+            "OwlFreshNativeSurfaceHost",
         ])
         XCTAssertEqual(webView.recordedCalls, session.recordedCalls)
         XCTAssertEqual(session.recordedCalls[0].payloadType, "OwlFreshWebViewReceiver")
@@ -151,6 +161,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         XCTAssertEqual(session.recordedCalls[5].payloadType, "Void")
         XCTAssertEqual(session.recordedCalls[6].payloadType, "Void")
         XCTAssertEqual(session.recordedCalls[7].payloadType, "UInt32")
+        XCTAssertEqual(session.recordedCalls[9].payloadType, "[String]")
     }
 
     func testGeneratedPipeBoundSinksForwardTypedCalls() async throws {
@@ -192,10 +203,12 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let ok = try await session.flush()
         let tree = try await surfaceTree.getSurfaceTree()
         let accepted = try await nativeSurface.acceptActivePopupMenuItem(2)
+        let selected = try await nativeSurface.selectActiveFilePickerFiles(["/tmp/owl.txt"])
 
         XCTAssertTrue(ok)
         XCTAssertEqual(tree.generation, 42)
         XCTAssertTrue(accepted)
+        XCTAssertTrue(selected)
         XCTAssertEqual(
             [
                 profile.handle,
@@ -220,6 +233,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "sessionFlush",
             "surfaceTreeHostGetSurfaceTree",
             "nativeSurfaceHostAcceptActivePopupMenuItem:2",
+            "nativeSurfaceHostSelectActiveFilePickerFiles:/tmp/owl.txt",
         ])
         XCTAssertEqual(recorder.recordedCalls.map(\.interface), [
             "OwlFreshSession",
@@ -233,6 +247,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "OwlFreshInput",
             "OwlFreshSession",
             "OwlFreshSurfaceTreeHost",
+            "OwlFreshNativeSurfaceHost",
             "OwlFreshNativeSurfaceHost",
         ])
     }
@@ -259,6 +274,10 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
               "selectedIndex": -1,
               "itemFontSize": 0,
               "rightAligned": false,
+              "filePickerMode": "",
+              "filePickerAcceptTypes": [],
+              "filePickerAllowsMultiple": false,
+              "filePickerUploadFolder": false,
               "label": "web-view"
             }
           ]
@@ -384,6 +403,16 @@ private final class FakeOwlFreshSink:
         calls.append("cancelActivePopup")
         return true
     }
+
+    func selectActiveFilePickerFiles(_ paths: [String]) async throws -> Bool {
+        calls.append("selectActiveFilePickerFiles")
+        return paths.count == 1
+    }
+
+    func cancelActiveFilePicker() async throws -> Bool {
+        calls.append("cancelActiveFilePicker")
+        return true
+    }
 }
 
 private final class FakePipeBindings: OwlFreshMojoPipeBindings {
@@ -460,6 +489,16 @@ private final class FakePipeBindings: OwlFreshMojoPipeBindings {
 
     func nativeSurfaceHostCancelActivePopup(_ session: OpaquePointer?) throws -> Bool {
         calls.append("nativeSurfaceHostCancelActivePopup")
+        return true
+    }
+
+    func nativeSurfaceHostSelectActiveFilePickerFiles(_ session: OpaquePointer?, paths: [String]) throws -> Bool {
+        calls.append("nativeSurfaceHostSelectActiveFilePickerFiles:\(paths.joined(separator: ","))")
+        return true
+    }
+
+    func nativeSurfaceHostCancelActiveFilePicker(_ session: OpaquePointer?) throws -> Bool {
+        calls.append("nativeSurfaceHostCancelActiveFilePicker")
         return true
     }
 }

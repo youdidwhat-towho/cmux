@@ -8,7 +8,7 @@ OUT_ROOT="${OWL_LAYER_HOST_FOCUSED_OUT:-$ROOT_DIR/artifacts/layer-host-focused-g
 RUN_SCRIPT="$SCRIPT_DIR/run-layer-host-verifier-gui.sh"
 
 if [ "$#" -eq 0 ]; then
-  suites=(render input resize lifecycle scale recovery scroll-text)
+  suites=(render input resize lifecycle scale recovery file-picker scroll-text)
 else
   suites=("$@")
 fi
@@ -16,7 +16,7 @@ fi
 expanded_suites=()
 for suite in "${suites[@]}"; do
   if [ "$suite" = "all" ]; then
-    expanded_suites+=(render input resize lifecycle scale recovery scroll-text widgets google)
+    expanded_suites+=(render input resize lifecycle scale recovery file-picker scroll-text widgets google)
   else
     expanded_suites+=("$suite")
   fi
@@ -78,6 +78,14 @@ run_suite() {
       OWL_LAYER_HOST_ONLY_TARGETS="crash-recovery-fixture" \
         "$RUN_SCRIPT"
       ;;
+    file-picker)
+      OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
+      OWL_LAYER_HOST_INPUT_CHECK=1 \
+      OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
+      OWL_LAYER_HOST_FILE_PICKER_CHECK=1 \
+      OWL_LAYER_HOST_ONLY_TARGETS="file-picker-fixture" \
+        "$RUN_SCRIPT"
+      ;;
     scroll-text)
       OWL_LAYER_HOST_RENDER_OUT="$out_dir" \
       OWL_LAYER_HOST_INPUT_CHECK=1 \
@@ -103,7 +111,7 @@ run_suite() {
       ;;
     *)
       echo "unknown focused suite: $suite" >&2
-      echo "usage: $0 [all|render|input|resize|lifecycle|scale|recovery|scroll-text|widgets|google ...]" >&2
+      echo "usage: $0 [all|render|input|resize|lifecycle|scale|recovery|file-picker|scroll-text|widgets|google ...]" >&2
       exit 2
       ;;
   esac
