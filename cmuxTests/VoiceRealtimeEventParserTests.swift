@@ -16,10 +16,62 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
         let workspaceProperties = workspaceParameters?["properties"] as? [String: Any]
         XCTAssertNotNil(workspaceProperties?["focus"])
 
+        let renameWorkspace = tools.first { $0["name"] as? String == "cmux_rename_workspace" }
+        let renameParameters = renameWorkspace?["parameters"] as? [String: Any]
+        let renameRequired = renameParameters?["required"] as? [String]
+        XCTAssertEqual(renameRequired, ["title"])
+
+        let typeText = tools.first { $0["name"] as? String == "cmux_type_text" }
+        let typeTextParameters = typeText?["parameters"] as? [String: Any]
+        let typeTextRequired = typeTextParameters?["required"] as? [String]
+        XCTAssertEqual(typeTextRequired, ["text"])
+
         let focus = tools.first { $0["name"] as? String == "cmux_focus" }
         let focusParameters = focus?["parameters"] as? [String: Any]
         let required = focusParameters?["required"] as? [String]
         XCTAssertTrue(required?.isEmpty ?? false)
+    }
+
+    @MainActor
+    func testAssistantTranscriptPartsStayInOneRenderedMessageUntilResponseDone() {
+        let viewModel = VoiceAgentViewModel()
+
+        viewModel.voiceRealtimeBridge(
+            viewModel.bridge,
+            didReceiveMessage: serverEvent(["type": "response.created"])
+        )
+        viewModel.voiceRealtimeBridge(
+            viewModel.bridge,
+            didReceiveMessage: serverEvent([
+                "type": "response.output_audio_transcript.delta",
+                "delta": "Sure, what title would you like?"
+            ])
+        )
+        viewModel.voiceRealtimeBridge(
+            viewModel.bridge,
+            didReceiveMessage: serverEvent([
+                "type": "response.output_audio_transcript.done",
+                "transcript": "Sure, what title would you like?"
+            ])
+        )
+        viewModel.voiceRealtimeBridge(
+            viewModel.bridge,
+            didReceiveMessage: serverEvent([
+                "type": "response.output_audio_transcript.delta",
+                "delta": " Just tell me the title."
+            ])
+        )
+        viewModel.voiceRealtimeBridge(
+            viewModel.bridge,
+            didReceiveMessage: serverEvent(["type": "response.done"])
+        )
+
+        let assistantItems = viewModel.transcript.filter { $0.role == .assistant }
+        XCTAssertEqual(assistantItems.count, 1)
+        XCTAssertEqual(
+            assistantItems.first?.text,
+            "Sure, what title would you like? Just tell me the title."
+        )
     }
 
     func testExtractsFunctionCallsFromResponseDone() {
@@ -99,5 +151,12 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
         ]
 
         XCTAssertTrue(VoiceRealtimeEventParser.isActiveResponseError(in: event))
+    }
+
+    private func serverEvent(_ event: [String: Any]) -> [String: Any] {
+        [
+            "kind": "server_event",
+            "event": event
+        ]
     }
 }

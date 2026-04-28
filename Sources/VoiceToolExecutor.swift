@@ -28,127 +28,6 @@ final class VoiceToolExecutor {
     private var lastPaneID: String?
     private var lastSurfaceID: String?
 
-    var toolDefinitions: [[String: Any]] {
-        [
-            tool(
-                name: "cmux_get_context",
-                description: "Get the current cmux window, workspace, pane, and surface tree. Use this before choosing a target when the user is ambiguous.",
-                properties: [:]
-            ),
-            tool(
-                name: "cmux_read_terminal",
-                description: "Read visible terminal text or recent scrollback from a terminal surface.",
-                properties: commonTargetProperties().merging([
-                    "lines": integerProperty("Maximum number of recent lines to read. Defaults to 80."),
-                    "scrollback": booleanProperty("Include scrollback.")
-                ]) { current, _ in current }
-            ),
-            tool(
-                name: "cmux_create_workspace",
-                description: "Create a new cmux workspace.",
-                properties: [
-                    "title": stringProperty("Optional workspace title."),
-                    "working_directory": stringProperty("Optional working directory."),
-                    "initial_command": stringProperty("Optional command to run in the initial terminal."),
-                    "description": stringProperty("Optional workspace description."),
-                    "focus": booleanProperty("Select and focus the new workspace. Defaults to true.")
-                ]
-            ),
-            tool(
-                name: "cmux_create_terminal",
-                description: "Create a new terminal surface in the focused pane or a specified pane.",
-                properties: commonTargetProperties().merging([
-                    "pane_id": stringProperty("Optional pane UUID to receive the terminal.")
-                ]) { current, _ in current }
-            ),
-            tool(
-                name: "cmux_create_split",
-                description: "Create a split pane with a terminal or browser.",
-                properties: commonTargetProperties().merging([
-                    "direction": [
-                        "type": "string",
-                        "description": "Split direction.",
-                        "enum": ["left", "right", "up", "down"]
-                    ],
-                    "type": [
-                        "type": "string",
-                        "description": "Surface type for the new split.",
-                        "enum": ["terminal", "browser"]
-                    ],
-                    "url": stringProperty("URL when creating a browser split.")
-                ]) { current, _ in current },
-                required: ["direction"]
-            ),
-            tool(
-                name: "cmux_run_command",
-                description: "Run a shell command in a terminal by sending text followed by Enter. Set confirmed true only when the user explicitly asked to run this exact command or confirmed it.",
-                properties: commonTargetProperties().merging([
-                    "command": stringProperty("The exact shell command to run."),
-                    "confirmed": booleanProperty("True only when the user explicitly asked to run this command or confirmed it.")
-                ]) { current, _ in current },
-                required: ["command", "confirmed"]
-            ),
-            tool(
-                name: "cmux_open_browser",
-                description: "Open a browser split for a URL.",
-                properties: commonTargetProperties().merging([
-                    "url": stringProperty("The URL to open.")
-                ]) { current, _ in current },
-                required: ["url"]
-            ),
-            tool(
-                name: "cmux_browser_snapshot",
-                description: "Return a compact accessibility-like snapshot for a browser surface.",
-                properties: commonTargetProperties().merging([
-                    "surface_id": stringProperty("Browser surface UUID."),
-                    "max_depth": integerProperty("Maximum DOM depth. Defaults to 8."),
-                    "interactive": booleanProperty("Only include interactive nodes.")
-                ]) { current, _ in current }
-            ),
-            tool(
-                name: "cmux_browser_navigate",
-                description: "Navigate a browser surface to a URL.",
-                properties: commonTargetProperties().merging([
-                    "surface_id": stringProperty("Browser surface UUID."),
-                    "url": stringProperty("The URL to navigate to.")
-                ]) { current, _ in current },
-                required: ["url"]
-            ),
-            tool(
-                name: "cmux_browser_click",
-                description: "Click an element in a browser surface by selector or element ref from a snapshot.",
-                properties: commonTargetProperties().merging([
-                    "surface_id": stringProperty("Browser surface UUID."),
-                    "selector": stringProperty("CSS selector or element ref, such as @e1.")
-                ]) { current, _ in current },
-                required: ["selector"]
-            ),
-            tool(
-                name: "cmux_browser_type",
-                description: "Type or fill text into a browser element.",
-                properties: commonTargetProperties().merging([
-                    "surface_id": stringProperty("Browser surface UUID."),
-                    "selector": stringProperty("CSS selector or element ref, such as @e1."),
-                    "text": stringProperty("Text to enter."),
-                    "replace": booleanProperty("Replace existing value instead of typing into the element. Defaults to true.")
-                ]) { current, _ in current },
-                required: ["selector", "text"]
-            ),
-            tool(
-                name: "cmux_focus",
-                description: "Focus a cmux window, workspace, pane, or surface by UUID. If the id is omitted, focus the most recently created or referenced object.",
-                properties: [
-                    "target_type": [
-                        "type": "string",
-                        "description": "Object type to focus. Omit this to focus the most recently created or referenced object.",
-                        "enum": ["window", "workspace", "pane", "surface"]
-                    ],
-                    "id": stringProperty("The UUID for the target. Omit this to focus the most recently created or referenced object of target_type.")
-                ]
-            )
-        ]
-    }
-
     func execute(name: String, argumentsJSON: String) async -> VoiceToolExecutionResult {
         let arguments = VoiceJSON.parseArguments(argumentsJSON)
 
@@ -169,6 +48,8 @@ final class VoiceToolExecutor {
             ])
             params["focus"] = boolValue(arguments["focus"]) ?? true
             return callV2(method: "workspace.create", params: params)
+        case "cmux_rename_workspace":
+            return renameWorkspace(arguments: arguments)
         case "cmux_create_terminal":
             var params = targetParams(from: arguments)
             params["type"] = "terminal"
@@ -199,6 +80,14 @@ final class VoiceToolExecutor {
             }
             var params = targetParams(from: arguments)
             params["text"] = command.hasSuffix("\n") ? command : "\(command)\n"
+            return callV2(method: "surface.send_text", params: params)
+        case "cmux_type_text":
+            guard let text = stringValue(arguments["text"]) else {
+                return failure(message: "Missing text.", code: "missing_text")
+            }
+            var params = targetParams(from: arguments)
+            let shouldSubmit = boolValue(arguments["submit"]) ?? false
+            params["text"] = shouldSubmit && !text.hasSuffix("\n") ? "\(text)\n" : text
             return callV2(method: "surface.send_text", params: params)
         case "cmux_open_browser":
             guard let url = stringValue(arguments["url"]) else {
@@ -242,6 +131,32 @@ final class VoiceToolExecutor {
         default:
             return failure(message: "Unknown voice tool: \(name)", code: "unknown_tool")
         }
+    }
+
+    private func renameWorkspace(arguments: [String: Any]) -> VoiceToolExecutionResult {
+        guard let title = stringValue(arguments["title"]) else {
+            return failure(message: "Missing title.", code: "missing_title")
+        }
+
+        var params = targetParams(from: arguments)
+        if params["workspace_id"] == nil {
+            if let lastWorkspaceID {
+                params["workspace_id"] = lastWorkspaceID
+            } else if let currentWorkspaceID = currentWorkspaceID() {
+                params["workspace_id"] = currentWorkspaceID
+            }
+        }
+        params["title"] = title
+        return callV2(method: "workspace.rename", params: params)
+    }
+
+    private func currentWorkspaceID() -> String? {
+        let payload = callV2(method: "workspace.current", params: [:]).payload
+        guard payload["ok"] as? Bool == true,
+              let result = payload["result"] as? [String: Any] else {
+            return nil
+        }
+        return stringValue(result["workspace_id"])
     }
 
     private func getContext() -> VoiceToolExecutionResult {
@@ -403,45 +318,6 @@ final class VoiceToolExecutor {
         }
         return params
     }
-}
-
-private func tool(
-    name: String,
-    description: String,
-    properties: [String: Any],
-    required: [String] = []
-) -> [String: Any] {
-    [
-        "type": "function",
-        "name": name,
-        "description": description,
-        "parameters": [
-            "type": "object",
-            "properties": properties,
-            "required": required
-        ]
-    ]
-}
-
-private func commonTargetProperties() -> [String: Any] {
-    [
-        "window_id": stringProperty("Optional target window UUID."),
-        "workspace_id": stringProperty("Optional target workspace UUID."),
-        "pane_id": stringProperty("Optional target pane UUID."),
-        "surface_id": stringProperty("Optional target surface UUID.")
-    ]
-}
-
-private func stringProperty(_ description: String) -> [String: Any] {
-    ["type": "string", "description": description]
-}
-
-private func integerProperty(_ description: String) -> [String: Any] {
-    ["type": "integer", "description": description]
-}
-
-private func booleanProperty(_ description: String) -> [String: Any] {
-    ["type": "boolean", "description": description]
 }
 
 private func stringValue(_ value: Any?) -> String? {

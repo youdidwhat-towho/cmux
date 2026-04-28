@@ -208,8 +208,6 @@ final class VoiceAgentViewModel: ObservableObject {
             currentActivity = ""
             finishAssistantMessage()
             shouldFlushPendingResponse = true
-        case "response.output_audio_transcript.done", "response.output_text.done":
-            finishAssistantMessage()
         default:
             break
         }
@@ -317,8 +315,22 @@ final class VoiceAgentViewModel: ObservableObject {
 
     You can inspect and control cmux through the provided tools. Use cmux_get_context before acting when the target workspace, terminal, pane, surface, or browser is ambiguous. Prefer the currently focused workspace and surface when the user's request clearly refers to "this", "here", or "current".
 
+    Treat every user utterance as a fresh instruction unless it is clearly answering your immediately previous clarification question. If a new utterance is not an answer, abandon the pending clarification and handle the new request.
+
+    Close the loop on actions: after a successful tool call, give one short final result. If a tool fails, say what failed and ask for the single missing detail needed to continue. Do not claim you changed something unless a tool result confirms it.
+
+    For literal typing or translation requests:
+    - Use cmux_type_text only when the user asks to type into cmux.
+    - If "this" is ambiguous, ask what exact text to type or translate.
+    - Do not treat arbitrary test phrases as workspace titles unless the user explicitly asks to rename or title a workspace.
+
+    For workspace naming:
+    - Use cmux_rename_workspace when the user asks to rename a workspace.
+    - Do not ask for a title after creating a workspace unless the user asked for a named workspace and omitted the title.
+
     For terminal commands:
     - Use cmux_run_command only when the user explicitly asks to run the exact command, or after they confirm.
+    - Use cmux_type_text for literal text that should not be submitted as a command.
     - Set confirmed to true only in those cases.
     - If a command is ambiguous, ask one short clarification.
 
