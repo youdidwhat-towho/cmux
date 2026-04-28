@@ -490,10 +490,10 @@ index 0000000000..960251dda6
 +#endif
 diff --git a/content/shell/browser/owl_fresh_host_mac.mm b/content/shell/browser/owl_fresh_host_mac.mm
 new file mode 100644
-index 0000000000..d80b4dc4f2
+index 0000000000..b69e049d90
 --- /dev/null
 +++ b/content/shell/browser/owl_fresh_host_mac.mm
-@@ -0,0 +1,1403 @@
+@@ -0,0 +1,1446 @@
 +#include "content/shell/browser/owl_fresh_host_mac.h"
 +
 +#import <Cocoa/Cocoa.h>
@@ -1089,6 +1089,8 @@ index 0000000000..d80b4dc4f2
 +      return;
 +    }
 +    gfx::Size size(width, height);
++    requested_size_ = size;
++    ui::OwlFreshClearDevToolsDockLayout();
 +    NSSize content_size = NSMakeSize(width, height);
 +    [CATransaction begin];
 +    [CATransaction setDisableActions:YES];
@@ -1400,9 +1402,21 @@ index 0000000000..d80b4dc4f2
 +      return;
 +    }
 +
-+    const std::string label =
-+        mode == mojom::OwlFreshDevToolsMode::kWindow ? "devtools-window"
-+                                                     : "devtools-inline";
++    std::string label = "devtools-bottom";
++    switch (mode) {
++      case mojom::OwlFreshDevToolsMode::kBottom:
++        label = "devtools-bottom";
++        break;
++      case mojom::OwlFreshDevToolsMode::kRight:
++        label = "devtools-right";
++        break;
++      case mojom::OwlFreshDevToolsMode::kLeft:
++        label = "devtools-left";
++        break;
++      case mojom::OwlFreshDevToolsMode::kWindow:
++        label = "devtools-window";
++        break;
++    }
 +    ui::OwlFreshSetDevToolsSurfaceLabel(label);
 +
 +    if (!devtools_frontend_) {
@@ -1425,15 +1439,38 @@ index 0000000000..d80b4dc4f2
 +    owl_fresh::MarkDevToolsFrontend(devtools_contents);
 +
 +    gfx::Rect inspected_bounds = inspected_contents->GetContainerBounds();
-+    const int width = std::max(inspected_bounds.width(), 800);
-+    const int height = std::max(inspected_bounds.height(), 600);
-+    const gfx::Size devtools_size(
-+        width,
-+        mode == mojom::OwlFreshDevToolsMode::kWindow
-+            ? height
-+            : std::max(280, height / 2));
++    const int width = std::max({requested_size_.width(), inspected_bounds.width(), 800});
++    const int height = std::max({requested_size_.height(), inspected_bounds.height(), 600});
++    const int bottom_height = std::min(280, std::max(1, height - 240));
++    const int side_width = std::min(360, std::max(1, width - 320));
++    gfx::Rect web_bounds(0, 0, width, height);
++    gfx::Rect devtools_bounds(0, 0, width, height);
++    switch (mode) {
++      case mojom::OwlFreshDevToolsMode::kBottom:
++        web_bounds = gfx::Rect(0, bottom_height, width, height - bottom_height);
++        devtools_bounds = gfx::Rect(0, 0, width, bottom_height);
++        break;
++      case mojom::OwlFreshDevToolsMode::kRight:
++        web_bounds = gfx::Rect(0, 0, width - side_width, height);
++        devtools_bounds = gfx::Rect(width - side_width, 0, side_width, height);
++        break;
++      case mojom::OwlFreshDevToolsMode::kLeft:
++        web_bounds = gfx::Rect(side_width, 0, width - side_width, height);
++        devtools_bounds = gfx::Rect(0, 0, side_width, height);
++        break;
++      case mojom::OwlFreshDevToolsMode::kWindow:
++        web_bounds = gfx::Rect(0, 0, width, height);
++        devtools_bounds = gfx::Rect(0, 0, width, height);
++        break;
++    }
++    shell->ResizeWebContentForTests(web_bounds.size());
 +    devtools_frontend_->frontend_shell()->ResizeWebContentForTests(
-+        devtools_size);
++        devtools_bounds.size());
++    ui::OwlFreshSetDevToolsDockLayout(
++        label,
++        CGRectMake(web_bounds.x(), web_bounds.y(), web_bounds.width(), web_bounds.height()),
++        CGRectMake(devtools_bounds.x(), devtools_bounds.y(), devtools_bounds.width(), devtools_bounds.height()));
++    EnsureWebContentsProducingFrames(inspected_contents);
 +    EnsureWebContentsProducingFrames(devtools_contents);
 +    devtools_contents->Focus();
 +    PublishCompositorWithRetry(60);
@@ -1448,6 +1485,11 @@ index 0000000000..d80b4dc4f2
 +    }
 +    devtools_frontend_->Close();
 +    devtools_frontend_ = base::WeakPtr<ShellDevToolsFrontend>();
++    ui::OwlFreshClearDevToolsDockLayout();
++    if (Shell* shell = CurrentShell()) {
++      shell->ResizeWebContentForTests(requested_size_);
++      EnsureWebContentsProducingFrames(shell->web_contents());
++    }
 +    if (client_) {
 +      client_->OnSurfaceTreeChanged(SurfaceTreeFromRegistry());
 +    }
@@ -1806,6 +1848,7 @@ index 0000000000..d80b4dc4f2
 +
 +  mojo::Remote<mojom::OwlFreshClient> client_;
 +  uint32_t last_context_id_ = 0;
++  gfx::Size requested_size_{960, 640};
 +  CAContext* __strong fixture_context_ = nil;
 +  CALayer* __strong fixture_root_ = nil;
 +  CALayer* __strong fixture_input_layer_ = nil;
@@ -2085,10 +2128,10 @@ index b11f388bcd..3cc18e5cdf 100644
    NSPoint position = parent_view.window.mouseLocationOutsideOfEventStream;
    NSTimeInterval eventTime = NSApp.currentEvent.timestamp;
 diff --git a/content/shell/common/shell_controller.test-mojom b/content/shell/common/shell_controller.test-mojom
-index 53b2a8b770..84c65be1c5 100644
+index 53b2a8b770..94f4a7b78a 100644
 --- a/content/shell/common/shell_controller.test-mojom
 +++ b/content/shell/common/shell_controller.test-mojom
-@@ -7,6 +7,147 @@ module content.mojom;
+@@ -7,6 +7,149 @@ module content.mojom;
  import "mojo/public/mojom/base/string16.mojom";
  import "mojo/public/mojom/base/values.mojom";
  
@@ -2130,8 +2173,10 @@ index 53b2a8b770..84c65be1c5 100644
 +};
 +
 +enum OwlFreshDevToolsMode {
-+  kInline = 0,
-+  kWindow = 1,
++  kBottom = 0,
++  kRight = 1,
++  kLeft = 2,
++  kWindow = 3,
 +};
 +
 +struct OwlFreshNativeMenuItem {
@@ -2236,7 +2281,7 @@ index 53b2a8b770..84c65be1c5 100644
  // A control interface which can be accessed by clients launching Content Shell
  // with a Mojo invitation on the command line. This is used by
  // LaunchAsMojoClientBrowserTest to exercise that mode of execution.
-@@ -21,7 +162,10 @@ interface ShellController {
+@@ -21,7 +164,10 @@ interface ShellController {
        => (mojo_base.mojom.Value value);
  
    // Tells Content Shell to close all windows and shut down. After sending this
@@ -3759,10 +3804,10 @@ index dcf493d629..8648983f2b 100644
  }  // namespace ui
 diff --git a/ui/accelerated_widget_mac/owl_fresh_context.h b/ui/accelerated_widget_mac/owl_fresh_context.h
 new file mode 100644
-index 0000000000..a71f3cff3d
+index 0000000000..2d4f7e407f
 --- /dev/null
 +++ b/ui/accelerated_widget_mac/owl_fresh_context.h
-@@ -0,0 +1,131 @@
+@@ -0,0 +1,136 @@
 +#ifndef UI_ACCELERATED_WIDGET_MAC_OWL_FRESH_CONTEXT_H_
 +#define UI_ACCELERATED_WIDGET_MAC_OWL_FRESH_CONTEXT_H_
 +
@@ -3840,6 +3885,11 @@ index 0000000000..a71f3cff3d
 +ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshSetDevToolsSurfaceLabel(
 +    const std::string& label);
 +ACCELERATED_WIDGET_MAC_EXPORT std::string OwlFreshDevToolsSurfaceLabel();
++ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshSetDevToolsDockLayout(
++    const std::string& label,
++    CGRect web_bounds,
++    CGRect devtools_bounds);
++ACCELERATED_WIDGET_MAC_EXPORT void OwlFreshClearDevToolsDockLayout();
 +ACCELERATED_WIDGET_MAC_EXPORT uint64_t OwlFreshDisplayPortalGeneration();
 +ACCELERATED_WIDGET_MAC_EXPORT std::vector<OwlFreshSurfaceSnapshot>
 +OwlFreshSurfaceTreeSnapshot();
@@ -3896,10 +3946,10 @@ index 0000000000..a71f3cff3d
 +#endif
 diff --git a/ui/accelerated_widget_mac/owl_fresh_context.mm b/ui/accelerated_widget_mac/owl_fresh_context.mm
 new file mode 100644
-index 0000000000..7661df6793
+index 0000000000..00264c5309
 --- /dev/null
 +++ b/ui/accelerated_widget_mac/owl_fresh_context.mm
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,561 @@
 +#include "ui/accelerated_widget_mac/owl_fresh_context.h"
 +
 +#include <algorithm>
@@ -3952,13 +4002,25 @@ index 0000000000..7661df6793
 +  std::string label;
 +};
 +
++struct OwlFreshDevToolsDockLayout {
++  bool active = false;
++  std::string label;
++  CGRect web_bounds = CGRectZero;
++  CGRect devtools_bounds = CGRectZero;
++};
++
 +std::atomic<uint32_t> g_legacy_context_id{0};
 +std::atomic<uint32_t> g_portal_context_id{0};
 +std::atomic<uint64_t> g_portal_generation{0};
 +
 +std::string& DevToolsSurfaceLabelStorage() {
-+  static base::NoDestructor<std::string> label("devtools-inline");
++  static base::NoDestructor<std::string> label("devtools-bottom");
 +  return *label;
++}
++
++OwlFreshDevToolsDockLayout& DevToolsDockLayoutStorage() {
++  static base::NoDestructor<OwlFreshDevToolsDockLayout> layout;
++  return *layout;
 +}
 +
 +OwlFreshDisplayPortal& Portal() {
@@ -4113,12 +4175,37 @@ index 0000000000..7661df6793
 +}
 +
 +void OwlFreshSetDevToolsSurfaceLabel(const std::string& label) {
-+  DevToolsSurfaceLabelStorage() = label.empty() ? "devtools-inline" : label;
++  DevToolsSurfaceLabelStorage() = label.empty() ? "devtools-bottom" : label;
 +  g_portal_generation.fetch_add(1, std::memory_order_relaxed);
 +}
 +
 +std::string OwlFreshDevToolsSurfaceLabel() {
 +  return DevToolsSurfaceLabelStorage();
++}
++
++void OwlFreshSetDevToolsDockLayout(const std::string& label,
++                                   CGRect web_bounds,
++                                   CGRect devtools_bounds) {
++  OwlFreshDevToolsDockLayout& layout = DevToolsDockLayoutStorage();
++  layout.active = true;
++  layout.label = label;
++  layout.web_bounds = NormalizedFrame(web_bounds);
++  layout.devtools_bounds = NormalizedFrame(devtools_bounds);
++  g_portal_generation.fetch_add(1, std::memory_order_relaxed);
++}
++
++void OwlFreshClearDevToolsDockLayout() {
++  OwlFreshDevToolsDockLayout& layout = DevToolsDockLayoutStorage();
++  layout.active = false;
++  layout.label.clear();
++  layout.web_bounds = CGRectZero;
++  layout.devtools_bounds = CGRectZero;
++  for (auto& [key, record] : SurfaceRecords()) {
++    if (record.kind == OwlFreshSurfaceKind::kDevTools) {
++      record.visible = false;
++    }
++  }
++  g_portal_generation.fetch_add(1, std::memory_order_relaxed);
 +}
 +
 +std::vector<OwlFreshSurfaceSnapshot> OwlFreshSurfaceTreeSnapshot() {
@@ -4132,7 +4219,15 @@ index 0000000000..7661df6793
 +    snapshot.parent_surface_id = StableIDForKey(record.parent_surface_key);
 +    snapshot.kind = record.kind;
 +    snapshot.context_id = record.context_id;
-+    snapshot.bounds = NormalizedFrame(record.bounds);
++    CGRect snapshot_bounds = record.bounds;
++    const OwlFreshDevToolsDockLayout& layout = DevToolsDockLayoutStorage();
++    if (layout.active && record.kind == OwlFreshSurfaceKind::kWebView) {
++      snapshot_bounds = layout.web_bounds;
++    } else if (layout.active && record.kind == OwlFreshSurfaceKind::kDevTools &&
++               record.label == layout.label) {
++      snapshot_bounds = layout.devtools_bounds;
++    }
++    snapshot.bounds = NormalizedFrame(snapshot_bounds);
 +    snapshot.scale = record.scale;
 +    snapshot.z_index = record.z_index;
 +    snapshot.visible = record.visible;

@@ -85,7 +85,7 @@ final class OwlBrowserCoreTests: XCTestCase {
         XCTAssertTrue(try controller.cancelActivePopup())
         XCTAssertTrue(try controller.selectActiveFilePickerFiles(["/tmp/owl-file.txt"]))
         XCTAssertTrue(try controller.cancelActiveFilePicker())
-        let devToolsOpened = try controller.openDevTools(.inline)
+        let devToolsOpened = try controller.openDevTools(.bottom)
         let devToolsResult = try controller.evaluateDevToolsJavaScript("window.owlDevTools")
         let devToolsClosed = try controller.closeDevTools()
         XCTAssertTrue(devToolsOpened)

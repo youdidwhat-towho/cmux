@@ -92,7 +92,7 @@ run_suite() {
       OWL_LAYER_HOST_INPUT_CHECK=1 \
       OWL_LAYER_HOST_INPUT_DIAGNOSTIC_CAPTURE=1 \
       OWL_LAYER_HOST_DEVTOOLS_CHECK=1 \
-      OWL_LAYER_HOST_ONLY_TARGETS="devtools-inline-fixture,devtools-window-fixture" \
+      OWL_LAYER_HOST_ONLY_TARGETS="devtools-bottom-fixture,devtools-right-fixture,devtools-left-fixture,devtools-window-fixture" \
         "$RUN_SCRIPT"
       ;;
     scroll-text)

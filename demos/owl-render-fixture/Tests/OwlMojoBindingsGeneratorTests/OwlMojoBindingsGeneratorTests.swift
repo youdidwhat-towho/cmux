@@ -108,7 +108,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
         let canceled = try await nativeSurface.cancelActivePopup()
         let fileSelected = try await nativeSurface.selectActiveFilePickerFiles(["/tmp/owl.txt"])
         let fileCanceled = try await nativeSurface.cancelActiveFilePicker()
-        let devToolsOpened = try await devTools.openDevTools(.inline)
+        let devToolsOpened = try await devTools.openDevTools(.bottom)
         let devToolsResult = try await devTools.evaluateDevToolsJavaScript("window.owlDevTools")
         let devToolsClosed = try await devTools.closeDevTools()
 
@@ -262,7 +262,7 @@ final class OwlMojoBindingsGeneratorTests: XCTestCase {
             "surfaceTreeHostGetSurfaceTree",
             "nativeSurfaceHostAcceptActivePopupMenuItem:2",
             "nativeSurfaceHostSelectActiveFilePickerFiles:/tmp/owl.txt",
-            "devToolsHostOpenDevTools:1",
+            "devToolsHostOpenDevTools:3",
             "devToolsHostEvaluateDevToolsJavaScript:window.owlDevTools",
         ])
         XCTAssertEqual(recorder.recordedCalls.map(\.interface), [

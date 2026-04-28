@@ -265,8 +265,10 @@ public enum OwlFreshSurfaceKind: UInt32, Codable, CaseIterable {
 }
 
 public enum OwlFreshDevToolsMode: UInt32, Codable, CaseIterable {
-    case inline = 0
-    case window = 1
+    case bottom = 0
+    case right = 1
+    case left = 2
+    case window = 3
 }
 
 public struct OwlFreshNativeMenuItem: Equatable, Codable {
@@ -1254,7 +1256,7 @@ public struct MojoSchemaDeclaration: Equatable, Codable {
 
 public enum OwlFreshMojoSchema {
     public static let module = "content.mojom"
-    public static let sourceChecksum = "fnv1a64:2118eb8adbed0132"
+    public static let sourceChecksum = "fnv1a64:f03993c12d1b7c86"
     public static let declarations: [MojoSchemaDeclaration] = [
         MojoSchemaDeclaration(kind: "enum", name: "OwlFreshMouseKind"),
         MojoSchemaDeclaration(kind: "struct", name: "OwlFreshMouseEvent"),

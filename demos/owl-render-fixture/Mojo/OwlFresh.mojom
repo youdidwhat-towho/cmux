@@ -38,8 +38,10 @@ enum OwlFreshSurfaceKind {
 };
 
 enum OwlFreshDevToolsMode {
-  kInline = 0,
-  kWindow = 1,
+  kBottom = 0,
+  kRight = 1,
+  kLeft = 2,
+  kWindow = 3,
 };
 
 struct OwlFreshNativeMenuItem {

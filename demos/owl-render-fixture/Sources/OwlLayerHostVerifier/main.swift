@@ -87,6 +87,7 @@ private enum InputAction {
     case waitForJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
     case waitForDevToolsJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
     case waitForSurfaceTree(label: String, expectations: [SurfaceTreeExpectation])
+    case waitForNoSurface(label: String, kind: OwlFreshSurfaceKind, surfaceLabel: String)
     case captureWindow(name: String, expected: Set<ExpectedPixel>)
     case detachReattachHost(name: String, expected: Set<ExpectedPixel>)
     case hideShowHostWindow(name: String, expected: Set<ExpectedPixel>)
@@ -95,6 +96,8 @@ private enum InputAction {
     case captureNativeMenu(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeMenuResponse)
     case captureNativeFilePicker(label: String, name: String, expected: Set<ExpectedPixel>, response: NativeFilePickerResponse)
     case openDevTools(OwlFreshDevToolsMode)
+    case closeDevTools
+    case clickDevToolsCloseButton
     case evaluateDevToolsJavaScript(label: String, script: String, expectations: [JavaScriptExpectation])
     case captureDetachedSurface(label: String, name: String, expected: Set<ExpectedPixel>)
     case acceptActivePopupMenuItem(UInt32)
@@ -119,6 +122,10 @@ private struct JavaScriptExpectation {
 private struct SurfaceTreeExpectation {
     let kind: OwlFreshSurfaceKind
     let label: String?
+    let x: Int32?
+    let y: Int32?
+    let width: UInt32?
+    let height: UInt32?
     let menuItem: String?
     let filePickerMode: String?
     let filePickerAcceptType: String?
@@ -126,12 +133,20 @@ private struct SurfaceTreeExpectation {
     init(
         kind: OwlFreshSurfaceKind,
         label: String? = nil,
+        x: Int32? = nil,
+        y: Int32? = nil,
+        width: UInt32? = nil,
+        height: UInt32? = nil,
         menuItem: String? = nil,
         filePickerMode: String? = nil,
         filePickerAcceptType: String? = nil
     ) {
         self.kind = kind
         self.label = label
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
         self.menuItem = menuItem
         self.filePickerMode = filePickerMode
         self.filePickerAcceptType = filePickerAcceptType
@@ -485,6 +500,21 @@ private func devToolsFrontendReadyScript() -> String {
         title: document.title,
         textSample,
         bodyHTMLSample: document.body ? document.body.innerHTML.slice(0, 500) : ""
+      };
+    })()
+    """
+}
+
+private func devToolsPageBoundsScript() -> String {
+    """
+    (() => {
+      if (window.owlDevToolsFixture?.measure) {
+        window.owlDevToolsFixture.measure();
+      }
+      return window.owlDevToolsFixture?.bounds || {
+        size: `${window.innerWidth}x${window.innerHeight}`,
+        innerWidth: window.innerWidth,
+        innerHeight: window.innerHeight
       };
     })()
     """
@@ -1204,53 +1234,173 @@ private final class LayerHostRunner {
                 )
             )
         }
-        let requestedDevToolsTargets = options.onlyTargets.contains("devtools-inline-fixture")
-            || options.onlyTargets.contains("devtools-window-fixture")
+        let requestedDevToolsTargets = options.onlyTargets.contains(where: { $0.hasPrefix("devtools-") })
         if options.includeDevTools || requestedDevToolsTargets {
-            let inlineProof = "OWL_DEVTOOLS_INLINE_OK"
-            let windowProof = "OWL_DEVTOOLS_WINDOW_OK"
-            targets.append(
-                RenderTarget(
-                    name: "devtools-inline-fixture",
-                    url: devToolsFixture.absoluteString,
-                    screenshotName: "devtools-inline-proof.png",
-                    expected: [.green, .dark, .nonWhite],
-                    preInputScreenshotName: "devtools-inline-before-open.png",
-                    preInputExpected: [.blue, .dark, .light],
-                    inputActions: [
-                        .openDevTools(.inline),
-                        .waitForSurfaceTree(
-                            label: "inline DevTools surface",
+            let dockThickness = UInt32(280)
+            let sideThickness = UInt32(360)
+            let fullWidth = UInt32(contentSize.width)
+            let fullHeight = UInt32(contentSize.height)
+            let sideWebWidth = fullWidth - sideThickness
+            let bottomWebHeight = fullHeight - dockThickness
+            let frontendReadyExpectations = [
+                JavaScriptExpectation(key: "path", value: .string("/devtools/devtools_app.html")),
+                JavaScriptExpectation(key: "readyState", value: .string("complete")),
+                JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
+                JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
+                JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
+            ]
+
+            struct DevToolsDockTargetSpec {
+                let name: String
+                let mode: OwlFreshDevToolsMode
+                let label: String
+                let proof: String
+                let webX: Int32
+                let webY: Int32
+                let webWidth: UInt32
+                let webHeight: UInt32
+                let devToolsX: Int32
+                let devToolsY: Int32
+                let devToolsWidth: UInt32
+                let devToolsHeight: UInt32
+                let closesAfterProof: Bool
+            }
+
+            let dockTargets = [
+                DevToolsDockTargetSpec(
+                    name: "devtools-bottom-fixture",
+                    mode: .bottom,
+                    label: "devtools-bottom",
+                    proof: "OWL_DEVTOOLS_BOTTOM_OK",
+                    webX: 0,
+                    webY: Int32(dockThickness),
+                    webWidth: fullWidth,
+                    webHeight: bottomWebHeight,
+                    devToolsX: 0,
+                    devToolsY: 0,
+                    devToolsWidth: fullWidth,
+                    devToolsHeight: dockThickness,
+                    closesAfterProof: true
+                ),
+                DevToolsDockTargetSpec(
+                    name: "devtools-right-fixture",
+                    mode: .right,
+                    label: "devtools-right",
+                    proof: "OWL_DEVTOOLS_RIGHT_OK",
+                    webX: 0,
+                    webY: 0,
+                    webWidth: sideWebWidth,
+                    webHeight: fullHeight,
+                    devToolsX: Int32(sideWebWidth),
+                    devToolsY: 0,
+                    devToolsWidth: sideThickness,
+                    devToolsHeight: fullHeight,
+                    closesAfterProof: false
+                ),
+                DevToolsDockTargetSpec(
+                    name: "devtools-left-fixture",
+                    mode: .left,
+                    label: "devtools-left",
+                    proof: "OWL_DEVTOOLS_LEFT_OK",
+                    webX: Int32(sideThickness),
+                    webY: 0,
+                    webWidth: sideWebWidth,
+                    webHeight: fullHeight,
+                    devToolsX: 0,
+                    devToolsY: 0,
+                    devToolsWidth: sideThickness,
+                    devToolsHeight: fullHeight,
+                    closesAfterProof: false
+                ),
+            ]
+
+            for spec in dockTargets {
+                var actions: [InputAction] = [
+                    .openDevTools(spec.mode),
+                    .waitForSurfaceTree(
+                        label: "\(spec.label) dock layout",
+                        expectations: [
+                            SurfaceTreeExpectation(
+                                kind: .webView,
+                                label: "web-view",
+                                x: spec.webX,
+                                y: spec.webY,
+                                width: spec.webWidth,
+                                height: spec.webHeight
+                            ),
+                            SurfaceTreeExpectation(
+                                kind: .devTools,
+                                label: spec.label,
+                                x: spec.devToolsX,
+                                y: spec.devToolsY,
+                                width: spec.devToolsWidth,
+                                height: spec.devToolsHeight
+                            ),
+                        ]
+                    ),
+                    .waitForJavaScript(
+                        label: "\(spec.label) inspected page bounds",
+                        script: devToolsPageBoundsScript(),
+                        expectations: [
+                            JavaScriptExpectation(
+                                key: "size",
+                                value: .string("\(spec.webWidth)x\(spec.webHeight)")
+                            ),
+                        ]
+                    ),
+                    .waitForDevToolsJavaScript(
+                        label: "\(spec.label) frontend",
+                        script: devToolsFrontendReadyScript(),
+                        expectations: frontendReadyExpectations
+                    ),
+                    .captureWindow(name: "\(spec.name)-ui.png", expected: [.blue, .dark, .light, .nonWhite]),
+                    .evaluateDevToolsJavaScript(
+                        label: "\(spec.label) DevTools JavaScript proof",
+                        script: devToolsBadgeScript(text: spec.proof),
+                        expectations: [
+                            JavaScriptExpectation(key: "proof", value: .string(spec.proof)),
+                        ]
+                    ),
+                    .captureWindow(name: "\(spec.name)-proof.png", expected: [.green, .dark, .nonWhite]),
+                ]
+                if spec.closesAfterProof {
+                    actions.append(contentsOf: [
+                        .clickDevToolsCloseButton,
+                        .waitForNoSurface(
+                            label: "\(spec.label) closed",
+                            kind: .devTools,
+                            surfaceLabel: spec.label
+                        ),
+                        .waitForJavaScript(
+                            label: "\(spec.label) restored inspected page bounds",
+                            script: devToolsPageBoundsScript(),
                             expectations: [
-                                SurfaceTreeExpectation(kind: .devTools, label: "devtools-inline"),
+                                JavaScriptExpectation(
+                                    key: "size",
+                                    value: .string("\(fullWidth)x\(fullHeight)")
+                                ),
                             ]
                         ),
-                        .waitForDevToolsJavaScript(
-                            label: "inline DevTools frontend",
-                            script: devToolsFrontendReadyScript(),
-                            expectations: [
-                                JavaScriptExpectation(key: "path", value: .string("/devtools/devtools_app.html")),
-                                JavaScriptExpectation(key: "readyState", value: .string("complete")),
-                                JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
-                                JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
-                                JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
-                            ]
-                        ),
-                        .captureWindow(name: "devtools-inline-ui.png", expected: [.nonWhite]),
-                        .evaluateDevToolsJavaScript(
-                            label: "inline DevTools JavaScript proof",
-                            script: devToolsBadgeScript(text: inlineProof),
-                            expectations: [
-                                JavaScriptExpectation(key: "proof", value: .string(inlineProof)),
-                            ]
-                        ),
-                        .captureWindow(name: "devtools-inline-proof.png", expected: [.green, .dark, .nonWhite]),
-                    ],
-                    postInputDiagnosticScript: nil,
-                    postInputExpectations: [],
-                    completeAfterInputActions: true
+                        .captureWindow(name: "\(spec.name)-after-close.png", expected: [.blue, .dark, .light, .nonWhite]),
+                    ])
+                }
+                targets.append(
+                    RenderTarget(
+                        name: spec.name,
+                        url: devToolsFixture.absoluteString,
+                        screenshotName: "\(spec.name)-proof.png",
+                        expected: [.green, .dark, .nonWhite],
+                        preInputScreenshotName: "\(spec.name)-before-open.png",
+                        preInputExpected: [.blue, .dark, .light, .nonWhite],
+                        inputActions: actions,
+                        postInputDiagnosticScript: nil,
+                        postInputExpectations: [],
+                        completeAfterInputActions: true
+                    )
                 )
-            )
+            }
+
+            let windowProof = "OWL_DEVTOOLS_WINDOW_OK"
             targets.append(
                 RenderTarget(
                     name: "devtools-window-fixture",
@@ -1258,25 +1408,44 @@ private final class LayerHostRunner {
                     screenshotName: "devtools-window-after-open.png",
                     expected: [.green, .dark, .nonWhite],
                     preInputScreenshotName: "devtools-window-before-open.png",
-                    preInputExpected: [.blue, .dark, .light],
+                    preInputExpected: [.blue, .dark, .light, .nonWhite],
                     inputActions: [
                         .openDevTools(.window),
                         .waitForSurfaceTree(
                             label: "window DevTools surface",
                             expectations: [
-                                SurfaceTreeExpectation(kind: .devTools, label: "devtools-window"),
+                                SurfaceTreeExpectation(
+                                    kind: .webView,
+                                    label: "web-view",
+                                    x: 0,
+                                    y: 0,
+                                    width: fullWidth,
+                                    height: fullHeight
+                                ),
+                                SurfaceTreeExpectation(
+                                    kind: .devTools,
+                                    label: "devtools-window",
+                                    x: 0,
+                                    y: 0,
+                                    width: fullWidth,
+                                    height: fullHeight
+                                ),
+                            ]
+                        ),
+                        .waitForJavaScript(
+                            label: "window mode inspected page bounds",
+                            script: devToolsPageBoundsScript(),
+                            expectations: [
+                                JavaScriptExpectation(
+                                    key: "size",
+                                    value: .string("\(fullWidth)x\(fullHeight)")
+                                ),
                             ]
                         ),
                         .waitForDevToolsJavaScript(
                             label: "window DevTools frontend",
                             script: devToolsFrontendReadyScript(),
-                            expectations: [
-                                JavaScriptExpectation(key: "path", value: .string("/devtools/devtools_app.html")),
-                                JavaScriptExpectation(key: "readyState", value: .string("complete")),
-                                JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
-                                JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
-                                JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
-                            ]
+                            expectations: frontendReadyExpectations
                         ),
                         .captureDetachedSurface(
                             label: "devtools-window",
@@ -1470,6 +1639,11 @@ private final class LayerHostRunner {
             contextID: contextID,
             size: contentSize
         )
+        window.onDevToolsCloseRequested = {
+            guard try hostController.closeDevTools() else {
+                throw VerifierError.input("host did not close DevTools from close button")
+            }
+        }
         defer {
             window.close()
             pumpApp(app, for: 0.2)
@@ -2111,10 +2285,36 @@ private final class LayerHostRunner {
                     app: app
                 )
                 window.update(surfaceTree: tree)
+            case .waitForNoSurface(let label, let kind, let surfaceLabel):
+                let tree = try waitForNoSurface(
+                    label: label,
+                    kind: kind,
+                    surfaceLabel: surfaceLabel,
+                    runtime: runtime,
+                    hostController: hostController,
+                    events: events,
+                    window: window,
+                    app: app
+                )
+                window.update(surfaceTree: tree)
             case .openDevTools(let mode):
                 guard try hostController.openDevTools(mode) else {
                     throw VerifierError.input("host did not open DevTools in mode \(mode)")
                 }
+                runtime.pollEvents(milliseconds: 50)
+                try waitForHostFlush(runtime: runtime, session: session, app: app)
+                window.update(surfaceTree: try hostController.getSurfaceTree())
+                window.flushHostedLayer()
+            case .closeDevTools:
+                guard try hostController.closeDevTools() else {
+                    throw VerifierError.input("host did not close DevTools")
+                }
+                runtime.pollEvents(milliseconds: 50)
+                try waitForHostFlush(runtime: runtime, session: session, app: app)
+                window.update(surfaceTree: try hostController.getSurfaceTree())
+                window.flushHostedLayer()
+            case .clickDevToolsCloseButton:
+                try window.performDevToolsCloseButtonClick()
                 runtime.pollEvents(milliseconds: 50)
                 try waitForHostFlush(runtime: runtime, session: session, app: app)
                 window.update(surfaceTree: try hostController.getSurfaceTree())
@@ -2419,6 +2619,41 @@ private final class LayerHostRunner {
         )
     }
 
+    private func waitForNoSurface(
+        label: String,
+        kind: OwlFreshSurfaceKind,
+        surfaceLabel: String,
+        runtime: any OwlBrowserRuntime,
+        hostController: OwlBrowserSessionController,
+        events: OwlBrowserSessionEvents,
+        window: LayerHostWindow,
+        app: NSApplication
+    ) throws -> OwlFreshSurfaceTree {
+        let deadline = Date().addingTimeInterval(10)
+        var lastTree: OwlFreshSurfaceTree?
+        var lastError = ""
+        while Date() < deadline {
+            runtime.pollEvents(milliseconds: 50)
+            pumpApp(app, for: 0.02)
+            do {
+                let tree = try hostController.getSurfaceTree()
+                lastTree = tree
+                window.update(surfaceTree: tree)
+                let surfaceExists = tree.surfaces.contains { surface in
+                    surface.visible && surface.kind == kind && surface.label == surfaceLabel
+                }
+                if !surfaceExists {
+                    return tree
+                }
+            } catch {
+                lastError = String(describing: error)
+            }
+        }
+        throw VerifierError.input(
+            "timed out waiting for \(label); lastTree=\(String(describing: lastTree)); lastError=\(lastError); logs=\(events.snapshot().logs)"
+        )
+    }
+
     private func surfaceTree(
         _ tree: OwlFreshSurfaceTree,
         satisfies expectations: [SurfaceTreeExpectation]
@@ -2429,6 +2664,18 @@ private final class LayerHostRunner {
                     return false
                 }
                 if let label = expectation.label, surface.label != label {
+                    return false
+                }
+                if let x = expectation.x, surface.x != x {
+                    return false
+                }
+                if let y = expectation.y, surface.y != y {
+                    return false
+                }
+                if let width = expectation.width, surface.width != width {
+                    return false
+                }
+                if let height = expectation.height, surface.height != height {
                     return false
                 }
                 if let menuItem = expectation.menuItem,
@@ -2654,7 +2901,16 @@ private func verifyJavaScriptExpectations(
 }
 
 private final class LayerHostWindow {
+    private final class CloseButtonTarget: NSObject {
+        var handler: (() -> Void)?
+
+        @objc func performClose(_ sender: Any?) {
+            handler?()
+        }
+    }
+
     let title: String
+    var onDevToolsCloseRequested: (() throws -> Void)?
     private let window: NSWindow
     private let contentView: NSView
     private let rootLayer: CALayer
@@ -2664,6 +2920,11 @@ private final class LayerHostWindow {
     private var popupHostLayers: [UInt64: CALayer] = [:]
     private var popupContextIDs: [UInt64: UInt32] = [:]
     private var detachedSurfaceWindows: [UInt64: DetachedSurfaceHostWindow] = [:]
+    private var devToolsCloseLayer: CALayer?
+    private var devToolsCloseTextLayer: CATextLayer?
+    private var devToolsCloseButton: NSButton?
+    private var devToolsCloseError: Error?
+    private let devToolsCloseButtonTarget = CloseButtonTarget()
 
     init(title: String, contextID: UInt32, size: CGSize) throws {
         self.title = title
@@ -2706,6 +2967,17 @@ private final class LayerHostWindow {
         window.level = .normal
         window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         window.center()
+
+        devToolsCloseButtonTarget.handler = { [weak self] in
+            guard let self else {
+                return
+            }
+            do {
+                try self.onDevToolsCloseRequested?()
+            } catch {
+                self.devToolsCloseError = error
+            }
+        }
     }
 
     func show() {
@@ -2755,6 +3027,17 @@ private final class LayerHostWindow {
         flushHostedLayer()
     }
 
+    func performDevToolsCloseButtonClick() throws {
+        guard let button = devToolsCloseButton, !button.isHidden else {
+            throw VerifierError.input("DevTools close button is not visible")
+        }
+        devToolsCloseError = nil
+        button.performClick(nil)
+        if let devToolsCloseError {
+            throw devToolsCloseError
+        }
+    }
+
     func update(surfaceTree: OwlFreshSurfaceTree) {
         let visibleSurfaces = surfaceTree.surfaces
             .filter(\.visible)
@@ -2770,7 +3053,8 @@ private final class LayerHostWindow {
             return
         }
 
-        let origin = CGPoint(x: CGFloat(primary.x), y: CGFloat(primary.y))
+        let popupOrigin = CGPoint(x: CGFloat(primary.x), y: CGFloat(primary.y))
+        let primaryFrame = frame(for: primary, origin: .zero)
         let primaryScale = contentsScale(for: primary)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
@@ -2780,9 +3064,9 @@ private final class LayerHostWindow {
             primaryContextID = primary.contextId
             hostLayer.setValue(NSNumber(value: primary.contextId), forKey: "contextId")
         }
-        hostLayer.frame = CGRect(origin: .zero, size: rootLayer.bounds.size)
-        hostLayer.bounds = rootLayer.bounds
-        hostLayer.position = CGPoint.zero
+        hostLayer.frame = primaryFrame
+        hostLayer.bounds = CGRect(origin: .zero, size: primaryFrame.size)
+        hostLayer.position = primaryFrame.origin
         hostLayer.zPosition = CGFloat(primary.zIndex)
         primaryContentsScale = primaryScale
 
@@ -2825,11 +3109,21 @@ private final class LayerHostWindow {
                 }
             }
             layer.contentsScale = contentsScale(for: surface)
-            layer.frame = frame(for: surface, origin: origin)
+            let layerOrigin = surface.kind == .devTools ? CGPoint.zero : popupOrigin
+            layer.frame = frame(for: surface, origin: layerOrigin)
             layer.bounds = CGRect(origin: .zero, size: layer.frame.size)
             layer.position = layer.frame.origin
             layer.zPosition = CGFloat(surface.zIndex)
             layer.isHidden = false
+        }
+        if let dockedDevTools = renderPopupSurfaces.first(where: { $0.kind == .devTools }) {
+            updateDevToolsCloseControl(surface: dockedDevTools)
+        } else {
+            devToolsCloseLayer?.removeFromSuperlayer()
+            devToolsCloseLayer = nil
+            devToolsCloseTextLayer = nil
+            devToolsCloseButton?.removeFromSuperview()
+            devToolsCloseButton = nil
         }
         for surface in detachedSurfaces {
             let detachedWindow: DetachedSurfaceHostWindow
@@ -3017,21 +3311,67 @@ private final class LayerHostWindow {
     }
 
     private func frame(for surface: OwlFreshSurfaceInfo, origin: CGPoint) -> CGRect {
-        if surface.kind == .devTools, surface.label == "devtools-inline" {
-            let height = min(CGFloat(surface.height), rootLayer.bounds.height * 0.5)
-            return CGRect(
-                x: 0,
-                y: rootLayer.bounds.height - height,
-                width: rootLayer.bounds.width,
-                height: height
-            )
-        }
         return CGRect(
             x: CGFloat(surface.x) - origin.x,
             y: CGFloat(surface.y) - origin.y,
             width: CGFloat(surface.width),
             height: CGFloat(surface.height)
         )
+    }
+
+    private func updateDevToolsCloseControl(surface: OwlFreshSurfaceInfo) {
+        let surfaceFrame = frame(for: surface, origin: .zero)
+        let buttonSize = CGSize(width: 32, height: 26)
+        let buttonFrame = CGRect(
+            x: max(surfaceFrame.minX + 8, surfaceFrame.maxX - buttonSize.width - 10),
+            y: surfaceFrame.minY + 8,
+            width: buttonSize.width,
+            height: buttonSize.height
+        )
+
+        let buttonLayer: CALayer
+        let textLayer: CATextLayer
+        if let existingButton = devToolsCloseLayer, let existingText = devToolsCloseTextLayer {
+            buttonLayer = existingButton
+            textLayer = existingText
+        } else {
+            buttonLayer = CALayer()
+            buttonLayer.cornerRadius = 4
+            buttonLayer.borderWidth = 1
+            buttonLayer.borderColor = NSColor(calibratedWhite: 0.45, alpha: 1).cgColor
+            buttonLayer.backgroundColor = NSColor(calibratedWhite: 0.98, alpha: 0.95).cgColor
+            buttonLayer.zPosition = 500
+
+            textLayer = CATextLayer()
+            textLayer.string = "X"
+            textLayer.alignmentMode = .center
+            textLayer.foregroundColor = NSColor(calibratedWhite: 0.12, alpha: 1).cgColor
+            textLayer.fontSize = 16
+            textLayer.contentsScale = NSScreen.main?.backingScaleFactor ?? 2.0
+            textLayer.zPosition = 501
+            buttonLayer.addSublayer(textLayer)
+            rootLayer.addSublayer(buttonLayer)
+            devToolsCloseLayer = buttonLayer
+            devToolsCloseTextLayer = textLayer
+        }
+        buttonLayer.frame = buttonFrame
+        textLayer.frame = CGRect(origin: .zero, size: buttonFrame.size)
+
+        let button: NSButton
+        if let existing = devToolsCloseButton {
+            button = existing
+        } else {
+            button = NSButton(frame: .zero)
+            button.title = ""
+            button.isBordered = false
+            button.target = devToolsCloseButtonTarget
+            button.action = #selector(CloseButtonTarget.performClose(_:))
+            button.toolTip = "Close DevTools"
+            contentView.addSubview(button)
+            devToolsCloseButton = button
+        }
+        button.frame = buttonFrame
+        button.isHidden = false
     }
 
     private func primarySurface(in surfaceTree: OwlFreshSurfaceTree) -> OwlFreshSurfaceInfo? {
@@ -5364,61 +5704,111 @@ private enum Fixtures {
       <meta charset="utf-8">
       <title>OWL DevTools Fixture</title>
       <style>
-        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: rgb(248,248,248); }
-        body { color: rgb(20,20,20); font: 18px -apple-system, BlinkMacSystemFont, sans-serif; }
+        html, body {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+          background: rgb(248,248,248);
+        }
+        body {
+          color: rgb(20,20,20);
+          font: 18px -apple-system, BlinkMacSystemFont, sans-serif;
+        }
+        #viewport {
+          position: absolute;
+          inset: 18px;
+          border: 10px solid rgb(20,20,20);
+          box-sizing: border-box;
+          background:
+            linear-gradient(90deg, rgba(0, 92, 230, 0.16), rgba(255,255,255,0) 38%),
+            rgb(255, 255, 255);
+        }
         #banner {
           position: absolute;
-          left: 48px;
-          top: 44px;
-          width: 864px;
-          height: 82px;
+          left: 36px;
+          top: 32px;
+          right: 36px;
+          min-height: 54px;
           background: rgb(0, 92, 230);
           color: white;
-          border: 4px solid rgb(20,20,20);
-          box-sizing: border-box;
           display: flex;
           align-items: center;
-          padding-left: 24px;
-          font-size: 34px;
+          padding: 8px 18px;
+          box-sizing: border-box;
+          font-size: 26px;
           font-weight: 900;
         }
-        #status {
+        #dimensions {
           position: absolute;
-          left: 48px;
-          top: 156px;
-          width: 864px;
-          height: 92px;
-          border: 4px solid rgb(20,20,20);
+          left: 36px;
+          top: 110px;
+          right: 36px;
+          height: 80px;
+          border: 6px solid rgb(20,20,20);
           box-sizing: border-box;
-          background: white;
+          background: rgb(255, 210, 0);
           display: flex;
           align-items: center;
-          padding-left: 24px;
-          font-size: 32px;
+          padding-left: 18px;
+          font-size: 28px;
           font-weight: 900;
         }
         #target {
           position: absolute;
-          left: 48px;
-          top: 286px;
-          width: 864px;
-          height: 220px;
-          border: 4px solid rgb(20,20,20);
+          left: 36px;
+          top: 224px;
+          right: 36px;
+          bottom: 36px;
+          min-height: 90px;
+          border: 6px solid rgb(20,20,20);
           box-sizing: border-box;
           background: rgb(255, 255, 255);
-          padding: 24px;
-          font-size: 24px;
+          padding: 18px;
+          font-size: 22px;
           font-weight: 800;
+        }
+        #resizeLog {
+          position: absolute;
+          right: 16px;
+          bottom: 12px;
+          font-size: 18px;
+          font-weight: 900;
         }
       </style>
     </head>
     <body>
-      <div id="banner">OWL_DEVTOOLS_PAGE_READY</div>
-      <div id="status">OWL_DEVTOOLS_WAITING</div>
-      <div id="target">DevTools should attach to this page and appear as a separate OWL surface.</div>
+      <div id="viewport">
+        <div id="banner">OWL_DEVTOOLS_PAGE_READY</div>
+        <div id="dimensions">size: pending</div>
+        <div id="target">DevTools should dock beside this bordered page without covering it.</div>
+        <div id="resizeLog">resizes: 0</div>
+      </div>
       <script>
-        window.owlDevToolsFixture = { ready: true };
-        document.getElementById("status").textContent = "OWL_DEVTOOLS_READY";
+        const dimensions = document.getElementById("dimensions");
+        const resizeLog = document.getElementById("resizeLog");
+        const state = {
+          ready: true,
+          resizeCount: 0,
+          bounds: null,
+          measure() {
+            this.bounds = {
+              innerWidth: window.innerWidth,
+              innerHeight: window.innerHeight,
+              size: `${window.innerWidth}x${window.innerHeight}`,
+              devicePixelRatio: window.devicePixelRatio
+            };
+            dimensions.textContent = `size: ${this.bounds.size}`;
+            resizeLog.textContent = `resizes: ${this.resizeCount}`;
+            return this.bounds;
+          }
+        };
+        window.owlDevToolsFixture = state;
+        window.addEventListener("resize", () => {
+          state.resizeCount += 1;
+          state.measure();
+        });
+        state.measure();
       </script>
     </body>
     </html>
