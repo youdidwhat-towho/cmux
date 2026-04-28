@@ -1501,12 +1501,13 @@ final class BrowserPopupDecisionTests: XCTestCase {
         )
     }
 
-    func testOtherNavigationKeyDownGestureStillCreatesPopup() {
+    func testOtherNavigationWithPopupFeaturesCreatesPopup() {
         XCTAssertTrue(
             browserNavigationShouldCreatePopup(
                 navigationType: .other,
                 modifierFlags: [],
                 buttonNumber: 0,
+                popupFeaturesWereSpecified: true,
                 currentEventType: .keyDown,
                 currentEventButtonNumber: 0
             )
@@ -1539,6 +1540,36 @@ final class BrowserPopupDecisionTests: XCTestCase {
                 navigationType: .linkActivated,
                 modifierFlags: [.command],
                 buttonNumber: 0
+            )
+        )
+    }
+
+    func testPopupFeaturesAreAbsentWhenAllWindowFeaturesAreNil() {
+        XCTAssertFalse(
+            browserNavigationPopupFeaturesWereSpecified(
+                x: nil,
+                y: nil,
+                width: nil,
+                height: nil,
+                menuBarVisibility: nil,
+                statusBarVisibility: nil,
+                toolbarsVisibility: nil,
+                allowsResizing: nil
+            )
+        )
+    }
+
+    func testPopupFeaturesArePresentWhenWidthIsSpecified() {
+        XCTAssertTrue(
+            browserNavigationPopupFeaturesWereSpecified(
+                x: nil,
+                y: nil,
+                width: NSNumber(value: 640),
+                height: nil,
+                menuBarVisibility: nil,
+                statusBarVisibility: nil,
+                toolbarsVisibility: nil,
+                allowsResizing: nil
             )
         )
     }
