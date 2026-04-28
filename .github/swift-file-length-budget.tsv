@@ -8,7 +8,7 @@
 13603	Sources/AppDelegate.swift
 13147	Sources/GhosttyTerminalView.swift
 11446	Sources/Panels/BrowserPanel.swift
-8549	Sources/cmuxApp.swift
+8553	Sources/cmuxApp.swift
 7146	Sources/TabManager.swift
 7070	Sources/Panels/BrowserPanelView.swift
 6474	cmuxTests/WorkspaceUnitTests.swift

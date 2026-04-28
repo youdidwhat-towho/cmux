@@ -1023,7 +1023,9 @@ struct cmuxApp: App {
         MenuBarExtraDebugWindowController.shared.show()
         WorkspaceTabChromeDebugWindowController.shared.show()
         TabBarBackdropLabWindowController.shared.show()
+#if DEBUG
         FeedTextEditorDebugWindowController.shared.show()
+#endif
     }
 }
 
@@ -1684,6 +1686,7 @@ private struct DebugWindowControlsView: View {
                         ) {
                             TabBarBackdropLabWindowController.shared.show()
                         }
+#if DEBUG
                         Button(
                             String(
                                 localized: "debug.menu.feedTextEditorDebug",
@@ -1692,6 +1695,7 @@ private struct DebugWindowControlsView: View {
                         ) {
                             FeedTextEditorDebugWindowController.shared.show()
                         }
+#endif
                         Button("Open All Debug Windows") {
                             BrowserImportHintDebugWindowController.shared.show()
                             BrowserProfilePopoverDebugWindowController.shared.show()
