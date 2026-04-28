@@ -3020,135 +3020,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         includeScrollback: Bool,
         persist: Bool
     ) -> [String: Any] {
-        let buildStart = ProcessInfo.processInfo.systemUptime
-        let snapshot = buildSessionSnapshot(includeScrollback: includeScrollback)
-        let buildMs = Self.debugElapsedMs(since: buildStart)
-
-        var persistMs: Double?
-        if persist {
-            let persistedGeometryData = snapshot?.windows.first.flatMap { primaryWindow in
-                Self.encodedPersistedWindowGeometryData(
-                    frame: primaryWindow.frame,
-                    display: primaryWindow.display
+        SessionSnapshotDebugBenchmark.run(
+            includeScrollback: includeScrollback,
+            persist: persist,
+            buildSnapshot: { [self] includeScrollback in
+                buildSessionSnapshot(includeScrollback: includeScrollback)
+            },
+            persistedGeometryData: { snapshot in
+                snapshot?.windows.first.flatMap { primaryWindow in
+                    Self.encodedPersistedWindowGeometryData(
+                        frame: primaryWindow.frame,
+                        display: primaryWindow.display
+                    )
+                }
+            },
+            persistSnapshot: { [self] snapshot, persistedGeometryData in
+                persistSessionSnapshot(
+                    snapshot,
+                    removeWhenEmpty: false,
+                    persistedGeometryData: persistedGeometryData,
+                    synchronously: true
                 )
             }
-            let persistStart = ProcessInfo.processInfo.systemUptime
-            persistSessionSnapshot(
-                snapshot,
-                removeWhenEmpty: false,
-                persistedGeometryData: persistedGeometryData,
-                synchronously: true
-            )
-            persistMs = Self.debugElapsedMs(since: persistStart)
-        }
-
-        return [
-            "include_scrollback": includeScrollback,
-            "persist": persist,
-            "built": snapshot != nil,
-            "saved": persist && snapshot != nil,
-            "elapsed_ms": Self.debugElapsedMs(since: buildStart),
-            "build_ms": buildMs,
-            "persist_ms": persistMs.map { $0 as Any } ?? NSNull(),
-            "shape": Self.debugSessionSnapshotShape(snapshot)
-        ]
+        )
     }
 
     func debugSeedSessionSnapshotScrollback(charactersPerTerminal: Int) -> [String: Any] {
-        let targetCharacters = min(
-            max(0, charactersPerTerminal),
-            SessionPersistencePolicy.maxScrollbackCharactersPerTerminal
+        let workspaces = sortedMainWindowContextsForSessionSnapshot().flatMap { context in
+            context.tabManager.tabs.filter { !$0.isRemoteWorkspace }
+        }
+        return SessionSnapshotDebugBenchmark.seedScrollback(
+            workspaces: workspaces,
+            charactersPerTerminal: charactersPerTerminal
         )
-        var workspaces = 0
-        var terminals = 0
-        var scrollbackCharacters = 0
-
-        for context in sortedMainWindowContextsForSessionSnapshot() {
-            for workspace in context.tabManager.tabs where !workspace.isRemoteWorkspace {
-                let seeded = workspace.debugSeedSessionSnapshotScrollback(
-                    charactersPerTerminal: targetCharacters
-                )
-                if seeded.terminals > 0 {
-                    workspaces += 1
-                    terminals += seeded.terminals
-                    scrollbackCharacters += seeded.characters
-                }
-            }
-        }
-
-        return [
-            "characters_per_terminal": targetCharacters,
-            "workspaces": workspaces,
-            "terminals": terminals,
-            "scrollback_chars": scrollbackCharacters
-        ]
-    }
-
-    private nonisolated static func debugElapsedMs(since start: TimeInterval) -> Double {
-        ((ProcessInfo.processInfo.systemUptime - start) * 1000.0 * 100.0).rounded() / 100.0
-    }
-
-    private nonisolated static func debugSessionSnapshotShape(_ snapshot: AppSessionSnapshot?) -> [String: Any] {
-        guard let snapshot else {
-            return [
-                "windows": 0,
-                "workspaces": 0,
-                "panels": 0,
-                "terminals": 0,
-                "browsers": 0,
-                "markdown": 0,
-                "scrollback_chars": 0,
-                "status_entries": 0,
-                "log_entries": 0,
-                "progress_entries": 0,
-                "git_entries": 0
-            ]
-        }
-
-        var workspaces = 0
-        var panels = 0
-        var terminals = 0
-        var browsers = 0
-        var markdown = 0
-        var scrollbackChars = 0
-        var statusEntries = 0
-        var logEntries = 0
-        var progressEntries = 0
-        var gitEntries = 0
-
-        for window in snapshot.windows {
-            workspaces += window.tabManager.workspaces.count
-            for workspace in window.tabManager.workspaces {
-                statusEntries += workspace.statusEntries.count
-                logEntries += workspace.logEntries.count
-                if workspace.progress != nil { progressEntries += 1 }
-                if workspace.gitBranch != nil { gitEntries += 1 }
-                panels += workspace.panels.count
-                for panel in workspace.panels {
-                    if let terminal = panel.terminal {
-                        terminals += 1
-                        scrollbackChars += terminal.scrollback?.count ?? 0
-                    }
-                    if panel.browser != nil { browsers += 1 }
-                    if panel.markdown != nil { markdown += 1 }
-                    if panel.gitBranch != nil { gitEntries += 1 }
-                }
-            }
-        }
-
-        return [
-            "windows": snapshot.windows.count,
-            "workspaces": workspaces,
-            "panels": panels,
-            "terminals": terminals,
-            "browsers": browsers,
-            "markdown": markdown,
-            "scrollback_chars": scrollbackChars,
-            "status_entries": statusEntries,
-            "log_entries": logEntries,
-            "progress_entries": progressEntries,
-            "git_entries": gitEntries
-        ]
     }
 #endif
 
