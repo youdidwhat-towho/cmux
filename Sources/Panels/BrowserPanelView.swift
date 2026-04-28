@@ -716,6 +716,10 @@ struct BrowserPanelView: View {
     }
 
     var body: some View {
+        panelContentWithNotifications
+    }
+
+    private var panelContentWithPreferences: some View {
         layeredPanelContent
             .coordinateSpace(name: "BrowserPanelViewSpace")
             .onPreferenceChange(OmnibarPillFramePreferenceKey.self) { frame in
@@ -724,6 +728,10 @@ struct BrowserPanelView: View {
             .onPreferenceChange(BrowserAddressBarHeightPreferenceKey.self) { height in
                 addressBarHeight = height
             }
+    }
+
+    private var panelContentWithPrimaryEvents: some View {
+        panelContentWithPreferences
             .onReceive(NotificationCenter.default.publisher(for: .webViewDidReceiveClick), perform: handleWebViewDidReceiveClick)
             .onAppear(perform: handleViewAppear)
             .onChange(of: panel.focusFlashToken) { newValue in handleFocusFlashTokenChange(newValue) }
@@ -733,6 +741,10 @@ struct BrowserPanelView: View {
             .onChange(of: panel.pendingAddressBarFocusRequestId) { newValue in handlePendingAddressBarFocusRequestChange(newValue) }
             .onChange(of: panel.profileID) { newValue in handleProfileIDChange(newValue) }
             .onChange(of: isBrowserImportHintPopoverPresented) { newValue in handleImportHintPopoverPresentationChange(newValue) }
+    }
+
+    private var panelContentWithNotifications: some View {
+        panelContentWithPrimaryEvents
             .onChange(of: isBrowserProfileMenuPresented) { newValue in handleProfileMenuPresentationChange(newValue) }
             .onChange(of: isVisibleInUI) { newValue in handleVisibleInUIChange(newValue) }
             .onChange(of: isFocused) { newValue in handlePanelFocusChange(newValue) }
