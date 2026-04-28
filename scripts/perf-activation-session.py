@@ -375,8 +375,7 @@ class CmuxPerfRunner:
         if not self.args.synthetic_scrollback_fallback:
             return False
         real_chars = real_snapshot.get("shape", {}).get("scrollback_chars") or 0
-        pending = self.result["fixture"].get("scrollback_pending", 0)
-        if pending == 0 and real_chars >= self.args.budget_min_scrollback_chars:
+        if real_chars >= self.args.budget_min_scrollback_chars:
             return False
         payload = self.rpc(
             "debug.session_snapshot_seed_scrollback",
@@ -384,9 +383,7 @@ class CmuxPerfRunner:
             timeout=max(60, self.args.snapshot_timeout),
         )
         self.result["fixture"]["synthetic_scrollback_fallback"] = payload
-        self.result["fixture"]["synthetic_scrollback_fallback_reason"] = (
-            "pending_terminals" if pending else "captured_scrollback_below_budget"
-        )
+        self.result["fixture"]["synthetic_scrollback_fallback_reason"] = "captured_scrollback_below_budget"
         return True
 
     def benchmark_restore(self) -> None:
