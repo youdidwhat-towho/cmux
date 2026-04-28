@@ -1276,21 +1276,23 @@ final class UpdateTitlebarAccessoryController {
         let currentMode = WorkspacePresentationModeSettings.mode()
         guard currentMode != lastKnownPresentationMode else { return }
         lastKnownPresentationMode = currentMode
-        // Ensure accessories exist on all windows. TitlebarControlsAccessoryViewController
-        // handles its own visibility (hidden in minimal, visible in standard) via its
-        // UserDefaults observer, so we just need to make sure it's attached.
+        if currentMode == .minimal {
+            for window in NSApp.windows {
+                removeAccessoryIfPresent(from: window)
+            }
+            return
+        }
+
         attachToExistingWindows()
 
         // When switching back to standard mode while a window is in fullscreen,
         // hide the accessories because fullscreen uses SwiftUI overlay controls.
-        if currentMode == .standard {
-            let controlsId = self.controlsIdentifier
-            for window in NSApp.windows where window.styleMask.contains(.fullScreen) {
-                for accessory in window.titlebarAccessoryViewControllers
-                    where accessory.view.identifier == controlsId {
-                    accessory.isHidden = true
-                    accessory.view.alphaValue = 0
-                }
+        let controlsId = self.controlsIdentifier
+        for window in NSApp.windows where window.styleMask.contains(.fullScreen) {
+            for accessory in window.titlebarAccessoryViewControllers
+                where accessory.view.identifier == controlsId {
+                accessory.isHidden = true
+                accessory.view.alphaValue = 0
             }
         }
     }
@@ -1327,6 +1329,10 @@ final class UpdateTitlebarAccessoryController {
 
     private func attachIfNeeded(to window: NSWindow) {
         guard !isSettingsWindow(window) else { return }
+        if WorkspacePresentationModeSettings.mode() == .minimal {
+            removeAccessoryIfPresent(from: window)
+            return
+        }
 
         // Window identifiers are assigned by SwiftUI via WindowAccessor, which can run
         // after didBecomeKey/didBecomeMain notifications. Retry briefly to avoid missing

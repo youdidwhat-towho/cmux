@@ -3732,7 +3732,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func tabManagerFor(windowId: UUID) -> TabManager? {
-        mainWindowContexts.values.first(where: { $0.windowId == windowId })?.tabManager
+        pruneOrphanedMainWindowContexts()
+        return mainWindowContexts.values.first(where: { $0.windowId == windowId })?.tabManager
     }
 
     func windowId(for tabManager: TabManager) -> UUID? {
@@ -4589,6 +4590,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return NSApp.windows.first(where: { $0.identifier?.rawValue == expectedIdentifier })
     }
 
+    private func windowForShortcutWindowNumber(_ windowNumber: Int) -> NSWindow? {
+        guard windowNumber > 0 else { return nil }
+        if let window = NSApp.window(withWindowNumber: windowNumber) {
+            return window
+        }
+        return mainWindowContexts.values.lazy.compactMap { context in
+            let window = context.window ?? self.windowForMainWindowId(context.windowId)
+            guard window?.windowNumber == windowNumber else { return nil }
+            return window
+        }.first
+    }
+
     private func resolvedWindow(for context: MainWindowContext) -> NSWindow? {
         if let window = context.window {
             return window
@@ -4716,6 +4729,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             for tab in context.tabManager.tabs {
                 store.clearNotifications(forTabId: tab.id)
             }
+        }
+    }
+
+    private func pruneOrphanedMainWindowContexts() {
+        let orphaned = mainWindowContexts.values.filter { context in
+            windowForMainWindowId(context.windowId) == nil
+        }
+        for context in orphaned {
+            discardOrphanedMainWindowContext(context)
         }
     }
 
@@ -4880,6 +4902,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
            isMainTerminalWindow(window) {
             return window
         }
+        if let window = windowForShortcutWindowNumber(event.windowNumber),
+           isMainTerminalWindow(window) {
+            return window
+        }
         if let keyWindow = NSApp.keyWindow, isMainTerminalWindow(keyWindow) {
             return keyWindow
         }
@@ -4896,6 +4922,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let eventWindowNumber = event.windowNumber
         guard eventWindowNumber > 0 else { return nil }
         return NSApp.window(withWindowNumber: eventWindowNumber)
+            ?? NSApp.windows.first(where: { $0.windowNumber == eventWindowNumber })
     }
 
     /// Re-sync app-level active window pointers from the currently focused main terminal window.
@@ -4997,6 +5024,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func preferredMainWindowContextForShortcuts(event: NSEvent) -> MainWindowContext? {
+        pruneOrphanedMainWindowContexts()
         if let context = contextForMainWindow(event.window) {
             return context
         }
@@ -5007,13 +5035,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return context
         }
         if let activeManager = tabManager,
-           let activeContext = mainWindowContexts.values.first(where: { $0.tabManager === activeManager }) {
+           let activeContext = mainWindowContexts.values.first(where: {
+               $0.tabManager === activeManager && resolvedWindow(for: $0) != nil
+           }) {
             return activeContext
         }
-        return mainWindowContexts.values.first
+        return mainWindowContexts.values.first(where: { resolvedWindow(for: $0) != nil })
     }
 
     private func preferredRegisteredMainWindowContext(preferredWindow: NSWindow? = nil) -> MainWindowContext? {
+        pruneOrphanedMainWindowContexts()
         if let preferredWindow,
            let context = contextForMainWindow(preferredWindow) {
             return context
@@ -5025,10 +5056,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return context
         }
         if let activeManager = tabManager,
-           let activeContext = mainWindowContexts.values.first(where: { $0.tabManager === activeManager }) {
+           let activeContext = mainWindowContexts.values.first(where: {
+               $0.tabManager === activeManager && resolvedWindow(for: $0) != nil
+           }) {
             return activeContext
         }
-        return mainWindowContexts.values.first
+        return mainWindowContexts.values.first(where: { resolvedWindow(for: $0) != nil })
     }
 
     private func activateMainWindowContextForShortcutEvent(_ event: NSEvent) {
@@ -5732,6 +5765,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         event: NSEvent? = nil,
         debugSource: String = "unspecified"
     ) -> MainWindowContext? {
+        pruneOrphanedMainWindowContexts()
         if let context = mainWindowContext(forShortcutEvent: event, debugSource: debugSource) {
             return context
         }
@@ -10015,7 +10049,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if matchConfiguredShortcut(event: event, action: .closeWindow) {
-            guard let targetWindow = event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
+            guard let targetWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow else {
                 NSSound.beep()
                 return true
             }
