@@ -60,7 +60,7 @@
 715	Sources/App/ShortcutRoutingSupport.swift
 714	Sources/AppleScriptSupport.swift
 708	Sources/App/MenuBarExtraController.swift
-743	cmuxTests/WorkspaceContentViewVisibilityTests.swift
+707	cmuxTests/WorkspaceContentViewVisibilityTests.swift
 692	cmuxTests/CmuxConfigTests.swift
 683	Sources/SocketControlSettings.swift
 640	Sources/Panels/BrowserPopupWindowController.swift

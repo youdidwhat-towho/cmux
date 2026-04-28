@@ -168,42 +168,6 @@ final class WorkspaceContentViewVisibilityTests: XCTestCase {
         window.orderOut(nil)
     }
 
-    @MainActor
-    func testWorkspaceLayoutRootHostStaysVisibleWhenWorkspaceIsNotInputActive() throws {
-        let manager = TabManager()
-        let workspace = try XCTUnwrap(manager.selectedWorkspace)
-        let visibleInactiveContext = WorkspaceLayoutRenderContext(
-            notificationStore: nil,
-            isWorkspaceVisible: true,
-            isWorkspaceInputActive: false,
-            isMinimalMode: false,
-            appearance: PanelAppearance(
-                dividerColor: .clear,
-                unfocusedOverlayNSColor: .clear,
-                unfocusedOverlayOpacity: 0
-            ),
-            workspacePortalPriority: 0,
-            usesWorkspacePaneOverlay: false,
-            showSplitButtons: workspace.showsSplitButtons
-        )
-        let renderSnapshot = workspace.makeLayoutRenderSnapshot(context: visibleInactiveContext)
-        let rootHost = WorkspaceLayoutRootHostView(
-            hostBridge: workspace.layoutInteractionHandlers,
-            renderSnapshot: renderSnapshot,
-            surfaceRegistry: workspace.surfaceRegistry
-        )
-
-        rootHost.isHidden = true
-        rootHost.update(
-            hostBridge: workspace.layoutInteractionHandlers,
-            renderSnapshot: renderSnapshot,
-            surfaceRegistry: workspace.surfaceRegistry
-        )
-
-        XCTAssertFalse(rootHost.isHidden)
-        WorkspaceLayoutNativeHost.dismantleNSView(rootHost, coordinator: ())
-    }
-
     func testPanelVisibleInUIReturnsFalseWhenWorkspaceHidden() {
         XCTAssertFalse(
             WorkspaceContentView.panelVisibleInUI(

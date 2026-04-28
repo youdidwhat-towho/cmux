@@ -80,6 +80,7 @@ final class WorkspaceLayoutNativeSplitView: NSSplitView, NSSplitViewDelegate {
         isHidden = rootHost.isHidden
         isVertical = snapshot.orientation == .horizontal
         updateDividerColor()
+        guard rootHost.isCurrentSplitHost(self, for: snapshot.splitId) else { return }
         install(child: firstChild, in: firstContainer, current: &self.firstChild)
         install(child: secondChild, in: secondContainer, current: &self.secondChild)
         syncDividerPosition()

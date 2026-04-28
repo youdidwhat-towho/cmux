@@ -301,6 +301,10 @@ final class WorkspaceLayoutRootHostView: NSView {
         return host
     }
 
+    func isCurrentSplitHost(_ host: WorkspaceLayoutNativeSplitView, for splitId: UUID) -> Bool {
+        splitHosts[splitId] === host
+    }
+
     func refreshPresentation() {
         displayedRenderSnapshot = desiredRenderSnapshot
         updateBackground()
@@ -309,7 +313,11 @@ final class WorkspaceLayoutRootHostView: NSView {
     }
 
     func syncLocalTabDragIfNeeded(from renderSnapshot: WorkspaceLayoutRenderSnapshot) {
-        guard let snapshotLocalTabDrag = renderSnapshot.presentation.localTabDrag else { return }
+        guard let snapshotLocalTabDrag = renderSnapshot.presentation.localTabDrag else {
+            guard activeLocalTabDrag != nil else { return }
+            clearLocalTabDrag(propagateToWorkspace: false)
+            return
+        }
         guard snapshotLocalTabDrag != activeLocalTabDrag else { return }
         activeLocalTabDrag = snapshotLocalTabDrag
         propagateLocalTabDrag()
