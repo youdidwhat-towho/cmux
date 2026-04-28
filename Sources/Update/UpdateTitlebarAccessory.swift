@@ -1288,7 +1288,9 @@ final class UpdateTitlebarAccessoryController {
         // When switching back to standard mode while a window is in fullscreen,
         // hide the accessories because fullscreen uses SwiftUI overlay controls.
         let controlsId = self.controlsIdentifier
-        for window in NSApp.windows where window.styleMask.contains(.fullScreen) {
+        for window in NSApp.windows
+            where window.styleMask.contains(.fullScreen)
+            && window.cmuxSupportsTitlebarAccessoryControllers {
             for accessory in window.titlebarAccessoryViewControllers
                 where accessory.view.identifier == controlsId {
                 accessory.isHidden = true
@@ -1329,6 +1331,10 @@ final class UpdateTitlebarAccessoryController {
 
     private func attachIfNeeded(to window: NSWindow) {
         guard !isSettingsWindow(window) else { return }
+        guard window.cmuxSupportsTitlebarAccessoryControllers else {
+            forgetWindow(window)
+            return
+        }
         if WorkspacePresentationModeSettings.mode() == .minimal {
             removeAccessoryIfPresent(from: window)
             return
@@ -1381,6 +1387,10 @@ final class UpdateTitlebarAccessoryController {
     }
 
     private func removeAccessoryIfPresent(from window: NSWindow) {
+        guard window.cmuxSupportsTitlebarAccessoryControllers else {
+            forgetWindow(window)
+            return
+        }
         let matchingIndices = window.titlebarAccessoryViewControllers.indices.reversed().filter { index in
             let id = window.titlebarAccessoryViewControllers[index].view.identifier
             return id == controlsIdentifier
@@ -1413,6 +1423,11 @@ final class UpdateTitlebarAccessoryController {
             UpdateLogStore.shared.append("removed titlebar accessories from window id=\(ident)")
         }
 #endif
+    }
+
+    private func forgetWindow(_ window: NSWindow) {
+        attachedWindows.remove(window)
+        pendingAttachRetries.removeValue(forKey: ObjectIdentifier(window))
     }
 
     private func isSettingsWindow(_ window: NSWindow) -> Bool {

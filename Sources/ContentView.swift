@@ -4156,6 +4156,7 @@ struct ContentView: View {
     }
 
     private func setTitlebarControlsHidden(_ hidden: Bool, in window: NSWindow) {
+        guard window.cmuxSupportsTitlebarAccessoryControllers else { return }
         let controlsId = NSUserInterfaceItemIdentifier("cmux.titlebarControls")
         for accessory in window.titlebarAccessoryViewControllers {
             if accessory.view.identifier == controlsId {
@@ -15228,9 +15229,11 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
             // Start past the traffic lights
             var leading: CGFloat = 78
             // Add width of all left-aligned titlebar accessories
-            for accessory in window.titlebarAccessoryViewControllers
-                where accessory.layoutAttribute == .leading || accessory.layoutAttribute == .left {
-                leading += accessory.view.frame.width
+            if window.cmuxSupportsTitlebarAccessoryControllers {
+                for accessory in window.titlebarAccessoryViewControllers
+                    where accessory.layoutAttribute == .leading || accessory.layoutAttribute == .left {
+                    leading += accessory.view.frame.width
+                }
             }
             leading += 0
             if leading != inset {

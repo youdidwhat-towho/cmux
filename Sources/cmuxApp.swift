@@ -8538,11 +8538,13 @@ private struct SettingsRootView: View {
         window.identifier = NSUserInterfaceItemIdentifier("cmux.settings")
         applyCurrentSettingsWindowStyle(to: window)
 
-        let accessories = window.titlebarAccessoryViewControllers
-        for index in accessories.indices.reversed() {
-            guard let identifier = accessories[index].view.identifier?.rawValue else { continue }
-            guard identifier.hasPrefix("cmux.") else { continue }
-            window.removeTitlebarAccessoryViewController(at: index)
+        if window.cmuxSupportsTitlebarAccessoryControllers {
+            let accessories = window.titlebarAccessoryViewControllers
+            for index in accessories.indices.reversed() {
+                guard let identifier = accessories[index].view.identifier?.rawValue else { continue }
+                guard identifier.hasPrefix("cmux.") else { continue }
+                window.removeTitlebarAccessoryViewController(at: index)
+            }
         }
         AppDelegate.shared?.applyWindowDecorations(to: window)
     }
