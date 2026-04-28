@@ -4591,6 +4591,32 @@ class TerminalController {
             return .err(code: "invalid_params", message: "state must be prompt, running, or unknown", data: nil)
         }
 
+        if let requestedSurfaceId {
+            let shouldPublish = Self.socketFastPathState.shouldPublishShellActivity(
+                workspaceId: workspaceId,
+                panelId: requestedSurfaceId,
+                state: state
+            )
+            if shouldPublish {
+                DispatchQueue.main.async {
+                    guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceId) else { return }
+                    tabManager.updateSurfaceShellActivity(
+                        tabId: workspaceId,
+                        surfaceId: requestedSurfaceId,
+                        state: state
+                    )
+                }
+            }
+            return .ok([
+                "workspace_id": workspaceId.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
+                "surface_id": requestedSurfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: requestedSurfaceId),
+                "state": state.rawValue,
+                "published": shouldPublish,
+            ])
+        }
+
         var result: V2CallResult = .err(
             code: "not_found",
             message: "Workspace not found",
@@ -4628,7 +4654,10 @@ class TerminalController {
                 return
             }
 
-            tab.updatePanelShellActivityState(panelId: surfaceId, state: state)
+            guard let tabManager = AppDelegate.shared?.tabManagerFor(tabId: tab.id) else {
+                return
+            }
+            tabManager.updateSurfaceShellActivity(tabId: tab.id, surfaceId: surfaceId, state: state)
 
             result = .ok([
                 "workspace_id": workspaceId.uuidString,

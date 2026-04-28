@@ -364,15 +364,27 @@ class CmuxPerfRunner:
             pending[surface] = (ws, f"DONE_{token}")
 
         prompt_reports = 0
+        poll_failures: list[dict[str, str]] = []
         deadline = time.time() + self.args.scrollback_timeout
         while pending and time.time() < deadline:
             done: list[tuple[str, str]] = []
             for surface, (ws, token) in list(pending.items()):
-                out = self.run_cli(
-                    ["read-screen", "--workspace", ws, "--surface", surface, "--lines", "25"],
-                    timeout=20,
-                    check=False,
-                )
+                try:
+                    out = self.run_cli(
+                        ["read-screen", "--workspace", ws, "--surface", surface, "--lines", "25"],
+                        timeout=20,
+                        check=False,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    if len(poll_failures) < 20:
+                        poll_failures.append(
+                            {
+                                "surface": surface,
+                                "workspace": ws,
+                                "error": f"read-screen timed out after {exc.timeout}s",
+                            }
+                        )
+                    continue
                 if token in out:
                     done.append((ws, surface))
             for ws, surface in done:
@@ -385,6 +397,8 @@ class CmuxPerfRunner:
         self.result["fixture"]["scrollback_done"] = len(terminals) - len(pending)
         self.result["fixture"]["scrollback_pending"] = len(pending)
         self.result["fixture"]["scrollback_prompt_reports"] = prompt_reports
+        if poll_failures:
+            self.result["fixture"]["scrollback_poll_failures"] = poll_failures
         if pending:
             self.result["fixture"]["scrollback_pending_sample"] = list(pending)[:10]
 
