@@ -371,17 +371,23 @@ class CmuxPerfRunner:
         self.result["measurements"][name] = payload
         return payload
 
-    def seed_synthetic_scrollback_fallback(self) -> None:
+    def seed_synthetic_scrollback_fallback(self, real_snapshot: dict) -> bool:
         if not self.args.synthetic_scrollback_fallback:
-            return
-        if self.result["fixture"].get("scrollback_pending", 0) == 0:
-            return
+            return False
+        real_chars = real_snapshot.get("shape", {}).get("scrollback_chars") or 0
+        pending = self.result["fixture"].get("scrollback_pending", 0)
+        if pending == 0 and real_chars >= self.args.budget_min_scrollback_chars:
+            return False
         payload = self.rpc(
             "debug.session_snapshot_seed_scrollback",
             {"characters_per_terminal": self.args.synthetic_scrollback_chars_per_terminal},
             timeout=max(60, self.args.snapshot_timeout),
         )
         self.result["fixture"]["synthetic_scrollback_fallback"] = payload
+        self.result["fixture"]["synthetic_scrollback_fallback_reason"] = (
+            "pending_terminals" if pending else "captured_scrollback_below_budget"
+        )
+        return True
 
     def benchmark_restore(self) -> None:
         self.stop_app()
@@ -457,8 +463,11 @@ class CmuxPerfRunner:
             terminals = self.create_fixture()
             self.seed_scrollback(terminals)
             self.benchmark_snapshot("snapshot_no_scrollback", include_scrollback=False)
-            self.seed_synthetic_scrollback_fallback()
-            self.benchmark_snapshot("snapshot_with_scrollback", include_scrollback=True)
+            real_scrollback = self.benchmark_snapshot("snapshot_with_real_scrollback", include_scrollback=True)
+            if self.seed_synthetic_scrollback_fallback(real_scrollback):
+                self.benchmark_snapshot("snapshot_with_scrollback", include_scrollback=True)
+            else:
+                self.result["measurements"]["snapshot_with_scrollback"] = real_scrollback
             self.benchmark_restore()
             self.apply_budgets()
             return self.result
@@ -494,10 +503,16 @@ def print_summary(result: dict) -> None:
     print(f"  launch_socket_ready_ms={measurements.get('launch_socket_ready_ms')}")
     synthetic_seed = fixture.get("synthetic_scrollback_fallback")
     if synthetic_seed:
-        print(f"  synthetic_scrollback_fallback={synthetic_seed}")
+        print(
+            "  synthetic_scrollback_fallback="
+            f"{synthetic_seed} reason={fixture.get('synthetic_scrollback_fallback_reason')}"
+        )
     no_scroll = measurements.get("snapshot_no_scrollback", {})
+    real_scroll = measurements.get("snapshot_with_real_scrollback", {})
     with_scroll = measurements.get("snapshot_with_scrollback", {})
     print(f"  snapshot_no_scrollback_ms={no_scroll.get('elapsed_ms')} shape={no_scroll.get('shape')}")
+    if real_scroll:
+        print(f"  snapshot_with_real_scrollback_ms={real_scroll.get('elapsed_ms')} shape={real_scroll.get('shape')}")
     print(f"  snapshot_with_scrollback_ms={with_scroll.get('elapsed_ms')} shape={with_scroll.get('shape')}")
     print(f"  restore_socket_ready_ms={measurements.get('restore_socket_ready_ms')}")
     failures = result.get("failures", [])
