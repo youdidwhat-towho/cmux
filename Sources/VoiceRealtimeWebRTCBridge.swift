@@ -36,7 +36,10 @@ final class VoiceRealtimeWebRTCBridge: NSObject {
     }
 
     deinit {
-        userContentController.removeScriptMessageHandler(forName: "cmuxRealtime")
+        let userContentController = userContentController
+        Task { @MainActor in
+            userContentController.removeScriptMessageHandler(forName: "cmuxRealtime")
+        }
     }
 
     func connect(ephemeralKey: String) {
