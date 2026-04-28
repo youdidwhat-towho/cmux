@@ -1642,6 +1642,41 @@ func shouldDispatchBrowserSpaceViaFirstResponderKeyDown(
     return normalizedFlags.isEmpty || normalizedFlags == [.shift]
 }
 
+func shouldBypassBrowserPlainTextKeyEquivalent(
+    keyCode: UInt16,
+    firstResponderIsBrowser: Bool,
+    firstResponderHasMarkedText: Bool = false,
+    flags: NSEvent.ModifierFlags,
+    characters: String?,
+    charactersIgnoringModifiers: String?
+) -> Bool {
+    guard firstResponderIsBrowser else { return false }
+    guard !firstResponderHasMarkedText else { return false }
+
+    let normalizedFlags = flags
+        .intersection(.deviceIndependentFlagsMask)
+        .subtracting([.numericPad, .function, .capsLock])
+    guard normalizedFlags.isEmpty || normalizedFlags == [.shift] else { return false }
+
+    // These keys have dedicated browser routing above. Keep this helper focused on
+    // printable text so shortcuts, navigation keys, and IME composition stay native.
+    switch keyCode {
+    case 36, 49, 76, 125, 126:
+        return false
+    default:
+        break
+    }
+
+    let text = charactersIgnoringModifiers ?? characters ?? ""
+    guard !text.isEmpty else { return false }
+
+    return text.unicodeScalars.allSatisfy { scalar in
+        !CharacterSet.controlCharacters.contains(scalar)
+            && !CharacterSet.newlines.contains(scalar)
+            && scalar.properties.generalCategory != .privateUse
+    }
+}
+
 func shouldToggleMainWindowFullScreenForCommandControlFShortcut(
     flags: NSEvent.ModifierFlags,
     chars: String,
@@ -15058,6 +15093,20 @@ private extension NSWindow {
             )
 #endif
             return true
+        }
+
+        if shouldBypassBrowserPlainTextKeyEquivalent(
+            keyCode: event.keyCode,
+            firstResponderIsBrowser: firstResponderWebView != nil,
+            firstResponderHasMarkedText: firstResponderHasMarkedText,
+            flags: event.modifierFlags,
+            characters: event.characters,
+            charactersIgnoringModifiers: event.charactersIgnoringModifiers
+        ) {
+#if DEBUG
+            dlog("  → browser plain text bypassed performKeyEquivalent")
+#endif
+            return false
         }
 
         if let firstResponderWebView,
