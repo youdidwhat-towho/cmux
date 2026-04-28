@@ -13970,7 +13970,7 @@ struct CMUXCLI {
                 }
                 return try resolveWorkspaceId(nil, client: client)
             }()
-            var context = try tmuxFormatContext(workspaceId: workspaceId, client: client)
+            let context = try tmuxFormatContext(workspaceId: workspaceId, client: client)
             let fallback = [
                 context["client_name"] ?? "cmux",
                 context["session_name"] ?? "cmux",
