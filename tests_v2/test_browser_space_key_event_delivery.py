@@ -9,9 +9,9 @@ the swallowed-space failure mode.
 
 import os
 import sys
-import tempfile
+import threading
 import time
-from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,7 +19,7 @@ from cmux import cmux, cmuxError
 
 
 SOCKET_PATH = os.environ.get("CMUX_SOCKET", "/tmp/cmux-debug.sock")
-_TEMP_FILES: list[Path] = []
+_SERVERS: list[ThreadingHTTPServer] = []
 
 
 def _must(condition: bool, message: str) -> None:
@@ -84,8 +84,7 @@ def _state(client: cmux, surface_id: str) -> dict[str, Any]:
     return state
 
 
-def _test_page() -> str:
-    html = """
+_TEST_HTML = """
 <!doctype html>
 <html>
   <head>
@@ -127,13 +126,28 @@ def _test_page() -> str:
     </script>
   </body>
 </html>
-    """.strip()
-    fd, raw_path = tempfile.mkstemp(prefix="cmux-space-key-event-", suffix=".html")
-    os.close(fd)
-    path = Path(raw_path)
-    path.write_text(html, encoding="utf-8")
-    _TEMP_FILES.append(path)
-    return path.resolve().as_uri()
+""".strip()
+
+
+class _FixtureHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        body = _TEST_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        return
+
+
+def _test_page() -> str:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _FixtureHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    _SERVERS.append(server)
+    return f"http://127.0.0.1:{server.server_port}/"
 
 
 def _focus_browser_input(client: cmux, surface_id: str) -> None:
@@ -253,11 +267,9 @@ def main() -> int:
                 if not ok:
                     failed += 1
     finally:
-        for path in _TEMP_FILES:
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        for server in _SERVERS:
+            server.shutdown()
+            server.server_close()
 
     if failed:
         print(f"\n{failed} test(s) failed.")
