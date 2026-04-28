@@ -1075,14 +1075,8 @@ final class ShortcutHintModifierPolicyTests: XCTestCase {
 
 
 final class RightSidebarModeShortcutHintTests: XCTestCase {
-    private let touchedShortcutActions: [KeyboardShortcutSettings.Action] = [
-        .focusRightSidebar,
-        .switchRightSidebarToFiles,
-        .switchRightSidebarToFind,
-        .switchRightSidebarToSessions,
-        .switchRightSidebarToFeed,
-        .switchRightSidebarToVoice,
-    ]
+    private let touchedShortcutActions: [KeyboardShortcutSettings.Action] =
+        [.focusRightSidebar] + RightSidebarMode.allCases.compactMap(\.shortcutAction)
     private var originalSettingsFileStore: KeyboardShortcutSettingsFileStore!
     private var savedShortcutData: [KeyboardShortcutSettings.Action: Data?] = [:]
     private var temporaryDirectoryURL: URL?
@@ -1133,6 +1127,25 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
         XCTAssertEqual(RightSidebarMode.sessions.shortcutAction, .switchRightSidebarToSessions)
         XCTAssertEqual(RightSidebarMode.feed.shortcutAction, .switchRightSidebarToFeed)
         XCTAssertEqual(RightSidebarMode.voice.shortcutAction, .switchRightSidebarToVoice)
+    }
+
+    func testEveryModeDefaultShortcutResolvesThroughGenericModeShortcut() {
+        for mode in RightSidebarMode.allCases {
+            guard let action = mode.shortcutAction else {
+                XCTFail("Missing shortcut action for \(mode.rawValue)")
+                continue
+            }
+            let shortcut = KeyboardShortcutSettings.shortcut(for: action)
+            guard let event = makeKeyDownEvent(for: shortcut) else {
+                XCTFail("Missing key code for \(mode.rawValue) shortcut \(shortcut.displayString)")
+                continue
+            }
+            XCTAssertEqual(
+                RightSidebarMode.modeShortcut(for: event),
+                mode,
+                "\(mode.rawValue) shortcut should route through the generic sidebar mode resolver"
+            )
+        }
     }
 
     func testModeShortcutUsesConfiguredBindings() {
@@ -1199,6 +1212,15 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
             fatalError("Failed to construct key event")
         }
         return event
+    }
+
+    private func makeKeyDownEvent(for shortcut: StoredShortcut) -> NSEvent? {
+        guard let keyCode = shortcut.resolvedKeyCode() else { return nil }
+        return makeKeyDownEvent(
+            key: shortcut.key,
+            modifiers: shortcut.modifierFlags,
+            keyCode: keyCode
+        )
     }
 }
 

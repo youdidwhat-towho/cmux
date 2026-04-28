@@ -53,20 +53,11 @@ enum RightSidebarMode: String, CaseIterable {
 extension RightSidebarMode {
     static func modeShortcut(for event: NSEvent) -> RightSidebarMode? {
         guard event.type == .keyDown else { return nil }
-        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToFiles).matches(event: event) {
-            return .files
-        }
-        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToFind).matches(event: event) {
-            return .find
-        }
-        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToSessions).matches(event: event) {
-            return .sessions
-        }
-        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToFeed).matches(event: event) {
-            return .feed
-        }
-        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToVoice).matches(event: event) {
-            return .voice
+        for mode in allCases {
+            guard let action = mode.shortcutAction else { continue }
+            if KeyboardShortcutSettings.shortcut(for: action).matches(event: event) {
+                return mode
+            }
         }
         return nil
     }
