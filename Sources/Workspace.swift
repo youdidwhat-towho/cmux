@@ -502,7 +502,10 @@ extension Workspace {
         switch panel.panelType {
         case .terminal:
             guard let terminalPanel = panel as? TerminalPanel else { return nil }
-            let shouldPersistScrollback = terminalPanel.shouldPersistScrollbackForSessionSnapshot()
+            let shouldPersistScrollback = Self.shouldPersistSessionScrollback(
+                shellActivityState: panelShellActivityStates[panelId],
+                fallbackNeedsConfirmClose: terminalPanel.needsConfirmClose()
+            )
 #if DEBUG
             let allowDebugFallbackScrollback = debugSessionSnapshotScrollbackFallbackPanelIds.contains(panelId)
 #else
@@ -584,6 +587,16 @@ extension Workspace {
         // Agent restores relaunch from the provider's session ID. Replaying the
         // old TUI scrollback can print stale launch commands and race the resume input.
         restorableAgent == nil
+    }
+
+    nonisolated static func shouldPersistSessionScrollback(
+        shellActivityState: PanelShellActivityState?,
+        fallbackNeedsConfirmClose: Bool
+    ) -> Bool {
+        !resolveCloseConfirmation(
+            shellActivityState: shellActivityState,
+            fallbackNeedsConfirmClose: fallbackNeedsConfirmClose
+        )
     }
 
     private func terminalSnapshotScrollback(

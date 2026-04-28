@@ -220,6 +220,24 @@ class CmuxPerfRunner:
         out = self.run_cli(["rpc", method, raw_params], timeout=timeout)
         return json.loads(out)
 
+    def report_shell_prompt(self, workspace: str, surface: str) -> bool:
+        try:
+            self.rpc(
+                "surface.report_shell_state",
+                {
+                    "workspace_id": workspace,
+                    "surface_id": surface,
+                    "state": "prompt",
+                },
+                timeout=20,
+            )
+            return True
+        except Exception as exc:
+            failures = self.result["fixture"].setdefault("scrollback_prompt_report_failures", [])
+            if len(failures) < 10:
+                failures.append({"surface": surface, "error": str(exc)})
+            return False
+
     def ref(self, text: str, kind: str) -> str:
         found = re.findall(rf"\b{kind}:\d+\b", text)
         if not found:
@@ -331,7 +349,7 @@ class CmuxPerfRunner:
         return terminals
 
     def seed_scrollback(self, terminals: list[tuple[str, str, pathlib.Path]]) -> None:
-        pending: dict[str, str] = {}
+        pending: dict[str, tuple[str, str]] = {}
         for idx, (ws, surface, _cwd) in enumerate(terminals, 1):
             lines = self.args.heavy_scrollback_lines if idx <= self.args.heavy_workspace_panes + self.args.heavy_tabbed_panes else self.args.other_scrollback_lines
             token = f"PERF_{idx:03d}"
@@ -343,22 +361,30 @@ class CmuxPerfRunner:
                 f"echo DONE_{token}\n"
             )
             self.run_cli(["send", "--workspace", ws, "--surface", surface, command], timeout=30, check=False)
-            pending[surface] = f"DONE_{token}"
+            pending[surface] = (ws, f"DONE_{token}")
 
+        prompt_reports = 0
         deadline = time.time() + self.args.scrollback_timeout
         while pending and time.time() < deadline:
-            done: list[str] = []
-            for surface, token in list(pending.items()):
-                out = self.run_cli(["read-screen", "--surface", surface, "--lines", "25"], timeout=20, check=False)
+            done: list[tuple[str, str]] = []
+            for surface, (ws, token) in list(pending.items()):
+                out = self.run_cli(
+                    ["read-screen", "--workspace", ws, "--surface", surface, "--lines", "25"],
+                    timeout=20,
+                    check=False,
+                )
                 if token in out:
-                    done.append(surface)
-            for surface in done:
+                    done.append((ws, surface))
+            for ws, surface in done:
+                if self.report_shell_prompt(ws, surface):
+                    prompt_reports += 1
                 pending.pop(surface, None)
             if pending:
                 time.sleep(1.0)
 
         self.result["fixture"]["scrollback_done"] = len(terminals) - len(pending)
         self.result["fixture"]["scrollback_pending"] = len(pending)
+        self.result["fixture"]["scrollback_prompt_reports"] = prompt_reports
         if pending:
             self.result["fixture"]["scrollback_pending_sample"] = list(pending)[:10]
 
@@ -370,6 +396,48 @@ class CmuxPerfRunner:
         )
         self.result["measurements"][name] = payload
         return payload
+
+    def benchmark_real_scrollback_snapshot(self) -> dict:
+        start = now_ms()
+        deadline = time.monotonic() + self.args.real_scrollback_capture_timeout
+        attempts: list[dict[str, float | int]] = []
+        first_attempt_wall_ms = 0.0
+        snapshot: dict = {}
+
+        while True:
+            attempt_start = now_ms()
+            snapshot = self.benchmark_snapshot("snapshot_with_real_scrollback", include_scrollback=True)
+            attempt_wall_ms = rounded_ms(now_ms() - attempt_start)
+            chars = snapshot.get("shape", {}).get("scrollback_chars") or 0
+            elapsed = snapshot.get("elapsed_ms") or 0.0
+            if not attempts:
+                first_attempt_wall_ms = attempt_wall_ms
+            attempts.append(
+                {
+                    "attempt": len(attempts) + 1,
+                    "elapsed_ms": float(elapsed),
+                    "wall_ms": attempt_wall_ms,
+                    "scrollback_chars": int(chars),
+                }
+            )
+            if chars >= self.args.budget_min_scrollback_chars:
+                break
+            if self.args.real_scrollback_capture_timeout <= 0 or time.monotonic() >= deadline:
+                break
+            time.sleep(max(0.05, self.args.real_scrollback_refresh_interval))
+
+        wait_ms = rounded_ms(now_ms() - start)
+        refresh_interval = max(0.05, self.args.real_scrollback_refresh_interval)
+        self.result["fixture"]["real_scrollback_capture"] = {
+            "attempts": len(attempts),
+            "attempt_samples": attempts[:10],
+            "wait_ms": wait_ms,
+            "retry_overhead_ms": rounded_ms(max(0.0, wait_ms - first_attempt_wall_ms)),
+            "refresh_interval_s": refresh_interval,
+            "refresh_rate_hz": round(1.0 / refresh_interval, 2),
+            "timeout_s": self.args.real_scrollback_capture_timeout,
+        }
+        return snapshot
 
     def seed_synthetic_scrollback_fallback(self, real_snapshot: dict) -> bool:
         if not self.args.synthetic_scrollback_fallback:
@@ -460,7 +528,7 @@ class CmuxPerfRunner:
             terminals = self.create_fixture()
             self.seed_scrollback(terminals)
             self.benchmark_snapshot("snapshot_no_scrollback", include_scrollback=False)
-            real_scrollback = self.benchmark_snapshot("snapshot_with_real_scrollback", include_scrollback=True)
+            real_scrollback = self.benchmark_real_scrollback_snapshot()
             if self.seed_synthetic_scrollback_fallback(real_scrollback):
                 self.benchmark_snapshot("snapshot_with_scrollback", include_scrollback=True)
             else:
@@ -499,10 +567,18 @@ def print_summary(result: dict) -> None:
     print(f"  fixture: workspaces={fixture.get('workspaces')} terminals={fixture.get('terminal_surfaces')} scrollback_done={fixture.get('scrollback_done')}")
     print(f"  launch_socket_ready_ms={measurements.get('launch_socket_ready_ms')}")
     synthetic_seed = fixture.get("synthetic_scrollback_fallback")
+    real_capture = fixture.get("real_scrollback_capture") or {}
     if synthetic_seed:
         print(
             "  synthetic_scrollback_fallback="
             f"{synthetic_seed} reason={fixture.get('synthetic_scrollback_fallback_reason')}"
+        )
+    if real_capture:
+        print(
+            "  real_scrollback_capture="
+            f"attempts={real_capture.get('attempts')} wait_ms={real_capture.get('wait_ms')} "
+            f"retry_overhead_ms={real_capture.get('retry_overhead_ms')} "
+            f"refresh_rate_hz={real_capture.get('refresh_rate_hz')}"
         )
     no_scroll = measurements.get("snapshot_no_scrollback", {})
     real_scroll = measurements.get("snapshot_with_real_scrollback", {})
@@ -541,6 +617,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--line-payload-chars", type=int, default=96)
     parser.add_argument("--synthetic-scrollback-fallback", action="store_true", help="Seed DEBUG-only fallback scrollback for headless CI runners.")
     parser.add_argument("--synthetic-scrollback-chars-per-terminal", type=int, default=165_000)
+    parser.add_argument("--real-scrollback-capture-timeout", type=float, default=20)
+    parser.add_argument("--real-scrollback-refresh-interval", type=float, default=0.5)
 
     parser.add_argument("--launch-timeout", type=float, default=45)
     parser.add_argument("--scrollback-timeout", type=float, default=180)

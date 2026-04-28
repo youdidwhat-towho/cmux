@@ -2331,6 +2331,8 @@ class TerminalController {
             return v2Result(id: id, self.v2SurfaceSendKey(params: params))
         case "surface.report_tty":
             return v2Result(id: id, self.v2SurfaceReportTTY(params: params))
+        case "surface.report_shell_state":
+            return v2Result(id: id, self.v2SurfaceReportShellState(params: params))
         case "surface.ports_kick":
             return v2Result(id: id, self.v2SurfacePortsKick(params: params))
         case "surface.clear_history":
@@ -2693,6 +2695,7 @@ class TerminalController {
             "surface.send_text",
             "surface.send_key",
             "surface.report_tty",
+            "surface.report_shell_state",
             "surface.ports_kick",
             "surface.read_text",
             "surface.clear_history",
@@ -4566,6 +4569,73 @@ class TerminalController {
                 "surface_id": surfaceId.uuidString,
                 "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
                 "tty_name": ttyName,
+            ])
+        }
+
+        return result
+    }
+
+    private func v2SurfaceReportShellState(params: [String: Any]) -> V2CallResult {
+        guard let workspaceId = v2UUID(params, "workspace_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid workspace_id", data: nil)
+        }
+        let requestedSurfaceId = v2UUID(params, "surface_id")
+        if v2HasNonNullParam(params, "surface_id"), requestedSurfaceId == nil {
+            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
+        }
+        let rawState = v2RawString(params, "state")
+            ?? v2RawString(params, "shell_state")
+            ?? v2RawString(params, "activity")
+        guard let rawState,
+              let state = Self.parseReportedShellActivityState(rawState) else {
+            return .err(code: "invalid_params", message: "state must be prompt, running, or unknown", data: nil)
+        }
+
+        var result: V2CallResult = .err(
+            code: "not_found",
+            message: "Workspace not found",
+            data: [
+                "workspace_id": workspaceId.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
+                "surface_id": v2OrNull(requestedSurfaceId?.uuidString),
+                "surface_ref": v2Ref(kind: .surface, uuid: requestedSurfaceId),
+            ]
+        )
+
+        v2MainSync {
+            guard let tab = self.tabForSidebarMutation(id: workspaceId) else {
+                return
+            }
+            let validSurfaceIds = Set(tab.panels.keys)
+            tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
+
+            let surfaceId = self.resolveReportedSurfaceId(
+                in: tab,
+                requestedSurfaceId: requestedSurfaceId,
+                validSurfaceIds: validSurfaceIds
+            )
+            guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
+                result = .err(
+                    code: "not_found",
+                    message: "Surface not found",
+                    data: [
+                        "workspace_id": workspaceId.uuidString,
+                        "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
+                        "surface_id": v2OrNull(requestedSurfaceId?.uuidString),
+                        "surface_ref": v2Ref(kind: .surface, uuid: requestedSurfaceId),
+                    ]
+                )
+                return
+            }
+
+            tab.updatePanelShellActivityState(panelId: surfaceId, state: state)
+
+            result = .ok([
+                "workspace_id": workspaceId.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: workspaceId),
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "state": state.rawValue,
             ])
         }
 

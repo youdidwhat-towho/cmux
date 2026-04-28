@@ -134,6 +134,10 @@ jobs:
           print(f"- Fixture: {fixture.get('workspaces')} workspaces, {fixture.get('terminal_surfaces')} terminals, {fixture.get('scrollback_done')} scrollback-ready terminals")
           if real_scroll:
             print(f"- Real scrollback snapshot: {real_scroll.get('elapsed_ms')} ms, {real_scroll.get('shape', {}).get('scrollback_chars')} chars")
+          real_capture = fixture.get("real_scrollback_capture") or {}
+          if real_capture:
+            print(f"- Real scrollback capture polling: {real_capture.get('attempts')} attempts over {real_capture.get('wait_ms')} ms at {real_capture.get('refresh_rate_hz')} Hz")
+            print(f"- Added CI time from capture polling: {real_capture.get('retry_overhead_ms')} ms measured, {int(real_capture.get('timeout_s') or 0)} s worst case")
           synthetic_seed = fixture.get("synthetic_scrollback_fallback")
           if synthetic_seed:
             print(f"- Synthetic scrollback fallback: {synthetic_seed.get('scrollback_chars')} chars across {synthetic_seed.get('terminals')} terminals ({fixture.get('synthetic_scrollback_fallback_reason')})")
