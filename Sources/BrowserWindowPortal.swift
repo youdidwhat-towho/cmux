@@ -35,6 +35,11 @@ enum BonsplitTabBarPassThrough {
         return window.contentLayoutRect.maxY - customTitlebarBandHeight - 0.5
     }
 
+    // The minimal-mode tab strip lives just under the titlebar. Anything more
+    // than this many points below the content top can't overlap it, so we skip
+    // the recursive subtree scan on the pointer-event hot path.
+    private static let tabStripScanBandHeight: CGFloat = 200
+
     static func shouldPassThroughToPaneTabBar(
         windowPoint: NSPoint,
         below portalHost: NSView
@@ -44,6 +49,16 @@ enum BonsplitTabBarPassThrough {
         } ?? false
         if registryHit {
             return (true, true)
+        }
+
+        // High-frequency pointer events (mouseMoved/cursorUpdate) flow through
+        // here on every hover; cap the recursive view-tree walk to the top
+        // band where the tab strip can actually live.
+        if let window = portalHost.window {
+            let scanFloor = window.contentLayoutRect.maxY - tabStripScanBandHeight
+            if windowPoint.y < scanFloor {
+                return (false, false)
+            }
         }
 
         let fallbackHit = hasUnderlyingBonsplitTabBarBackground(
@@ -89,22 +104,21 @@ enum BonsplitTabBarPassThrough {
         at windowPoint: NSPoint,
         below portalHost: NSView
     ) -> Bool {
-        if let container = portalHost.superview,
-           let hostIndex = container.subviews.firstIndex(of: portalHost) {
-            for sibling in container.subviews[..<hostIndex].reversed() {
-                guard !sibling.isHidden, sibling.alphaValue > 0 else { continue }
-                if hasBonsplitTabBarBackground(at: windowPoint, in: sibling) {
-                    return true
-                }
+        // Only walk siblings rendered below the host. Falling back to the full
+        // window content tree when the host has no superview would risk a
+        // false-positive pass-through against a tab bar painted *above* an
+        // unparented host.
+        guard let container = portalHost.superview,
+              let hostIndex = container.subviews.firstIndex(of: portalHost) else {
+            return false
+        }
+        for sibling in container.subviews[..<hostIndex].reversed() {
+            guard !sibling.isHidden, sibling.alphaValue > 0 else { continue }
+            if hasBonsplitTabBarBackground(at: windowPoint, in: sibling) {
+                return true
             }
-            return false
         }
-
-        guard let window = portalHost.window,
-              let rootView = window.contentView else {
-            return false
-        }
-        return hasBonsplitTabBarBackground(at: windowPoint, in: rootView)
+        return false
     }
 }
 

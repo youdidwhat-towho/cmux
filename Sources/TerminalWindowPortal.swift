@@ -132,7 +132,13 @@ final class WindowTerminalHostView: NSView {
     // PERF: hitTest is called on EVERY event including keyboard. Keep non-pointer
     // path minimal. Do not add work outside the isPointerEvent guard.
     override func hitTest(_ point: NSPoint) -> NSView? {
-        let currentEvent = NSApp.currentEvent
+        performHitTest(at: point, currentEvent: NSApp.currentEvent)
+    }
+
+    // Test seam: production calls go through `hitTest(_:)` which reads
+    // `NSApp.currentEvent`; tests can call this directly with a synthetic
+    // pointer event so the typing-latency guard doesn't gate them out.
+    func performHitTest(at point: NSPoint, currentEvent: NSEvent?) -> NSView? {
         let isPointerEvent: Bool
         switch currentEvent?.type {
         case .mouseMoved, .mouseEntered, .mouseExited,
@@ -145,7 +151,7 @@ final class WindowTerminalHostView: NSView {
             isPointerEvent = false
         }
 
-        if isPointerEvent || currentEvent == nil {
+        if isPointerEvent {
             if shouldPassThroughToTitlebar(at: point) {
                 clearActiveDividerCursor(restoreArrow: false)
                 return nil
@@ -155,9 +161,7 @@ final class WindowTerminalHostView: NSView {
                 clearActiveDividerCursor(restoreArrow: false)
                 return nil
             }
-        }
 
-        if isPointerEvent {
             if shouldPassThroughToSidebarResizer(at: point) {
                 clearActiveDividerCursor(restoreArrow: false)
                 return nil
