@@ -3027,6 +3027,8 @@ class TerminalController {
             ?? false
         let persist = v2Bool(params, "persist") ?? true
         var payload: [String: Any]?
+        // Snapshot capture walks AppKit, SwiftUI, and terminal-panel state, so this
+        // DEBUG-only benchmark must run synchronously on the main thread.
         v2MainSync {
             payload = AppDelegate.shared?.debugBenchmarkSessionSnapshot(
                 includeScrollback: includeScrollback,
@@ -3044,6 +3046,8 @@ class TerminalController {
             ?? v2Int(params, "chars_per_terminal")
             ?? 0
         var payload: [String: Any]?
+        // Synthetic scrollback seeding mutates workspace snapshot fallback state,
+        // which is owned by the main-thread workspace graph.
         v2MainSync {
             payload = AppDelegate.shared?.debugSeedSessionSnapshotScrollback(
                 charactersPerTerminal: charactersPerTerminal

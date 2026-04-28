@@ -3020,7 +3020,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         includeScrollback: Bool,
         persist: Bool
     ) -> [String: Any] {
-        let totalStart = ProcessInfo.processInfo.systemUptime
         let buildStart = ProcessInfo.processInfo.systemUptime
         let snapshot = buildSessionSnapshot(includeScrollback: includeScrollback)
         let buildMs = Self.debugElapsedMs(since: buildStart)
@@ -3048,7 +3047,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             "persist": persist,
             "built": snapshot != nil,
             "saved": persist && snapshot != nil,
-            "elapsed_ms": Self.debugElapsedMs(since: totalStart),
+            "elapsed_ms": Self.debugElapsedMs(since: buildStart),
             "build_ms": buildMs,
             "persist_ms": persistMs.map { $0 as Any } ?? NSNull(),
             "shape": Self.debugSessionSnapshotShape(snapshot)
