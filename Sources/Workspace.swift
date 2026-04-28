@@ -8237,7 +8237,7 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     private func syncCodexAppServerSidebarStatus() {
-        let failedMessages = panels.values.compactMap { panel in
+        let failedMessages: [String] = panels.values.compactMap { (panel: any Panel) -> String? in
             guard let codexPanel = panel as? CodexAppServerPanel else { return nil }
             guard case let .failed(message) = codexPanel.status else { return nil }
             let trimmed = message.trimmingCharacters(in: .whitespacesAndNewlines)
