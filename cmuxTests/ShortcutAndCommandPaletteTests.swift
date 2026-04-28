@@ -1215,7 +1215,7 @@ final class RightSidebarModeShortcutHintTests: XCTestCase {
     }
 
     private func makeKeyDownEvent(for shortcut: StoredShortcut) -> NSEvent? {
-        guard let keyCode = shortcut.resolvedKeyCode() else { return nil }
+        guard let keyCode = shortcut.firstStroke.resolvedKeyCode() else { return nil }
         return makeKeyDownEvent(
             key: shortcut.key,
             modifiers: shortcut.modifierFlags,
