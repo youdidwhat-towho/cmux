@@ -251,6 +251,18 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertNil(CodexAppServerClient.requestID(from: NSNumber(value: true)))
     }
 
+    func testPanelResolvedRequestIDParserPreservesNumericStringsAsStrings() {
+        XCTAssertEqual(
+            CodexAppServerPanel.requestIDValue(named: "id", in: ["id": "01"]),
+            .string("01")
+        )
+        XCTAssertEqual(
+            CodexAppServerPanel.requestIDValue(named: "id", in: ["id": 1]),
+            .int(1)
+        )
+        XCTAssertNil(CodexAppServerPanel.requestIDValue(named: "id", in: ["id": true]))
+    }
+
     func testAppServerEnvironmentIncludesNodeVersionManagerPaths() throws {
         let tempDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("cmux-codex-app-server-\(UUID().uuidString)", isDirectory: true)

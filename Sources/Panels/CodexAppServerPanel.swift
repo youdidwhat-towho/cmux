@@ -1975,24 +1975,8 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         return nil
     }
 
-    private static func requestIDValue(named key: String, in object: [String: Any]?) -> CodexAppServerRequestID? {
-        guard let value = object?[key] else { return nil }
-        if let value = value as? String {
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return nil }
-            if let intValue = Int(trimmed) {
-                return .int(intValue)
-            }
-            return .string(trimmed)
-        }
-        if let value = value as? Int {
-            return .int(value)
-        }
-        if let value = value as? NSNumber,
-           CFGetTypeID(value) != CFBooleanGetTypeID() {
-            return .int(value.intValue)
-        }
-        return nil
+    nonisolated static func requestIDValue(named key: String, in object: [String: Any]?) -> CodexAppServerRequestID? {
+        CodexAppServerClient.requestID(from: object?[key])
     }
 
     private static func itemIdentifier(from item: [String: Any]) -> String? {
