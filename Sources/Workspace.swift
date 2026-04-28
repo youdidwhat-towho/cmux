@@ -7577,39 +7577,16 @@ final class Workspace: Identifiable, ObservableObject {
             backgroundOpacity: backgroundOpacity,
             sharesWindowBackdrop: sharesWindowBackdrop
         )
-        let paneBackgroundHex = usesBonsplitPaneTerminalBackdrop(
-            renderingMode: renderingMode,
-            sharesWindowBackdrop: sharesWindowBackdrop
-        )
-            ? surfaceHex
-            : "#00000000"
         let borderHex = WindowChromeSeparatorColor
             .color(forChromeBackground: backgroundColor)
             .hexString(includeAlpha: true)
         return .init(
             backgroundHex: surfaceHex,
-            tabBarBackgroundHex: surfaceHex,
-            splitButtonBackdropHex: surfaceHex,
-            paneBackgroundHex: paneBackgroundHex,
             borderHex: borderHex
         )
     }
 
     nonisolated static let bonsplitSplitButtonBackdropSoftness: CGFloat = 0.60
-
-    nonisolated static func bonsplitSplitButtonBackdropEffect() -> BonsplitConfiguration.Appearance.SplitButtonBackdropEffect {
-        .init(
-            style: .translucentChrome,
-            fadeWidth: 99.75,
-            contentFadeWidth: 28.875,
-            solidWidth: 23.875,
-            fadeRampStartFraction: bonsplitSplitButtonBackdropSoftness,
-            leadingOpacity: 0,
-            trailingOpacity: 0.8625,
-            contentOcclusionFraction: 0.6875,
-            masksTabContent: true
-        )
-    }
 
     nonisolated static func resolvedChromeColors(
         from backgroundColor: NSColor,
@@ -7619,17 +7596,8 @@ final class Workspace: Identifiable, ObservableObject {
         // Keep this signature aligned with bonsplitChromeHex for settings tests
         // and future background-image handling.
         let backgroundHex = backgroundColor.hexString()
-        let paneBackgroundHex = usesBonsplitPaneTerminalBackdrop(
-            renderingMode: renderingMode,
-            sharesWindowBackdrop: sharesWindowBackdrop
-        )
-            ? backgroundHex
-            : "#00000000"
         return .init(
             backgroundHex: backgroundHex,
-            tabBarBackgroundHex: backgroundHex,
-            splitButtonBackdropHex: backgroundHex,
-            paneBackgroundHex: paneBackgroundHex,
             borderHex: WindowChromeSeparatorColor
                 .color(forChromeBackground: backgroundColor)
                 .hexString(includeAlpha: true)
@@ -7641,9 +7609,6 @@ final class Workspace: Identifiable, ObservableObject {
         _ rhs: BonsplitConfiguration.Appearance.ChromeColors
     ) -> Bool {
         lhs.backgroundHex == rhs.backgroundHex &&
-            lhs.tabBarBackgroundHex == rhs.tabBarBackgroundHex &&
-            lhs.splitButtonBackdropHex == rhs.splitButtonBackdropHex &&
-            lhs.paneBackgroundHex == rhs.paneBackgroundHex &&
             lhs.borderHex == rhs.borderHex
     }
 
@@ -7651,9 +7616,6 @@ final class Workspace: Identifiable, ObservableObject {
         _ colors: BonsplitConfiguration.Appearance.ChromeColors
     ) -> String {
         "bg=\(colors.backgroundHex ?? "nil") " +
-            "tabBarBg=\(colors.tabBarBackgroundHex ?? "nil") " +
-            "splitBackdrop=\(colors.splitButtonBackdropHex ?? "nil") " +
-            "paneBg=\(colors.paneBackgroundHex ?? "nil") " +
             "border=\(colors.borderHex ?? "nil")"
     }
 
@@ -7674,7 +7636,6 @@ final class Workspace: Identifiable, ObservableObject {
         )
         return BonsplitConfiguration.Appearance(
             tabTitleFontSize: tabTitleFontSize,
-            splitButtonBackdropEffect: Self.bonsplitSplitButtonBackdropEffect(),
             splitButtonTooltips: Self.currentSplitButtonTooltips(),
             enableAnimations: false,
             chromeColors: chromeColors
@@ -13837,9 +13798,6 @@ extension Workspace: BonsplitDelegate {
         case .clearName:
             guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
             setPanelCustomTitle(panelId: panelId, title: nil)
-        case .copyIdentifiers:
-            guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
-            copyIdentifiersToPasteboard(surfaceId: panelId)
         case .closeToLeft:
             closeTabs(tabIdsToLeft(of: tab.id, inPane: pane))
         case .closeToRight:

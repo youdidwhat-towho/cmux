@@ -65,6 +65,25 @@ final class CMUXMarkdownTests: XCTestCase {
         XCTAssertGreaterThan(CFAttributedStringGetLength(rendered.attributedString), 0)
     }
 
+    func testCoreTextRendererDoesNotApplyLinkStyleToListMarkers() {
+        let rendered = CMUXMarkdownCoreTextRenderer().render("""
+        - [AppDelegate.swift](file:///tmp/AppDelegate.swift)
+        1. [BrowserPanel.swift](file:///tmp/BrowserPanel.swift)
+        """)
+        let attributed = rendered.attributedString as NSAttributedString
+        let underlineKey = NSAttributedString.Key(kCTUnderlineStyleAttributeName as String)
+        let firstMarkerRange = (rendered.plainText as NSString).range(of: "- ")
+        let firstFilenameRange = (rendered.plainText as NSString).range(of: "AppDelegate.swift")
+        let secondMarkerRange = (rendered.plainText as NSString).range(of: "1. ")
+        let secondFilenameRange = (rendered.plainText as NSString).range(of: "BrowserPanel.swift")
+
+        XCTAssertEqual(firstMarkerRange.location, 0)
+        XCTAssertNil(attributed.attribute(underlineKey, at: firstMarkerRange.location, effectiveRange: nil))
+        XCTAssertNotNil(attributed.attribute(underlineKey, at: firstFilenameRange.location, effectiveRange: nil))
+        XCTAssertNil(attributed.attribute(underlineKey, at: secondMarkerRange.location, effectiveRange: nil))
+        XCTAssertNotNil(attributed.attribute(underlineKey, at: secondFilenameRange.location, effectiveRange: nil))
+    }
+
     func testInlineUnderscoresInsideFilenamesStayLiteral() {
         let markdown = "Fix shell/platformdelegate_mac.mm and keep _real emphasis_ working."
 
@@ -249,6 +268,23 @@ final class CMUXMarkdownTests: XCTestCase {
         let rendered = CMUXMarkdownAppKitRenderer().render(markdown)
 
         XCTAssertTrue(rendered.string.contains("Intro text.\n\nswift\n"))
+    }
+
+    func testAppKitRendererDoesNotApplyLinkStyleToListMarkers() {
+        let rendered = CMUXMarkdownAppKitRenderer().render("""
+        - [AppDelegate.swift](file:///tmp/AppDelegate.swift)
+        1. [BrowserPanel.swift](file:///tmp/BrowserPanel.swift)
+        """)
+        let firstMarkerRange = (rendered.string as NSString).range(of: "- ")
+        let firstFilenameRange = (rendered.string as NSString).range(of: "AppDelegate.swift")
+        let secondMarkerRange = (rendered.string as NSString).range(of: "1. ")
+        let secondFilenameRange = (rendered.string as NSString).range(of: "BrowserPanel.swift")
+
+        XCTAssertEqual(firstMarkerRange.location, 0)
+        XCTAssertNil(rendered.attribute(.underlineStyle, at: firstMarkerRange.location, effectiveRange: nil))
+        XCTAssertNotNil(rendered.attribute(.underlineStyle, at: firstFilenameRange.location, effectiveRange: nil))
+        XCTAssertNil(rendered.attribute(.underlineStyle, at: secondMarkerRange.location, effectiveRange: nil))
+        XCTAssertNotNil(rendered.attribute(.underlineStyle, at: secondFilenameRange.location, effectiveRange: nil))
     }
     #endif
 

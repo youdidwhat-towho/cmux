@@ -143,13 +143,19 @@ enum CodexAppServerRequestFactory {
         notification(method: "initialized")
     }
 
-    static func threadStartRequest(id: Int, cwd: String?) -> [String: Any] {
+    static func threadStartRequest(id: Int, cwd: String?, model: String? = nil, serviceTier: String? = nil) -> [String: Any] {
         var params: [String: Any] = [
             "serviceName": "cmux",
             "ephemeral": true,
         ]
         if let cwd, !cwd.isEmpty {
             params["cwd"] = cwd
+        }
+        if let model, !model.isEmpty {
+            params["model"] = model
+        }
+        if let serviceTier, !serviceTier.isEmpty {
+            params["serviceTier"] = serviceTier
         }
         return request(id: id, method: "thread/start", params: params)
     }
@@ -164,7 +170,14 @@ enum CodexAppServerRequestFactory {
         return request(id: id, method: "thread/resume", params: params)
     }
 
-    static func turnStartRequest(id: Int, threadId: String, text: String, cwd: String?) -> [String: Any] {
+    static func turnStartRequest(
+        id: Int,
+        threadId: String,
+        text: String,
+        cwd: String?,
+        model: String? = nil,
+        serviceTier: String? = nil
+    ) -> [String: Any] {
         var params: [String: Any] = [
             "threadId": threadId,
             "input": [
@@ -178,7 +191,56 @@ enum CodexAppServerRequestFactory {
         if let cwd, !cwd.isEmpty {
             params["cwd"] = cwd
         }
+        if let model, !model.isEmpty {
+            params["model"] = model
+        }
+        if let serviceTier, !serviceTier.isEmpty {
+            params["serviceTier"] = serviceTier
+        }
         return request(id: id, method: "turn/start", params: params)
+    }
+
+    static func modelListRequest(id: Int, includeHidden: Bool = false) -> [String: Any] {
+        request(
+            id: id,
+            method: "model/list",
+            params: [
+                "includeHidden": includeHidden,
+            ]
+        )
+    }
+
+    static func accountRateLimitsReadRequest(id: Int) -> [String: Any] {
+        request(id: id, method: "account/rateLimits/read")
+    }
+
+    static func turnSteerRequest(id: Int, threadId: String, turnId: String, text: String) -> [String: Any] {
+        request(
+            id: id,
+            method: "turn/steer",
+            params: [
+                "threadId": threadId,
+                "expectedTurnId": turnId,
+                "input": [
+                    [
+                        "type": "text",
+                        "text": text,
+                        "textElements": [],
+                    ],
+                ],
+            ]
+        )
+    }
+
+    static func turnInterruptRequest(id: Int, threadId: String, turnId: String) -> [String: Any] {
+        request(
+            id: id,
+            method: "turn/interrupt",
+            params: [
+                "threadId": threadId,
+                "turnId": turnId,
+            ]
+        )
     }
 }
 
@@ -234,15 +296,25 @@ final class CodexAppServerClient: @unchecked Sendable {
         let continuation: CheckedContinuation<[String: Any], Error>
         let maximumResponseBytesToParse: Int?
         let oversizedResponseFallback: [String: Any]?
+#if DEBUG
+        let method: String
+        let startedAt: UInt64
+        var requestBytes = 0
+#endif
 
         init(
             _ continuation: CheckedContinuation<[String: Any], Error>,
+            method: String,
             maximumResponseBytesToParse: Int? = nil,
             oversizedResponseFallback: [String: Any]? = nil
         ) {
             self.continuation = continuation
             self.maximumResponseBytesToParse = maximumResponseBytesToParse
             self.oversizedResponseFallback = oversizedResponseFallback
+#if DEBUG
+            self.method = method
+            self.startedAt = CodexAppServerTiming.now()
+#endif
         }
 
         func fallbackIfOversized(byteCount: Int) -> [String: Any]? {
@@ -325,19 +397,39 @@ final class CodexAppServerClient: @unchecked Sendable {
     }
 
     func startAndInitialize() async throws {
+#if DEBUG
+        let timingStart = CodexAppServerTiming.now()
+        CodexAppServerTiming.log("client.initialize.begin")
+#endif
         do {
             try start()
             _ = try await sendRequestObject(CodexAppServerRequestFactory.initializeRequest(id: nextId()))
             try sendNotificationObject(CodexAppServerRequestFactory.initializedNotification())
+#if DEBUG
+            CodexAppServerTiming.log("client.initialize.end", [
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: timingStart)),
+            ])
+#endif
         } catch {
             stopSynchronously()
+#if DEBUG
+            CodexAppServerTiming.log("client.initialize.error", [
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: timingStart)),
+                "error": error.localizedDescription,
+            ])
+#endif
             throw error
         }
     }
 
-    func startThread(cwd: String?) async throws -> String {
+    func startThread(cwd: String?, model: String? = nil, serviceTier: String? = nil) async throws -> String {
         let response = try await sendRequestObject(
-            CodexAppServerRequestFactory.threadStartRequest(id: nextId(), cwd: cwd)
+            CodexAppServerRequestFactory.threadStartRequest(
+                id: nextId(),
+                cwd: cwd,
+                model: model,
+                serviceTier: serviceTier
+            )
         )
         guard let thread = response["thread"] as? [String: Any],
               let threadId = thread["id"] as? String,
@@ -364,13 +456,21 @@ final class CodexAppServerClient: @unchecked Sendable {
         return response
     }
 
-    func startTurn(threadId: String, text: String, cwd: String?) async throws -> String {
+    func startTurn(
+        threadId: String,
+        text: String,
+        cwd: String?,
+        model: String? = nil,
+        serviceTier: String? = nil
+    ) async throws -> String {
         let response = try await sendRequestObject(
             CodexAppServerRequestFactory.turnStartRequest(
                 id: nextId(),
                 threadId: threadId,
                 text: text,
-                cwd: cwd
+                cwd: cwd,
+                model: model,
+                serviceTier: serviceTier
             )
         )
         guard let turn = response["turn"] as? [String: Any],
@@ -379,6 +479,46 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw CodexAppServerClientError.invalidResponse("turn/start response did not include turn.id")
         }
         return turnId
+    }
+
+    func listModels(includeHidden: Bool = false) async throws -> [[String: Any]] {
+        let response = try await sendRequestObject(
+            CodexAppServerRequestFactory.modelListRequest(id: nextId(), includeHidden: includeHidden)
+        )
+        guard let data = response["data"] as? [[String: Any]] else {
+            throw CodexAppServerClientError.invalidResponse("model/list response did not include data")
+        }
+        return data
+    }
+
+    func readRateLimits() async throws -> [String: Any] {
+        try await sendRequestObject(CodexAppServerRequestFactory.accountRateLimitsReadRequest(id: nextId()))
+    }
+
+    func steerTurn(threadId: String, turnId: String, text: String) async throws -> String {
+        let response = try await sendRequestObject(
+            CodexAppServerRequestFactory.turnSteerRequest(
+                id: nextId(),
+                threadId: threadId,
+                turnId: turnId,
+                text: text
+            )
+        )
+        guard let returnedTurnId = response["turnId"] as? String,
+              !returnedTurnId.isEmpty else {
+            throw CodexAppServerClientError.invalidResponse("turn/steer response did not include turnId")
+        }
+        return returnedTurnId
+    }
+
+    func interruptTurn(threadId: String, turnId: String) async throws {
+        _ = try await sendRequestObject(
+            CodexAppServerRequestFactory.turnInterruptRequest(
+                id: nextId(),
+                threadId: threadId,
+                turnId: turnId
+            )
+        )
     }
 
     func respondToServerRequest(id: CodexAppServerRequestID, result: [String: Any]) throws {
@@ -402,12 +542,23 @@ final class CodexAppServerClient: @unchecked Sendable {
             throw CodexAppServerClientError.alreadyRunning
         }
 
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+        let configStart = CodexAppServerTiming.now()
+#endif
         let process = Process()
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
 
         let configuration = Self.appServerLaunchConfiguration()
+#if DEBUG
+        CodexAppServerTiming.log("client.process.config", [
+            "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: configStart)),
+            "executable": configuration.executablePath,
+            "args": configuration.arguments.joined(separator: " "),
+        ])
+#endif
         process.executableURL = URL(fileURLWithPath: configuration.executablePath)
         process.arguments = configuration.arguments
         process.environment = configuration.environment
@@ -436,10 +587,26 @@ final class CodexAppServerClient: @unchecked Sendable {
         }
 
         do {
+#if DEBUG
+            let runStart = CodexAppServerTiming.now()
+#endif
             try process.run()
+#if DEBUG
+            CodexAppServerTiming.log("client.process.run", [
+                "pid": process.processIdentifier,
+                "run_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: runStart)),
+                "total_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            ])
+#endif
         } catch {
             stdoutPipe.fileHandleForReading.readabilityHandler = nil
             stderrPipe.fileHandleForReading.readabilityHandler = nil
+#if DEBUG
+            CodexAppServerTiming.log("client.process.run.error", [
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                "error": error.localizedDescription,
+            ])
+#endif
             throw error
         }
 
@@ -652,8 +819,12 @@ final class CodexAppServerClient: @unchecked Sendable {
         guard let id = Self.requestID(from: object["id"]) else {
             throw CodexAppServerClientError.invalidResponse("request object missing numeric id")
         }
+        let method = object["method"] as? String ?? "unknown"
 
         return try await withCheckedThrowingContinuation { continuation in
+#if DEBUG
+            let enqueueTime = CodexAppServerTiming.now()
+#endif
             stateQueue.async {
                 guard self.process?.isRunning == true,
                       let stdinPipe = self.stdinPipe else {
@@ -661,15 +832,33 @@ final class CodexAppServerClient: @unchecked Sendable {
                     return
                 }
 
-                self.pending[id] = PendingRequest(
+                let pendingRequest = PendingRequest(
                     continuation,
+                    method: method,
                     maximumResponseBytesToParse: maximumResponseBytesToParse,
                     oversizedResponseFallback: oversizedResponseFallback
                 )
+                self.pending[id] = pendingRequest
                 do {
-                    try Self.writeJSONObject(object, to: stdinPipe.fileHandleForWriting)
+                    let bytes = try Self.writeJSONObject(object, to: stdinPipe.fileHandleForWriting)
+#if DEBUG
+                    pendingRequest.requestBytes = bytes
+                    CodexAppServerTiming.log("client.request.sent", [
+                        "id": id.description,
+                        "method": method,
+                        "bytes": bytes,
+                        "queue_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: enqueueTime)),
+                    ])
+#endif
                 } catch {
                     self.pending.removeValue(forKey: id)
+#if DEBUG
+                    CodexAppServerTiming.log("client.request.writeError", [
+                        "id": id.description,
+                        "method": method,
+                        "error": error.localizedDescription,
+                    ])
+#endif
                     continuation.resume(throwing: error)
                 }
             }
@@ -708,7 +897,8 @@ final class CodexAppServerClient: @unchecked Sendable {
         try result.get()
     }
 
-    private static func writeJSONObject(_ object: [String: Any], to handle: FileHandle) throws {
+    @discardableResult
+    private static func writeJSONObject(_ object: [String: Any], to handle: FileHandle) throws -> Int {
         guard JSONSerialization.isValidJSONObject(object) else {
             throw CodexAppServerClientError.invalidResponse("request is not valid JSON")
         }
@@ -719,36 +909,87 @@ final class CodexAppServerClient: @unchecked Sendable {
         } catch {
             throw CodexAppServerClientError.writeFailed
         }
+        return data.count
     }
 
     private func ingestStdout(_ data: Data) {
+#if DEBUG
+        let enqueueTime = CodexAppServerTiming.now()
+#endif
         stateQueue.async {
-            for line in self.stdoutLineBuffer.append(data) {
+#if DEBUG
+            let appendStart = CodexAppServerTiming.now()
+#endif
+            let lines = self.stdoutLineBuffer.append(data)
+#if DEBUG
+            if data.count >= 4 * 1024 * 1024 || !lines.isEmpty {
+                CodexAppServerTiming.log("client.stdout.chunk", [
+                    "bytes": data.count,
+                    "lines": lines.count,
+                    "buffered": self.stdoutLineBuffer.bufferedByteCount,
+                    "queue_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: enqueueTime)),
+                    "append_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: appendStart)),
+                ])
+            }
+#endif
+            for line in lines {
                 self.handleStdoutLine(line)
             }
         }
     }
 
     private func handleStdoutLine(_ data: Data) {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
         if let id = Self.responseId(in: data),
            let request = pending[id],
            !Self.containsTopLevelKey("error", in: data),
            let fallback = request.fallbackIfOversized(byteCount: data.count) {
             pending.removeValue(forKey: id)
+#if DEBUG
+            CodexAppServerTiming.log("client.response.oversized", [
+                "id": id.description,
+                "method": request.method,
+                "bytes": data.count,
+                "request_bytes": request.requestBytes,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: request.startedAt)),
+                "scan_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            ])
+#endif
             request.continuation.resume(returning: fallback)
             return
         }
 
+#if DEBUG
+        let parseStart = CodexAppServerTiming.now()
+#endif
         guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             if let text = String(data: data, encoding: .utf8) {
                 emit(.stderr("Unparseable Codex app-server output: \(text)\n"))
             }
             return
         }
+#if DEBUG
+        let parseMs = CodexAppServerTiming.elapsedMs(since: parseStart)
+#endif
 
         if let id = Self.requestID(from: object["id"]),
            object["result"] != nil || object["error"] != nil {
             let request = pending.removeValue(forKey: id)
+#if DEBUG
+            if let request {
+                CodexAppServerTiming.log("client.response.parsed", [
+                    "id": id.description,
+                    "method": request.method,
+                    "bytes": data.count,
+                    "request_bytes": request.requestBytes,
+                    "total_ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: request.startedAt)),
+                    "parse_ms": CodexAppServerTiming.ms(parseMs),
+                    "error": object["error"] != nil,
+                ])
+            }
+#endif
             if let errorObject = object["error"] as? [String: Any] {
                 let message = errorObject["message"] as? String ?? String(describing: errorObject)
                 request?.continuation.resume(throwing: CodexAppServerClientError.requestFailed(message))

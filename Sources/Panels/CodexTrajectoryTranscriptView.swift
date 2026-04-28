@@ -4,19 +4,42 @@ import SwiftUI
 
 struct CodexTrajectoryTranscriptView: NSViewRepresentable {
     var items: [CodexAppServerTranscriptItem]
+    var bottomSpacerHeight: CGFloat = 184
 
     func makeNSView(context: Context) -> CodexTrajectoryTranscriptScrollView {
         CodexTrajectoryTranscriptScrollView()
     }
 
     func updateNSView(_ nsView: CodexTrajectoryTranscriptScrollView, context: Context) {
-        nsView.update(entries: CodexTrajectoryTranscriptDisplayEntry.entries(from: items))
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
+        let entries = CodexTrajectoryTranscriptDisplayEntry.entries(from: items)
+#if DEBUG
+        if items.count >= 100 {
+            CodexAppServerTiming.log("transcript.entries", [
+                "items": items.count,
+                "entries": entries.count,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            ])
+        } else {
+            CodexAppServerTiming.logSlow("transcript.entries", start: start, thresholdMs: 5, [
+                "items": items.count,
+                "entries": entries.count,
+            ])
+        }
+#endif
+        nsView.update(
+            entries: entries,
+            bottomSpacerHeight: bottomSpacerHeight
+        )
     }
 }
 
 enum CodexTrajectoryTranscriptDisplayKind: Hashable {
     case plain
     case toolGroup
+    case toolRun
     case compaction
     case previousMessages
 }
@@ -39,7 +62,7 @@ struct CodexTrajectoryTranscriptDisplayEntry: Hashable {
     fileprivate var previousEntries: [CodexTrajectoryTranscriptDisplayEntry] = []
 
     var isAccordion: Bool {
-        kind == .toolGroup || kind == .previousMessages
+        kind == .toolGroup || kind == .toolRun || kind == .previousMessages
     }
 
     var isCompaction: Bool {
@@ -56,6 +79,9 @@ struct CodexTrajectoryTranscriptDisplayEntry: Hashable {
 
     var accordionIDs: [String] {
         var ids: [String] = isAccordion ? [id] : []
+        for entry in childToolRunEntries {
+            ids.append(contentsOf: entry.accordionIDs)
+        }
         for entry in previousEntries {
             ids.append(contentsOf: entry.accordionIDs)
         }
@@ -67,11 +93,21 @@ struct CodexTrajectoryTranscriptDisplayEntry: Hashable {
     }
 
     var toolSummaryLines: [String] {
+        if kind == .toolGroup || kind == .toolRun {
+            return []
+        }
         let lines = toolRuns.map(\.summaryLine).filter { !$0.isEmpty }
         if !lines.isEmpty {
             return lines
         }
         return subtitle.isEmpty ? [] : [subtitle]
+    }
+
+    fileprivate var childToolRunEntries: [Self] {
+        guard kind == .toolGroup else { return [] }
+        return toolRuns.enumerated().map { index, run in
+            Self.toolRun(run, index: index, parent: self)
+        }
     }
 
     static func entries(from items: [CodexAppServerTranscriptItem]) -> [Self] {
@@ -204,10 +240,13 @@ struct CodexTrajectoryTranscriptDisplayEntry: Hashable {
     private static func toolGroup(from items: [CodexAppServerTranscriptItem]) -> Self? {
         guard let first = items.first else { return nil }
         let runs = CodexTrajectoryToolRun.runs(from: items)
-        let detailText = runs.map(\.detailText).filter { !$0.isEmpty }.joined(separator: "\n\n")
-        guard !detailText.isEmpty else { return nil }
+        guard !runs.isEmpty else { return nil }
 
         let title = CodexTrajectoryToolRun.title(for: runs)
+        let summaryText = runs
+            .map(\.summaryLine)
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
 
         let subtitle = runs.compactMap(\.summary).first ?? first.title
         return Self(
@@ -220,12 +259,37 @@ struct CodexTrajectoryTranscriptDisplayEntry: Hashable {
                 id: "toolgroup-\(first.id.uuidString)-content",
                 kind: .commandOutput,
                 title: "",
-                text: detailText,
+                text: summaryText,
                 isStreaming: items.contains(where: \.isStreaming),
                 createdAt: first.date
             ),
             toolRuns: runs,
             fileChanges: runs.compactMap(\.fileChange)
+        )
+    }
+
+    private static func toolRun(
+        _ run: CodexTrajectoryToolRun,
+        index: Int,
+        parent: Self
+    ) -> Self {
+        let id = "\(parent.id)-run-\(index)"
+        return Self(
+            id: id,
+            kind: .toolRun,
+            title: run.summaryLine.isEmpty ? run.label : run.summaryLine,
+            subtitle: run.summary ?? "",
+            statusText: statusText(for: [run]),
+            block: CodexTrajectoryBlock(
+                id: "\(id)-content",
+                kind: .commandOutput,
+                title: "",
+                text: run.detailText,
+                isStreaming: parent.block.isStreaming,
+                createdAt: parent.block.createdAt
+            ),
+            toolRuns: [run],
+            fileChanges: run.fileChange.map { [$0] } ?? []
         )
     }
 
@@ -251,6 +315,7 @@ private enum CodexTrajectoryToolRunKind: Hashable {
     case search
     case list
     case webSearch
+    case hook
     case tool
 }
 
@@ -344,6 +409,8 @@ private struct CodexTrajectoryToolRun: Hashable {
                     }
                     runs.append(run)
                 }
+            case .hookEvent(let method):
+                runs.append(hookRun(method: method, body: item.body, fallbackTitle: item.title))
             case .plain, .compaction:
                 break
             }
@@ -358,6 +425,7 @@ private struct CodexTrajectoryToolRun: Hashable {
         let searchCount = count(.search, in: runs)
         let listCount = count(.list, in: runs)
         let webSearchCount = count(.webSearch, in: runs)
+        let hookCount = count(.hook, in: runs)
         let toolCount = count(.tool, in: runs)
 
         var parts: [String] = []
@@ -395,6 +463,9 @@ private struct CodexTrajectoryToolRun: Hashable {
         }
         if webSearchCount > 0 {
             parts.append(webSearchCountTitle(webSearchCount, isContinuation: !parts.isEmpty))
+        }
+        if hookCount > 0 {
+            parts.append(hookCountTitle(hookCount))
         }
         if toolCount > 0 {
             parts.append(toolCountTitle(toolCount))
@@ -557,6 +628,75 @@ private struct CodexTrajectoryToolRun: Hashable {
                 exitCode: nil
             ),
         ]
+    }
+
+    private static func hookRun(method: String, body: String, fallbackTitle: String) -> Self {
+        let object = jsonDictionary(from: body) ?? [:]
+        let run = object["run"] as? [String: Any]
+        let eventName = run.flatMap { stringValue(named: "eventName", in: $0) }
+            ?? run.flatMap { stringValue(named: "event_name", in: $0) }
+        let status = run.flatMap { stringValue(named: "status", in: $0) }
+        let command = run.flatMap { stringValue(named: "command", in: $0) }
+        let sourcePath = run.flatMap { stringValue(named: "sourcePath", in: $0) }
+            ?? run.flatMap { stringValue(named: "source_path", in: $0) }
+        let durationMs = run.flatMap { intValue(named: "durationMs", in: $0) }
+            ?? run.flatMap { intValue(named: "duration_ms", in: $0) }
+        let displayOrder = run.flatMap { intValue(named: "displayOrder", in: $0) }
+            ?? run.flatMap { intValue(named: "display_order", in: $0) }
+        let label = String(localized: "codexAppServer.hook.label", defaultValue: "Hook")
+
+        let action: String
+        switch method {
+        case "hook/started":
+            action = String(localized: "codexAppServer.hook.started", defaultValue: "Started")
+        case "hook/completed":
+            action = String(localized: "codexAppServer.hook.completed", defaultValue: "Completed")
+        default:
+            action = fallbackTitle.isEmpty ? method : fallbackTitle
+        }
+
+        let hookName = eventName?.isEmpty == false ? eventName! : method
+        let summaryFormat = String(localized: "codexAppServer.hook.summary", defaultValue: "%@ hook %@")
+        let summaryLine = String(format: summaryFormat, locale: Locale.current, action, hookName)
+
+        var details: [String] = []
+        if let command, !command.isEmpty {
+            let format = String(localized: "codexAppServer.hook.command", defaultValue: "Command: %@")
+            details.append(String(format: format, locale: Locale.current, command))
+        }
+        if let status, !status.isEmpty {
+            let format = String(localized: "codexAppServer.hook.status", defaultValue: "Status: %@")
+            details.append(String(format: format, locale: Locale.current, status))
+        }
+        if let durationMs {
+            let format = String(localized: "codexAppServer.hook.duration", defaultValue: "Duration: %ld ms")
+            details.append(String(format: format, locale: Locale.current, durationMs))
+        }
+        if let displayOrder {
+            let format = String(localized: "codexAppServer.hook.order", defaultValue: "Order: %ld")
+            details.append(String(format: format, locale: Locale.current, displayOrder))
+        }
+        if let sourcePath, !sourcePath.isEmpty {
+            let format = String(localized: "codexAppServer.hook.source", defaultValue: "Source: %@")
+            details.append(String(format: format, locale: Locale.current, displayPath(sourcePath)))
+        }
+
+        let threadId = stringValue(named: "threadId", in: object)
+            ?? stringValue(named: "thread_id", in: object)
+        if let threadId, !threadId.isEmpty {
+            let format = String(localized: "codexAppServer.hook.thread", defaultValue: "Thread: %@")
+            details.append(String(format: format, locale: Locale.current, threadId))
+        }
+
+        let output = details.isEmpty ? body.trimmingCharacters(in: .whitespacesAndNewlines) : details.joined(separator: "\n")
+        return Self(
+            kind: .hook,
+            label: label,
+            summaryLine: summaryLine,
+            command: "",
+            output: output,
+            exitCode: nil
+        )
     }
 
     private static func webSearchRuns(from body: String, fallbackTitle: String) -> [Self] {
@@ -739,6 +879,17 @@ private struct CodexTrajectoryToolRun: Hashable {
                 localized: "codexAppServer.toolGroup.searchedWeb.many.start",
                 defaultValue: "Searched web %1$ld times"
             )
+        return String(format: format, locale: Locale.current, count)
+    }
+
+    private static func hookCountTitle(_ count: Int) -> String {
+        if count == 1 {
+            return String(localized: "codexAppServer.hook.count.one", defaultValue: "Hook event")
+        }
+        let format = String(
+            localized: "codexAppServer.hook.count.many",
+            defaultValue: "%1$ld hook events"
+        )
         return String(format: format, locale: Locale.current, count)
     }
 
@@ -963,6 +1114,20 @@ private struct CodexTrajectoryToolRun: Hashable {
         return nil
     }
 
+    private static func intValue(named key: String, in object: [String: Any]) -> Int? {
+        if let value = object[key] as? Int {
+            return value
+        }
+        if let value = object[key] as? NSNumber,
+           CFGetTypeID(value) != CFBooleanGetTypeID() {
+            return value.intValue
+        }
+        if let value = object[key] as? String {
+            return Int(value)
+        }
+        return nil
+    }
+
     private static func prettyJSON(_ value: Any) -> String {
         guard JSONSerialization.isValidJSONObject(value),
               let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
@@ -1036,7 +1201,7 @@ private struct CodexTrajectoryToolOutput {
 private extension CodexAppServerTranscriptItem {
     var isToolTranscriptItem: Bool {
         switch presentation {
-        case .toolCall, .toolOutput, .commandOutput:
+        case .toolCall, .toolOutput, .commandOutput, .hookEvent:
             return true
         case .plain, .compaction:
             return false
@@ -1085,6 +1250,7 @@ private extension CodexAppServerTranscriptItem {
 final class CodexTrajectoryTranscriptScrollView: NSScrollView {
     private let trajectoryView = CodexTrajectoryTranscriptDocumentView()
     private var entries: [CodexTrajectoryTranscriptDisplayEntry] = []
+    private var bottomSpacerHeight: CGFloat = 184
     private var backgroundObserver: NSObjectProtocol?
 
     override init(frame frameRect: NSRect) {
@@ -1095,7 +1261,7 @@ final class CodexTrajectoryTranscriptScrollView: NSScrollView {
         hasHorizontalScroller = false
         autohidesScrollers = true
         borderType = .noBorder
-        contentInsets = NSEdgeInsets(top: 18, left: 0, bottom: 92, right: 0)
+        contentInsets = NSEdgeInsets(top: 18, left: 0, bottom: 0, right: 0)
         documentView = trajectoryView
         backgroundObserver = NotificationCenter.default.addObserver(
             forName: .ghosttyDefaultBackgroundDidChange,
@@ -1118,13 +1284,19 @@ final class CodexTrajectoryTranscriptScrollView: NSScrollView {
 
     override func layout() {
         super.layout()
-        reloadPreservingScroll(stickToBottom: isScrolledNearBottom)
+        reloadPreservingScroll(stickToBottom: isScrolledNearBottom, animateScroll: false)
     }
 
-    fileprivate func update(entries: [CodexTrajectoryTranscriptDisplayEntry]) {
+    fileprivate func update(
+        entries: [CodexTrajectoryTranscriptDisplayEntry],
+        bottomSpacerHeight: CGFloat
+    ) {
         let shouldStickToBottom = isScrolledNearBottom
+        let normalizedBottomSpacerHeight = max(0, bottomSpacerHeight)
+        let spacerChanged = abs(normalizedBottomSpacerHeight - self.bottomSpacerHeight) > 0.5
         self.entries = entries
-        reloadPreservingScroll(stickToBottom: shouldStickToBottom)
+        self.bottomSpacerHeight = normalizedBottomSpacerHeight
+        reloadPreservingScroll(stickToBottom: shouldStickToBottom, animateScroll: spacerChanged)
     }
 
     private var documentWidth: CGFloat {
@@ -1133,16 +1305,40 @@ final class CodexTrajectoryTranscriptScrollView: NSScrollView {
 
     private var isScrolledNearBottom: Bool {
         let visibleMaxY = contentView.bounds.maxY
-        let documentHeight = trajectoryView.frame.height
-        return documentHeight - visibleMaxY < 48
+        return trajectoryView.frame.height - visibleMaxY < 48
     }
 
-    private func reloadPreservingScroll(stickToBottom: Bool) {
+    private func reloadPreservingScroll(stickToBottom: Bool, animateScroll: Bool) {
         guard documentWidth > 1 else { return }
-        trajectoryView.update(entries: entries, width: documentWidth)
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
+        trajectoryView.update(
+            entries: entries,
+            width: documentWidth,
+            bottomSpacerHeight: bottomSpacerHeight
+        )
         if stickToBottom {
-            scrollToBottom()
+            scrollToBottom(animated: animateScroll)
         }
+#if DEBUG
+        if entries.count >= 100 {
+            CodexAppServerTiming.log("transcript.scrollUpdate", [
+                "entries": entries.count,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                "stick": stickToBottom,
+                "animate": animateScroll,
+                "width": Int(documentWidth),
+            ])
+        } else {
+            CodexAppServerTiming.logSlow("transcript.scrollUpdate", start: start, thresholdMs: 8, [
+                "entries": entries.count,
+                "stick": stickToBottom,
+                "animate": animateScroll,
+                "width": Int(documentWidth),
+            ])
+        }
+#endif
     }
 
     private func refreshThemeColors() {
@@ -1150,10 +1346,21 @@ final class CodexTrajectoryTranscriptScrollView: NSScrollView {
         trajectoryView.invalidateTheme()
     }
 
-    private func scrollToBottom() {
+    private func scrollToBottom(animated: Bool) {
         let maxY = max(0, trajectoryView.frame.height - contentView.bounds.height)
-        contentView.scroll(to: NSPoint(x: 0, y: maxY))
-        reflectScrolledClipView(contentView)
+        let targetOrigin = NSPoint(x: 0, y: maxY)
+        if animated, window != nil {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.16
+                context.allowsImplicitAnimation = true
+                contentView.animator().setBoundsOrigin(targetOrigin)
+            } completionHandler: {
+                self.reflectScrolledClipView(self.contentView)
+            }
+        } else {
+            contentView.scroll(to: targetOrigin)
+            reflectScrolledClipView(contentView)
+        }
     }
 }
 
@@ -1165,6 +1372,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         case fileChangeCard
         case compaction
         case previousMessagesHeader
+        case bottomSpacer
     }
 
     private struct PageEntry {
@@ -1185,13 +1393,6 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     private struct CachedLayout {
         var block: CodexTrajectoryBlock
         var layout: CodexTrajectoryBlockLayout
-    }
-
-    private struct ExpansionAnimation {
-        var from: CGFloat
-        var to: CGFloat
-        var startTime: TimeInterval
-        var duration: TimeInterval
     }
 
     private struct TextSelectionEndpoint: Equatable {
@@ -1223,15 +1424,17 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     private var cachedLayouts: [LayoutCacheKey: CachedLayout] = [:]
     private var activeLayoutCacheKeys: Set<LayoutCacheKey> = []
     private var expandedAccordionIDs: Set<String> = []
-    private var expansionAnimations: [String: ExpansionAnimation] = [:]
+#if DEBUG
+    private var debugLayoutRequestCount = 0
+    private var debugLayoutCacheHitCount = 0
+#endif
     private var textSelection: TextSelection?
     private var isSelectingText = false
-    private var animationTimer: Timer?
     private var documentWidth: CGFloat = 1
     private let horizontalInset: CGFloat = 24
     private let maxContentWidth: CGFloat = 740
     private let maxUserBubbleWidth: CGFloat = 740
-    private let rowSpacing: CGFloat = 16
+    private let rowSpacing: CGFloat = 15
     private let accordionHeaderTitleHeight: CGFloat = 28
     private let accordionSummaryRowHeight: CGFloat = 23
     private let accordionSummaryLimit = 12
@@ -1241,7 +1444,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     private let accordionContentTopSpacing: CGFloat = 2
     private let fileChangeHeaderHeight: CGFloat = 44
     private let fileChangeRowHeight: CGFloat = 40
-    private let accordionAnimationDuration: TimeInterval = 0.18
+    private var bottomSpacerHeight: CGFloat = 184
 
     override var isFlipped: Bool {
         true
@@ -1255,23 +1458,38 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         true
     }
 
-    deinit {
-        animationTimer?.invalidate()
-    }
-
-    func update(entries: [CodexTrajectoryTranscriptDisplayEntry], width: CGFloat) {
+    func update(
+        entries: [CodexTrajectoryTranscriptDisplayEntry],
+        width: CGFloat,
+        bottomSpacerHeight: CGFloat
+    ) {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
         let normalizedWidth = max(1, width)
+        let normalizedBottomSpacerHeight = max(0, bottomSpacerHeight)
         let activeAccordionIDs = Set(entries.flatMap(\.accordionIDs))
         expandedAccordionIDs.formIntersection(activeAccordionIDs)
-        expansionAnimations = expansionAnimations.filter { activeAccordionIDs.contains($0.key) }
 
         let oldContentWidth = contentWidth
         let widthChanged = abs(normalizedWidth - documentWidth) > 0.5
         let entriesChanged = entries != self.entries
-        guard entriesChanged || widthChanged else { return }
+        let bottomSpacerChanged = abs(normalizedBottomSpacerHeight - self.bottomSpacerHeight) > 0.5
+        guard entriesChanged || widthChanged || bottomSpacerChanged else { return }
+
+        if bottomSpacerChanged, !entriesChanged, !widthChanged, updateExistingBottomSpacerHeight(normalizedBottomSpacerHeight) {
+#if DEBUG
+            CodexAppServerTiming.logSlow("transcript.documentUpdate.spacerOnly", start: start, thresholdMs: 2, [
+                "entries": entries.count,
+                "spacer": Int(normalizedBottomSpacerHeight),
+            ])
+#endif
+            return
+        }
 
         self.entries = entries
         documentWidth = normalizedWidth
+        self.bottomSpacerHeight = normalizedBottomSpacerHeight
 
         let contentWidthChanged = abs(contentWidth - oldContentWidth) > 0.5
         if entriesChanged || contentWidthChanged || pageEntries.isEmpty {
@@ -1281,6 +1499,42 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
             needsDisplay = true
             window?.invalidateCursorRects(for: self)
         }
+#if DEBUG
+        if entries.count >= 100 {
+            CodexAppServerTiming.log("transcript.documentUpdate", [
+                "entries": entries.count,
+                "pages": pageEntries.count,
+                "height": Int(heightIndex.totalHeight),
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                "entries_changed": entriesChanged,
+                "width_changed": widthChanged,
+                "spacer_changed": bottomSpacerChanged,
+            ])
+        } else {
+            CodexAppServerTiming.logSlow("transcript.documentUpdate", start: start, thresholdMs: 8, [
+                "entries": entries.count,
+                "pages": pageEntries.count,
+                "height": Int(heightIndex.totalHeight),
+                "entries_changed": entriesChanged,
+                "width_changed": widthChanged,
+                "spacer_changed": bottomSpacerChanged,
+            ])
+        }
+#endif
+    }
+
+    private func updateExistingBottomSpacerHeight(_ height: CGFloat) -> Bool {
+        guard !pageEntries.isEmpty,
+              pageEntries[pageEntries.count - 1].chrome == .bottomSpacer else {
+            self.bottomSpacerHeight = height
+            return false
+        }
+        bottomSpacerHeight = height
+        let lastIndex = pageEntries.count - 1
+        pageEntries[lastIndex].fullContentHeight = height
+        heightIndex.update(index: lastIndex, height: height)
+        setFrameSize(NSSize(width: documentWidth, height: max(1, heightIndex.totalHeight)))
+        return true
     }
 
     fileprivate func invalidateTheme() {
@@ -1384,20 +1638,14 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                 context.restoreGState()
             case .compaction:
                 drawCompaction(entry: pageEntry.entry, at: y, context: context)
+            case .bottomSpacer:
+                continue
             }
         }
     }
 
     override func mouseDown(with event: NSEvent) {
         let point = convert(event.locationInWindow, from: nil)
-        if let endpoint = textEndpoint(at: point, allowNearest: false) {
-            window?.makeFirstResponder(self)
-            textSelection = TextSelection(anchor: endpoint, focus: endpoint)
-            isSelectingText = true
-            needsDisplay = true
-            return
-        }
-
         guard let index = heightIndex.index(containingOffset: point.y),
               pageEntries.indices.contains(index) else {
             clearTextSelection()
@@ -1406,18 +1654,23 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         }
 
         let pageEntry = pageEntries[index]
-        guard pageEntry.chrome == .accordionHeader || pageEntry.chrome == .previousMessagesHeader else {
-            super.mouseDown(with: event)
+        if pageEntry.chrome == .accordionHeader || pageEntry.chrome == .previousMessagesHeader {
+            let y = heightIndex.prefixSum(upTo: index)
+            if accordionHeaderRect(for: pageEntry.entry, at: y).contains(point) {
+                toggleAccordion(id: pageEntry.entry.id)
+                return
+            }
+        }
+
+        if let endpoint = textEndpoint(at: point, allowNearest: false) {
+            window?.makeFirstResponder(self)
+            textSelection = TextSelection(anchor: endpoint, focus: endpoint)
+            isSelectingText = true
+            needsDisplay = true
             return
         }
 
-        let y = heightIndex.prefixSum(upTo: index)
-        guard accordionHeaderRect(for: pageEntry.entry, at: y).contains(point) else {
-            super.mouseDown(with: event)
-            return
-        }
-
-        toggleAccordion(id: pageEntry.entry.id)
+        super.mouseDown(with: event)
     }
 
     override func mouseDragged(with event: NSEvent) {
@@ -1504,7 +1757,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                 ) {
                     addCursorRect(rect, cursor: .iBeam)
                 }
-            case .fileChangeCard, .compaction:
+            case .fileChangeCard, .compaction, .bottomSpacer:
                 continue
             }
         }
@@ -1602,6 +1855,11 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     }
 
     private func rebuildLayout() {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+        debugLayoutRequestCount = 0
+        debugLayoutCacheHitCount = 0
+#endif
         let theme = Self.theme(for: effectiveAppearance)
         let layoutWidth = contentWidth
         pageEntries.removeAll(keepingCapacity: true)
@@ -1644,20 +1902,25 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
             } else if entry.isAccordion {
                 let progress = expansionProgress(for: entry.id)
                 let headerHeight = accordionHeaderHeight(for: entry)
+                let collapsedSpacing = entry.kind == .toolRun ? CGFloat(4) : rowSpacing
                 pageEntries.append(
                     PageEntry(
                         entry: entry,
                         page: nil,
                         chrome: .accordionHeader,
                         topSpacing: 0,
-                        bottomSpacing: progress > 0 ? 0 : rowSpacing,
+                        bottomSpacing: progress > 0 ? 0 : collapsedSpacing,
                         fullContentHeight: headerHeight
                     )
                 )
-                heights.append(headerHeight + (progress > 0 ? 0 : rowSpacing))
+                heights.append(headerHeight + (progress > 0 ? 0 : collapsedSpacing))
 
                 if progress > 0 {
-                    if !entry.fileChanges.isEmpty {
+                    if entry.kind == .toolGroup {
+                        for childEntry in entry.childToolRunEntries {
+                            appendEntry(childEntry)
+                        }
+                    } else if !entry.fileChanges.isEmpty {
                         let fullHeight = fileChangeCardHeight(for: entry) + rowSpacing
                         pageEntries.append(
                             PageEntry(
@@ -1715,6 +1978,9 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         for entry in entries {
             appendEntry(entry)
         }
+        if !entries.isEmpty {
+            appendBottomSpacer(to: &heights)
+        }
 
         pruneLayoutCache()
 
@@ -1723,6 +1989,55 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         clampSelectionToCurrentText()
         needsDisplay = true
         window?.invalidateCursorRects(for: self)
+#if DEBUG
+        if entries.count >= 100 {
+            CodexAppServerTiming.log("transcript.rebuildLayout", [
+                "entries": entries.count,
+                "pages": pageEntries.count,
+                "height": Int(heightIndex.totalHeight),
+                "layout_requests": debugLayoutRequestCount,
+                "cache_hits": debugLayoutCacheHitCount,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            ])
+        } else {
+            CodexAppServerTiming.logSlow("transcript.rebuildLayout", start: start, thresholdMs: 8, [
+                "entries": entries.count,
+                "pages": pageEntries.count,
+                "height": Int(heightIndex.totalHeight),
+                "layout_requests": debugLayoutRequestCount,
+                "cache_hits": debugLayoutCacheHitCount,
+            ])
+        }
+#endif
+    }
+
+    private func appendBottomSpacer(to heights: inout [CGFloat]) {
+        let entry = CodexTrajectoryTranscriptDisplayEntry(
+            id: "bottom-spacer",
+            kind: .plain,
+            title: "",
+            subtitle: "",
+            statusText: nil,
+            block: CodexTrajectoryBlock(
+                id: "bottom-spacer",
+                kind: .status,
+                title: "",
+                text: "",
+                isStreaming: false,
+                createdAt: .distantPast
+            )
+        )
+        pageEntries.append(
+            PageEntry(
+                entry: entry,
+                page: nil,
+                chrome: .bottomSpacer,
+                topSpacing: 0,
+                bottomSpacing: 0,
+                fullContentHeight: bottomSpacerHeight
+            )
+        )
+        heights.append(bottomSpacerHeight)
     }
 
     private func fileChangeCardHeight(for entry: CodexTrajectoryTranscriptDisplayEntry) -> CGFloat {
@@ -1735,6 +2050,9 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         width: CGFloat,
         theme: CodexTrajectoryTheme
     ) -> CodexTrajectoryBlockLayout {
+#if DEBUG
+        debugLayoutRequestCount += 1
+#endif
         let cacheKey = LayoutCacheKey(
             block: block,
             width: Int(width.rounded()),
@@ -1742,6 +2060,9 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         )
         activeLayoutCacheKeys.insert(cacheKey)
         if let cached = cachedLayouts[cacheKey] {
+#if DEBUG
+            debugLayoutCacheHitCount += 1
+#endif
             return cached.layout
         }
 
@@ -1811,7 +2132,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                 width: max(1, contentWidth - accordionContentIndent),
                 height: page.measuredSize.height
             )
-        case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader:
+        case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader, .bottomSpacer:
             return nil
         }
     }
@@ -2115,7 +2436,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
             switch pageEntry.chrome {
             case .plain, .accordionContent:
                 break
-            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader:
+            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader, .bottomSpacer:
                 continue
             }
             let pageText = Self.pageText(for: pageEntry.entry.block, page: page, theme: theme)
@@ -2152,7 +2473,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                         utf16Offset: pageInfo.globalUTF16Range.lowerBound
                     )
                 }
-            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader:
+            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader, .bottomSpacer:
                 continue
             }
         }
@@ -2173,7 +2494,7 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                         utf16Offset: pageInfo.globalUTF16Range.upperBound
                     )
                 }
-            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader:
+            case .accordionHeader, .fileChangeCard, .compaction, .previousMessagesHeader, .bottomSpacer:
                 continue
             }
         }
@@ -2200,61 +2521,16 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     }
 
     private func toggleAccordion(id: String) {
-        let current = expansionProgress(for: id)
-        let shouldExpand = !expandedAccordionIDs.contains(id)
-        if shouldExpand {
-            expandedAccordionIDs.insert(id)
-        } else {
+        if expandedAccordionIDs.contains(id) {
             expandedAccordionIDs.remove(id)
+        } else {
+            expandedAccordionIDs.insert(id)
         }
-
-        expansionAnimations[id] = ExpansionAnimation(
-            from: current,
-            to: shouldExpand ? 1 : 0,
-            startTime: Self.animationTime,
-            duration: accordionAnimationDuration
-        )
-        startAnimationTimer()
         rebuildLayout()
     }
 
     private func expansionProgress(for id: String) -> CGFloat {
-        guard let animation = expansionAnimations[id] else {
-            return expandedAccordionIDs.contains(id) ? 1 : 0
-        }
-        let elapsed = max(0, Self.animationTime - animation.startTime)
-        let linear = min(1, elapsed / animation.duration)
-        let eased = linear * linear * (3 - 2 * linear)
-        return animation.from + (animation.to - animation.from) * eased
-    }
-
-    private func startAnimationTimer() {
-        guard animationTimer == nil else { return }
-        let timer = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
-            self?.animationTick()
-        }
-        animationTimer = timer
-        RunLoop.main.add(timer, forMode: .common)
-    }
-
-    private func animationTick() {
-        let now = Self.animationTime
-        let completedIDs = expansionAnimations.compactMap { id, animation -> String? in
-            now - animation.startTime >= animation.duration ? id : nil
-        }
-        for id in completedIDs {
-            expansionAnimations.removeValue(forKey: id)
-        }
-        rebuildLayout()
-
-        if expansionAnimations.isEmpty {
-            animationTimer?.invalidate()
-            animationTimer = nil
-        }
-    }
-
-    private static var animationTime: TimeInterval {
-        Date.timeIntervalSinceReferenceDate
+        expandedAccordionIDs.contains(id) ? 1 : 0
     }
 
     private func accordionHeaderHeight(for entry: CodexTrajectoryTranscriptDisplayEntry) -> CGFloat {
@@ -2267,7 +2543,8 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     }
 
     private func accordionHeaderRect(for entry: CodexTrajectoryTranscriptDisplayEntry, at y: CGFloat) -> CGRect {
-        contentRect(y: y + rowSpacing / 2, height: accordionHeaderHeight(for: entry))
+        let topOffset = entry.kind == .toolRun ? CGFloat(2) : rowSpacing / 2
+        return contentRect(y: y + topOffset, height: accordionHeaderHeight(for: entry))
     }
 
     private func drawCompaction(
@@ -2281,8 +2558,8 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
             width: contentWidth,
             height: compactionHeight
         )
-        let font = CTFontCreateUIFontForLanguage(.system, 12, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        let font = CTFontCreateUIFontForLanguage(.system, 11.5, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, 11.5, nil)
         let textColor = Self.color(.secondaryLabelColor, appearance: effectiveAppearance)
         let lineColor = Self.color(.separatorColor, appearance: effectiveAppearance)
         let attributes: [CFString: Any] = [
@@ -2331,28 +2608,33 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         let secondary = Self.color(.secondaryLabelColor, appearance: effectiveAppearance)
         let primary = Self.primaryTextColor(for: effectiveAppearance)
 
-        let titleFont = CTFontCreateUIFontForLanguage(.system, 14, nil)
+        let titleSize: CGFloat = entry.kind == .toolRun ? 14 : 13.5
+        let titleFont = CTFontCreateUIFontForLanguage(.system, titleSize, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, titleSize, nil)
+        let summaryFont = CTFontCreateUIFontForLanguage(.system, 14, nil)
             ?? CTFontCreateWithName("Helvetica" as CFString, 14, nil)
-        let summaryFont = CTFontCreateUIFontForLanguage(.system, 15, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, 15, nil)
-        let statusFont = CTFontCreateUIFontForLanguage(.system, 12, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, 12, nil)
+        let statusFont = CTFontCreateUIFontForLanguage(.system, 11.5, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, 11.5, nil)
 
-        let textX = rect.minX
+        let isToolRun = entry.kind == .toolRun
+        let textX = isToolRun ? rect.minX + 22 : rect.minX
         let statusWidth: CGFloat = entry.statusText == nil ? 0 : 112
         let titleWidth = max(1, rect.maxX - textX - statusWidth - 28)
         drawTruncatedLine(
             entry.title,
             font: titleFont,
-            color: secondary.cgColor,
+            color: (isToolRun ? primary.withAlphaComponent(0.88) : secondary).cgColor,
             rect: CGRect(x: textX, y: rect.minY + 4, width: titleWidth, height: 18),
             context: context
         )
 
         let measuredTitleWidth = min(titleWidth, measureTextWidth(entry.title, font: titleFont))
+        let chevronCenter = isToolRun
+            ? CGPoint(x: rect.minX + 8, y: rect.minY + 13)
+            : CGPoint(x: textX + measuredTitleWidth + 14, y: rect.minY + 13)
         drawChevron(
             progress: expansionProgress(for: entry.id),
-            center: CGPoint(x: textX + measuredTitleWidth + 14, y: rect.minY + 13),
+            center: chevronCenter,
             color: secondary.withAlphaComponent(0.86).cgColor,
             context: context
         )
@@ -2392,8 +2674,8 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         context: CGContext
     ) {
         let secondary = Self.color(.secondaryLabelColor, appearance: effectiveAppearance)
-        let font = CTFontCreateUIFontForLanguage(.system, 15, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, 15, nil)
+        let font = CTFontCreateUIFontForLanguage(.system, 14, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, 14, nil)
 
         drawTruncatedLine(
             entry.title,
@@ -2592,6 +2874,22 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         context.setFillColor(fill.cgColor)
         context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
         context.fillPath()
+        if kind == .stderr {
+            let stroke = Self.stderrStrokeColor(for: effectiveAppearance)
+            context.setStrokeColor(stroke.cgColor)
+            context.setLineWidth(1)
+            context.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5), cornerWidth: radius, cornerHeight: radius, transform: nil))
+            context.strokePath()
+
+            let accentHeight = max(0, rect.height - 16)
+            if accentHeight > 0 {
+                let accentRect = CGRect(x: rect.minX + 8, y: rect.minY + 8, width: 3, height: accentHeight)
+                let accent = Self.stderrAccentColor(for: effectiveAppearance)
+                context.setFillColor(accent.cgColor)
+                context.addPath(CGPath(roundedRect: accentRect, cornerWidth: 1.5, cornerHeight: 1.5, transform: nil))
+                context.fillPath()
+            }
+        }
         context.restoreGState()
     }
 
@@ -2684,22 +2982,24 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     private static func theme(for appearance: NSAppearance) -> CodexTrajectoryTheme {
         let background = transcriptBackgroundColor(for: appearance)
         let isDark = background.luminance <= 0.5
-        let textFont = CTFontCreateUIFontForLanguage(.system, 16, nil)
-            ?? CTFontCreateWithName("Helvetica" as CFString, 16, nil)
-        let monoFont = CTFontCreateUIFontForLanguage(.userFixedPitch, 14, nil)
-            ?? CTFontCreateWithName("Menlo" as CFString, 14, nil)
+        let textFont = CTFontCreateUIFontForLanguage(.system, 15, nil)
+            ?? CTFontCreateWithName("Helvetica" as CFString, 15, nil)
+        let monoFont = CTFontCreateUIFontForLanguage(.userFixedPitch, 13.5, nil)
+            ?? CTFontCreateWithName("Menlo" as CFString, 13.5, nil)
         let primary = primaryTextColor(for: appearance)
         let muted = isDark
             ? NSColor(srgbRed: 0.555, green: 0.575, blue: 0.535, alpha: 1)
             : color(.secondaryLabelColor, appearance: appearance)
-        let error = color(isDark ? NSColor.systemRed : NSColor.systemRed, appearance: appearance)
+        let error = isDark
+            ? NSColor(srgbRed: 1, green: 0.37, blue: 0.32, alpha: 1)
+            : NSColor(srgbRed: 0.72, green: 0.08, blue: 0.08, alpha: 1)
         let fallback = CodexTrajectoryBlockStyle(font: textFont, foregroundColor: primary.cgColor)
 
         return CodexTrajectoryTheme(
             identifier: isDark ? "cmux-dark" : "cmux-light",
             contentInsets: CodexTrajectoryInsets(top: 4, left: 0, bottom: 4, right: 0),
             contentInsetsByKind: [
-                .userText: CodexTrajectoryInsets(top: 12, left: 16, bottom: 12, right: 16),
+                .userText: CodexTrajectoryInsets(top: 11, left: 15, bottom: 11, right: 15),
                 .stderr: CodexTrajectoryInsets(top: 10, left: 14, bottom: 10, right: 14),
             ],
             stylesByKind: [
@@ -2710,8 +3010,8 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
                 .fileChange: CodexTrajectoryBlockStyle(font: monoFont, foregroundColor: primary.cgColor),
                 .approvalRequest: CodexTrajectoryBlockStyle(font: textFont, foregroundColor: primary.cgColor),
                 .status: CodexTrajectoryBlockStyle(font: textFont, foregroundColor: muted.cgColor),
-                .stderr: CodexTrajectoryBlockStyle(font: monoFont, foregroundColor: error.cgColor),
-                .systemEvent: CodexTrajectoryBlockStyle(font: monoFont, foregroundColor: muted.cgColor),
+                .stderr: CodexTrajectoryBlockStyle(font: textFont, foregroundColor: color(error, appearance: appearance).cgColor),
+                .systemEvent: CodexTrajectoryBlockStyle(font: textFont, foregroundColor: muted.cgColor),
             ],
             fallbackStyle: fallback,
             markdownKinds: [.assistantText]
@@ -2744,10 +3044,30 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
         case .assistantText:
             return color(.controlBackgroundColor, appearance: appearance)
         case .stderr:
-            return color(NSColor.systemRed.withAlphaComponent(0.10), appearance: appearance)
+            let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            let fill = isDark
+                ? NSColor(srgbRed: 0.24, green: 0.12, blue: 0.11, alpha: 0.92)
+                : NSColor(srgbRed: 1.0, green: 0.92, blue: 0.90, alpha: 1)
+            return color(fill, appearance: appearance)
         case .commandOutput, .toolCall, .fileChange, .systemEvent, .status, .approvalRequest:
             return color(.windowBackgroundColor, appearance: appearance)
         }
+    }
+
+    private static func stderrStrokeColor(for appearance: NSAppearance) -> NSColor {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let stroke = isDark
+            ? NSColor(srgbRed: 0.46, green: 0.19, blue: 0.17, alpha: 1)
+            : NSColor(srgbRed: 0.86, green: 0.29, blue: 0.24, alpha: 0.32)
+        return color(stroke, appearance: appearance)
+    }
+
+    private static func stderrAccentColor(for appearance: NSAppearance) -> NSColor {
+        let isDark = appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let accent = isDark
+            ? NSColor(srgbRed: 1, green: 0.34, blue: 0.30, alpha: 0.80)
+            : NSColor(srgbRed: 0.78, green: 0.12, blue: 0.10, alpha: 0.72)
+        return color(accent, appearance: appearance)
     }
 
     private static func color(_ color: NSColor, appearance: NSAppearance) -> NSColor {

@@ -1944,7 +1944,7 @@ struct CMUXCLI {
 
         // Codex hooks management (no socket needed)
         if command == "codex" {
-            let sub = commandArgs.first?.lowercased() ?? "help"
+            let sub = commandArgs.first?.lowercased()
             if sub == "help" || sub == "--help" || sub == "-h" {
                 print("cmux codex")
                 print("")
@@ -3551,8 +3551,16 @@ struct CMUXCLI {
         idFormat: CLIIDFormat,
         windowOverride: String?
     ) throws {
-        guard let subcommand = commandArgs.first?.lowercased() else {
-            throw CLIError(message: codexCommandUsage())
+        guard let subcommand = commandArgs.first?.lowercased(),
+              !subcommand.hasPrefix("-") else {
+            try runCodexOpenCommand(
+                commandArgs: commandArgs,
+                client: client,
+                jsonOutput: jsonOutput,
+                idFormat: idFormat,
+                windowOverride: windowOverride
+            )
+            return
         }
 
         switch subcommand {
@@ -3571,52 +3579,34 @@ struct CMUXCLI {
         }
     }
 
-    private func runCodexResumeCommand(
+    private func runCodexOpenCommand(
         commandArgs: [String],
         client: SocketClient,
         jsonOutput: Bool,
         idFormat: CLIIDFormat,
         windowOverride: String?
     ) throws {
-        let (workspaceOpt, rem0) = parseOption(commandArgs, name: "--workspace")
-        let (paneOpt, rem1) = parseOption(rem0, name: "--pane")
-        let (cwdOpt, rem2) = parseOption(rem1, name: "--cwd")
-        let remaining = rem2.filter { $0 != "--" }
+        let options = try parseCodexSurfaceOptions(
+            commandArgs,
+            commandName: "codex",
+            allowPositionals: false
+        )
 
-        if let unknown = remaining.first(where: { $0.hasPrefix("--") }) {
-            throw CLIError(message: "codex resume: unknown flag '\(unknown)'. Known flags: --workspace <id|ref>, --pane <id|ref>, --cwd <path>")
-        }
-        guard let sessionId = remaining.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sessionId.isEmpty else {
-            throw CLIError(message: "codex resume requires a session id.\n\nUsage: cmux codex resume <session-id> [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>]")
-        }
-        if remaining.count > 1 {
-            throw CLIError(message: "codex resume: unexpected argument '\(remaining[1])'")
+        if let unexpected = options.positionals.first {
+            throw CLIError(message: "codex: unexpected argument '\(unexpected)'.\n\n\(codexCommandUsage())")
         }
 
-        let workspaceArg = workspaceOpt ?? (windowOverride == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
-        var params: [String: Any] = [
-            "type": "codex-app-server",
-            "thread_id": sessionId,
-        ]
-        if let windowOverride {
-            if let windowId = try normalizeWindowHandle(windowOverride, client: client) {
-                params["window_id"] = windowId
-            }
-        }
-        let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client)
-        if let wsId {
-            params["workspace_id"] = wsId
-        }
-        let paneId = try normalizePaneHandle(paneOpt, client: client, workspaceHandle: wsId)
-        if let paneId {
-            params["pane_id"] = paneId
-        }
-        if let cwdOpt {
-            params["cwd"] = resolvePath(cwdOpt)
-        }
+        var params = try codexSurfaceCreateParams(
+            options: options,
+            client: client,
+            windowOverride: windowOverride
+        )
+        params["type"] = "codex-app-server"
 
         let payload = try client.sendV2(method: "surface.create", params: params)
+        if options.focus {
+            try focusCreatedSurface(payload, client: client)
+        }
         printV2Payload(
             payload,
             jsonOutput: jsonOutput,
@@ -3625,14 +3615,162 @@ struct CMUXCLI {
         )
     }
 
+    private func runCodexResumeCommand(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat,
+        windowOverride: String?
+    ) throws {
+        let options = try parseCodexSurfaceOptions(
+            commandArgs,
+            commandName: "codex resume",
+            allowPositionals: true
+        )
+        guard let sessionId = options.positionals.first?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty else {
+            throw CLIError(message: "codex resume requires a session id.\n\nUsage: cmux codex resume <session-id> [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>] [--no-focus]")
+        }
+        guard let normalizedSessionId = normalizedCodexThreadId(sessionId) else {
+            throw CLIError(message: "codex resume requires a UUID session id.")
+        }
+        if options.positionals.count > 1 {
+            throw CLIError(message: "codex resume: unexpected argument '\(options.positionals[1])'")
+        }
+
+        var params = try codexSurfaceCreateParams(
+            options: options,
+            client: client,
+            windowOverride: windowOverride
+        )
+        params["type"] = "codex-app-server"
+        params["thread_id"] = normalizedSessionId
+
+        let payload = try client.sendV2(method: "surface.create", params: params)
+        if options.focus {
+            try focusCreatedSurface(payload, client: client)
+        }
+        printV2Payload(
+            payload,
+            jsonOutput: jsonOutput,
+            idFormat: idFormat,
+            fallbackText: v2OKSummary(payload, idFormat: idFormat, kinds: ["surface", "pane", "workspace"])
+        )
+    }
+
+    private struct CodexSurfaceOptions {
+        var workspace: String?
+        var pane: String?
+        var cwd: String?
+        var focus: Bool
+        var positionals: [String]
+    }
+
+    private func parseCodexSurfaceOptions(
+        _ args: [String],
+        commandName: String,
+        allowPositionals: Bool
+    ) throws -> CodexSurfaceOptions {
+        let focus = !hasFlag(args, name: "--no-focus") && !hasFlag(args, name: "--no-autofocus")
+        let (workspaceOpt, rem0) = parseOption(args, name: "--workspace")
+        let (paneOpt, rem1) = parseOption(rem0, name: "--pane")
+        let (cwdOpt, rem2) = parseOption(rem1, name: "--cwd")
+        let remaining = rem2.filter {
+            $0 != "--" && $0 != "--no-focus" && $0 != "--no-autofocus"
+        }
+
+        if let unknown = remaining.first(where: { $0.hasPrefix("--") }) {
+            throw CLIError(
+                message: "\(commandName): unknown flag '\(unknown)'. Known flags: --workspace <id|ref>, --pane <id|ref>, --cwd <path>, --no-focus"
+            )
+        }
+        if !allowPositionals, let unexpected = remaining.first {
+            throw CLIError(message: "\(commandName): unexpected argument '\(unexpected)'")
+        }
+
+        return CodexSurfaceOptions(
+            workspace: workspaceOpt,
+            pane: paneOpt,
+            cwd: cwdOpt,
+            focus: focus,
+            positionals: remaining
+        )
+    }
+
+    private func codexSurfaceCreateParams(
+        options: CodexSurfaceOptions,
+        client: SocketClient,
+        windowOverride: String?
+    ) throws -> [String: Any] {
+        let workspaceArg = options.workspace ?? (windowOverride == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+        var params: [String: Any] = ["focus": false]
+
+        if let windowOverride {
+            if let windowId = try normalizeWindowHandle(windowOverride, client: client) {
+                params["window_id"] = windowId
+            }
+        }
+        let windowHandle = params["window_id"] as? String
+        let wsId = try normalizeWorkspaceHandle(workspaceArg, client: client, windowHandle: windowHandle, allowCurrent: true)
+        if let wsId {
+            params["workspace_id"] = wsId
+        }
+        let paneId = try normalizePaneHandle(options.pane, client: client, workspaceHandle: wsId)
+        if let paneId {
+            params["pane_id"] = paneId
+        }
+        if let cwd = options.cwd {
+            params["cwd"] = resolvePath(cwd)
+        }
+
+        return params
+    }
+
+    private func focusCreatedSurface(_ payload: [String: Any], client: SocketClient) throws {
+        guard let surfaceId = payload["surface_id"] as? String else { return }
+        var params: [String: Any] = ["surface_id": surfaceId]
+        if let workspaceId = payload["workspace_id"] as? String {
+            params["workspace_id"] = workspaceId
+        }
+        if let windowId = payload["window_id"] as? String {
+            params["window_id"] = windowId
+        }
+        _ = try client.sendV2(method: "surface.focus", params: params)
+    }
+
+    private func normalizedCodexThreadId(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+
+        let prefix = "urn:uuid:"
+        let bareThreadId: String
+        if trimmed.lowercased().hasPrefix(prefix) {
+            bareThreadId = String(trimmed.dropFirst(prefix.count))
+        } else {
+            bareThreadId = trimmed
+        }
+
+        guard UUID(uuidString: bareThreadId) != nil else { return nil }
+        return bareThreadId.lowercased()
+    }
+
     private func codexCommandUsage() -> String {
         """
-        Usage: cmux codex <install-hooks|uninstall-hooks|resume>
+        Usage:
+          cmux codex [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>] [--no-focus]
+          cmux codex resume <session-id> [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>] [--no-focus]
+          cmux codex <install-hooks|uninstall-hooks>
 
         Subcommands:
           install-hooks     Install cmux hooks into ~/.codex/hooks.json
           uninstall-hooks   Remove cmux hooks from ~/.codex/hooks.json
           resume <id>       Open a native Codex app-server tab for an existing session
+
+        Flags:
+          --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID/current)
+          --pane <id|ref>        Target pane (default: focused pane)
+          --cwd <path>           Override working directory
+          --no-focus             Open without focusing the new Codex surface
         """
     }
 
@@ -3974,7 +4112,11 @@ struct CMUXCLI {
     ) throws -> String? {
         guard let raw else {
             if !allowCurrent { return nil }
-            let current = try client.sendV2(method: "workspace.current")
+            var params: [String: Any] = [:]
+            if let windowHandle {
+                params["window_id"] = windowHandle
+            }
+            let current = try client.sendV2(method: "workspace.current", params: params)
             return (current["workspace_ref"] as? String) ?? (current["workspace_id"] as? String)
         }
 
@@ -9626,22 +9768,29 @@ struct CMUXCLI {
             """
         case "codex":
             return """
-            Usage: cmux codex <install-hooks|uninstall-hooks|resume>
+            Usage:
+              cmux codex [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>] [--no-focus]
+              cmux codex resume <session-id> [--workspace <id|ref>] [--pane <id|ref>] [--cwd <path>] [--no-focus]
+              cmux codex <install-hooks|uninstall-hooks>
 
             Manage Codex integration.
 
             Subcommands:
+              (none)            Open a native Codex app-server tab
               install-hooks     Install cmux hooks into ~/.codex/hooks.json
               uninstall-hooks   Remove cmux hooks from ~/.codex/hooks.json
               resume <id>       Open a native Codex app-server tab for an existing session
 
-            Resume flags:
+            Surface flags:
               --workspace <id|ref>   Target workspace (default: $CMUX_WORKSPACE_ID/current)
               --pane <id|ref>        Target pane (default: focused pane)
-              --cwd <path>           Override working directory for the resumed thread
+              --cwd <path>           Override working directory
+              --no-focus             Open without focusing the new Codex surface
 
             Example:
+              cmux codex
               cmux codex resume 00000000-0000-0000-0000-000000000000
+              cmux codex resume 00000000-0000-0000-0000-000000000000 --no-focus
             """
         case "codex-hook":
             return """
@@ -18663,9 +18812,8 @@ export default CMUXSessionRestore;
           omo [opencode-args...]
           omx [omx-args...]
           omc [omc-args...]
-          codex <install-hooks|uninstall-hooks>
-          opencode <install-hooks|uninstall-hooks>
           codex <install-hooks|uninstall-hooks|resume>
+          opencode <install-hooks|uninstall-hooks>
           opencode <install-hooks|uninstall-hooks>
           ping
           version

@@ -11,8 +11,10 @@ Filenames should stay literal: shell/platformdelegate_mac.mm and AtlasLocalDemoP
 | Escaped \| pipe | pass | [link](https://example.com) |
 
 - Lists should keep compact indentation.
+  - [AppDelegate.swift](file:///tmp/AppDelegate.swift) should not color the marker.
   - Nested list items should not drift.
-1. Ordered items should remain readable.
+1. [BrowserPanelView.swift](file:///tmp/BrowserPanelView.swift) should keep the number plain.
+2. Ordered items should remain readable.
 
 ```swift
 @MainActor

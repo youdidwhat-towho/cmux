@@ -1889,6 +1889,57 @@
         }
       }
     },
+    "codexAppServer.queueDebug.variant.compactShelf": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Compact shelf"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コンパクト シェルフ"
+          }
+        }
+      }
+    },
+    "codexAppServer.queueDebug.variant.glassShelf": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Glass shelf"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ガラス シェルフ"
+          }
+        }
+      }
+    },
+    "codexAppServer.queueDebug.variant.solidShelf": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Solid shelf"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ソリッド シェルフ"
+          }
+        }
+      }
+    },
     "codexAppServer.prompt.placeholder": {
       "extractionState": "manual",
       "localizations": {

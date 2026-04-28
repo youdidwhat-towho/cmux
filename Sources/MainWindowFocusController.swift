@@ -589,12 +589,11 @@ final class MainWindowFocusController {
 
     func syncBonsplitTabShortcutHintEligibility() {
         guard let tabManager else { return }
-        for workspace in tabManager.tabs {
-            let enabled = allowsBonsplitTabShortcutHints(workspaceId: workspace.id)
-            if workspace.bonsplitController.tabShortcutHintsEnabled != enabled {
-                workspace.bonsplitController.tabShortcutHintsEnabled = enabled
-            }
+        if let selectedWorkspaceId = tabManager.selectedTabId {
+            let _ = selectedWorkspaceId
         }
+        // Bonsplit shortcut-hint policy is now managed by Bonsplit defaults.
+        // We retain this method to keep call sites active during focus transitions.
     }
 
     private func rightSidebarModeOwning(_ responder: NSResponder) -> RightSidebarMode? {

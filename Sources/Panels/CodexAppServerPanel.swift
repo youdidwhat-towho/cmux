@@ -1,6 +1,80 @@
 import Foundation
 import Combine
 
+#if DEBUG
+enum CodexAppServerTiming {
+    static func now() -> UInt64 {
+        DispatchTime.now().uptimeNanoseconds
+    }
+
+    static func elapsedMs(since start: UInt64) -> Double {
+        Double(now() - start) / 1_000_000
+    }
+
+    static func log(_ name: String, _ fields: [String: Any?] = [:]) {
+        let fieldPriority: [String: Int] = [
+            "ms": 0,
+            "mode": 1,
+            "items": 2,
+            "entries": 3,
+            "total": 4,
+            "exact_total": 5,
+            "truncated": 6,
+            "bytes": 7,
+            "read_mb": 8,
+            "file_mb": 9,
+        ]
+        let fieldText = fields
+            .sorted {
+                let lhs = fieldPriority[$0.key] ?? 100
+                let rhs = fieldPriority[$1.key] ?? 100
+                if lhs != rhs { return lhs < rhs }
+                return $0.key < $1.key
+            }
+            .map { key, value in "\(key)=\(format(value))" }
+            .joined(separator: " ")
+        if fieldText.isEmpty {
+            cmuxDebugLog("codex.load.\(name)")
+        } else {
+            cmuxDebugLog("codex.load.\(name) \(fieldText)")
+        }
+    }
+
+    static func logSlow(
+        _ name: String,
+        start: UInt64,
+        thresholdMs: Double,
+        _ fields: [String: Any?] = [:]
+    ) {
+        let elapsed = elapsedMs(since: start)
+        guard elapsed >= thresholdMs else { return }
+        var output = fields
+        output["ms"] = ms(elapsed)
+        log(name, output)
+    }
+
+    static func ms(_ value: Double) -> String {
+        String(format: "%.1f", value)
+    }
+
+    private static func format(_ value: Any?) -> String {
+        guard let value, !(value is NSNull) else { return "nil" }
+        if let value = value as? Double {
+            return ms(value)
+        }
+        if let value = value as? Float {
+            return ms(Double(value))
+        }
+        if let value = value as? Bool {
+            return value ? "1" : "0"
+        }
+        let text = String(describing: value)
+        guard text.count > 220 else { return text }
+        return "\(text.prefix(96))…\(text.suffix(96))"
+    }
+}
+#endif
+
 enum CodexAppServerPanelStatus: Equatable {
     case stopped
     case starting
@@ -40,6 +114,57 @@ enum CodexAppServerPanelStatus: Equatable {
     }
 }
 
+enum CodexAppServerTranscriptLoadingPhase: Equatable {
+    case idle
+    case startingServer
+    case restoringHistory
+    case resumingThread
+
+    var isLoading: Bool {
+        self != .idle
+    }
+
+    var localizedTitle: String {
+        switch self {
+        case .idle:
+            return ""
+        case .startingServer:
+            return String(localized: "codexAppServer.loading.startingServer", defaultValue: "Starting Codex…")
+        case .restoringHistory:
+            return String(localized: "codexAppServer.loading.restoringHistory", defaultValue: "Loading conversation…")
+        case .resumingThread:
+            return String(localized: "codexAppServer.loading.resumingThread", defaultValue: "Resuming conversation…")
+        }
+    }
+}
+
+enum CodexAppServerTranscriptContentState: Equatable {
+    case loading(CodexAppServerTranscriptLoadingPhase)
+    case empty
+    case content
+
+    static func resolve(
+        hasTranscriptItems: Bool,
+        hasPendingRequests: Bool,
+        status: CodexAppServerPanelStatus,
+        loadingPhase: CodexAppServerTranscriptLoadingPhase
+    ) -> Self {
+        if hasTranscriptItems || hasPendingRequests {
+            return .content
+        }
+        if loadingPhase.isLoading {
+            return .loading(loadingPhase)
+        }
+        if status == .starting {
+            return .loading(.startingServer)
+        }
+        if status == .running {
+            return .loading(.resumingThread)
+        }
+        return .empty
+    }
+}
+
 enum CodexAppServerTranscriptRole: Equatable, Sendable {
     case user
     case assistant
@@ -54,6 +179,202 @@ enum CodexAppServerTranscriptPresentation: Equatable, Sendable {
     case toolOutput
     case commandOutput
     case compaction
+    case hookEvent(method: String)
+}
+
+struct CodexAppServerRateLimitWindow: Equatable, Sendable {
+    var name: String
+    var usedPercent: Double?
+    var resetsAt: Date?
+    var windowDurationMins: Int?
+
+    var clampedUsedFraction: Double {
+        guard let usedPercent else { return 0 }
+        return min(1, max(0, usedPercent / 100))
+    }
+
+    var displayPercent: String {
+        guard let usedPercent else { return "--" }
+        return "\(Int(usedPercent.rounded()))%"
+    }
+}
+
+struct CodexAppServerRateLimitSummary: Equatable, Sendable {
+    var primary: CodexAppServerRateLimitWindow?
+    var secondary: CodexAppServerRateLimitWindow?
+    var updatedAt: Date
+
+    init?(params: [String: Any]?, updatedAt: Date = Date()) {
+        guard let rateLimits = params?["rateLimits"] as? [String: Any] else {
+            return nil
+        }
+        primary = Self.window(named: "primary", from: rateLimits)
+        secondary = Self.window(named: "secondary", from: rateLimits)
+        self.updatedAt = updatedAt
+
+        if primary == nil, secondary == nil {
+            return nil
+        }
+    }
+
+    var windows: [CodexAppServerRateLimitWindow] {
+        [primary, secondary].compactMap { $0 }
+    }
+
+    private static func window(named name: String, from rateLimits: [String: Any]) -> CodexAppServerRateLimitWindow? {
+        guard let object = rateLimits[name] as? [String: Any] else { return nil }
+        return CodexAppServerRateLimitWindow(
+            name: name,
+            usedPercent: doubleValue(named: "usedPercent", in: object),
+            resetsAt: dateValue(named: "resetsAt", in: object),
+            windowDurationMins: intValue(named: "windowDurationMins", in: object)
+        )
+    }
+
+    private static func doubleValue(named key: String, in object: [String: Any]) -> Double? {
+        if let value = object[key] as? Double {
+            return value
+        }
+        if let value = object[key] as? Int {
+            return Double(value)
+        }
+        if let value = object[key] as? NSNumber,
+           CFGetTypeID(value) != CFBooleanGetTypeID() {
+            return value.doubleValue
+        }
+        if let value = object[key] as? String {
+            return Double(value)
+        }
+        return nil
+    }
+
+    private static func intValue(named key: String, in object: [String: Any]) -> Int? {
+        if let value = object[key] as? Int {
+            return value
+        }
+        if let value = object[key] as? NSNumber,
+           CFGetTypeID(value) != CFBooleanGetTypeID() {
+            return value.intValue
+        }
+        if let value = object[key] as? String {
+            return Int(value)
+        }
+        return nil
+    }
+
+    private static func dateValue(named key: String, in object: [String: Any]) -> Date? {
+        if let value = doubleValue(named: key, in: object) {
+            return Date(timeIntervalSince1970: value)
+        }
+        return nil
+    }
+}
+
+struct CodexAppServerModelInfo: Identifiable, Equatable, Sendable {
+    var id: String
+    var model: String
+    var displayName: String
+    var description: String
+    var additionalSpeedTiers: [String]
+    var isDefault: Bool
+
+    init?(object: [String: Any]) {
+        guard let id = Self.stringValue(named: "id", in: object),
+              let model = Self.stringValue(named: "model", in: object) else {
+            return nil
+        }
+        self.id = id
+        self.model = model
+        displayName = Self.stringValue(named: "displayName", in: object) ?? model
+        description = Self.stringValue(named: "description", in: object) ?? ""
+        additionalSpeedTiers = Self.stringArrayValue(named: "additionalSpeedTiers", in: object)
+        isDefault = Self.boolValue(named: "isDefault", in: object) ?? false
+    }
+
+    var pickerTitle: String {
+        displayName.isEmpty ? model : displayName
+    }
+
+    var supportsFastMode: Bool {
+        additionalSpeedTiers.contains("fast")
+    }
+
+    private static func stringValue(named key: String, in object: [String: Any]) -> String? {
+        if let value = object[key] as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        return nil
+    }
+
+    private static func stringArrayValue(named key: String, in object: [String: Any]) -> [String] {
+        guard let values = object[key] as? [Any] else { return [] }
+        return values.compactMap { value in
+            guard let text = value as? String else { return nil }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+    }
+
+    private static func boolValue(named key: String, in object: [String: Any]) -> Bool? {
+        if let value = object[key] as? Bool {
+            return value
+        }
+        if let value = object[key] as? NSNumber,
+           CFGetTypeID(value) == CFBooleanGetTypeID() {
+            return value.boolValue
+        }
+        return nil
+    }
+}
+
+struct CodexAppServerContextSummary: Equatable, Sendable {
+    var usedTokens: Int
+    var contextWindowTokens: Int
+
+    init?(params: [String: Any]?) {
+        let usage = params?["tokenUsage"] as? [String: Any]
+            ?? params?["token_usage"] as? [String: Any]
+            ?? params
+        guard let usage else { return nil }
+
+        let total = usage["total"] as? [String: Any]
+            ?? usage["last"] as? [String: Any]
+        let usedTokens = Self.intValue(named: "totalTokens", in: total)
+            ?? Self.intValue(named: "total_tokens", in: total)
+            ?? Self.intValue(named: "totalTokens", in: usage)
+            ?? Self.intValue(named: "total_tokens", in: usage)
+        let contextWindowTokens = Self.intValue(named: "modelContextWindow", in: usage)
+            ?? Self.intValue(named: "model_context_window", in: usage)
+
+        guard let usedTokens,
+              let contextWindowTokens,
+              contextWindowTokens > 0 else {
+            return nil
+        }
+        self.usedTokens = usedTokens
+        self.contextWindowTokens = contextWindowTokens
+    }
+
+    var remainingPercent: Int {
+        let remaining = max(0, contextWindowTokens - usedTokens)
+        return Int((Double(remaining) / Double(contextWindowTokens) * 100).rounded())
+    }
+
+    private static func intValue(named key: String, in object: [String: Any]?) -> Int? {
+        guard let object else { return nil }
+        if let value = object[key] as? Int {
+            return value
+        }
+        if let value = object[key] as? NSNumber,
+           CFGetTypeID(value) != CFBooleanGetTypeID() {
+            return value.intValue
+        }
+        if let value = object[key] as? String {
+            return Int(value)
+        }
+        return nil
+    }
 }
 
 struct CodexAppServerTranscriptItem: Identifiable, Equatable, Sendable {
@@ -118,6 +439,7 @@ struct CodexSessionHistorySnapshot: Equatable, Sendable {
     var fileURL: URL?
     var transcriptItems: [CodexAppServerTranscriptItem]
     var totalDisplayableItemCount: Int
+    var totalDisplayableItemCountIsExact = true
     var didTruncate: Bool
 }
 
@@ -140,6 +462,97 @@ enum CodexAppServerApprovalDecision: String {
     case cancel
 }
 
+enum CodexAppServerPromptQueueKind: Equatable, Sendable {
+    case steer
+    case followUp
+
+    var localizedLabel: String {
+        switch self {
+        case .steer:
+            return String(localized: "codexAppServer.queue.steer", defaultValue: "Steering")
+        case .followUp:
+            return String(localized: "codexAppServer.queue.followUp", defaultValue: "Queued")
+        }
+    }
+}
+
+struct CodexAppServerQueuedPrompt: Identifiable, Equatable, Sendable {
+    let id: UUID
+    var text: String
+    var kind: CodexAppServerPromptQueueKind
+    var date: Date
+
+    init(id: UUID = UUID(), text: String, kind: CodexAppServerPromptQueueKind, date: Date = Date()) {
+        self.id = id
+        self.text = text
+        self.kind = kind
+        self.date = date
+    }
+}
+
+struct CodexPromptSelectionRange: Equatable, Sendable {
+    var location: Int
+    var length: Int
+
+    init(location: Int, length: Int) {
+        self.location = max(0, location)
+        self.length = max(0, length)
+    }
+
+    init(_ range: NSRange) {
+        let rangeLocation = range.location == NSNotFound ? 0 : range.location
+        let rangeLength = range.length == NSNotFound ? 0 : range.length
+        self.init(location: rangeLocation, length: rangeLength)
+    }
+
+    static func caret(at location: Int) -> Self {
+        Self(location: location, length: 0)
+    }
+
+    func clamped(to textLength: Int) -> Self {
+        let safeTextLength = max(0, textLength)
+        let safeLocation = min(max(0, location), safeTextLength)
+        let safeLength = min(max(0, length), max(0, safeTextLength - safeLocation))
+        return Self(location: safeLocation, length: safeLength)
+    }
+
+    var nsRange: NSRange {
+        NSRange(location: location, length: length)
+    }
+
+    static func normalized(
+        _ ranges: [CodexPromptSelectionRange],
+        textLength: Int,
+        fallbackToEnd: Bool = true
+    ) -> [CodexPromptSelectionRange] {
+        guard !ranges.isEmpty else {
+            return [.caret(at: fallbackToEnd ? max(0, textLength) : 0)]
+        }
+        return ranges.map { $0.clamped(to: textLength) }
+    }
+
+    static func normalized(
+        nsRanges: [NSValue],
+        textLength: Int,
+        fallbackToEnd: Bool = true
+    ) -> [CodexPromptSelectionRange] {
+        normalized(
+            nsRanges.map { CodexPromptSelectionRange($0.rangeValue) },
+            textLength: textLength,
+            fallbackToEnd: fallbackToEnd
+        )
+    }
+
+    static func nsValues(
+        from ranges: [CodexPromptSelectionRange],
+        textLength: Int,
+        fallbackToEnd: Bool = true
+    ) -> [NSValue] {
+        normalized(ranges, textLength: textLength, fallbackToEnd: fallbackToEnd)
+            .map { NSValue(range: $0.nsRange) }
+    }
+}
+
 @MainActor
 final class CodexAppServerPanel: Panel, ObservableObject {
     let id: UUID
@@ -156,6 +569,15 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     @Published private(set) var status: CodexAppServerPanelStatus = .stopped
     @Published private(set) var transcriptItems: [CodexAppServerTranscriptItem] = []
     @Published private(set) var pendingRequests: [CodexAppServerPendingRequest] = []
+    @Published private(set) var transcriptLoadingPhase: CodexAppServerTranscriptLoadingPhase = .idle
+    @Published private(set) var rateLimitSummary: CodexAppServerRateLimitSummary?
+    @Published private(set) var contextSummary: CodexAppServerContextSummary?
+    @Published private(set) var availableModels: [CodexAppServerModelInfo] = []
+    @Published var selectedModelId: String?
+    @Published var fastModeEnabled: Bool = false
+    @Published private(set) var pendingSteers: [CodexAppServerQueuedPrompt] = []
+    @Published private(set) var queuedFollowUps: [CodexAppServerQueuedPrompt] = []
+    var promptSelectionRanges: [CodexPromptSelectionRange] = [.caret(at: 0)]
 
     private let client: CodexAppServerClient
     private let initialResumeThreadId: String?
@@ -164,10 +586,13 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     private var activeAssistantItemId: UUID?
     private var activeCommandOutputItemIDs: [String: UUID] = [:]
     private var anonymousCommandOutputItemID: UUID?
+    private var lastRenderedUserMessageText: String?
     private var isStarted = false
     private var isClosed = false
     private var didResumeInitialThread = false
     private var lifecycleGeneration = 0
+    private var initialHistoryRestoreThreadId: String?
+    private var initialHistoryRestoreTask: Task<CodexSessionHistorySnapshot, Never>?
 
     var displayTitle: String {
         if status.isFailed {
@@ -188,7 +613,69 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     }
 
     var canSendPrompt: Bool {
-        !status.isBusy && !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !status.isFailed && !promptText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    var queuedPrompts: [CodexAppServerQueuedPrompt] {
+        pendingSteers + queuedFollowUps
+    }
+
+    var canInterruptPendingPrompts: Bool {
+        status.isBusy && !pendingSteers.isEmpty && threadId != nil && currentTurnId != nil
+    }
+
+    var shouldAutoStart: Bool {
+        normalizedThreadId(initialResumeThreadId) != nil
+    }
+
+    var selectedModel: CodexAppServerModelInfo? {
+        if let selectedModelId,
+           let model = availableModels.first(where: { $0.id == selectedModelId || $0.model == selectedModelId }) {
+            return model
+        }
+        return availableModels.first(where: \.isDefault) ?? availableModels.first
+    }
+
+    var selectedModelDisplayName: String {
+        selectedModel?.pickerTitle
+            ?? String(localized: "codexAppServer.composer.model.fallback", defaultValue: "Codex")
+    }
+
+    var selectedModelParameter: String? {
+        selectedModel?.model
+    }
+
+    var effectiveServiceTier: String? {
+        guard fastModeEnabled,
+              selectedModel?.supportsFastMode == true else {
+            return nil
+        }
+        return "fast"
+    }
+
+    func updatePromptSelectionRanges(_ ranges: [CodexPromptSelectionRange]) {
+        let textLength = (promptText as NSString).length
+        promptSelectionRanges = CodexPromptSelectionRange.normalized(ranges, textLength: textLength)
+    }
+
+    func selectModel(_ modelId: String) {
+        selectedModelId = modelId
+        if selectedModel?.supportsFastMode != true {
+            fastModeEnabled = false
+        }
+    }
+
+    func setFastModeEnabled(_ enabled: Bool) {
+        fastModeEnabled = enabled && selectedModel?.supportsFastMode == true
+    }
+
+    var transcriptContentState: CodexAppServerTranscriptContentState {
+        CodexAppServerTranscriptContentState.resolve(
+            hasTranscriptItems: !transcriptItems.isEmpty,
+            hasPendingRequests: !pendingRequests.isEmpty,
+            status: status,
+            loadingPhase: transcriptLoadingPhase
+        )
     }
 
     var resumableThreadId: String? {
@@ -208,7 +695,7 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         self.id = id
         self.workspaceId = workspaceId
         self.cwd = cwd
-        self.initialResumeThreadId = resumeThreadId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.initialResumeThreadId = Self.normalizedCodexThreadId(resumeThreadId)
         self.client = client
         self.client.onEvent = { [weak self] event in
             Task { @MainActor in
@@ -223,28 +710,97 @@ final class CodexAppServerPanel: Panel, ObservableObject {
 
     func start() async {
         guard !isStarted, status != .starting else { return }
+#if DEBUG
+        let startTime = CodexAppServerTiming.now()
+#endif
         let generation = lifecycleGeneration
+        let pendingInitialResumeThreadId = normalizedThreadId(initialResumeThreadId)
+#if DEBUG
+        CodexAppServerTiming.log("panel.start.begin", [
+            "panel": id.uuidString.prefix(8),
+            "workspace": workspaceId.uuidString.prefix(8),
+            "has_resume": pendingInitialResumeThreadId?.isEmpty == false,
+            "cwd": currentWorkingDirectory(),
+        ])
+#endif
         status = .starting
+        transcriptLoadingPhase = pendingInitialResumeThreadId?.isEmpty == false
+            ? .restoringHistory
+            : .startingServer
+        if let pendingInitialResumeThreadId,
+           !pendingInitialResumeThreadId.isEmpty,
+           !didResumeInitialThread {
+            threadId = pendingInitialResumeThreadId
+            startInitialHistoryRestore(threadId: pendingInitialResumeThreadId, generation: generation)
+        }
         do {
+#if DEBUG
+            let initializeStart = CodexAppServerTiming.now()
+#endif
             try await client.startAndInitialize()
+#if DEBUG
+            CodexAppServerTiming.log("panel.clientInitialized", [
+                "panel": id.uuidString.prefix(8),
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: initializeStart)),
+            ])
+#endif
             guard isCurrentLifecycle(generation) else {
                 client.stop()
                 return
             }
             isStarted = true
-            if let initialResumeThreadId, !initialResumeThreadId.isEmpty, !didResumeInitialThread {
+            Task { @MainActor [weak self] in
+                await self?.refreshCodexMetadata(generation: generation)
+            }
+            if let pendingInitialResumeThreadId,
+               !pendingInitialResumeThreadId.isEmpty,
+               !didResumeInitialThread {
                 status = .running
+                if transcriptItems.isEmpty {
+                    transcriptLoadingPhase = .resumingThread
+                }
+#if DEBUG
+                let resumeStart = CodexAppServerTiming.now()
+                CodexAppServerTiming.log("panel.resume.begin", [
+                    "panel": id.uuidString.prefix(8),
+                    "thread": pendingInitialResumeThreadId,
+                    "items_before": transcriptItems.count,
+                ])
+#endif
                 let response = try await client.resumeThread(
-                    threadId: initialResumeThreadId,
+                    threadId: pendingInitialResumeThreadId,
                     cwd: currentWorkingDirectory()
                 )
+#if DEBUG
+                CodexAppServerTiming.log("panel.resume.response", [
+                    "panel": id.uuidString.prefix(8),
+                    "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: resumeStart)),
+                    "keys": response.keys.sorted().joined(separator: ","),
+                    "truncated": (response["_cmuxResponseTruncated"] as? Bool) == true,
+                ])
+#endif
                 guard isCurrentLifecycle(generation) else {
                     client.stop()
                     return
                 }
                 didResumeInitialThread = true
-                let snapshot = applyResumeResponse(response, fallbackThreadId: initialResumeThreadId)
+#if DEBUG
+                let applyStart = CodexAppServerTiming.now()
+#endif
+                let snapshot = applyResumeResponse(response, fallbackThreadId: pendingInitialResumeThreadId)
+#if DEBUG
+                CodexAppServerTiming.log("panel.resume.applied", [
+                    "panel": id.uuidString.prefix(8),
+                    "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: applyStart)),
+                    "snapshot_items": snapshot.transcriptItems.count,
+                    "snapshot_total": snapshot.totalRestoredItemCount,
+                    "did_truncate": snapshot.didTruncate,
+                    "response_truncated": snapshot.responseWasTruncated,
+                    "transcript_items": transcriptItems.count,
+                ])
+#endif
                 if snapshot.responseWasTruncated {
+                    transcriptLoadingPhase = .restoringHistory
                     await loadLocalHistory(for: snapshot.threadId)
                 }
                 guard isCurrentLifecycle(generation) else {
@@ -252,19 +808,77 @@ final class CodexAppServerPanel: Panel, ObservableObject {
                     return
                 }
                 status = .ready
+                transcriptLoadingPhase = .idle
             } else {
                 status = .ready
+                transcriptLoadingPhase = .idle
             }
+#if DEBUG
+            CodexAppServerTiming.log("panel.start.end", [
+                "panel": id.uuidString.prefix(8),
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: startTime)),
+                "status": String(describing: status),
+                "items": transcriptItems.count,
+            ])
+#endif
         } catch {
             guard isCurrentLifecycle(generation) else { return }
             isStarted = false
+            transcriptLoadingPhase = .idle
             status = .failed(error.localizedDescription)
             appendError(error.localizedDescription)
+#if DEBUG
+            CodexAppServerTiming.log("panel.start.error", [
+                "panel": id.uuidString.prefix(8),
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: startTime)),
+                "error": error.localizedDescription,
+            ])
+#endif
+        }
+    }
+
+    private func refreshCodexMetadata(generation: Int) async {
+        guard isCurrentLifecycle(generation), isStarted else { return }
+        do {
+            let models = try await client.listModels(includeHidden: true)
+                .compactMap(CodexAppServerModelInfo.init(object:))
+                .filter { !$0.pickerTitle.isEmpty }
+            guard isCurrentLifecycle(generation) else { return }
+            availableModels = models
+            if selectedModelId == nil {
+                selectedModelId = models.first(where: \.isDefault)?.id ?? models.first?.id
+            }
+            if selectedModel?.supportsFastMode != true {
+                fastModeEnabled = false
+            }
+        } catch {
+#if DEBUG
+            CodexAppServerTiming.log("panel.modelList.error", [
+                "panel": id.uuidString.prefix(8),
+                "error": error.localizedDescription,
+            ])
+#endif
+        }
+
+        do {
+            let rateLimits = try await client.readRateLimits()
+            guard isCurrentLifecycle(generation) else { return }
+            rateLimitSummary = CodexAppServerRateLimitSummary(params: rateLimits)
+        } catch {
+#if DEBUG
+            CodexAppServerTiming.log("panel.rateLimits.error", [
+                "panel": id.uuidString.prefix(8),
+                "error": error.localizedDescription,
+            ])
+#endif
         }
     }
 
     func stop() {
         lifecycleGeneration += 1
+        initialHistoryRestoreTask?.cancel()
+        initialHistoryRestoreTask = nil
+        initialHistoryRestoreThreadId = nil
         if isStarted {
             client.stop()
         }
@@ -274,17 +888,72 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         activeAssistantItemId = nil
         activeCommandOutputItemIDs.removeAll(keepingCapacity: false)
         anonymousCommandOutputItemID = nil
+        lastRenderedUserMessageText = nil
         didResumeInitialThread = false
         pendingRequests.removeAll()
+        pendingSteers.removeAll()
+        queuedFollowUps.removeAll()
+        contextSummary = nil
+        transcriptLoadingPhase = .idle
         status = .stopped
     }
 
     func sendPrompt() async {
         let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !status.isBusy else { return }
-        let generation = lifecycleGeneration
+        guard !text.isEmpty, !status.isFailed else { return }
         promptText = ""
-        appendUser(text)
+
+        if status == .starting {
+            queuedFollowUps.append(CodexAppServerQueuedPrompt(text: text, kind: .followUp))
+            return
+        }
+
+        if status.isBusy {
+            await submitSteer(text)
+            return
+        }
+
+        await submitNewTurn(text, renderUserImmediately: true)
+    }
+
+    func queuePromptForNextTurn() {
+        let text = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !status.isFailed else { return }
+        promptText = ""
+        queuedFollowUps.append(CodexAppServerQueuedPrompt(text: text, kind: .followUp))
+        drainNextQueuedFollowUpIfNeeded()
+    }
+
+    func interruptForPendingPrompts() async {
+        guard status.isBusy,
+              pendingSteers.isEmpty == false,
+              let threadId,
+              let currentTurnId else { return }
+
+        let steers = pendingSteers
+        do {
+            try await client.interruptTurn(threadId: threadId, turnId: currentTurnId)
+            self.currentTurnId = nil
+            status = .ready
+            let merged = steers.map(\.text).joined(separator: "\n\n")
+            pendingSteers.removeAll()
+            if !merged.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                await submitNewTurn(merged, renderUserImmediately: true)
+            } else {
+                drainNextQueuedFollowUpIfNeeded()
+            }
+        } catch {
+            appendError(error.localizedDescription)
+        }
+    }
+
+    private func submitNewTurn(_ text: String, renderUserImmediately: Bool) async {
+        let cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedText.isEmpty else { return }
+        let generation = lifecycleGeneration
+        if renderUserImmediately {
+            appendUser(cleanedText)
+        }
 
         do {
             status = .running
@@ -297,7 +966,11 @@ final class CodexAppServerPanel: Panel, ObservableObject {
             if let threadId {
                 resolvedThreadId = threadId
             } else {
-                let newThreadId = try await client.startThread(cwd: currentWorkingDirectory())
+                let newThreadId = try await client.startThread(
+                    cwd: currentWorkingDirectory(),
+                    model: selectedModelParameter,
+                    serviceTier: effectiveServiceTier
+                )
                 guard isCurrentLifecycle(generation) else { return }
                 threadId = newThreadId
                 resolvedThreadId = newThreadId
@@ -305,8 +978,10 @@ final class CodexAppServerPanel: Panel, ObservableObject {
 
             let turnId = try await client.startTurn(
                 threadId: resolvedThreadId,
-                text: text,
-                cwd: currentWorkingDirectory()
+                text: cleanedText,
+                cwd: currentWorkingDirectory(),
+                model: selectedModelParameter,
+                serviceTier: effectiveServiceTier
             )
             guard isCurrentLifecycle(generation) else { return }
             currentTurnId = turnId
@@ -314,6 +989,61 @@ final class CodexAppServerPanel: Panel, ObservableObject {
             guard isCurrentLifecycle(generation) else { return }
             status = .failed(error.localizedDescription)
             appendError(error.localizedDescription)
+        }
+    }
+
+    private func submitSteer(_ text: String) async {
+        let cleanedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedText.isEmpty else { return }
+        let pending = CodexAppServerQueuedPrompt(text: cleanedText, kind: .steer)
+        pendingSteers.append(pending)
+
+        do {
+            let resolvedThreadId: String
+            if let threadId {
+                resolvedThreadId = threadId
+            } else {
+                resolvedThreadId = try await client.startThread(
+                    cwd: currentWorkingDirectory(),
+                    model: selectedModelParameter,
+                    serviceTier: effectiveServiceTier
+                )
+                threadId = resolvedThreadId
+            }
+
+            if let activeTurnId = currentTurnId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !activeTurnId.isEmpty {
+                let returnedTurnId = try await client.steerTurn(
+                    threadId: resolvedThreadId,
+                    turnId: activeTurnId,
+                    text: cleanedText
+                )
+                currentTurnId = returnedTurnId
+            } else {
+                let returnedTurnId = try await client.startTurn(
+                    threadId: resolvedThreadId,
+                    text: cleanedText,
+                    cwd: currentWorkingDirectory(),
+                    model: selectedModelParameter,
+                    serviceTier: effectiveServiceTier
+                )
+                currentTurnId = returnedTurnId
+            }
+        } catch {
+            pendingSteers.removeAll { $0.id == pending.id }
+            queuedFollowUps.insert(
+                CodexAppServerQueuedPrompt(text: cleanedText, kind: .followUp, date: pending.date),
+                at: 0
+            )
+            appendError(error.localizedDescription)
+        }
+    }
+
+    private func drainNextQueuedFollowUpIfNeeded() {
+        guard !status.isBusy, !queuedFollowUps.isEmpty else { return }
+        let next = queuedFollowUps.removeFirst()
+        Task { @MainActor in
+            await submitNewTurn(next.text, renderUserImmediately: true)
         }
     }
 
@@ -345,6 +1075,9 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     func close() {
         isClosed = true
         lifecycleGeneration += 1
+        initialHistoryRestoreTask?.cancel()
+        initialHistoryRestoreTask = nil
+        initialHistoryRestoreThreadId = nil
         stop()
     }
 
@@ -409,7 +1142,11 @@ final class CodexAppServerPanel: Panel, ObservableObject {
             activeAssistantItemId = nil
             activeCommandOutputItemIDs.removeAll(keepingCapacity: false)
             anonymousCommandOutputItemID = nil
+            lastRenderedUserMessageText = nil
             pendingRequests.removeAll()
+            pendingSteers.removeAll()
+            queuedFollowUps.removeAll()
+            transcriptLoadingPhase = .idle
             appendEvent(
                 title: String(localized: "codexAppServer.event.terminated", defaultValue: "App server exited"),
                 body: String(statusCode)
@@ -429,10 +1166,20 @@ final class CodexAppServerPanel: Panel, ObservableObject {
             }
         case "turn/started":
             status = .running
+            if let turn = params?["turn"] as? [String: Any],
+               let turnId = Self.stringValue(named: "id", in: turn),
+               !turnId.isEmpty {
+                currentTurnId = turnId
+            }
         case "turn/completed":
             status = .ready
             currentTurnId = nil
             finishStreamingAssistant()
+            drainNextQueuedFollowUpIfNeeded()
+        case "item/started":
+            if handleUserMessageItem(params?["item"] as? [String: Any]) {
+                break
+            }
         case "item/agentMessage/delta":
             appendAssistantDelta(Self.stringValue(named: "delta", in: params))
         case "item/commandExecution/outputDelta":
@@ -450,19 +1197,60 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         case "serverRequest/resolved":
             removeResolvedServerRequest(params)
         case "item/completed":
+            if handleUserMessageItem(params?["item"] as? [String: Any]) {
+                break
+            }
             handleCompletedItem(params?["item"] as? [String: Any])
+        case "userMessage":
+            _ = handleUserMessageItem(params)
         case "thread/compacted":
             appendCompactionEvent()
+        case "account/rateLimits/updated":
+            rateLimitSummary = CodexAppServerRateLimitSummary(params: params)
+        case "thread/tokenUsage/updated":
+            contextSummary = CodexAppServerContextSummary(params: params)
+        case "hook/started", "hook/completed":
+            appendHookEvent(method: method, params: params)
+        case "error":
+            appendCodexErrorEvent(params)
         case "warning":
             appendEvent(
                 title: String(localized: "codexAppServer.event.warning", defaultValue: "Warning"),
-                body: Self.stringValue(named: "message", in: params) ?? Self.prettyJSON(params)
+                body: Self.normalizedWarningMessage(Self.stringValue(named: "message", in: params) ?? Self.prettyJSON(params))
             )
-        case "mcpServer/startupStatus/updated", "thread/status/changed", "thread/tokenUsage/updated":
+        case "mcpServer/startupStatus/updated", "thread/status/changed":
             break
         default:
             appendEvent(title: method, body: Self.prettyJSON(params))
         }
+    }
+
+    @discardableResult
+    private func handleUserMessageItem(_ item: [String: Any]?) -> Bool {
+        guard let item else { return false }
+        let type = item["type"] as? String ?? item["kind"] as? String ?? ""
+        guard type == "userMessage" else { return false }
+        guard let text = Self.userMessageText(from: item) else { return true }
+        commitServerUserMessage(text)
+        return true
+    }
+
+    private func commitServerUserMessage(_ text: String) {
+        let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+
+        if let first = pendingSteers.first,
+           first.text.trimmingCharacters(in: .whitespacesAndNewlines) == normalized {
+            pendingSteers.removeFirst()
+            appendUser(normalized)
+            return
+        }
+
+        if lastRenderedUserMessageText?.trimmingCharacters(in: .whitespacesAndNewlines) == normalized {
+            return
+        }
+
+        appendUser(normalized)
     }
 
     private func handleCompletedItem(_ item: [String: Any]?) {
@@ -498,6 +1286,7 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     }
 
     private func appendUser(_ text: String) {
+        lastRenderedUserMessageText = text.trimmingCharacters(in: .whitespacesAndNewlines)
         append(
             role: .user,
             title: String(localized: "codexAppServer.role.user", defaultValue: "You"),
@@ -558,6 +1347,24 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         trimTranscriptItemsIfNeeded()
     }
 
+    private func appendHookEvent(method: String, params: [String: Any]?) {
+        let title: String
+        switch method {
+        case "hook/started":
+            title = String(localized: "codexAppServer.event.hookStarted", defaultValue: "Hook started")
+        case "hook/completed":
+            title = String(localized: "codexAppServer.event.hookCompleted", defaultValue: "Hook completed")
+        default:
+            title = String(localized: "codexAppServer.event.hook", defaultValue: "Hook")
+        }
+        append(
+            role: .event,
+            title: title,
+            body: Self.prettyJSON(params),
+            presentation: .hookEvent(method: method)
+        )
+    }
+
     private func finishCommandOutput(for itemId: String?) {
         let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)
         let outputItemId: UUID?
@@ -600,6 +1407,27 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         )
     }
 
+    private func appendCodexErrorEvent(_ params: [String: Any]?) {
+        let error = params?["error"] as? [String: Any] ?? params
+        let info = Self.stringValue(named: "codexErrorInfo", in: error)
+            ?? Self.stringValue(named: "code", in: error)
+        let message = Self.stringValue(named: "message", in: error)
+            ?? Self.stringValue(named: "message", in: params)
+            ?? Self.prettyJSON(params)
+        let title: String
+        switch info ?? "" {
+        case "usageLimitExceeded":
+            title = String(localized: "codexAppServer.error.usageLimitExceeded", defaultValue: "Usage limit reached")
+        case "contextWindowExceeded":
+            title = String(localized: "codexAppServer.error.contextWindowExceeded", defaultValue: "Context window exceeded")
+        case "serverOverloaded":
+            title = String(localized: "codexAppServer.error.serverOverloaded", defaultValue: "Server overloaded")
+        default:
+            title = String(localized: "codexAppServer.error.codexError", defaultValue: "Codex error")
+        }
+        append(role: .error, title: title, body: message)
+    }
+
     private func appendCompactionEvent() {
         transcriptItems.append(
             CodexAppServerTranscriptItem(
@@ -636,11 +1464,12 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         guard !snapshot.transcriptItems.isEmpty else { return snapshot }
         if snapshot.didTruncate {
             transcriptItems = [
-                Self.historyTruncatedItem(
-                    displayedCount: snapshot.transcriptItems.count,
-                    totalCount: snapshot.totalRestoredItemCount,
-                    date: snapshot.transcriptItems.first?.date
-                )
+                    Self.historyTruncatedItem(
+                        displayedCount: snapshot.transcriptItems.count,
+                        totalCount: snapshot.totalRestoredItemCount,
+                        totalCountIsExact: true,
+                        date: snapshot.transcriptItems.first?.date
+                    )
             ] + snapshot.transcriptItems
         } else {
             transcriptItems = snapshot.transcriptItems
@@ -648,20 +1477,127 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         return snapshot
     }
 
-    private func loadLocalHistory(for threadId: String) async {
-        let snapshot = await CodexSessionHistoryLoader.loadHistory(
-            threadId: threadId,
-            limit: Self.localHistoryItemLimit
-        )
-        guard !isClosed else { return }
-        guard !snapshot.transcriptItems.isEmpty else {
-            appendEvent(
-                title: String(localized: "codexAppServer.event.historyOmitted", defaultValue: "History omitted"),
-                body: String(
-                    localized: "codexAppServer.event.historyOmitted.body",
-                    defaultValue: "Codex returned a very large history. The thread is connected, and new messages will stream here."
-                )
+    private func startInitialHistoryRestore(threadId: String, generation: Int) {
+        let sanitizedThreadId = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sanitizedThreadId.isEmpty else { return }
+
+        initialHistoryRestoreTask?.cancel()
+        initialHistoryRestoreThreadId = sanitizedThreadId
+#if DEBUG
+        CodexAppServerTiming.log("localHistory.prefetch.scheduled", [
+            "panel": id.uuidString.prefix(8),
+            "thread": sanitizedThreadId,
+            "limit": Self.localHistoryItemLimit,
+        ])
+#endif
+        initialHistoryRestoreTask = Task { [weak self] in
+#if DEBUG
+            let loadStart = CodexAppServerTiming.now()
+#endif
+            let snapshot = await CodexSessionHistoryLoader.loadHistory(
+                threadId: sanitizedThreadId,
+                limit: Self.localHistoryItemLimit
             )
+#if DEBUG
+            CodexAppServerTiming.log("localHistory.prefetch.loaded", [
+                "thread": sanitizedThreadId,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: loadStart)),
+                "items": snapshot.transcriptItems.count,
+                "total": snapshot.totalDisplayableItemCount,
+                "exact_total": snapshot.totalDisplayableItemCountIsExact,
+                "truncated": snapshot.didTruncate,
+                "file": snapshot.fileURL?.lastPathComponent,
+            ])
+#endif
+            await MainActor.run {
+                guard let self,
+                      !Task.isCancelled,
+                      self.isCurrentLifecycle(generation),
+                      self.normalizedThreadId(self.threadId) == sanitizedThreadId else {
+                    return
+                }
+                self.applyLocalHistory(snapshot, showEmptyFallback: false)
+            }
+            return snapshot
+        }
+    }
+
+    private func loadLocalHistory(for threadId: String) async {
+        transcriptLoadingPhase = .restoringHistory
+        let sanitizedThreadId = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
+#if DEBUG
+        let loadStart = CodexAppServerTiming.now()
+        CodexAppServerTiming.log("localHistory.fallback.begin", [
+            "panel": id.uuidString.prefix(8),
+            "thread": sanitizedThreadId,
+            "limit": Self.localHistoryItemLimit,
+        ])
+#endif
+        let snapshot: CodexSessionHistorySnapshot
+        if initialHistoryRestoreThreadId == sanitizedThreadId,
+           let initialHistoryRestoreTask {
+#if DEBUG
+            let reuseStart = CodexAppServerTiming.now()
+#endif
+            snapshot = await initialHistoryRestoreTask.value
+#if DEBUG
+            CodexAppServerTiming.log("localHistory.fallback.reusedPrefetch", [
+                "panel": id.uuidString.prefix(8),
+                "thread": sanitizedThreadId,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: reuseStart)),
+                "items": snapshot.transcriptItems.count,
+                "total": snapshot.totalDisplayableItemCount,
+                "exact_total": snapshot.totalDisplayableItemCountIsExact,
+            ])
+#endif
+        } else {
+            snapshot = await CodexSessionHistoryLoader.loadHistory(
+                threadId: sanitizedThreadId,
+                limit: Self.localHistoryItemLimit
+            )
+        }
+        guard !isClosed else { return }
+#if DEBUG
+        CodexAppServerTiming.log("localHistory.fallback.loaded", [
+            "panel": id.uuidString.prefix(8),
+            "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: loadStart)),
+            "items": snapshot.transcriptItems.count,
+            "total": snapshot.totalDisplayableItemCount,
+            "exact_total": snapshot.totalDisplayableItemCountIsExact,
+            "truncated": snapshot.didTruncate,
+            "file": snapshot.fileURL?.lastPathComponent,
+        ])
+#endif
+        applyLocalHistory(snapshot, showEmptyFallback: true)
+    }
+
+    private func applyLocalHistory(_ snapshot: CodexSessionHistorySnapshot, showEmptyFallback: Bool) {
+#if DEBUG
+        let applyStart = CodexAppServerTiming.now()
+        defer {
+            CodexAppServerTiming.logSlow("localHistory.apply", start: applyStart, thresholdMs: 2, [
+                "panel": id.uuidString.prefix(8),
+                "snapshot_items": snapshot.transcriptItems.count,
+                "snapshot_total": snapshot.totalDisplayableItemCount,
+                "transcript_items": transcriptItems.count,
+            ])
+        }
+#endif
+        guard !snapshot.transcriptItems.isEmpty else {
+            if showEmptyFallback {
+                appendEvent(
+                    title: String(localized: "codexAppServer.event.historyOmitted", defaultValue: "History omitted"),
+                    body: String(
+                        localized: "codexAppServer.event.historyOmitted.body",
+                        defaultValue: "Codex returned a very large history. The thread is connected, and new messages will stream here."
+                    )
+                )
+            }
+            return
+        }
+
+        if !transcriptItems.isEmpty,
+           snapshot.totalDisplayableItemCount <= transcriptItems.count {
             return
         }
 
@@ -671,6 +1607,7 @@ final class CodexAppServerPanel: Panel, ObservableObject {
                 Self.historyTruncatedItem(
                     displayedCount: snapshot.transcriptItems.count,
                     totalCount: snapshot.totalDisplayableItemCount,
+                    totalCountIsExact: snapshot.totalDisplayableItemCountIsExact,
                     date: snapshot.transcriptItems.first?.date
                 )
             ] + snapshot.transcriptItems
@@ -684,6 +1621,19 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         fallbackThreadId: String,
         restoredItemLimit: Int
     ) -> CodexAppServerResumeSnapshot {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+        var debugTurnCount = 0
+        var debugRawItemCount = 0
+        defer {
+            CodexAppServerTiming.logSlow("resumeSnapshot.parse", start: start, thresholdMs: 2, [
+                "thread": fallbackThreadId,
+                "turns": debugTurnCount,
+                "raw_items": debugRawItemCount,
+                "limit": restoredItemLimit,
+            ])
+        }
+#endif
         let thread = response["thread"] as? [String: Any]
         let resolvedThreadId = Self.stringValue(named: "id", in: thread) ?? fallbackThreadId
         let resolvedCwd = Self.stringValue(named: "cwd", in: response)
@@ -701,10 +1651,16 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         }
 
         let turns = thread?["turns"] as? [[String: Any]] ?? []
+#if DEBUG
+        debugTurnCount = turns.count
+#endif
         var restoredItems: [CodexAppServerTranscriptItem] = []
         for turn in turns {
             let date = Self.dateValue(named: "startedAt", in: turn) ?? Date()
             let items = turn["items"] as? [[String: Any]] ?? []
+#if DEBUG
+            debugRawItemCount += items.count
+#endif
             for item in items {
                 if let restoredItem = restoredTranscriptItem(fromThreadItem: item, date: date) {
                     restoredItems.append(restoredItem)
@@ -732,18 +1688,32 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     private static func historyTruncatedItem(
         displayedCount: Int,
         totalCount: Int,
+        totalCountIsExact: Bool,
         date: Date?
     ) -> CodexAppServerTranscriptItem {
-        let format = String(
-            localized: "codexAppServer.event.historyTruncated.body",
-            defaultValue: "Showing the latest %1$ld of %2$ld history items."
-        )
-        let body = String(
-            format: format,
-            locale: Locale.current,
-            displayedCount,
-            totalCount
-        )
+        let body: String
+        if totalCountIsExact {
+            let format = String(
+                localized: "codexAppServer.event.historyTruncated.body",
+                defaultValue: "Showing the latest %1$ld of %2$ld history items."
+            )
+            body = String(
+                format: format,
+                locale: Locale.current,
+                displayedCount,
+                totalCount
+            )
+        } else {
+            let format = String(
+                localized: "codexAppServer.event.historyTruncated.approximateBody",
+                defaultValue: "Showing the latest %ld history items. Earlier history is omitted."
+            )
+            body = String(
+                format: format,
+                locale: Locale.current,
+                displayedCount
+            )
+        }
         return CodexAppServerTranscriptItem(
             role: .event,
             title: String(localized: "codexAppServer.event.historyTruncated", defaultValue: "Earlier history omitted"),
@@ -872,9 +1842,24 @@ final class CodexAppServerPanel: Panel, ObservableObject {
         cwd.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func normalizedThreadId(_ value: String?) -> String? {
+    nonisolated static func normalizedCodexThreadId(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        return trimmed.isEmpty ? nil : trimmed
+        guard !trimmed.isEmpty else { return nil }
+
+        let prefix = "urn:uuid:"
+        let bareThreadId: String
+        if trimmed.lowercased().hasPrefix(prefix) {
+            bareThreadId = String(trimmed.dropFirst(prefix.count))
+        } else {
+            bareThreadId = trimmed
+        }
+
+        guard UUID(uuidString: bareThreadId) != nil else { return nil }
+        return bareThreadId.lowercased()
+    }
+
+    private func normalizedThreadId(_ value: String?) -> String? {
+        Self.normalizedCodexThreadId(value)
     }
 
     private static func stringValue(named key: String, in object: [String: Any]?) -> String? {
@@ -886,6 +1871,21 @@ final class CodexAppServerPanel: Panel, ObservableObject {
             return value.stringValue
         }
         return nil
+    }
+
+    private static func normalizedWarningMessage(_ message: String) -> String {
+        var lines = message
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        if lines.first?.caseInsensitiveCompare("Warning") == .orderedSame {
+            lines.removeFirst()
+        }
+        if let first = lines.first,
+           first.lowercased().hasPrefix("warning: ") {
+            lines[0] = String(first.dropFirst("Warning: ".count))
+        }
+        return lines.joined(separator: "\n")
     }
 
     private static func requestIDValue(named key: String, in object: [String: Any]?) -> CodexAppServerRequestID? {
@@ -973,6 +1973,9 @@ final class CodexAppServerPanel: Panel, ObservableObject {
 
 enum CodexSessionHistoryLoader {
     private static let chunkSize = 1024 * 1024
+    private static let largeHistoryTailParsingThreshold = 64 * 1024 * 1024
+    private static let initialTailParseByteLimit = 32 * 1024 * 1024
+    private static let maxTailParseByteLimit = 128 * 1024 * 1024
     private static let eventMessageNeedle = Data(#""type":"event_msg""#.utf8)
     private static let contextCompactedNeedle = Data(#""type":"context_compacted""#.utf8)
     private static let userMessageNeedle = Data(#""type":"user_message""#.utf8)
@@ -993,8 +1996,14 @@ enum CodexSessionHistoryLoader {
     static func loadHistorySync(
         threadId: String,
         limit: Int,
-        searchRoots: [URL]? = nil
+        searchRoots: [URL]? = nil,
+        tailParsingThreshold: Int = largeHistoryTailParsingThreshold,
+        tailInitialReadLimit: Int = initialTailParseByteLimit,
+        tailMaxReadLimit: Int = maxTailParseByteLimit
     ) -> CodexSessionHistorySnapshot {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
         let sanitizedThreadId = threadId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !sanitizedThreadId.isEmpty else {
             return emptySnapshot(threadId: threadId, fileURL: nil)
@@ -1002,10 +2011,36 @@ enum CodexSessionHistoryLoader {
 
         let roots = searchRoots ?? defaultSearchRoots()
         guard let fileURL = historyFile(threadId: sanitizedThreadId, searchRoots: roots) else {
+#if DEBUG
+            CodexAppServerTiming.log("localHistory.load.missing", [
+                "thread": sanitizedThreadId,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                "roots": roots.map(\.path).joined(separator: ","),
+            ])
+#endif
             return emptySnapshot(threadId: sanitizedThreadId, fileURL: nil)
         }
 
-        return parseHistoryFile(fileURL, threadId: sanitizedThreadId, limit: limit)
+        let snapshot = parseHistoryFile(
+            fileURL,
+            threadId: sanitizedThreadId,
+            limit: limit,
+            tailParsingThreshold: tailParsingThreshold,
+            tailInitialReadLimit: tailInitialReadLimit,
+            tailMaxReadLimit: tailMaxReadLimit
+        )
+#if DEBUG
+        CodexAppServerTiming.log("localHistory.load.end", [
+            "thread": sanitizedThreadId,
+            "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            "items": snapshot.transcriptItems.count,
+            "total": snapshot.totalDisplayableItemCount,
+            "exact_total": snapshot.totalDisplayableItemCountIsExact,
+            "truncated": snapshot.didTruncate,
+            "file": fileURL.lastPathComponent,
+        ])
+#endif
+        return snapshot
     }
 
     private static func defaultSearchRoots() -> [URL] {
@@ -1029,12 +2064,17 @@ enum CodexSessionHistoryLoader {
             fileURL: fileURL,
             transcriptItems: [],
             totalDisplayableItemCount: 0,
+            totalDisplayableItemCountIsExact: true,
             didTruncate: false
         )
     }
 
     private static func historyFile(threadId: String, searchRoots: [URL]) -> URL? {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
         var jsonlFiles: [URL] = []
+        var visitedURLCount = 0
         for root in searchRoots {
             guard FileManager.default.fileExists(atPath: root.path) else { continue }
             guard let enumerator = FileManager.default.enumerator(
@@ -1045,6 +2085,7 @@ enum CodexSessionHistoryLoader {
                 continue
             }
             for case let fileURL as URL in enumerator {
+                visitedURLCount += 1
                 guard fileURL.pathExtension == "jsonl" else { continue }
                 guard isRegularFile(fileURL) else { continue }
                 jsonlFiles.append(fileURL)
@@ -1053,11 +2094,41 @@ enum CodexSessionHistoryLoader {
 
         let filenameMatches = jsonlFiles.filter { $0.lastPathComponent.contains(threadId) }
         if let match = sortedMostRecentlyModified(filenameMatches).first {
+#if DEBUG
+            CodexAppServerTiming.log("localHistory.search.end", [
+                "thread": threadId,
+                "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                "roots": searchRoots.count,
+                "visited": visitedURLCount,
+                "jsonl": jsonlFiles.count,
+                "filename_matches": filenameMatches.count,
+                "metadata_scanned": 0,
+                "result": match.path,
+            ])
+#endif
             return match
         }
 
-        let metadataMatches = jsonlFiles.filter { sessionMetadataMatches(fileURL: $0, threadId: threadId) }
-        return sortedMostRecentlyModified(metadataMatches).first
+        var metadataScanned = 0
+        let metadataMatches = jsonlFiles.filter {
+            metadataScanned += 1
+            return sessionMetadataMatches(fileURL: $0, threadId: threadId)
+        }
+        let result = sortedMostRecentlyModified(metadataMatches).first
+#if DEBUG
+        CodexAppServerTiming.log("localHistory.search.end", [
+            "thread": threadId,
+            "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            "roots": searchRoots.count,
+            "visited": visitedURLCount,
+            "jsonl": jsonlFiles.count,
+            "filename_matches": filenameMatches.count,
+            "metadata_scanned": metadataScanned,
+            "metadata_matches": metadataMatches.count,
+            "result": result?.path,
+        ])
+#endif
+        return result
     }
 
     private static func sortedMostRecentlyModified(_ files: [URL]) -> [URL] {
@@ -1087,7 +2158,10 @@ enum CodexSessionHistoryLoader {
     private static func parseHistoryFile(
         _ fileURL: URL,
         threadId: String,
-        limit: Int
+        limit: Int,
+        tailParsingThreshold: Int = largeHistoryTailParsingThreshold,
+        tailInitialReadLimit: Int = initialTailParseByteLimit,
+        tailMaxReadLimit: Int = maxTailParseByteLimit
     ) -> CodexSessionHistorySnapshot {
         let resolvedLimit = max(1, limit)
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else {
@@ -1095,21 +2169,47 @@ enum CodexSessionHistoryLoader {
         }
         defer { try? handle.close() }
 
+        let fileByteSize = (try? handle.seekToEnd()) ?? 0
+        if fileByteSize > UInt64(max(0, tailParsingThreshold)),
+           let snapshot = parseTailHistoryFile(
+                fileURL,
+                handle: handle,
+                fileByteSize: fileByteSize,
+                threadId: threadId,
+                limit: resolvedLimit,
+                initialReadLimit: tailInitialReadLimit,
+                maxReadLimit: tailMaxReadLimit
+           ) {
+            return snapshot
+        }
+
+        return parseForwardHistoryFile(
+            fileURL,
+            handle: handle,
+            threadId: threadId,
+            limit: resolvedLimit
+        )
+    }
+
+    private static func parseForwardHistoryFile(
+        _ fileURL: URL,
+        handle: FileHandle,
+        threadId: String,
+        limit: Int
+    ) -> CodexSessionHistorySnapshot {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
+        try? handle.seek(toOffset: 0)
+
         var lineBuffer = CodexAppServerLineBuffer()
         var transcriptItems: [CodexAppServerTranscriptItem] = []
         var totalDisplayableItemCount = 0
-
-        func consume(_ line: Data) {
-            guard shouldParseLine(line),
-                  let item = transcriptItem(from: line) else {
-                return
-            }
-            totalDisplayableItemCount += 1
-            transcriptItems.append(item)
-            if transcriptItems.count > resolvedLimit * 2 {
-                transcriptItems.removeFirst(transcriptItems.count - resolvedLimit)
-            }
-        }
+        var chunkCount = 0
+        var byteCount = 0
+        var lineCount = 0
+        var candidateLineCount = 0
+        var parsedLineCount = 0
 
         while true {
             let chunk: Data?
@@ -1121,25 +2221,286 @@ enum CodexSessionHistoryLoader {
             guard let chunk, !chunk.isEmpty else {
                 break
             }
+            chunkCount += 1
+            byteCount += chunk.count
             for line in lineBuffer.append(chunk) {
-                consume(line)
+                consumeHistoryLine(
+                    line,
+                    resolvedLimit: limit,
+                    transcriptItems: &transcriptItems,
+                    totalDisplayableItemCount: &totalDisplayableItemCount,
+                    lineCount: &lineCount,
+                    candidateLineCount: &candidateLineCount,
+                    parsedLineCount: &parsedLineCount
+                )
             }
         }
         if let finalLine = lineBuffer.finish() {
-            consume(finalLine)
+            consumeHistoryLine(
+                finalLine,
+                resolvedLimit: limit,
+                transcriptItems: &transcriptItems,
+                totalDisplayableItemCount: &totalDisplayableItemCount,
+                lineCount: &lineCount,
+                candidateLineCount: &candidateLineCount,
+                parsedLineCount: &parsedLineCount
+            )
         }
 
-        if transcriptItems.count > resolvedLimit {
-            transcriptItems = Array(transcriptItems.suffix(resolvedLimit))
+        if transcriptItems.count > limit {
+            transcriptItems = Array(transcriptItems.suffix(limit))
         }
 
-        return CodexSessionHistorySnapshot(
+        let snapshot = CodexSessionHistorySnapshot(
             threadId: threadId,
             fileURL: fileURL,
             transcriptItems: transcriptItems,
             totalDisplayableItemCount: totalDisplayableItemCount,
+            totalDisplayableItemCountIsExact: true,
             didTruncate: totalDisplayableItemCount > transcriptItems.count
         )
+#if DEBUG
+        CodexAppServerTiming.log("localHistory.parse.end", [
+            "thread": threadId,
+            "mode": "forward",
+            "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+            "file": fileURL.lastPathComponent,
+            "mb": String(format: "%.1f", Double(byteCount) / 1_048_576),
+            "chunks": chunkCount,
+            "lines": lineCount,
+            "candidates": candidateLineCount,
+            "parsed": parsedLineCount,
+            "items": transcriptItems.count,
+            "total": totalDisplayableItemCount,
+            "truncated": totalDisplayableItemCount > transcriptItems.count,
+        ])
+#endif
+        return snapshot
+    }
+
+    private static func parseTailHistoryFile(
+        _ fileURL: URL,
+        handle: FileHandle,
+        fileByteSize: UInt64,
+        threadId: String,
+        limit: Int,
+        initialReadLimit: Int,
+        maxReadLimit: Int
+    ) -> CodexSessionHistorySnapshot? {
+#if DEBUG
+        let start = CodexAppServerTiming.now()
+#endif
+        var readLimit = min(
+            fileByteSize,
+            UInt64(max(1, min(initialReadLimit, maxReadLimit)))
+        )
+        let maxTailBytes = min(fileByteSize, UInt64(max(1, maxReadLimit)))
+        var attemptCount = 0
+
+        while true {
+            attemptCount += 1
+            let offset = fileByteSize - readLimit
+            let skipFirstLine: Bool
+            if offset > 0 {
+                do {
+                    try handle.seek(toOffset: offset - 1)
+                    let previousByte = try handle.read(upToCount: 1)
+                    skipFirstLine = previousByte?.first != 0x0A
+                } catch {
+                    skipFirstLine = true
+                }
+            } else {
+                skipFirstLine = false
+            }
+
+            let data: Data
+            do {
+                try handle.seek(toOffset: offset)
+                data = try handle.read(upToCount: Int(readLimit)) ?? Data()
+            } catch {
+                return nil
+            }
+
+            let parsed = parseTailHistoryData(
+                data,
+                threadId: threadId,
+                fileURL: fileURL,
+                limit: limit,
+                skipFirstLine: skipFirstLine,
+                omittedPrefix: offset > 0
+            )
+
+            if parsed.transcriptItems.count >= limit || offset == 0 {
+#if DEBUG
+                CodexAppServerTiming.log("localHistory.parse.end", [
+                    "thread": threadId,
+                    "mode": "tail",
+                    "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                    "file": fileURL.lastPathComponent,
+                    "file_mb": String(format: "%.1f", Double(fileByteSize) / 1_048_576),
+                    "read_mb": String(format: "%.1f", Double(data.count) / 1_048_576),
+                    "attempts": attemptCount,
+                    "items": parsed.transcriptItems.count,
+                    "total": parsed.totalDisplayableItemCount,
+                    "exact_total": parsed.totalDisplayableItemCountIsExact,
+                    "truncated": parsed.didTruncate,
+                ])
+#endif
+                return parsed
+            }
+
+            guard readLimit < maxTailBytes else {
+#if DEBUG
+                CodexAppServerTiming.log("localHistory.parse.tailFallback", [
+                    "thread": threadId,
+                    "ms": CodexAppServerTiming.ms(CodexAppServerTiming.elapsedMs(since: start)),
+                    "file": fileURL.lastPathComponent,
+                    "read_mb": String(format: "%.1f", Double(readLimit) / 1_048_576),
+                    "items": parsed.transcriptItems.count,
+                    "limit": limit,
+                ])
+#endif
+                try? handle.seek(toOffset: 0)
+                return nil
+            }
+            readLimit = min(maxTailBytes, readLimit * 2)
+        }
+    }
+
+    private static func parseHistoryData(
+        _ data: Data,
+        threadId: String,
+        fileURL: URL,
+        limit: Int,
+        skipFirstLine: Bool,
+        omittedPrefix: Bool,
+        chunkCount: Int
+    ) -> CodexSessionHistorySnapshot {
+        var lineBuffer = CodexAppServerLineBuffer()
+        var transcriptItems: [CodexAppServerTranscriptItem] = []
+        var totalDisplayableItemCount = 0
+        var lineCount = 0
+        var candidateLineCount = 0
+        var parsedLineCount = 0
+        var shouldSkipNextLine = skipFirstLine
+
+        func consumeIfComplete(_ line: Data) {
+            if shouldSkipNextLine {
+                shouldSkipNextLine = false
+                return
+            }
+            consumeHistoryLine(
+                line,
+                resolvedLimit: limit,
+                transcriptItems: &transcriptItems,
+                totalDisplayableItemCount: &totalDisplayableItemCount,
+                lineCount: &lineCount,
+                candidateLineCount: &candidateLineCount,
+                parsedLineCount: &parsedLineCount
+            )
+        }
+
+        for line in lineBuffer.append(data) {
+            consumeIfComplete(line)
+        }
+        if let finalLine = lineBuffer.finish() {
+            consumeIfComplete(finalLine)
+        }
+
+        if transcriptItems.count > limit {
+            transcriptItems = Array(transcriptItems.suffix(limit))
+        }
+        let exactTotal = !omittedPrefix
+        let reportedTotal = exactTotal
+            ? totalDisplayableItemCount
+            : max(totalDisplayableItemCount + 1, transcriptItems.count + 1)
+        return CodexSessionHistorySnapshot(
+            threadId: threadId,
+            fileURL: fileURL,
+            transcriptItems: transcriptItems,
+            totalDisplayableItemCount: reportedTotal,
+            totalDisplayableItemCountIsExact: exactTotal,
+            didTruncate: omittedPrefix || totalDisplayableItemCount > transcriptItems.count
+        )
+    }
+
+    private static func parseTailHistoryData(
+        _ data: Data,
+        threadId: String,
+        fileURL: URL,
+        limit: Int,
+        skipFirstLine: Bool,
+        omittedPrefix: Bool
+    ) -> CodexSessionHistorySnapshot {
+        var reversedItems: [CodexAppServerTranscriptItem] = []
+        reversedItems.reserveCapacity(limit)
+
+        data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+            var lineEnd = data.count
+            var index = data.count
+
+            func consumeLine(start: Int, end: Int) {
+                guard end > start else { return }
+                if skipFirstLine && start == 0 { return }
+                let line = Data(bytes: base.advanced(by: start), count: end - start)
+                guard shouldParseLine(line),
+                      let item = transcriptItem(from: line) else {
+                    return
+                }
+                reversedItems.append(item)
+            }
+
+            while index > 0 && reversedItems.count < limit {
+                index -= 1
+                guard base[index] == 0x0A else { continue }
+                consumeLine(start: index + 1, end: lineEnd)
+                lineEnd = index
+            }
+
+            if reversedItems.count < limit {
+                consumeLine(start: 0, end: lineEnd)
+            }
+        }
+
+        let transcriptItems = reversedItems.reversed()
+        let exactTotal = !omittedPrefix && reversedItems.count < limit
+        let reportedTotal = exactTotal
+            ? transcriptItems.count
+            : max(transcriptItems.count + 1, limit + 1)
+        return CodexSessionHistorySnapshot(
+            threadId: threadId,
+            fileURL: fileURL,
+            transcriptItems: Array(transcriptItems),
+            totalDisplayableItemCount: reportedTotal,
+            totalDisplayableItemCountIsExact: exactTotal,
+            didTruncate: omittedPrefix || reportedTotal > transcriptItems.count
+        )
+    }
+
+    private static func consumeHistoryLine(
+        _ line: Data,
+        resolvedLimit: Int,
+        transcriptItems: inout [CodexAppServerTranscriptItem],
+        totalDisplayableItemCount: inout Int,
+        lineCount: inout Int,
+        candidateLineCount: inout Int,
+        parsedLineCount: inout Int
+    ) {
+        lineCount += 1
+        guard shouldParseLine(line) else {
+            return
+        }
+        candidateLineCount += 1
+        guard let item = transcriptItem(from: line) else {
+            return
+        }
+        parsedLineCount += 1
+        totalDisplayableItemCount += 1
+        transcriptItems.append(item)
+        if transcriptItems.count > resolvedLimit * 2 {
+            transcriptItems.removeFirst(transcriptItems.count - resolvedLimit)
+        }
     }
 
     private static func shouldParseLine(_ line: Data) -> Bool {
@@ -1221,7 +2582,7 @@ enum CodexSessionHistoryLoader {
             return CodexAppServerTranscriptItem(
                 role: .event,
                 title: String(localized: "codexAppServer.event.warning", defaultValue: "Warning"),
-                body: CodexAppServerTranscriptPolicy.truncatedBody(message),
+                body: CodexAppServerTranscriptPolicy.truncatedBody(normalizedWarningMessage(message)),
                 date: date
             )
         default:

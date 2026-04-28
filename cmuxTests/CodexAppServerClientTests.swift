@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 #if canImport(cmux_DEV)
@@ -85,6 +86,74 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertEqual(input[0]["type"] as? String, "text")
         XCTAssertEqual(input[0]["text"] as? String, "Summarize this repo")
         XCTAssertNotNil(input[0]["textElements"] as? [Any])
+    }
+
+    func testTurnSteerRequestUsesExpectedTurnPrecondition() throws {
+        let request = CodexAppServerRequestFactory.turnSteerRequest(
+            id: 10,
+            threadId: "thr_123",
+            turnId: "turn_456",
+            text: "Adjust the current plan"
+        )
+
+        XCTAssertEqual(request["jsonrpc"] as? String, "2.0")
+        XCTAssertEqual(request["id"] as? Int, 10)
+        XCTAssertEqual(request["method"] as? String, "turn/steer")
+
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["threadId"] as? String, "thr_123")
+        XCTAssertEqual(params["expectedTurnId"] as? String, "turn_456")
+
+        let input = try XCTUnwrap(params["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 1)
+        XCTAssertEqual(input[0]["type"] as? String, "text")
+        XCTAssertEqual(input[0]["text"] as? String, "Adjust the current plan")
+    }
+
+    func testTurnInterruptRequestTargetsThreadAndTurn() throws {
+        let request = CodexAppServerRequestFactory.turnInterruptRequest(
+            id: 11,
+            threadId: "thr_123",
+            turnId: "turn_456"
+        )
+
+        XCTAssertEqual(request["jsonrpc"] as? String, "2.0")
+        XCTAssertEqual(request["id"] as? Int, 11)
+        XCTAssertEqual(request["method"] as? String, "turn/interrupt")
+
+        let params = try XCTUnwrap(request["params"] as? [String: Any])
+        XCTAssertEqual(params["threadId"] as? String, "thr_123")
+        XCTAssertEqual(params["turnId"] as? String, "turn_456")
+    }
+
+    func testCodexThreadIdNormalizationRejectsInvalidResumeIds() {
+        XCTAssertEqual(
+            CodexAppServerPanel.normalizedCodexThreadId("019d6637-e5cc-7cc0-a321-2c43b799036b"),
+            "019d6637-e5cc-7cc0-a321-2c43b799036b"
+        )
+        XCTAssertEqual(
+            CodexAppServerPanel.normalizedCodexThreadId("urn:uuid:019D6637-E5CC-7CC0-A321-2C43B799036B"),
+            "019d6637-e5cc-7cc0-a321-2c43b799036b"
+        )
+        XCTAssertNil(CodexAppServerPanel.normalizedCodexThreadId("codex"))
+        XCTAssertNil(CodexAppServerPanel.normalizedCodexThreadId("0"))
+    }
+
+    @MainActor
+    func testCodexPanelAutoStartsOnlyWhenResumingThread() {
+        let workspaceId = UUID()
+        let freshPanel = CodexAppServerPanel(
+            workspaceId: workspaceId,
+            cwd: "/tmp"
+        )
+        let resumingPanel = CodexAppServerPanel(
+            workspaceId: workspaceId,
+            cwd: "/tmp",
+            resumeThreadId: "019d6637-e5cc-7cc0-a321-2c43b799036b"
+        )
+
+        XCTAssertFalse(freshPanel.shouldAutoStart)
+        XCTAssertTrue(resumingPanel.shouldAutoStart)
     }
 
     func testResponseObjectUsesJsonRpcResponseShapeWithoutMethod() throws {
@@ -292,6 +361,51 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         ])
     }
 
+    func testLocalCodexHistoryLoaderTailParsesLargeJsonlWithoutExactTotal() throws {
+        let fileManager = FileManager.default
+        let threadId = "019d6637-e5cc-7cc0-a321-2c43b799036d"
+        let tempDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-codex-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: tempDirectory) }
+
+        let sessionDirectory = tempDirectory
+            .appendingPathComponent("2026/04/06", isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let fileURL = sessionDirectory
+            .appendingPathComponent("rollout-2026-04-06T21-33-52-\(threadId).jsonl")
+
+        var records: [[String: Any]] = [
+            [
+                "timestamp": "2026-04-06T21:33:52.000Z",
+                "type": "session_meta",
+                "payload": ["id": threadId],
+            ],
+        ]
+        for index in 0..<80 {
+            records.append(Self.responseItem(role: "assistant", text: "old \(index) " + String(repeating: "x", count: 80)))
+        }
+        records.append(Self.responseItem(role: "assistant", text: "new 1"))
+        records.append(Self.responseItem(role: "assistant", text: "new 2"))
+        records.append(Self.responseItem(role: "assistant", text: "new 3"))
+
+        let jsonl = try records.map(Self.jsonLine).joined(separator: "\n")
+        try jsonl.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let snapshot = CodexSessionHistoryLoader.loadHistorySync(
+            threadId: threadId,
+            limit: 2,
+            searchRoots: [tempDirectory],
+            tailParsingThreshold: 1,
+            tailInitialReadLimit: 768,
+            tailMaxReadLimit: 768
+        )
+
+        XCTAssertEqual(snapshot.transcriptItems.map(\.body), ["new 2", "new 3"])
+        XCTAssertTrue(snapshot.didTruncate)
+        XCTAssertFalse(snapshot.totalDisplayableItemCountIsExact)
+        XCTAssertGreaterThan(snapshot.totalDisplayableItemCount, snapshot.transcriptItems.count)
+    }
+
     func testLocalCodexHistoryLoaderIgnoresPlainUserResponseWarnings() throws {
         let fileManager = FileManager.default
         let threadId = "019d6637-e5cc-7cc0-a321-2c43b799036e"
@@ -486,6 +600,68 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertEqual(compactionEntries.count, 1)
         XCTAssertEqual(compactionEntries[0].kind, .compaction)
         XCTAssertEqual(compactionEntries[0].title, "Context automatically compacted")
+    }
+
+    func testTrajectoryTranscriptEntriesSummarizeHookEvents() {
+        let started = """
+        {
+          "run": {
+            "command": "/Users/lawrence/.codex/hooks.json",
+            "displayOrder": 8,
+            "eventName": "stop",
+            "sourcePath": "/Users/lawrence/.codex/hooks.json",
+            "status": "running"
+          },
+          "threadId": "019d6637-e5cc-7cc0-a321-2c43b799036b"
+        }
+        """
+        let completed = """
+        {
+          "run": {
+            "durationMs": 42,
+            "eventName": "stop",
+            "status": "completed"
+          },
+          "threadId": "019d6637-e5cc-7cc0-a321-2c43b799036b"
+        }
+        """
+
+        let entries = CodexTrajectoryTranscriptDisplayEntry.entries(from: [
+            Self.transcriptHook(method: "hook/started", body: started),
+            Self.transcriptHook(method: "hook/completed", body: completed),
+        ])
+
+        XCTAssertEqual(entries.count, 1)
+        XCTAssertEqual(entries[0].kind, .toolGroup)
+        XCTAssertEqual(entries[0].title, "2 hook events")
+        XCTAssertTrue(entries[0].block.text.contains("Started hook stop"))
+        XCTAssertTrue(entries[0].block.text.contains("Completed hook stop"))
+    }
+
+    func testRateLimitSummaryParsesPrimaryAndSecondaryWindows() throws {
+        let summary = try XCTUnwrap(
+            CodexAppServerRateLimitSummary(params: [
+                "rateLimits": [
+                    "primary": [
+                        "usedPercent": 11,
+                        "resetsAt": 1_777_354_261,
+                        "windowDurationMins": 300,
+                    ],
+                    "secondary": [
+                        "usedPercent": 2,
+                        "resetsAt": 1_777_941_061,
+                        "windowDurationMins": 10_080,
+                    ],
+                ],
+            ])
+        )
+
+        let primary = try XCTUnwrap(summary.primary)
+        let secondary = try XCTUnwrap(summary.secondary)
+        XCTAssertEqual(primary.displayPercent, "11%")
+        XCTAssertEqual(secondary.displayPercent, "2%")
+        XCTAssertEqual(primary.windowDurationMins, 300)
+        XCTAssertEqual(secondary.clampedUsedFraction, 0.02, accuracy: 0.001)
     }
 
     @MainActor
@@ -688,6 +864,149 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertEqual(entries.map(\.block.displayText), ["Warning\nneeds attention", "visible"])
     }
 
+    func testTranscriptContentStateShowsLoadingInsteadOfEmptyWhileStarting() {
+        XCTAssertEqual(
+            CodexAppServerTranscriptContentState.resolve(
+                hasTranscriptItems: false,
+                hasPendingRequests: false,
+                status: .starting,
+                loadingPhase: .idle
+            ),
+            .loading(.startingServer)
+        )
+
+        XCTAssertEqual(
+            CodexAppServerTranscriptContentState.resolve(
+                hasTranscriptItems: false,
+                hasPendingRequests: false,
+                status: .ready,
+                loadingPhase: .restoringHistory
+            ),
+            .loading(.restoringHistory)
+        )
+    }
+
+    func testTranscriptContentStatePrefersContentOverLoading() {
+        XCTAssertEqual(
+            CodexAppServerTranscriptContentState.resolve(
+                hasTranscriptItems: true,
+                hasPendingRequests: false,
+                status: .starting,
+                loadingPhase: .resumingThread
+            ),
+            .content
+        )
+
+        XCTAssertEqual(
+            CodexAppServerTranscriptContentState.resolve(
+                hasTranscriptItems: false,
+                hasPendingRequests: true,
+                status: .starting,
+                loadingPhase: .resumingThread
+            ),
+            .content
+        )
+    }
+
+    func testCodexPromptReturnKeyConvention() {
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 36,
+                modifierFlags: [],
+                hasMarkedText: false
+            ),
+            .submit
+        )
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 36,
+                modifierFlags: [.shift],
+                hasMarkedText: false
+            ),
+            .insertNewline
+        )
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 76,
+                modifierFlags: [],
+                hasMarkedText: false
+            ),
+            .submit
+        )
+    }
+
+    func testCodexPromptQueueAndInterruptKeyConvention() {
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 48,
+                modifierFlags: [],
+                hasMarkedText: false
+            ),
+            .queueFollowUp
+        )
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 53,
+                modifierFlags: [],
+                hasMarkedText: false
+            ),
+            .interrupt
+        )
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 48,
+                modifierFlags: [.shift],
+                hasMarkedText: false
+            ),
+            .passThrough
+        )
+    }
+
+    func testCodexPromptReturnKeyDoesNotInterruptCompositionOrModifiedShortcuts() {
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 36,
+                modifierFlags: [],
+                hasMarkedText: true
+            ),
+            .passThrough
+        )
+        XCTAssertEqual(
+            CodexPromptTextViewKeyAction.action(
+                keyCode: 36,
+                modifierFlags: [.command],
+                hasMarkedText: false
+            ),
+            .passThrough
+        )
+    }
+
+    func testCodexPromptSelectionRangesClampToPromptLength() {
+        let ranges = CodexPromptSelectionRange.normalized(
+            [
+                CodexPromptSelectionRange(location: 3, length: 20),
+                CodexPromptSelectionRange(location: 40, length: 4),
+            ],
+            textLength: 7
+        )
+
+        XCTAssertEqual(ranges, [
+            CodexPromptSelectionRange(location: 3, length: 4),
+            CodexPromptSelectionRange(location: 7, length: 0),
+        ])
+    }
+
+    func testCodexPromptSelectionRangesDefaultToTextEnd() {
+        XCTAssertEqual(
+            CodexPromptSelectionRange.normalized([], textLength: 6),
+            [CodexPromptSelectionRange(location: 6, length: 0)]
+        )
+        XCTAssertEqual(
+            CodexPromptSelectionRange.normalized([], textLength: 6, fallbackToEnd: false),
+            [CodexPromptSelectionRange(location: 0, length: 0)]
+        )
+    }
+
     func testTranscriptDisplayDoesNotCollapseWaitingTurn() {
         let items: [CodexAppServerTranscriptItem] = [
             CodexAppServerTranscriptItem(role: .user, title: "You", body: "old prompt"),
@@ -725,6 +1044,15 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
             title: name,
             body: body,
             presentation: .toolCall(name: name)
+        )
+    }
+
+    private static func transcriptHook(method: String, body: String) -> CodexAppServerTranscriptItem {
+        CodexAppServerTranscriptItem(
+            role: .event,
+            title: method,
+            body: body,
+            presentation: .hookEvent(method: method)
         )
     }
 

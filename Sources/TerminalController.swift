@@ -2556,6 +2556,10 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugShortcutSimulate(params: params))
         case "debug.type":
             return v2Result(id: id, self.v2DebugType(params: params))
+        case "debug.window.click":
+            return v2Result(id: id, self.v2DebugWindowClick(params: params))
+        case "debug.window.scroll":
+            return v2Result(id: id, self.v2DebugWindowScroll(params: params))
         case "debug.app.activate":
             return v2Result(id: id, self.v2DebugActivateApp())
         case "debug.command_palette.toggle":
@@ -2612,6 +2616,8 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugPanelSnapshotReset(params: params))
         case "debug.window.screenshot":
             return v2Result(id: id, self.v2DebugScreenshot(params: params))
+        case "debug.window.set_frame":
+            return v2Result(id: id, self.v2DebugWindowSetFrame(params: params))
 #endif
 
             default:
@@ -2798,6 +2804,8 @@ class TerminalController {
             "debug.shortcut.set",
             "debug.shortcut.simulate",
             "debug.type",
+            "debug.window.click",
+            "debug.window.scroll",
             "debug.app.activate",
             "debug.command_palette.toggle",
             "debug.command_palette.rename_tab.open",
@@ -2826,6 +2834,7 @@ class TerminalController {
             "debug.panel_snapshot",
             "debug.panel_snapshot.reset",
             "debug.window.screenshot",
+            "debug.window.set_frame",
         ])
 #endif
 
@@ -3450,6 +3459,19 @@ class TerminalController {
         if let i = params[key] as? Int { return i }
         if let n = params[key] as? NSNumber { return n.intValue }
         if let s = params[key] as? String { return Int(s) }
+        return nil
+    }
+
+    private func v2CGFloat(_ params: [String: Any], _ key: String) -> CGFloat? {
+        if let value = params[key] as? CGFloat { return value }
+        if let value = params[key] as? Double { return CGFloat(value) }
+        if let value = params[key] as? Float { return CGFloat(value) }
+        if let value = params[key] as? Int { return CGFloat(value) }
+        if let value = params[key] as? NSNumber { return CGFloat(value.doubleValue) }
+        if let value = params[key] as? String,
+           let parsed = Double(value.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return CGFloat(parsed)
+        }
         return nil
     }
 
@@ -5338,11 +5360,21 @@ class TerminalController {
                 newPanelId = ws.newBrowserSurface(inPane: paneId, url: url, focus: v2FocusAllowed())?.id
             } else if panelType == .codexAppServer {
                 let cwd = v2RawString(params, "cwd")?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let threadId = v2RawString(params, "thread_id")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let requestedThreadId = v2RawString(params, "thread_id")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let threadId = CodexAppServerPanel.normalizedCodexThreadId(requestedThreadId)
+                if requestedThreadId?.isEmpty == false, threadId == nil {
+                    result = .err(
+                        code: "invalid_params",
+                        message: "Invalid Codex thread_id. Expected a UUID.",
+                        data: nil
+                    )
+                    return
+                }
                 newPanelId = ws.newCodexAppServerSurface(
                     inPane: paneId,
                     cwd: cwd?.isEmpty == false ? cwd : nil,
-                    resumeThreadId: threadId?.isEmpty == false ? threadId : nil,
+                    resumeThreadId: threadId,
                     focus: v2FocusAllowed(requested: v2Bool(params, "focus") ?? true)
                 )?.id
             } else {
@@ -6671,13 +6703,23 @@ class TerminalController {
                 )?.id
             } else if panelType == .codexAppServer {
                 let cwd = v2RawString(params, "cwd")?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let threadId = v2RawString(params, "thread_id")?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let requestedThreadId = v2RawString(params, "thread_id")?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let threadId = CodexAppServerPanel.normalizedCodexThreadId(requestedThreadId)
+                if requestedThreadId?.isEmpty == false, threadId == nil {
+                    result = .err(
+                        code: "invalid_params",
+                        message: "Invalid Codex thread_id. Expected a UUID.",
+                        data: nil
+                    )
+                    return
+                }
                 newPanelId = ws.newCodexAppServerSplit(
                     from: focusedPanelId,
                     orientation: orientation,
                     insertFirst: insertFirst,
                     cwd: cwd?.isEmpty == false ? cwd : nil,
-                    resumeThreadId: threadId?.isEmpty == false ? threadId : nil,
+                    resumeThreadId: threadId,
                     focus: v2FocusAllowed()
                 )?.id
             } else {
@@ -11326,6 +11368,133 @@ class TerminalController {
         return result
     }
 
+    private func v2DebugWindowClick(params: [String: Any]) -> V2CallResult {
+        let requestedX = v2CGFloat(params, "x")
+        let requestedY = v2CGFloat(params, "y")
+
+        var result: V2CallResult = .err(code: "internal_error", message: "No window", data: nil)
+        v2MainSync {
+            guard let window = NSApp.keyWindow
+                ?? NSApp.mainWindow
+                ?? NSApp.windows.first(where: { $0.isVisible })
+                ?? NSApp.windows.first,
+                let contentView = window.contentView else {
+                result = .err(code: "not_found", message: "No window", data: nil)
+                return
+            }
+            if socketCommandAllowsInAppFocusMutations() {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
+
+            let x = requestedX ?? contentView.bounds.midX
+            let yFromTop = requestedY ?? contentView.bounds.midY
+            let locationInContent = NSPoint(
+                x: x,
+                y: contentView.bounds.height - yFromTop
+            )
+            guard contentView.bounds.contains(locationInContent) else {
+                result = .err(
+                    code: "invalid_params",
+                    message: "Click point is outside the content view",
+                    data: [
+                        "x": x,
+                        "y": yFromTop,
+                        "width": contentView.bounds.width,
+                        "height": contentView.bounds.height,
+                    ]
+                )
+                return
+            }
+
+            let targetView = contentView.hitTest(locationInContent) ?? contentView
+            let locationInWindow = contentView.convert(locationInContent, to: nil)
+            let timestamp = ProcessInfo.processInfo.systemUptime
+            let windowNumber = window.windowNumber
+            let down = NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: locationInWindow,
+                modifierFlags: [],
+                timestamp: timestamp,
+                windowNumber: windowNumber,
+                context: nil,
+                eventNumber: 0,
+                clickCount: 1,
+                pressure: 1
+            )
+            let up = NSEvent.mouseEvent(
+                with: .leftMouseUp,
+                location: locationInWindow,
+                modifierFlags: [],
+                timestamp: timestamp,
+                windowNumber: windowNumber,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 0
+            )
+
+            if let down {
+                targetView.mouseDown(with: down)
+            }
+            if let up {
+                targetView.mouseUp(with: up)
+            }
+            result = .ok([
+                "x": x,
+                "y": yFromTop,
+                "target": String(describing: type(of: targetView)),
+            ])
+        }
+        return result
+    }
+
+    private func v2DebugWindowScroll(params: [String: Any]) -> V2CallResult {
+        let deltaX = v2CGFloat(params, "delta_x") ?? v2CGFloat(params, "dx") ?? 0
+        let deltaY = v2CGFloat(params, "delta_y") ?? v2CGFloat(params, "dy") ?? 0
+        guard deltaX != 0 || deltaY != 0 else {
+            return .err(code: "invalid_params", message: "Missing non-zero delta_x/delta_y", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "internal_error", message: "No window", data: nil)
+        v2MainSync {
+            guard let window = NSApp.keyWindow
+                ?? NSApp.mainWindow
+                ?? NSApp.windows.first(where: { $0.isVisible })
+                ?? NSApp.windows.first,
+                let contentView = window.contentView else {
+                result = .err(code: "not_found", message: "No window", data: nil)
+                return
+            }
+            if socketCommandAllowsInAppFocusMutations() {
+                NSApp.activate(ignoringOtherApps: true)
+                window.makeKeyAndOrderFront(nil)
+            }
+
+            guard let cgEvent = CGEvent(
+                scrollWheelEvent2Source: nil,
+                units: .pixel,
+                wheelCount: 2,
+                wheel1: Int32(deltaY),
+                wheel2: Int32(deltaX),
+                wheel3: 0
+            ),
+                let event = NSEvent(cgEvent: cgEvent) else {
+                result = .err(code: "internal_error", message: "Failed to create scroll event", data: nil)
+                return
+            }
+
+            let locationInContent = NSPoint(x: contentView.bounds.midX, y: contentView.bounds.midY)
+            let targetView = contentView.hitTest(locationInContent) ?? contentView
+            targetView.scrollWheel(with: event)
+            result = .ok([
+                "delta_x": deltaX,
+                "delta_y": deltaY,
+            ])
+        }
+        return result
+    }
+
     private func v2DebugActivateApp() -> V2CallResult {
         let resp = activateApp()
         return resp == "OK" ? .ok([:]) : .err(code: "internal_error", message: resp, data: nil)
@@ -11783,6 +11952,46 @@ class TerminalController {
             "screenshot_id": parts[0],
             "path": parts[1]
         ])
+    }
+
+    private func v2DebugWindowSetFrame(params: [String: Any]) -> V2CallResult {
+        var payload: [String: Any]?
+        var failure: String?
+
+        DispatchQueue.main.sync {
+            guard let window = NSApp.mainWindow ?? NSApp.windows.first(where: { $0.isVisible }) else {
+                failure = "No window available"
+                return
+            }
+
+            var frame = window.frame
+            if let x = v2CGFloat(params, "x") {
+                frame.origin.x = x
+            }
+            if let y = v2CGFloat(params, "y") {
+                frame.origin.y = y
+            }
+            if let width = v2CGFloat(params, "width") {
+                frame.size.width = max(320, width)
+            }
+            if let height = v2CGFloat(params, "height") {
+                frame.size.height = max(240, height)
+            }
+
+            window.setFrame(frame, display: true, animate: false)
+            let applied = window.frame
+            payload = [
+                "x": applied.origin.x,
+                "y": applied.origin.y,
+                "width": applied.size.width,
+                "height": applied.size.height,
+            ]
+        }
+
+        if let failure {
+            return .err(code: "internal_error", message: failure, data: nil)
+        }
+        return .ok(payload ?? [:])
     }
 #endif
 

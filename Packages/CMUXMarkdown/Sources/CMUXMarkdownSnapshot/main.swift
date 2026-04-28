@@ -14,9 +14,10 @@ This paragraph has **strong text**, *emphasis*, `inline code`, ~~strikethrough~~
 
 ## Tool summary
 
-- [x] Parsed markdown blocks without an external renderer
-- Rendered inline styles through CoreText
+- [x] [AppDelegate.swift](file:///tmp/AppDelegate.swift) renders without coloring the bullet
+- [BrowserPanel.swift](file:///tmp/BrowserPanel.swift) renders without coloring the marker
 - Kept output selectable in the Codex transcript view
+1. [BrowserPanelView.swift](file:///tmp/BrowserPanelView.swift) keeps the number plain
 
 > Context automatically compacted
 > The thread is connected, and new messages will stream here.

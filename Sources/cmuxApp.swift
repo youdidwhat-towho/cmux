@@ -17,6 +17,12 @@ struct cmuxApp: App {
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
     @AppStorage(BrowserToolbarAccessorySpacingDebugSettings.key) private var browserToolbarAccessorySpacingRaw = BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing
+#if DEBUG
+    @AppStorage(CodexComposerDebugSettings.layoutLabVisibleKey)
+    private var showCodexComposerLayoutLab = CodexComposerDebugSettings.defaultShowLayoutLab
+    @AppStorage(CodexComposerDebugSettings.queueLabVisibleKey)
+    private var showCodexQueueLayoutLab = CodexComposerDebugSettings.defaultShowQueueLab
+#endif
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
     private var browserToolbarAccessorySpacing: Int {
@@ -295,6 +301,17 @@ struct cmuxApp: App {
 
 #if DEBUG
             CommandMenu("Debug") {
+                Toggle(
+                    String(localized: "menu.codexDebug.showComposerLayoutLab", defaultValue: "Show Composer Layout Lab"),
+                    isOn: $showCodexComposerLayoutLab
+                )
+                Toggle(
+                    String(localized: "menu.codexDebug.showQueueLayoutLab", defaultValue: "Show Queue Layout Lab"),
+                    isOn: $showCodexQueueLayoutLab
+                )
+
+                Divider()
+
                 Button("New Tab With Lorem Search Text") {
                     appDelegate.openDebugLoremTab(nil)
                 }
@@ -3441,7 +3458,7 @@ private struct TabBarBackdropLabVariant: Identifiable {
     let id: String
     let title: String
     let detail: String
-    let effect: BonsplitConfiguration.Appearance.SplitButtonBackdropEffect
+    let effect: TabBarBackdropLabSplitButtonBackdropEffect
     let chromeHex: String
     let tabBarHex: String
     let splitButtonBackdropHex: String
@@ -3454,6 +3471,51 @@ private struct TabBarBackdropLabVariant: Identifiable {
 
     var renderIdentity: String {
         "\(id)-\(chromeHex)-\(tabBarHex)-\(splitButtonBackdropHex)-\(paneHex)-\(borderHex)-\(String(format: "%.3f", opacity))-\(String(format: "%.1f", effect.fadeWidth))-\(String(format: "%.1f", effect.contentFadeWidth))-\(String(format: "%.1f", effect.solidWidth))-\(String(format: "%.2f", effect.fadeRampStartFraction))-\(String(format: "%.2f", effect.leadingOpacity))-\(String(format: "%.2f", effect.trailingOpacity))-\(String(format: "%.2f", effect.contentOcclusionFraction))-\(effect.masksTabContent ? 1 : 0)"
+    }
+}
+
+private enum TabBarBackdropLabSplitButtonBackdropStyle {
+    case translucentChrome
+    case hidden
+    case precompositedPaneBackground
+    case opaquePaneBackground
+    case opaqueBarBackground
+    case precompositedBarBackground
+    case windowBackground
+    case controlBackground
+}
+
+private struct TabBarBackdropLabSplitButtonBackdropEffect {
+    let style: TabBarBackdropLabSplitButtonBackdropStyle
+    let fadeWidth: CGFloat
+    let contentFadeWidth: CGFloat
+    let solidWidth: CGFloat
+    let fadeRampStartFraction: CGFloat
+    let leadingOpacity: CGFloat
+    let trailingOpacity: CGFloat
+    let contentOcclusionFraction: CGFloat
+    let masksTabContent: Bool
+
+    init(
+        style: TabBarBackdropLabSplitButtonBackdropStyle,
+        fadeWidth: CGFloat = 0,
+        contentFadeWidth: CGFloat = 0,
+        solidWidth: CGFloat = 0,
+        fadeRampStartFraction: CGFloat = 0,
+        leadingOpacity: CGFloat = 0,
+        trailingOpacity: CGFloat = 0,
+        contentOcclusionFraction: CGFloat = 0,
+        masksTabContent: Bool = false
+    ) {
+        self.style = style
+        self.fadeWidth = fadeWidth
+        self.contentFadeWidth = contentFadeWidth
+        self.solidWidth = solidWidth
+        self.fadeRampStartFraction = fadeRampStartFraction
+        self.leadingOpacity = leadingOpacity
+        self.trailingOpacity = trailingOpacity
+        self.contentOcclusionFraction = contentOcclusionFraction
+        self.masksTabContent = masksTabContent
     }
 }
 
@@ -3480,10 +3542,10 @@ private struct TabBarBackdropLabView: View {
         WindowChromeSeparatorColor.color(forChromeBackground: terminalColor)
     }
 
-    private var candidateBackdropEffect: BonsplitConfiguration.Appearance.SplitButtonBackdropEffect {
+    private var candidateBackdropEffect: TabBarBackdropLabSplitButtonBackdropEffect {
         let softness = CGFloat(min(max(0, candidateSoftness), 1))
         let productionSoftness = Workspace.bonsplitSplitButtonBackdropSoftness
-        let production = Workspace.bonsplitSplitButtonBackdropEffect()
+        let production = Self.productionSplitButtonBackdropEffect
         func interpolate(strong: CGFloat, production: CGFloat, soft: CGFloat) -> CGFloat {
             if softness <= productionSoftness {
                 let progress = softness / productionSoftness
@@ -3505,6 +3567,18 @@ private struct TabBarBackdropLabView: View {
             masksTabContent: true
         )
     }
+
+    private static let productionSplitButtonBackdropEffect: TabBarBackdropLabSplitButtonBackdropEffect = .init(
+        style: .translucentChrome,
+        fadeWidth: 99.75,
+        contentFadeWidth: 28.875,
+        solidWidth: 23.875,
+        fadeRampStartFraction: Workspace.bonsplitSplitButtonBackdropSoftness,
+        leadingOpacity: 0,
+        trailingOpacity: 0.8625,
+        contentOcclusionFraction: 0.6875,
+        masksTabContent: true
+    )
 
     private var variants: [TabBarBackdropLabVariant] {
         let chromeHex = surfaceColor.hexString(includeAlpha: true)
@@ -3792,7 +3866,7 @@ private struct TabBarBackdropLabView: View {
         id: String,
         title: String,
         detail: String,
-        effect: BonsplitConfiguration.Appearance.SplitButtonBackdropEffect,
+        effect: TabBarBackdropLabSplitButtonBackdropEffect,
         chromeHex: String,
         tabBarHex: String? = nil,
         splitButtonBackdropHex: String? = nil,
@@ -3925,14 +3999,10 @@ private struct TabBarBackdropLabSample: View {
             showSplitButtons: true,
             splitButtons: BonsplitConfiguration.SplitActionButton.defaults,
             splitButtonsOnHover: false,
-            splitButtonBackdropEffect: variant.effect,
             animationDuration: 0.0,
             enableAnimations: false,
             chromeColors: .init(
                 backgroundHex: variant.chromeHex,
-                tabBarBackgroundHex: variant.tabBarHex,
-                splitButtonBackdropHex: variant.splitButtonBackdropHex,
-                paneBackgroundHex: variant.paneHex,
                 borderHex: variant.borderHex
             )
         )
