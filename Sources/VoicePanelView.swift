@@ -14,6 +14,7 @@ struct VoicePanelView: View {
             VoiceRealtimeWebView(bridge: viewModel.bridge)
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
+                .allowsHitTesting(false)
                 .accessibilityHidden(true)
         }
         .background(Color(nsColor: .controlBackgroundColor))

@@ -17,6 +17,17 @@ struct VoiceToolExecutionResult {
 
 @MainActor
 final class VoiceToolExecutor {
+    private struct FocusTarget {
+        let targetType: String
+        let id: String
+    }
+
+    private var lastFocusTarget: FocusTarget?
+    private var lastWindowID: String?
+    private var lastWorkspaceID: String?
+    private var lastPaneID: String?
+    private var lastSurfaceID: String?
+
     var toolDefinitions: [[String: Any]] {
         [
             tool(
@@ -39,7 +50,8 @@ final class VoiceToolExecutor {
                     "title": stringProperty("Optional workspace title."),
                     "working_directory": stringProperty("Optional working directory."),
                     "initial_command": stringProperty("Optional command to run in the initial terminal."),
-                    "description": stringProperty("Optional workspace description.")
+                    "description": stringProperty("Optional workspace description."),
+                    "focus": booleanProperty("Select and focus the new workspace. Defaults to true.")
                 ]
             ),
             tool(
@@ -124,16 +136,15 @@ final class VoiceToolExecutor {
             ),
             tool(
                 name: "cmux_focus",
-                description: "Focus a cmux window, workspace, pane, or surface by UUID.",
+                description: "Focus a cmux window, workspace, pane, or surface by UUID. If the id is omitted, focus the most recently created or referenced object.",
                 properties: [
                     "target_type": [
                         "type": "string",
-                        "description": "Object type to focus.",
+                        "description": "Object type to focus. Omit this to focus the most recently created or referenced object.",
                         "enum": ["window", "workspace", "pane", "surface"]
                     ],
-                    "id": stringProperty("The UUID for the target.")
-                ],
-                required: ["target_type", "id"]
+                    "id": stringProperty("The UUID for the target. Omit this to focus the most recently created or referenced object of target_type.")
+                ]
             )
         ]
     }
@@ -150,12 +161,14 @@ final class VoiceToolExecutor {
             params["scrollback"] = boolValue(arguments["scrollback"]) ?? true
             return callV2(method: "surface.read_text", params: params)
         case "cmux_create_workspace":
-            return callV2(method: "workspace.create", params: selectedParams(arguments, keys: [
+            var params = selectedParams(arguments, keys: [
                 "title",
                 "working_directory",
                 "initial_command",
                 "description"
-            ]))
+            ])
+            params["focus"] = boolValue(arguments["focus"]) ?? true
+            return callV2(method: "workspace.create", params: params)
         case "cmux_create_terminal":
             var params = targetParams(from: arguments)
             params["type"] = "terminal"
@@ -242,22 +255,74 @@ final class VoiceToolExecutor {
     }
 
     private func focus(arguments: [String: Any]) -> VoiceToolExecutionResult {
-        guard let targetType = stringValue(arguments["target_type"]),
-              let id = stringValue(arguments["id"]) else {
+        guard let target = resolvedFocusTarget(from: arguments) else {
             return failure(message: "Missing focus target.", code: "missing_focus_target")
         }
 
+        switch target.targetType {
+        case "window":
+            return callV2(method: "window.focus", params: ["window_id": target.id])
+        case "workspace":
+            return callV2(method: "workspace.select", params: ["workspace_id": target.id])
+        case "pane":
+            return callV2(method: "pane.focus", params: ["pane_id": target.id])
+        case "surface":
+            return callV2(method: "surface.focus", params: ["surface_id": target.id])
+        default:
+            return failure(message: "Unsupported focus target: \(target.targetType)", code: "unsupported_focus_target")
+        }
+    }
+
+    private func resolvedFocusTarget(from arguments: [String: Any]) -> FocusTarget? {
+        let requestedTargetType = stringValue(arguments["target_type"])
+        let requestedID = stringValue(arguments["id"])
+
+        if let requestedTargetType,
+           let requestedID {
+            return FocusTarget(targetType: requestedTargetType, id: requestedID)
+        }
+
+        if let requestedTargetType,
+           let rememberedID = rememberedID(for: requestedTargetType) {
+            return FocusTarget(targetType: requestedTargetType, id: rememberedID)
+        }
+
+        if let requestedID,
+           let rememberedTargetType = rememberedTargetType(for: requestedID) ?? lastFocusTarget?.targetType {
+            return FocusTarget(targetType: rememberedTargetType, id: requestedID)
+        }
+
+        return lastFocusTarget
+    }
+
+    private func rememberedTargetType(for id: String) -> String? {
+        if lastWindowID == id {
+            return "window"
+        }
+        if lastWorkspaceID == id {
+            return "workspace"
+        }
+        if lastPaneID == id {
+            return "pane"
+        }
+        if lastSurfaceID == id {
+            return "surface"
+        }
+        return nil
+    }
+
+    private func rememberedID(for targetType: String) -> String? {
         switch targetType {
         case "window":
-            return callV2(method: "window.focus", params: ["window_id": id])
+            return lastWindowID
         case "workspace":
-            return callV2(method: "workspace.select", params: ["workspace_id": id])
+            return lastWorkspaceID
         case "pane":
-            return callV2(method: "pane.focus", params: ["pane_id": id])
+            return lastPaneID
         case "surface":
-            return callV2(method: "surface.focus", params: ["surface_id": id])
+            return lastSurfaceID
         default:
-            return failure(message: "Unsupported focus target: \(targetType)", code: "unsupported_focus_target")
+            return nil
         }
     }
 
@@ -275,11 +340,13 @@ final class VoiceToolExecutor {
                 return failure(message: response, code: "invalid_rpc_response", method: method)
             }
             if object["ok"] as? Bool == true {
-                return VoiceToolExecutionResult(payload: [
+                let payload: [String: Any] = [
                     "ok": true,
                     "method": method,
                     "result": object["result"] ?? NSNull()
-                ])
+                ]
+                rememberFocusTargets(from: payload)
+                return VoiceToolExecutionResult(payload: payload)
             }
             return VoiceToolExecutionResult(payload: [
                 "ok": false,
@@ -288,6 +355,26 @@ final class VoiceToolExecutor {
             ])
         } catch {
             return failure(message: error.localizedDescription, code: "rpc_encoding_failed", method: method)
+        }
+    }
+
+    private func rememberFocusTargets(from payload: [String: Any]) {
+        let result = (payload["result"] as? [String: Any]) ?? payload
+        if let windowID = stringValue(result["window_id"]) {
+            lastWindowID = windowID
+            lastFocusTarget = FocusTarget(targetType: "window", id: windowID)
+        }
+        if let workspaceID = stringValue(result["workspace_id"]) {
+            lastWorkspaceID = workspaceID
+            lastFocusTarget = FocusTarget(targetType: "workspace", id: workspaceID)
+        }
+        if let paneID = stringValue(result["pane_id"]) {
+            lastPaneID = paneID
+            lastFocusTarget = FocusTarget(targetType: "pane", id: paneID)
+        }
+        if let surfaceID = stringValue(result["surface_id"]) {
+            lastSurfaceID = surfaceID
+            lastFocusTarget = FocusTarget(targetType: "surface", id: surfaceID)
         }
     }
 
@@ -340,6 +427,7 @@ private func commonTargetProperties() -> [String: Any] {
     [
         "window_id": stringProperty("Optional target window UUID."),
         "workspace_id": stringProperty("Optional target workspace UUID."),
+        "pane_id": stringProperty("Optional target pane UUID."),
         "surface_id": stringProperty("Optional target surface UUID.")
     ]
 }

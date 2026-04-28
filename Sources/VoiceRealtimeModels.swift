@@ -224,6 +224,29 @@ enum VoiceRealtimeEventParser {
         return VoiceRealtimeTextDelta(itemID: itemID, text: transcript)
     }
 
+    static func speechStartedItemID(in event: [String: Any]) -> String? {
+        guard eventType(in: event) == "input_audio_buffer.speech_started" else {
+            return nil
+        }
+        return nonEmptyString(event["item_id"])
+    }
+
+    static func isActiveResponseError(in event: [String: Any]) -> Bool {
+        guard eventType(in: event) == "error" else { return false }
+        let code = errorCode(in: event)?.lowercased() ?? ""
+        let message = errorMessage(in: event)?.lowercased() ?? ""
+        return code.contains("conversation_already_has_active_response")
+            || code.contains("active_response")
+            || message.contains("active response")
+    }
+
+    static func errorCode(in event: [String: Any]) -> String? {
+        if let error = event["error"] as? [String: Any] {
+            return nonEmptyString(error["code"])
+        }
+        return nonEmptyString(event["code"])
+    }
+
     static func errorMessage(in event: [String: Any]) -> String? {
         if let error = event["error"] as? [String: Any] {
             return nonEmptyString(error["message"]) ?? nonEmptyString(error["code"])

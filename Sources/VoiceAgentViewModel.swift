@@ -17,6 +17,10 @@ final class VoiceAgentViewModel: ObservableObject {
     private var handledCallIDs: Set<String> = []
     private var activeAssistantItemID: UUID?
     private var userTranscriptItemIDsByRealtimeItemID: [String: UUID] = [:]
+    private var pendingUserTranscriptItemID: UUID?
+    private var isResponseActive = false
+    private var pendingResponseCreate = false
+    private var inFlightFunctionCallCount = 0
 
     init() {
         bridge.delegate = self
@@ -24,6 +28,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
     func connect() {
         guard !state.isActive else { return }
+        resetSessionState()
         state = .preparing
         append(.system, String(localized: "voice.log.preparing", defaultValue: "Preparing voice session."))
 
@@ -47,7 +52,7 @@ final class VoiceAgentViewModel: ObservableObject {
         bridge.disconnect()
         state = .disconnected
         currentActivity = ""
-        activeAssistantItemID = nil
+        resetSessionState()
         microphoneLevel = 0
         microphoneReady = false
     }
@@ -81,7 +86,7 @@ final class VoiceAgentViewModel: ObservableObject {
                 ]
             ]
         ])
-        bridge.sendClientEvent(["type": "response.create"])
+        requestResponseCreate()
     }
 
     private func append(_ role: VoiceTranscriptRole, _ text: String) {
@@ -104,9 +109,13 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func appendUserTranscriptionDelta(_ delta: VoiceRealtimeTextDelta) {
-        if let id = userTranscriptItemIDsByRealtimeItemID[delta.itemID],
+        if let id = transcriptIDForUserTranscription(itemID: delta.itemID),
            let index = transcript.firstIndex(where: { $0.id == id }) {
-            transcript[index].text += delta.text
+            if transcript[index].text == listeningPlaceholderText {
+                transcript[index].text = delta.text
+            } else {
+                transcript[index].text += delta.text
+            }
             return
         }
 
@@ -116,12 +125,53 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func completeUserTranscription(_ completed: VoiceRealtimeTextDelta) {
-        if let id = userTranscriptItemIDsByRealtimeItemID[completed.itemID],
+        if let id = transcriptIDForUserTranscription(itemID: completed.itemID),
            let index = transcript.firstIndex(where: { $0.id == id }) {
             transcript[index].text = completed.text
+            clearPendingUserTranscriptIfNeeded(id: id)
             return
         }
         append(.user, completed.text)
+    }
+
+    private func beginUserSpeech(itemID: String?) {
+        if let itemID,
+           userTranscriptItemIDsByRealtimeItemID[itemID] != nil {
+            return
+        }
+
+        if let pendingUserTranscriptItemID,
+            transcript.contains(where: { $0.id == pendingUserTranscriptItemID }) {
+            if let itemID {
+                userTranscriptItemIDsByRealtimeItemID[itemID] = pendingUserTranscriptItemID
+            }
+            return
+        }
+
+        let item = VoiceTranscriptItem(role: .user, text: listeningPlaceholderText)
+        pendingUserTranscriptItemID = item.id
+        if let itemID {
+            userTranscriptItemIDsByRealtimeItemID[itemID] = item.id
+        }
+        transcript.append(item)
+    }
+
+    private func transcriptIDForUserTranscription(itemID: String) -> UUID? {
+        if let id = userTranscriptItemIDsByRealtimeItemID[itemID] {
+            return id
+        }
+
+        if let pendingUserTranscriptItemID {
+            userTranscriptItemIDsByRealtimeItemID[itemID] = pendingUserTranscriptItemID
+            return pendingUserTranscriptItemID
+        }
+
+        return nil
+    }
+
+    private func clearPendingUserTranscriptIfNeeded(id: UUID) {
+        guard pendingUserTranscriptItemID == id else { return }
+        pendingUserTranscriptItemID = nil
     }
 
     private func finishAssistantMessage() {
@@ -129,20 +179,35 @@ final class VoiceAgentViewModel: ObservableObject {
     }
 
     private func handleServerEvent(_ event: [String: Any]) {
+        if VoiceRealtimeEventParser.isActiveResponseError(in: event) {
+            pendingResponseCreate = true
+            currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
+            return
+        }
+
         if let error = VoiceRealtimeEventParser.errorMessage(in: event) {
             append(.error, error)
             currentActivity = ""
             return
         }
 
-        switch VoiceRealtimeEventParser.eventType(in: event) {
+        let eventType = VoiceRealtimeEventParser.eventType(in: event)
+        var shouldFlushPendingResponse = false
+
+        switch eventType {
         case "input_audio_buffer.speech_started":
             currentActivity = String(localized: "voice.activity.listening", defaultValue: "Listening")
+            beginUserSpeech(itemID: VoiceRealtimeEventParser.speechStartedItemID(in: event))
         case "input_audio_buffer.speech_stopped", "response.created":
             currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
+            if eventType == "response.created" {
+                isResponseActive = true
+            }
         case "response.done":
+            isResponseActive = false
             currentActivity = ""
             finishAssistantMessage()
+            shouldFlushPendingResponse = true
         case "response.output_audio_transcript.done", "response.output_text.done":
             finishAssistantMessage()
         default:
@@ -165,14 +230,20 @@ final class VoiceAgentViewModel: ObservableObject {
             appendAssistantDelta(delta)
         }
 
-        for call in VoiceRealtimeEventParser.functionCalls(in: event) {
+        let functionCalls = VoiceRealtimeEventParser.functionCalls(in: event)
+        for call in functionCalls {
             handleFunctionCall(call)
+        }
+
+        if shouldFlushPendingResponse && functionCalls.isEmpty {
+            flushPendingResponseCreateIfNeeded()
         }
     }
 
     private func handleFunctionCall(_ call: VoiceRealtimeFunctionCall) {
         guard !handledCallIDs.contains(call.callID) else { return }
         handledCallIDs.insert(call.callID)
+        inFlightFunctionCallCount += 1
         append(
             .tool,
             String(
@@ -199,8 +270,46 @@ final class VoiceAgentViewModel: ObservableObject {
                     "output": result.outputJSONString
                 ]
             ])
-            bridge.sendClientEvent(["type": "response.create"])
+            inFlightFunctionCallCount = max(0, inFlightFunctionCallCount - 1)
+            if inFlightFunctionCallCount == 0 {
+                requestResponseCreate()
+            }
         }
+    }
+
+    private func requestResponseCreate() {
+        guard state.isConnected else { return }
+        if inFlightFunctionCallCount > 0 {
+            pendingResponseCreate = true
+            return
+        }
+        if isResponseActive {
+            pendingResponseCreate = true
+            return
+        }
+        pendingResponseCreate = false
+        isResponseActive = true
+        currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
+        bridge.sendClientEvent(["type": "response.create"])
+    }
+
+    private func flushPendingResponseCreateIfNeeded() {
+        guard pendingResponseCreate else { return }
+        requestResponseCreate()
+    }
+
+    private func resetSessionState() {
+        handledCallIDs.removeAll()
+        activeAssistantItemID = nil
+        userTranscriptItemIDsByRealtimeItemID.removeAll()
+        pendingUserTranscriptItemID = nil
+        isResponseActive = false
+        pendingResponseCreate = false
+        inFlightFunctionCallCount = 0
+    }
+
+    private var listeningPlaceholderText: String {
+        String(localized: "voice.activity.listening", defaultValue: "Listening")
     }
 
     private static let instructions = """
@@ -272,12 +381,14 @@ extension VoiceAgentViewModel: VoiceRealtimeWebRTCBridgeDelegate {
         case "disconnected":
             state = .disconnected
             currentActivity = ""
+            resetSessionState()
         case "failed":
             if !state.isActive {
                 break
             }
             state = .failed(String(localized: "voice.error.connectionFailed", defaultValue: "Voice connection failed."))
             currentActivity = ""
+            resetSessionState()
         default:
             break
         }

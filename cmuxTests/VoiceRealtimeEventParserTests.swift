@@ -7,6 +7,21 @@ import XCTest
 #endif
 
 final class VoiceRealtimeEventParserTests: XCTestCase {
+    @MainActor
+    func testVoiceToolsExposeWorkspaceFocusAndImplicitFocusTarget() {
+        let tools = VoiceToolExecutor().toolDefinitions
+
+        let createWorkspace = tools.first { $0["name"] as? String == "cmux_create_workspace" }
+        let workspaceParameters = createWorkspace?["parameters"] as? [String: Any]
+        let workspaceProperties = workspaceParameters?["properties"] as? [String: Any]
+        XCTAssertNotNil(workspaceProperties?["focus"])
+
+        let focus = tools.first { $0["name"] as? String == "cmux_focus" }
+        let focusParameters = focus?["parameters"] as? [String: Any]
+        let required = focusParameters?["required"] as? [String]
+        XCTAssertTrue(required?.isEmpty ?? false)
+    }
+
     func testExtractsFunctionCallsFromResponseDone() {
         let event: [String: Any] = [
             "type": "response.done",
@@ -63,5 +78,26 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
             VoiceRealtimeEventParser.userTranscriptionDelta(in: event),
             VoiceRealtimeTextDelta(itemID: "item_123", text: "open")
         )
+    }
+
+    func testReadsSpeechStartedItemID() {
+        let event: [String: Any] = [
+            "type": "input_audio_buffer.speech_started",
+            "item_id": "item_456"
+        ]
+
+        XCTAssertEqual(VoiceRealtimeEventParser.speechStartedItemID(in: event), "item_456")
+    }
+
+    func testDetectsActiveResponseError() {
+        let event: [String: Any] = [
+            "type": "error",
+            "error": [
+                "code": "conversation_already_has_active_response",
+                "message": "Conversation already has an active response in progress."
+            ]
+        ]
+
+        XCTAssertTrue(VoiceRealtimeEventParser.isActiveResponseError(in: event))
     }
 }

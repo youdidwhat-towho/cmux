@@ -7,6 +7,23 @@ protocol VoiceRealtimeWebRTCBridgeDelegate: AnyObject {
 }
 
 @MainActor
+private final class VoiceRealtimeWKWebView: WKWebView {
+    override var acceptsFirstResponder: Bool { false }
+
+    override func becomeFirstResponder() -> Bool {
+        false
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
+@MainActor
 final class VoiceRealtimeWebRTCBridge: NSObject {
     weak var delegate: VoiceRealtimeWebRTCBridgeDelegate?
 
@@ -24,7 +41,7 @@ final class VoiceRealtimeWebRTCBridge: NSObject {
         configuration.suppressesIncrementalRendering = true
 
         self.userContentController = userContentController
-        self.webView = WKWebView(frame: .zero, configuration: configuration)
+        self.webView = VoiceRealtimeWKWebView(frame: .zero, configuration: configuration)
 
         super.init()
 
