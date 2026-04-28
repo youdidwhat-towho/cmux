@@ -928,6 +928,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let isRunningUnderXCTest = isRunningUnderXCTest(env)
         let telemetryEnabled = TelemetrySettings.enabledForCurrentLaunch
         AppIconLaunchState.markDidFinishLaunching()
+        syncActivationPolicy()
 
         claimAuthCallbackURLSchemes()
 
@@ -1057,7 +1058,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if !isRunningUnderXCTest {
             configureUserNotifications()
             installMenuBarVisibilityObserver()
-            syncMenuBarExtraVisibility()
+            syncApplicationPresentationPreferences()
             updateController.startUpdaterIfNeeded()
         }
         titlebarAccessoryController.start()
@@ -6529,6 +6530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let store = TerminalNotificationStore.shared
         menuBarExtraController = MenuBarExtraController(
             notificationStore: store,
+            onShowMainWindow: { [weak self] in
+                self?.showMainWindowFromMenuBar()
+            },
             onShowNotifications: { [weak self] in
                 self?.showNotificationsPopoverFromMenuBar()
             },
@@ -6562,13 +6566,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             queue: .main
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
-                self?.syncMenuBarExtraVisibility()
+                self?.syncApplicationPresentationPreferences()
             }
         }
     }
 
+    private func syncApplicationPresentationPreferences(defaults: UserDefaults = .standard) {
+        syncActivationPolicy(defaults: defaults)
+        syncMenuBarExtraVisibility(defaults: defaults)
+    }
+
+    private func syncActivationPolicy(defaults: UserDefaults = .standard) {
+        MenuBarOnlySettings.applyActivationPolicy(defaults: defaults)
+    }
+
     private func syncMenuBarExtraVisibility(defaults: UserDefaults = .standard) {
-        if MenuBarExtraSettings.showsMenuBarExtra(defaults: defaults) {
+        if MenuBarExtraSettings.shouldInstallMenuBarExtra(defaults: defaults) {
             setupMenuBarExtra()
             return
         }
@@ -6619,6 +6632,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func refreshMenuBarExtraForDebug() {
         menuBarExtraController?.refreshForDebugControls()
+    }
+
+    func showMainWindowFromMenuBar() {
+        let context: MainWindowContext? = {
+            if let keyWindow = NSApp.keyWindow,
+               let keyContext = contextForMainTerminalWindow(keyWindow) {
+                return keyContext
+            }
+            if let mainWindow = NSApp.mainWindow,
+               let mainContext = contextForMainTerminalWindow(mainWindow) {
+                return mainContext
+            }
+            if let visibleContext = sortedMainWindowContextsForSessionSnapshot().first(where: { context in
+                guard let window = resolvedWindow(for: context) else { return false }
+                return window.isVisible && !window.isMiniaturized
+            }) {
+                return visibleContext
+            }
+            return sortedMainWindowContextsForSessionSnapshot().first
+        }()
+
+        let window: NSWindow? = {
+            if let context {
+                if let window = resolvedWindow(for: context) {
+                    return window
+                }
+                discardOrphanedMainWindowContext(context)
+            }
+            let windowId = ensureInitialMainWindowIfNeeded(shouldActivate: false)
+            return windowForMainWindowId(windowId)
+        }()
+
+        guard let window else {
+            NSSound.beep()
+            return
+        }
+
+        NSApp.unhide(nil)
+        bringToFront(window)
     }
 
     func showNotificationsPopoverFromMenuBar() {

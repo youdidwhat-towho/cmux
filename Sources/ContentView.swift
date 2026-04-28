@@ -625,6 +625,17 @@ private final class PassthroughWindowOverlayContainerView: NSView {
     }
 }
 
+@MainActor
+private final class NativeTitlebarBackdropView: NSView {
+    override var isOpaque: Bool {
+        layer?.isOpaque ?? false
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        nil
+    }
+}
+
 #if DEBUG
 private func debugCommandPaletteWindowSummary(_ window: NSWindow?) -> String {
     guard let window else { return "nil" }
@@ -1527,6 +1538,7 @@ struct ContentView: View {
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
     @EnvironmentObject var cmuxConfigStore: CmuxConfigStore
     @EnvironmentObject var fileExplorerState: FileExplorerState
+    @Environment(\.colorScheme) private var colorScheme
     @State private var sidebarWidth: CGFloat = 200
     @State private var hoveredResizerHandles: Set<SidebarResizerHandle> = []
     @State private var isResizerDragging = false
@@ -1916,6 +1928,7 @@ struct ContentView: View {
         static let workspaceHasBelow = "workspace.hasBelow"
         static let workspaceHasUnread = "workspace.hasUnread"
         static let workspaceHasRead = "workspace.hasRead"
+        static let sidebarMatchTerminalBackground = "sidebar.matchTerminalBackground"
 
         static let hasFocusedPanel = "panel.hasFocus"
         static let panelName = "panel.name"
@@ -2439,6 +2452,7 @@ struct ContentView: View {
             updateViewModel: updateViewModel,
             fileExplorerState: fileExplorerState,
             onSendFeedback: presentFeedbackComposer,
+            titlebarHeight: titlebarPadding,
             selection: $sidebarSelectionState.selection,
             selectedTabIds: $selectedTabIds,
             lastSidebarSelectionIndex: $lastSidebarSelectionIndex
@@ -2449,7 +2463,7 @@ struct ContentView: View {
 
     /// Space at top of content area for the titlebar. This must be at least the actual titlebar
     /// height; otherwise controls like Bonsplit tab dragging can be interpreted as window drags.
-    @State private var titlebarPadding: CGFloat = 32
+    @State private var titlebarPadding: CGFloat = WindowChromeMetrics.defaultTitlebarHeight
     /// SwiftUI WindowGroup windows can still report a titlebar safe area; manually created
     /// main windows use MainWindowHostingView and report zero.
     @State private var hostingSafeAreaTop: CGFloat = 0
@@ -2480,7 +2494,7 @@ struct ContentView: View {
         return -max(0, min(titlebarPadding, hostingSafeAreaTop))
     }
 
-    private var terminalContent: some View {
+    private func terminalContent(appearance: WindowAppearanceSnapshot) -> some View {
         let mountedWorkspaceIdSet = Set(mountedWorkspaceIds)
         let mountedWorkspaces = tabManager.tabs.filter { mountedWorkspaceIdSet.contains($0.id) }
         let selectedWorkspaceId = tabManager.selectedTabId
@@ -2541,13 +2555,13 @@ struct ContentView: View {
         .overlay(alignment: .top) {
             if !isMinimalMode {
                 // Titlebar overlay is only over terminal content, not the sidebar.
-                customTitlebar
+                customTitlebar(appearance: appearance)
             }
         }
     }
 
-    private var terminalContentWithSidebarDropOverlay: some View {
-        terminalContent
+    private func terminalContentWithSidebarDropOverlay(appearance: WindowAppearanceSnapshot) -> some View {
+        terminalContent(appearance: appearance)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .layoutPriority(1)
             .overlay {
@@ -2555,16 +2569,13 @@ struct ContentView: View {
             }
     }
 
-    private var terminalContentWithRightSidebarPanel: some View {
+    private func terminalContentWithRightSidebarPanel(appearance: WindowAppearanceSnapshot) -> some View {
         // File explorer is always in the view tree. Visibility is controlled by
         // frame width (0 when hidden), avoiding SwiftUI view insertion/removal
         // and all associated transition animations.
         return HStack(spacing: 0) {
-            terminalContentWithSidebarDropOverlay
-            if rightSidebarVisible {
-                Divider()
-            }
-            rightSidebarPanelWithBackdrop
+            terminalContentWithSidebarDropOverlay(appearance: appearance)
+            rightSidebarPanelWithBackdrop(appearance: appearance)
         }
     }
 
@@ -2576,10 +2587,15 @@ struct ContentView: View {
         rightSidebarVisible ? fileExplorerWidth : 0
     }
 
-    private func sidebarBackdropLayer(width: CGFloat) -> some View {
-        SidebarBackdrop()
+    private func sidebarBackdropLayer(
+        width: CGFloat,
+        role: WindowBackdropRole,
+        appearance: WindowAppearanceSnapshot
+    ) -> some View {
+        WindowBackdropLayer(role: role, snapshot: appearance)
             .ignoresSafeArea()
             .frame(width: width)
+            .clipShape(RoundedRectangle(cornerRadius: appearance.sidebarSettings.materialPolicy.cornerRadius, style: .continuous))
             .clipped()
             .allowsHitTesting(false)
     }
@@ -2587,24 +2603,31 @@ struct ContentView: View {
     private func sidebarPanelContainer<Content: View>(
         width: CGFloat,
         alignment: Alignment,
+        role: WindowBackdropRole,
+        appearance: WindowAppearanceSnapshot,
         @ViewBuilder content: () -> Content
     ) -> some View {
         ZStack(alignment: alignment) {
-            sidebarBackdropLayer(width: width)
+            sidebarBackdropLayer(width: width, role: role, appearance: appearance)
             content()
         }
         .frame(width: width)
     }
 
-    private var sidebarPanelWithBackdrop: some View {
-        sidebarPanelContainer(width: sidebarWidth, alignment: .leading) {
+    private func sidebarPanelWithBackdrop(appearance: WindowAppearanceSnapshot) -> some View {
+        sidebarPanelContainer(width: sidebarWidth, alignment: .leading, role: .leftSidebar, appearance: appearance) {
             sidebarView
         }
     }
 
-    private var rightSidebarPanelWithBackdrop: some View {
-        sidebarPanelContainer(width: rightSidebarWidth, alignment: .trailing) {
+    private func rightSidebarPanelWithBackdrop(appearance: WindowAppearanceSnapshot) -> some View {
+        sidebarPanelContainer(width: rightSidebarWidth, alignment: .trailing, role: .rightSidebar, appearance: appearance) {
             rightSidebarPanel
+        }
+        .overlay(alignment: .leading) {
+            if rightSidebarVisible {
+                WindowChromeBorder(orientation: .vertical)
+            }
         }
     }
 
@@ -2613,6 +2636,7 @@ struct ContentView: View {
             fileExplorerStore: fileExplorerStore,
             fileExplorerState: fileExplorerState,
             sessionIndexStore: sessionIndexStore,
+            titlebarHeight: titlebarPadding,
             onResumeSession: { entry in
                 resumeSession(entry: entry)
             }
@@ -2647,6 +2671,14 @@ struct ContentView: View {
 
     @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
     @AppStorage("sidebarMatchTerminalBackground") private var sidebarMatchTerminalBackground = false
+    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
+    @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
+    @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
+    @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
+    @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
+    @AppStorage("sidebarState") private var sidebarStateSetting = SidebarStateOption.followWindow.rawValue
+    @AppStorage("sidebarCornerRadius") private var sidebarCornerRadius = 0.0
+    @AppStorage("sidebarBlurOpacity") private var sidebarBlurOpacity = 1.0
 
     // Background glass settings
     @AppStorage("bgGlassTintHex") private var bgGlassTintHex = "#000000"
@@ -2656,9 +2688,28 @@ struct ContentView: View {
 
     @State private var titlebarLeadingInset: CGFloat = 12
     private var windowIdentifier: String { "cmux.main.\(windowId.uuidString)" }
-    private var fakeTitlebarTextColor: Color {
+    private var windowAppearanceSnapshot: WindowAppearanceSnapshot {
         _ = titlebarThemeGeneration
-        let ghosttyBackground = GhosttyApp.shared.defaultBackgroundColor
+        return WindowAppearanceSnapshot.current(
+            unifySurfaceBackdrops: sidebarMatchTerminalBackground,
+            colorScheme: colorScheme,
+            sidebarMaterial: sidebarMaterial,
+            sidebarBlendMode: sidebarBlendMode,
+            sidebarState: sidebarStateSetting,
+            sidebarTintHex: sidebarTintHex,
+            sidebarTintHexLight: sidebarTintHexLight,
+            sidebarTintHexDark: sidebarTintHexDark,
+            sidebarTintOpacity: sidebarTintOpacity,
+            sidebarCornerRadius: sidebarCornerRadius,
+            sidebarBlurOpacity: sidebarBlurOpacity,
+            bgGlassEnabled: bgGlassEnabled,
+            bgGlassTintHex: bgGlassTintHex,
+            bgGlassTintOpacity: bgGlassTintOpacity
+        )
+    }
+
+    private func fakeTitlebarTextColor(appearance: WindowAppearanceSnapshot) -> Color {
+        let ghosttyBackground = appearance.terminalBackgroundColor
         return ghosttyBackground.isLightColor
             ? Color.black.opacity(0.78)
             : Color.white.opacity(0.82)
@@ -2684,7 +2735,7 @@ struct ContentView: View {
         )
     }
 
-    private var customTitlebar: some View {
+    private func customTitlebar(appearance: WindowAppearanceSnapshot) -> some View {
         ZStack {
             // Enable window dragging from the titlebar strip without making the entire content
             // view draggable (which breaks drag gestures like tab reordering).
@@ -2706,7 +2757,7 @@ struct ContentView: View {
 
                 Text(titlebarText)
                     .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(fakeTitlebarTextColor)
+                    .foregroundColor(fakeTitlebarTextColor(appearance: appearance))
                     .lineLimit(1)
                     .allowsHitTesting(false)
 
@@ -2722,20 +2773,8 @@ struct ContentView: View {
         .frame(maxWidth: .infinity)
         .contentShape(Rectangle())
         .background(TitlebarDoubleClickMonitorView())
-        .background({
-            // The terminal background is provided by a single CALayer
-            // (backgroundView in GhosttySurfaceScrollView), so the titlebar
-            // opacity matches the configured value directly.
-            let alpha = CGFloat(GhosttyApp.shared.defaultBackgroundOpacity)
-            return TitlebarLayerBackground(
-                backgroundColor: GhosttyApp.shared.defaultBackgroundColor,
-                opacity: alpha
-            )
-        }())
         .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Color(nsColor: .separatorColor))
-                .frame(height: 1)
+            WindowChromeBorder(orientation: .horizontal)
         }
     }
 
@@ -2936,7 +2975,7 @@ struct ContentView: View {
         return dir.isEmpty ? nil : dir
     }
 
-    private var contentAndSidebarLayout: AnyView {
+    private func contentAndSidebarLayout(appearance: WindowAppearanceSnapshot) -> AnyView {
         let layout: AnyView
         // When matching terminal background, use HStack so both sidebar and terminal
         // sit directly on the window background with no intermediate layers.
@@ -2949,17 +2988,14 @@ struct ContentView: View {
             layout = AnyView(
                 ZStack(alignment: .leading) {
                     HStack(spacing: 0) {
-                        terminalContentWithSidebarDropOverlay
+                        terminalContentWithSidebarDropOverlay(appearance: appearance)
                             .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
-                        if rightSidebarVisible {
-                            Divider()
-                        }
-                        rightSidebarPanelWithBackdrop
+                        rightSidebarPanelWithBackdrop(appearance: appearance)
                     }
                     if sidebarState.isVisible {
-                        sidebarPanelWithBackdrop
+                        sidebarPanelWithBackdrop(appearance: appearance)
                     }
                 }
             )
@@ -2968,9 +3004,9 @@ struct ContentView: View {
             layout = AnyView(
                 HStack(spacing: 0) {
                     if sidebarState.isVisible {
-                        sidebarPanelWithBackdrop
+                        sidebarPanelWithBackdrop(appearance: appearance)
                     }
-                    terminalContentWithRightSidebarPanel
+                    terminalContentWithRightSidebarPanel(appearance: appearance)
                 }
             )
         }
@@ -2993,8 +3029,15 @@ struct ContentView: View {
     }
 
     var body: some View {
+        let appearance = windowAppearanceSnapshot
         var view = AnyView(
-            contentAndSidebarLayout
+            ZStack(alignment: .topLeading) {
+                WindowBackdropLayer(role: .windowRoot, snapshot: appearance)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+
+                contentAndSidebarLayout(appearance: appearance)
+            }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .overlay(alignment: .topLeading) {
                     if isFullScreen && sidebarState.isVisible && !isMinimalMode {
@@ -3150,6 +3193,18 @@ struct ContentView: View {
             guard let tabId = notification.userInfo?[GhosttyNotificationKey.tabId] as? UUID,
                   tabId == tabManager.selectedTabId else { return }
             scheduleTitlebarTextRefresh()
+        })
+
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { notification in
+            let payloadHex = (notification.userInfo?[GhosttyNotificationKey.backgroundColor] as? NSColor)?.hexString()
+            let eventId = (notification.userInfo?[GhosttyNotificationKey.backgroundEventId] as? NSNumber)?.uint64Value
+            let source = notification.userInfo?[GhosttyNotificationKey.backgroundSource] as? String
+            scheduleTitlebarThemeRefresh(
+                reason: "ghosttyDefaultBackgroundDidChange",
+                backgroundEventId: eventId,
+                backgroundSource: source,
+                notificationPayloadHex: payloadHex
+            )
         })
 
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .ghosttyDidFocusTab)) { _ in
@@ -3525,6 +3580,7 @@ struct ContentView: View {
         })
 
         view = AnyView(view.onChange(of: sidebarMatchTerminalBackground) { _ in
+            tabManager.applyWindowBackdropModeForAllTabs(reason: "sidebarMatchTerminalBackgroundChanged")
             guard sidebarState.isVisible,
                   sidebarBlendMode == SidebarBlendModeOption.withinWindow.rawValue else { return }
             if let observedWindow {
@@ -3568,7 +3624,7 @@ struct ContentView: View {
             removeSidebarResizerPointerMonitor()
         })
 
-        view = AnyView(view.background(WindowAccessor { [sidebarBlendMode, bgGlassEnabled, bgGlassTintHex, bgGlassTintOpacity] window in
+        view = AnyView(view.background(WindowAccessor { [appearance] window in
             window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
             window.isRestorable = false
             window.titlebarAppearsTransparent = true
@@ -3596,8 +3652,14 @@ struct ContentView: View {
 
             // Keep content below the titlebar so drags on Bonsplit's tab bar don't
             // get interpreted as window drags.
+            // User settings decide whether window glass is active. The native Tahoe
+            // NSGlassEffectView path vs the older NSVisualEffectView fallback is chosen
+            // inside WindowGlassEffect.apply.
+            let currentThemeBackground = appearance.compositedTerminalBackgroundColor
+            let shouldApplyWindowGlass = appearance.windowGlassSettings.shouldApply()
+            let shouldForceTransparentHosting = appearance.shouldUseTransparentHosting()
             let computedTitlebarHeight = window.frame.height - window.contentLayoutRect.height
-            let nextPadding = max(28, min(72, computedTitlebarHeight))
+            let nextPadding = WindowChromeMetrics.clampedTitlebarHeight(computedTitlebarHeight)
             let nextSafeAreaTop = max(0, window.contentView?.safeAreaInsets.top ?? 0)
             if abs(titlebarPadding - nextPadding) > 0.5 {
                 DispatchQueue.main.async {
@@ -3609,23 +3671,12 @@ struct ContentView: View {
                     hostingSafeAreaTop = nextSafeAreaTop
                 }
             }
+            removeNativeTitlebarBackdrop(in: window)
 #if DEBUG
             if ProcessInfo.processInfo.environment["CMUX_UI_TEST_MODE"] == "1" {
                 UpdateLogStore.shared.append("ui test window accessor: id=\(windowIdentifier) visible=\(window.isVisible)")
             }
 #endif
-            // User settings decide whether window glass is active. The native Tahoe
-            // NSGlassEffectView path vs the older NSVisualEffectView fallback is chosen
-            // inside WindowGlassEffect.apply.
-            let currentThemeBackground = GhosttyBackgroundTheme.currentColor()
-            let shouldApplyWindowGlass = cmuxShouldApplyWindowGlass(
-                sidebarBlendMode: sidebarBlendMode,
-                bgGlassEnabled: bgGlassEnabled,
-                glassEffectAvailable: WindowGlassEffect.isAvailable
-            )
-            let shouldForceTransparentHosting =
-                shouldApplyWindowGlass || currentThemeBackground.alphaComponent < 0.999
-
             if shouldForceTransparentHosting {
                 window.isOpaque = false
                 // Keep the window clear whenever translucency is active. Relying only on
@@ -3644,13 +3695,18 @@ struct ContentView: View {
 
             if shouldApplyWindowGlass {
                 // Apply liquid glass effect to the window with tint from settings
-                let tintColor = (NSColor(hex: bgGlassTintHex) ?? .black).withAlphaComponent(bgGlassTintOpacity)
-                WindowGlassEffect.apply(to: window, tintColor: tintColor)
+                WindowGlassEffect.apply(to: window, tintColor: appearance.windowGlassSettings.tintColor)
             } else {
                 WindowGlassEffect.remove(from: window)
             }
             AppDelegate.shared?.attachUpdateAccessory(to: window)
             AppDelegate.shared?.applyWindowDecorations(to: window)
+            // Let cmux supply the translucent titlebar fills. AppKit's native
+            // material otherwise blends a lighter strip over the terminal area.
+            syncNativeTitlebarBackdrop(
+                in: window,
+                enabled: true
+            )
             AppDelegate.shared?.registerMainWindow(
                 window,
                 windowId: windowId,
@@ -3919,6 +3975,215 @@ struct ContentView: View {
         guard let window = NSApp.windows.first(where: { $0.identifier?.rawValue == windowIdentifier }) else { return }
         let tintColor = (NSColor(hex: bgGlassTintHex) ?? .black).withAlphaComponent(bgGlassTintOpacity)
         WindowGlassEffect.updateTint(to: window, color: tintColor)
+    }
+
+    private func removeNativeTitlebarBackdrop(in window: NSWindow) {
+        guard let contentView = window.contentView,
+              let themeFrame = contentView.superview else { return }
+
+        let identifier = NSUserInterfaceItemIdentifier("cmux.nativeTitlebarBackdrop")
+        let existing = themeFrame.subviews.first { $0.identifier == identifier } as? NativeTitlebarBackdropView
+        existing?.removeFromSuperview()
+    }
+
+    private func syncNativeTitlebarBackdrop(
+        in window: NSWindow,
+        enabled: Bool
+    ) {
+        guard let titlebarContainer = nativeTitlebarContainer(in: window) else { return }
+        let titlebarView = firstNativeDescendant(
+            in: titlebarContainer,
+            className: "NSTitlebarView",
+            includeRoot: true
+        )
+        let titlebarBackgroundViews = nativeDescendants(
+            in: titlebarContainer,
+            className: "NSTitlebarBackgroundView"
+        )
+        let effectViews = nativeDescendants(in: titlebarContainer, className: "NSVisualEffectView")
+
+        if enabled {
+            rememberNativeTitlebarBackdropState(
+                titlebarContainer: titlebarContainer,
+                titlebarView: titlebarView,
+                titlebarBackgroundViews: titlebarBackgroundViews,
+                effectViews: effectViews
+            )
+        } else {
+            restoreNativeTitlebarBackdropState(
+                titlebarContainer: titlebarContainer,
+                titlebarView: titlebarView,
+                titlebarBackgroundViews: titlebarBackgroundViews,
+                effectViews: effectViews
+            )
+            return
+        }
+
+        titlebarContainer.wantsLayer = true
+        titlebarContainer.layer?.backgroundColor = nil
+        titlebarContainer.layer?.isOpaque = false
+        titlebarView?.wantsLayer = true
+        titlebarView?.layer?.backgroundColor = nil
+        titlebarView?.layer?.isOpaque = false
+        for titlebarBackgroundView in titlebarBackgroundViews {
+            titlebarBackgroundView.isHidden = true
+        }
+        for effectView in effectViews {
+            effectView.isHidden = true
+        }
+        window.titlebarAppearsTransparent = true
+    }
+
+    private static var unifiedTitlebarLayerAppliedKey: UInt8 = 0
+    private static var unifiedTitlebarLayerColorKey: UInt8 = 0
+    private static var unifiedTitlebarLayerOpaqueKey: UInt8 = 0
+    private static var unifiedTitlebarHiddenAppliedKey: UInt8 = 0
+    private static var unifiedTitlebarHiddenKey: UInt8 = 0
+
+    private func rememberNativeTitlebarBackdropState(
+        titlebarContainer: NSView,
+        titlebarView: NSView?,
+        titlebarBackgroundViews: [NSView],
+        effectViews: [NSView]
+    ) {
+        rememberNativeTitlebarLayerState(titlebarContainer)
+        if let titlebarView {
+            rememberNativeTitlebarLayerState(titlebarView)
+        }
+        for titlebarBackgroundView in titlebarBackgroundViews {
+            rememberNativeTitlebarHiddenState(titlebarBackgroundView)
+        }
+        for effectView in effectViews {
+            rememberNativeTitlebarHiddenState(effectView)
+        }
+    }
+
+    private func restoreNativeTitlebarBackdropState(
+        titlebarContainer: NSView,
+        titlebarView: NSView?,
+        titlebarBackgroundViews: [NSView],
+        effectViews: [NSView]
+    ) {
+        restoreNativeTitlebarLayerState(titlebarContainer)
+        if let titlebarView {
+            restoreNativeTitlebarLayerState(titlebarView)
+        }
+        for titlebarBackgroundView in titlebarBackgroundViews {
+            restoreNativeTitlebarHiddenState(titlebarBackgroundView)
+        }
+        for effectView in effectViews {
+            restoreNativeTitlebarHiddenState(effectView)
+        }
+    }
+
+    private func rememberNativeTitlebarLayerState(_ view: NSView) {
+        guard objc_getAssociatedObject(view, &Self.unifiedTitlebarLayerAppliedKey) == nil else { return }
+
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerAppliedKey, NSNumber(value: true), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerColorKey, view.layer?.backgroundColor ?? NSNull(), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerOpaqueKey, view.layer.map { NSNumber(value: $0.isOpaque) } ?? NSNull(), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func restoreNativeTitlebarLayerState(_ view: NSView) {
+        guard objc_getAssociatedObject(view, &Self.unifiedTitlebarLayerAppliedKey) != nil else { return }
+
+        if let storedColor = objc_getAssociatedObject(view, &Self.unifiedTitlebarLayerColorKey),
+           !(storedColor is NSNull) {
+            view.layer?.backgroundColor = storedColor as! CGColor
+        } else {
+            view.layer?.backgroundColor = nil
+        }
+
+        if let isOpaque = objc_getAssociatedObject(view, &Self.unifiedTitlebarLayerOpaqueKey) as? NSNumber {
+            view.layer?.isOpaque = isOpaque.boolValue
+        }
+
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerAppliedKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerColorKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarLayerOpaqueKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func rememberNativeTitlebarHiddenState(_ view: NSView) {
+        guard objc_getAssociatedObject(view, &Self.unifiedTitlebarHiddenAppliedKey) == nil else { return }
+
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarHiddenAppliedKey, NSNumber(value: true), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarHiddenKey, NSNumber(value: view.isHidden), .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func restoreNativeTitlebarHiddenState(_ view: NSView) {
+        guard objc_getAssociatedObject(view, &Self.unifiedTitlebarHiddenAppliedKey) != nil else { return }
+
+        if let hidden = objc_getAssociatedObject(view, &Self.unifiedTitlebarHiddenKey) as? NSNumber {
+            view.isHidden = hidden.boolValue
+        }
+
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarHiddenAppliedKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        objc_setAssociatedObject(view, &Self.unifiedTitlebarHiddenKey, nil, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+    }
+
+    private func nativeTitlebarContainer(in window: NSWindow) -> NSView? {
+        if !window.styleMask.contains(.fullScreen) {
+            return window.contentView.flatMap {
+                firstNativeDescendant(
+                    in: nativeRootView(from: $0),
+                    className: "NSTitlebarContainerView",
+                    includeRoot: true
+                )
+            }
+        }
+
+        for candidate in NSApp.windows where candidate.className == "NSToolbarFullScreenWindow" {
+            guard candidate.parent == window else { continue }
+            if let contentView = candidate.contentView {
+                return firstNativeDescendant(
+                    in: nativeRootView(from: contentView),
+                    className: "NSTitlebarContainerView",
+                    includeRoot: true
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func nativeRootView(from view: NSView) -> NSView {
+        var root = view
+        while let superview = root.superview {
+            root = superview
+        }
+        return root
+    }
+
+    private func firstNativeDescendant(
+        in view: NSView,
+        className: String,
+        includeRoot: Bool = false
+    ) -> NSView? {
+        if includeRoot, String(describing: type(of: view)) == className {
+            return view
+        }
+
+        for subview in view.subviews {
+            if String(describing: type(of: subview)) == className {
+                return subview
+            }
+            if let found = firstNativeDescendant(in: subview, className: className) {
+                return found
+            }
+        }
+
+        return nil
+    }
+
+    private func nativeDescendants(in view: NSView, className: String) -> [NSView] {
+        var result: [NSView] = []
+        for subview in view.subviews {
+            if String(describing: type(of: subview)) == className {
+                result.append(subview)
+            }
+            result.append(contentsOf: nativeDescendants(in: subview, className: className))
+        }
+        return result
     }
 
     private func setTitlebarControlsHidden(_ hidden: Bool, in window: NSWindow) {
@@ -6443,6 +6708,7 @@ struct ContentView: View {
     ) -> CommandPaletteContextSnapshot {
         var snapshot = CommandPaletteContextSnapshot()
         snapshot.setBool(CommandPaletteContextKeys.workspaceMinimalModeEnabled, isMinimalMode)
+        snapshot.setBool(CommandPaletteContextKeys.sidebarMatchTerminalBackground, sidebarMatchTerminalBackground)
 
         if let workspace = tabManager.selectedWorkspace {
             snapshot.setBool(CommandPaletteContextKeys.hasWorkspace, true)
@@ -6673,6 +6939,18 @@ struct ContentView: View {
                 title: constant(String(localized: "command.toggleSidebar.title", defaultValue: "Toggle Sidebar")),
                 subtitle: constant(String(localized: "command.toggleSidebar.subtitle", defaultValue: "Layout")),
                 keywords: ["toggle", "sidebar", "layout"]
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.toggleMatchTerminalBackground",
+                title: { context in
+                    context.bool(CommandPaletteContextKeys.sidebarMatchTerminalBackground)
+                        ? String(localized: "command.disableMatchTerminalBackground.title", defaultValue: "Disable Match Terminal Background")
+                        : String(localized: "command.enableMatchTerminalBackground.title", defaultValue: "Enable Match Terminal Background")
+                },
+                subtitle: constant(String(localized: "command.matchTerminalBackground.subtitle", defaultValue: "Sidebar Appearance")),
+                keywords: ["match", "terminal", "background", "transparency", "sidebar", "surface", "chrome"]
             )
         )
         contributions.append(
@@ -7469,6 +7747,9 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.toggleSidebar") {
             sidebarState.toggle()
+        }
+        registry.register(commandId: "palette.toggleMatchTerminalBackground") {
+            sidebarMatchTerminalBackground.toggle()
         }
         registry.register(commandId: "palette.enableMinimalMode") {
             workspacePresentationMode = WorkspacePresentationModeSettings.Mode.minimal.rawValue
@@ -9269,6 +9550,7 @@ struct VerticalTabsSidebar: View {
     @ObservedObject var updateViewModel: UpdateViewModel
     @ObservedObject var fileExplorerState: FileExplorerState
     let onSendFeedback: () -> Void
+    let titlebarHeight: CGFloat
     @EnvironmentObject var tabManager: TabManager
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @Binding var selection: SidebarSelection
@@ -9287,14 +9569,14 @@ struct VerticalTabsSidebar: View {
     @State private var pendingSelectedWorkspaceScrollId: UUID?
     @AppStorage(WorkspacePresentationModeSettings.modeKey)
     private var workspacePresentationMode = WorkspacePresentationModeSettings.defaultMode.rawValue
+    @AppStorage("sidebarMatchTerminalBackground")
+    private var sidebarMatchTerminalBackground = false
 
-    /// Space at top of sidebar for traffic light buttons
-    private let trafficLightPadding: CGFloat = 28
     private let tabRowSpacing: CGFloat = 2
     private let hiddenTitlebarControlsLeadingInset: CGFloat = 72
 
     private var workspaceScrollTopVisibilityInset: CGFloat {
-        trafficLightPadding + 8
+        titlebarHeight + 8
     }
 
     private var isMinimalMode: Bool {
@@ -9501,14 +9783,14 @@ struct VerticalTabsSidebar: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
-                    SidebarTopScrim(height: trafficLightPadding + 20)
+                    SidebarTopScrim(height: titlebarHeight + 20)
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
                     // Match native titlebar behavior in the sidebar top strip:
                     // drag-to-move and double-click action (zoom/minimize).
                     WindowDragHandleView()
-                        .frame(height: trafficLightPadding)
+                        .frame(height: titlebarHeight)
                         .background(TitlebarDoubleClickMonitorView())
                 }
                 .overlay(alignment: .topLeading) {
@@ -10652,6 +10934,7 @@ private struct FeedbackComposerMessageEditor: NSViewRepresentable {
     func updateNSView(_ nsView: FeedbackComposerMessageEditorView, context: Context) {
         if nsView.textView.string != text {
             nsView.textView.string = text
+            nsView.refreshTextLayout()
         }
         nsView.placeholder = placeholder
         nsView.textView.setAccessibilityLabel(accessibilityLabel)
@@ -10677,7 +10960,7 @@ private final class FeedbackComposerPassthroughLabel: NSTextField {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 
-private final class FeedbackComposerMessageScrollView: NSScrollView {
+final class FeedbackComposerMessageScrollView: NSScrollView {
     weak var focusTextView: NSTextView?
 
     override func mouseDown(with event: NSEvent) {
@@ -10688,8 +10971,13 @@ private final class FeedbackComposerMessageScrollView: NSScrollView {
     }
 }
 
-private final class FeedbackComposerMessageEditorView: NSView {
+final class FeedbackComposerMessageEditorView: NSView {
+    private static let font = NSFont.systemFont(ofSize: 12)
     private static let textInset = NSSize(width: 10, height: 10)
+    private static let minimumDocumentHeight: CGFloat = {
+        let lineHeight = ceil(font.ascender - font.descender + font.leading)
+        return lineHeight + textInset.height * 2
+    }()
 
     let scrollView = FeedbackComposerMessageScrollView()
     let textView = NSTextView()
@@ -10715,7 +11003,10 @@ private final class FeedbackComposerMessageEditorView: NSView {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = false
         scrollView.automaticallyAdjustsContentInsets = false
+        scrollView.hasHorizontalScroller = false
         scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.scrollerStyle = .overlay
         scrollView.focusTextView = textView
 
         textView.translatesAutoresizingMaskIntoConstraints = false
@@ -10728,14 +11019,15 @@ private final class FeedbackComposerMessageEditorView: NSView {
         textView.autoresizingMask = [.width]
         textView.backgroundColor = .clear
         textView.drawsBackground = false
-        textView.font = .systemFont(ofSize: 12)
+        textView.font = Self.font
         textView.textColor = .labelColor
         textView.insertionPointColor = .labelColor
         textView.textContainerInset = Self.textInset
         textView.textContainer?.lineFragmentPadding = 0
         textView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
         textView.textContainer?.widthTracksTextView = true
-        textView.minSize = .zero
+        textView.textContainer?.heightTracksTextView = false
+        textView.minSize = NSSize(width: 0, height: Self.minimumDocumentHeight)
         textView.maxSize = NSSize(
             width: CGFloat.greatestFiniteMagnitude,
             height: CGFloat.greatestFiniteMagnitude
@@ -10745,7 +11037,7 @@ private final class FeedbackComposerMessageEditorView: NSView {
         addSubview(scrollView)
 
         placeholderField.translatesAutoresizingMaskIntoConstraints = false
-        placeholderField.font = .systemFont(ofSize: 12)
+        placeholderField.font = Self.font
         placeholderField.textColor = .secondaryLabelColor
         placeholderField.lineBreakMode = .byWordWrapping
         placeholderField.maximumNumberOfLines = 0
@@ -10796,11 +11088,48 @@ private final class FeedbackComposerMessageEditorView: NSView {
 
     @objc
     private func textDidChange(_ notification: Notification) {
-        updatePlaceholderVisibility()
+        refreshTextLayout(scrollSelection: true)
     }
 
     private func updatePlaceholderVisibility() {
         placeholderField.isHidden = textView.string.isEmpty == false
+    }
+
+    func refreshTextLayout(scrollSelection: Bool = false) {
+        updatePlaceholderVisibility()
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        syncTextViewFrameToContentSize()
+        if scrollSelection {
+            textView.scrollRangeToVisible(textView.selectedRange())
+        }
+    }
+
+    private func naturalDocumentHeight(for width: CGFloat) -> CGFloat {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else {
+            return Self.minimumDocumentHeight
+        }
+
+        let textWidth = max(width - Self.textInset.width * 2, 1)
+        textContainer.containerSize = NSSize(
+            width: textWidth,
+            height: CGFloat.greatestFiniteMagnitude
+        )
+        layoutManager.ensureLayout(for: textContainer)
+        let usedRect = layoutManager.usedRect(for: textContainer)
+        let extraLineHeight: CGFloat
+        if layoutManager.extraLineFragmentTextContainer === textContainer {
+            extraLineHeight = ceil(layoutManager.extraLineFragmentRect.height)
+        } else {
+            extraLineHeight = 0
+        }
+        let lineHeight = ceil(Self.font.ascender - Self.font.descender + Self.font.leading)
+        let contentHeight = max(lineHeight, ceil(usedRect.height) + extraLineHeight)
+        return max(
+            Self.minimumDocumentHeight,
+            ceil(contentHeight + Self.textInset.height * 2)
+        )
     }
 
     private func syncTextViewFrameToContentSize() {
@@ -10808,14 +11137,10 @@ private final class FeedbackComposerMessageEditorView: NSView {
         guard contentSize.width > 0, contentSize.height > 0 else { return }
 
         textView.minSize = NSSize(width: 0, height: contentSize.height)
-        textView.textContainer?.containerSize = NSSize(
-            width: contentSize.width,
-            height: CGFloat.greatestFiniteMagnitude
-        )
-
+        let naturalHeight = naturalDocumentHeight(for: contentSize.width)
         let targetSize = NSSize(
             width: contentSize.width,
-            height: max(textView.frame.height, contentSize.height)
+            height: max(naturalHeight, contentSize.height)
         )
         if textView.frame.size != targetSize {
             textView.frame = NSRect(origin: .zero, size: targetSize)
@@ -10837,6 +11162,8 @@ private enum SidebarHelpMenuAction {
 }
 
 private struct SidebarFeedbackComposerSheet: View {
+    private static let formMaxHeight: CGFloat = 560
+
     @AppStorage(FeedbackComposerSettings.storedEmailKey) private var email = ""
     @Environment(\.dismiss) private var dismiss
 
@@ -10866,7 +11193,12 @@ private struct SidebarFeedbackComposerSheet: View {
             if didSend {
                 successView
             } else {
-                formView
+                ScrollView {
+                    formView
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, 4)
+                }
+                .frame(maxHeight: Self.formMaxHeight)
             }
         }
         .padding(20)
@@ -11765,34 +12097,9 @@ private struct SidebarTopScrim: View {
     let height: CGFloat
 
     var body: some View {
-        SidebarTopBlurEffect()
+        Color.clear
             .frame(height: height)
-            .mask(
-                LinearGradient(
-                    colors: [
-                        Color.black.opacity(0.95),
-                        Color.black.opacity(0.75),
-                        Color.black.opacity(0.35),
-                        Color.clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-            )
     }
-}
-
-private struct SidebarTopBlurEffect: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSVisualEffectView {
-        let view = NSVisualEffectView()
-        view.blendingMode = .withinWindow
-        view.material = .underWindowBackground
-        view.state = .active
-        view.isEmphasized = false
-        return view
-    }
-
-    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {}
 }
 
 private struct SidebarScrollViewResolver: NSViewRepresentable {
@@ -12021,6 +12328,7 @@ private final class SidebarTabItemContextMenuState: ObservableObject {
 
 private struct TabItemView: View, Equatable {
     private static let workspaceObservationCoalesceInterval: RunLoop.SchedulerTimeType.Stride = .milliseconds(40)
+    private static let legacyVMWebSocketDescription = "VM WebSocket PTY"
 
     // Closures, Bindings, and object references are excluded from ==
     // because they're recreated every parent eval but don't affect rendering.
@@ -12299,6 +12607,14 @@ private struct TabItemView: View, Equatable {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
+    }
+
+    private func copyWorkspaceIdsToPasteboard(_ ids: [UUID]) {
+        let refs = TerminalController.shared.v2WorkspaceRefs(for: ids)
+        let workspaces = ids.map { id in
+            (id: id, ref: refs[id])
+        }
+        copyTextToPasteboard(WorkspaceSurfaceIdentifierClipboardText.make(workspaces: workspaces))
     }
 
     private var visibleAuxiliaryDetails: SidebarWorkspaceAuxiliaryDetailVisibility {
@@ -12807,6 +13123,10 @@ private struct TabItemView: View, Equatable {
             multi: String(localized: "contextMenu.clearLatestNotifications", defaultValue: "Clear Latest Notifications"),
             single: String(localized: "contextMenu.clearLatestNotification", defaultValue: "Clear Latest Notification"),
             isMulti: isMulti)
+        let copyWorkspaceIDLabel = contextMenuLabel(
+            multi: String(localized: "contextMenu.copyWorkspaceIDs", defaultValue: "Copy Workspace IDs"),
+            single: String(localized: "contextMenu.copyWorkspaceID", defaultValue: "Copy Workspace ID"),
+            isMulti: isMulti)
         let renameWorkspaceShortcut = KeyboardShortcutSettings.shortcut(for: .renameWorkspace)
         let editWorkspaceDescriptionShortcut = KeyboardShortcutSettings.shortcut(for: .editWorkspaceDescription)
         let closeWorkspaceShortcut = KeyboardShortcutSettings.shortcut(for: .closeWorkspace)
@@ -13013,6 +13333,13 @@ private struct TabItemView: View, Equatable {
             clearLatestNotifications(targetIds)
         }
         .disabled(!hasLatestNotifications(in: targetIds))
+
+        Divider()
+
+        Button(copyWorkspaceIDLabel) {
+            copyWorkspaceIdsToPasteboard(targetIds)
+        }
+        .disabled(targetIds.isEmpty)
     }
 
     private var backgroundColor: Color {
@@ -13290,7 +13617,7 @@ private struct TabItemView: View, Equatable {
 
         return SidebarWorkspaceSnapshotBuilder.Snapshot(
             title: tab.title,
-            customDescription: tab.customDescription,
+            customDescription: sidebarVisibleCustomDescription,
             isPinned: tab.isPinned,
             customColorHex: tab.customColor,
             remoteWorkspaceSidebarText: remoteWorkspaceSidebarText,
@@ -13309,6 +13636,16 @@ private struct TabItemView: View, Equatable {
             listeningPorts: detailVisibility.showsPorts ? tab.listeningPorts : []
         )
     }
+
+    private var sidebarVisibleCustomDescription: String? {
+        guard let description = tab.customDescription else { return nil }
+        if tab.title.hasPrefix("vm:"),
+           description.trimmingCharacters(in: .whitespacesAndNewlines) == Self.legacyVMWebSocketDescription {
+            return nil
+        }
+        return description
+    }
+
     private func moveWorkspaces(_ workspaceIds: [UUID], toWindow windowId: UUID) {
         guard let app = AppDelegate.shared else { return }
         let orderedWorkspaceIds = tabManager.tabs.compactMap { workspaceIds.contains($0.id) ? $0.id : nil }
@@ -15044,150 +15381,171 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
     }
 }
 
-/// Replicates bonsplit TabBarColors.nsColorSeparator derivation from chrome background.
+enum WindowChromeSeparatorColor {
+    static func color(forChromeBackground chrome: NSColor) -> NSColor {
+        let srgb = chrome.usingColorSpace(.sRGB) ?? chrome
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+        let isLight = luminance > 0.5
+        let amount: CGFloat = isLight ? -0.12 : 0.16
+        let alpha: CGFloat = isLight ? 0.26 : 0.36
+        return NSColor(
+            red: min(1.0, max(0.0, r + amount)),
+            green: min(1.0, max(0.0, g + amount)),
+            blue: min(1.0, max(0.0, b + amount)),
+            alpha: alpha
+        )
+    }
+
+    static func current() -> NSColor {
+        color(forChromeBackground: GhosttyBackgroundTheme.currentColor())
+    }
+}
+
+/// Shared terminal chrome separator color for layer-backed AppKit callers.
 func cmuxTerminalChromeSeparatorNSColor() -> NSColor {
-    let chrome = GhosttyBackgroundTheme.currentColor()
-    let srgb = chrome.usingColorSpace(.sRGB) ?? chrome
-    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-    srgb.getRed(&r, green: &g, blue: &b, alpha: &a)
-    let luminance = 0.299 * r + 0.587 * g + 0.114 * b
-    let isLight = luminance > 0.5
-    let amount: CGFloat = isLight ? -0.12 : 0.16
-    let alpha: CGFloat = isLight ? 0.26 : 0.36
-    return NSColor(
-        red: min(1.0, max(0.0, r + amount)),
-        green: min(1.0, max(0.0, g + amount)),
-        blue: min(1.0, max(0.0, b + amount)),
-        alpha: alpha
-    )
+    WindowChromeSeparatorColor.current()
+}
+
+enum WindowChromeMetrics {
+    static let minimumTitlebarHeight: CGFloat = 28
+    static let maximumTitlebarHeight: CGFloat = 72
+    static let defaultTitlebarHeight: CGFloat = 32
+
+    static func clampedTitlebarHeight(_ height: CGFloat) -> CGFloat {
+        max(minimumTitlebarHeight, min(maximumTitlebarHeight, height))
+    }
+}
+
+struct WindowChromeBorder: View {
+    enum Orientation {
+        case vertical
+        case horizontal
+    }
+
+    let orientation: Orientation
+    var ignoresSafeArea = true
+    @State private var separatorColor = WindowChromeSeparatorColor.current()
+
+    var body: some View {
+        if ignoresSafeArea {
+            border.ignoresSafeArea()
+        } else {
+            border
+        }
+    }
+
+    private var border: some View {
+        Rectangle()
+            .fill(Color(nsColor: separatorColor))
+            .frame(
+                maxWidth: orientation == .horizontal ? .infinity : nil,
+                maxHeight: orientation == .vertical ? .infinity : nil
+            )
+            .frame(
+                width: orientation == .vertical ? 1 : nil,
+                height: orientation == .horizontal ? 1 : nil
+            )
+            .onAppear {
+                separatorColor = WindowChromeSeparatorColor.current()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
+                separatorColor = WindowChromeSeparatorColor.current()
+            }
+    }
 }
 
 /// 1px trailing border on the sidebar, derived from the terminal chrome background.
 private struct SidebarTrailingBorder: View {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @State private var separatorColor: NSColor = cmuxTerminalChromeSeparatorNSColor()
+    var body: some View {
+        WindowChromeBorder(orientation: .vertical)
+    }
+}
+
+private struct WindowBackdropLayer: View {
+    let role: WindowBackdropRole
+    let snapshot: WindowAppearanceSnapshot
 
     var body: some View {
-        if matchTerminalBackground {
-            Rectangle()
-                .fill(Color(nsColor: separatorColor))
-                .frame(width: 1)
-                .ignoresSafeArea()
-                .onAppear {
-                    separatorColor = cmuxTerminalChromeSeparatorNSColor()
+        backdrop(for: snapshot.policy(for: role))
+    }
+
+    @ViewBuilder
+    private func backdrop(for policy: WindowBackdropPolicy) -> some View {
+        switch policy {
+        case let .ghosttyTerminalBackdrop(color, opacity, _):
+            LayerBackedBackdropColor(color: color.withAlphaComponent(opacity))
+        case let .sidebarMaterial(materialPolicy):
+            ZStack {
+                let usingNativeLiquidGlass = materialPolicy.preferLiquidGlass &&
+                    SidebarVisualEffectBackground.liquidGlassAvailable
+                if let material = materialPolicy.material,
+                   !materialPolicy.usesWindowLevelGlass {
+                    SidebarVisualEffectBackground(
+                        material: material,
+                        blendingMode: materialPolicy.blendingMode,
+                        state: materialPolicy.state,
+                        opacity: materialPolicy.opacity,
+                        tintColor: materialPolicy.tintColor,
+                        cornerRadius: materialPolicy.cornerRadius,
+                        preferLiquidGlass: materialPolicy.preferLiquidGlass
+                    )
                 }
-                .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                    separatorColor = cmuxTerminalChromeSeparatorNSColor()
+                // Tint overlay for tint-only materials and NSVisualEffectView
+                // fallback. Native liquid glass receives its tint in AppKit.
+                if !materialPolicy.usesWindowLevelGlass && !usingNativeLiquidGlass {
+                    Color(nsColor: materialPolicy.tintColor)
                 }
+            }
+        case .clear:
+            Color.clear
         }
     }
 }
 
-/// Sidebar background that uses the same technique as TitlebarLayerBackground:
-/// fully opaque layer color + layer-level opacity. This matches how the terminal's
-/// Metal surface composites its background.
-private struct SidebarTerminalBackgroundView: NSViewRepresentable {
-    let backgroundColor: NSColor
-    let opacity: CGFloat
+private struct LayerBackedBackdropColor: NSViewRepresentable {
+    let color: NSColor
 
-    func makeNSView(context: Context) -> NSView {
-        let view = NSView()
-        view.wantsLayer = true
-        view.layer?.backgroundColor = backgroundColor.withAlphaComponent(1.0).cgColor
-        view.layer?.opacity = Float(opacity)
+    func makeNSView(context _: Context) -> NSView {
+        let view = NonHitTestingLayerBackedColorView()
+        view.setBackdropColor(color)
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        nsView.layer?.backgroundColor = backgroundColor.withAlphaComponent(1.0).cgColor
-        nsView.layer?.opacity = Float(opacity)
+    func updateNSView(_ nsView: NSView, context _: Context) {
+        (nsView as? NonHitTestingLayerBackedColorView)?.setBackdropColor(color)
     }
-}
 
-struct SidebarBackdrop: View {
-    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
-    @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
-    @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
-    @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
-    @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
-    @AppStorage("sidebarMaterial") private var sidebarMaterial = SidebarMaterialOption.sidebar.rawValue
-    @AppStorage("sidebarBlendMode") private var sidebarBlendMode = SidebarBlendModeOption.withinWindow.rawValue
-    @AppStorage("sidebarState") private var sidebarState = SidebarStateOption.followWindow.rawValue
-    @AppStorage("sidebarCornerRadius") private var sidebarCornerRadius = 0.0
-    @AppStorage("sidebarBlurOpacity") private var sidebarBlurOpacity = 1.0
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var terminalBackgroundColor: NSColor = GhosttyApp.shared.defaultBackgroundColor
-    @State private var terminalBackgroundOpacity: Double = GhosttyApp.shared.defaultBackgroundOpacity
-
-    var body: some View {
-        let cornerRadius = CGFloat(max(0, sidebarCornerRadius))
-        let terminalBackground = SidebarTerminalBackgroundView(
-            backgroundColor: terminalBackgroundColor,
-            opacity: CGFloat(terminalBackgroundOpacity)
-        )
-
-        if matchTerminalBackground {
-            // The terminal background is provided by a single CALayer, so
-            // the sidebar uses the configured opacity directly.
-            return AnyView(
-                terminalBackground
-                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .onAppear(perform: refreshTerminalBackground)
-                .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                    refreshTerminalBackground()
-                }
-            )
+    private final class NonHitTestingLayerBackedColorView: NSView {
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer?.masksToBounds = true
+            layer?.isOpaque = false
         }
 
-        let materialOption = SidebarMaterialOption(rawValue: sidebarMaterial)
-        let blendingMode = SidebarBlendModeOption(rawValue: sidebarBlendMode)?.mode ?? .behindWindow
-        let state = SidebarStateOption(rawValue: sidebarState)?.state ?? .active
-        let resolvedHex: String = {
-            if colorScheme == .dark, let dark = sidebarTintHexDark {
-                return dark
-            } else if colorScheme == .light, let light = sidebarTintHexLight {
-                return light
-            }
-            return sidebarTintHex
-        }()
-        let tintColor = (NSColor(hex: resolvedHex) ?? NSColor(hex: sidebarTintHex) ?? .black).withAlphaComponent(sidebarTintOpacity)
-        let useLiquidGlass = materialOption?.usesLiquidGlass ?? false
-        let useWindowLevelGlass = useLiquidGlass && blendingMode == .behindWindow
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            wantsLayer = true
+            layer?.masksToBounds = true
+            layer?.isOpaque = false
+        }
 
-        return AnyView(
-            ZStack {
-                if let material = materialOption?.material {
-                    // When using liquidGlass + behindWindow, window handles glass + tint
-                    // Sidebar is fully transparent
-                    if !useWindowLevelGlass {
-                        SidebarVisualEffectBackground(
-                            material: material,
-                            blendingMode: blendingMode,
-                            state: state,
-                            opacity: sidebarBlurOpacity,
-                            tintColor: tintColor,
-                            cornerRadius: cornerRadius,
-                            preferLiquidGlass: useLiquidGlass
-                        )
-                        // Tint overlay for NSVisualEffectView fallback
-                        if !useLiquidGlass {
-                            Color(nsColor: tintColor)
-                        }
-                    }
-                }
-                // When material is none or useWindowLevelGlass, render nothing
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .onAppear(perform: refreshTerminalBackground)
-            .onReceive(NotificationCenter.default.publisher(for: .ghosttyDefaultBackgroundDidChange)) { _ in
-                refreshTerminalBackground()
-            }
-        )
-    }
+        override var isOpaque: Bool { false }
 
-    private func refreshTerminalBackground() {
-        terminalBackgroundColor = GhosttyApp.shared.defaultBackgroundColor
-        terminalBackgroundOpacity = GhosttyApp.shared.defaultBackgroundOpacity
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            nil
+        }
+
+        func setBackdropColor(_ color: NSColor) {
+            wantsLayer = true
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.backgroundColor = color.cgColor
+            layer?.isOpaque = color.alphaComponent >= 1
+            CATransaction.commit()
+        }
     }
 }
 
