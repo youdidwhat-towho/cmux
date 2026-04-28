@@ -1513,8 +1513,8 @@ final class BrowserPopupDecisionTests: XCTestCase {
         )
     }
 
-    func testOtherNavigationWithoutExplicitNewTabIntentCreatesPopup() {
-        XCTAssertTrue(
+    func testOtherNavigationWithoutPopupFeaturesDoesNotCreatePopup() {
+        XCTAssertFalse(
             browserNavigationShouldCreatePopup(
                 navigationType: .other,
                 modifierFlags: [],
