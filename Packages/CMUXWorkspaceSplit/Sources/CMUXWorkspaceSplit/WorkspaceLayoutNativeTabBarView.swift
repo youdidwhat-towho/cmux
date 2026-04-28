@@ -235,7 +235,7 @@ final class WorkspaceLayoutNativeTabBarView: NSView {
                 contextMenuState: tabSnapshot.contextMenuState,
                 onSelect: { [weak self] in
                     guard let self else { return }
-                    hostBridge.focusPane(snapshot.paneId)
+                    _ = hostBridge.focusPane(snapshot.paneId)
                     hostBridge.selectTab(tab.id)
                     self.onTabMutation?()
                 },
@@ -560,7 +560,7 @@ final class WorkspaceLayoutTabDocumentView: NSView {
                     toPane: snapshot.paneId,
                     atIndex: destinationIndex
                 )
-                hostBridge.focusPane(snapshot.paneId)
+                _ = hostBridge.focusPane(snapshot.paneId)
             } else {
                 _ = hostBridge.moveTab(
                     draggedTabId,

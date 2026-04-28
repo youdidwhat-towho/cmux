@@ -726,17 +726,17 @@ struct BrowserPanelView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .webViewDidReceiveClick), perform: handleWebViewDidReceiveClick)
             .onAppear(perform: handleViewAppear)
-            .onChange(of: panel.focusFlashToken, perform: handleFocusFlashTokenChange)
-            .onChange(of: panel.currentURL, perform: handleCurrentURLChange)
-            .onChange(of: browserThemeModeRaw, perform: handleBrowserThemeModeStorageChange)
-            .onChange(of: colorScheme, perform: handleColorSchemeChange)
-            .onChange(of: panel.pendingAddressBarFocusRequestId, perform: handlePendingAddressBarFocusRequestChange)
-            .onChange(of: panel.profileID, perform: handleProfileIDChange)
-            .onChange(of: isBrowserImportHintPopoverPresented, perform: handleImportHintPopoverPresentationChange)
-            .onChange(of: isBrowserProfileMenuPresented, perform: handleProfileMenuPresentationChange)
-            .onChange(of: isVisibleInUI, perform: handleVisibleInUIChange)
-            .onChange(of: isFocused, perform: handlePanelFocusChange)
-            .onChange(of: addressBarFocused, perform: handleAddressBarFocusChange)
+            .onChange(of: panel.focusFlashToken) { _, newValue in handleFocusFlashTokenChange(newValue) }
+            .onChange(of: panel.currentURL) { _, newValue in handleCurrentURLChange(newValue) }
+            .onChange(of: browserThemeModeRaw) { _, newValue in handleBrowserThemeModeStorageChange(newValue) }
+            .onChange(of: colorScheme) { _, newValue in handleColorSchemeChange(newValue) }
+            .onChange(of: panel.pendingAddressBarFocusRequestId) { _, newValue in handlePendingAddressBarFocusRequestChange(newValue) }
+            .onChange(of: panel.profileID) { _, newValue in handleProfileIDChange(newValue) }
+            .onChange(of: isBrowserImportHintPopoverPresented) { _, newValue in handleImportHintPopoverPresentationChange(newValue) }
+            .onChange(of: isBrowserProfileMenuPresented) { _, newValue in handleProfileMenuPresentationChange(newValue) }
+            .onChange(of: isVisibleInUI) { _, newValue in handleVisibleInUIChange(newValue) }
+            .onChange(of: isFocused) { _, newValue in handlePanelFocusChange(newValue) }
+            .onChange(of: addressBarFocused) { _, newValue in handleAddressBarFocusChange(newValue) }
             .onReceive(NotificationCenter.default.publisher(for: .browserMoveOmnibarSelection), perform: handleBrowserMoveOmnibarSelection)
             .onReceive(panel.historyStore.$entries, perform: handleHistoryEntriesChange)
             .onReceive(NotificationCenter.default.publisher(for: .browserDidBlurAddressBar), perform: handleExternalAddressBarBlur)

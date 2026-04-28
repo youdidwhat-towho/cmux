@@ -11174,8 +11174,6 @@ final class Workspace: Identifiable, ObservableObject {
         startupEnvironment: [String: String] = [:]
     ) -> TerminalPanel? {
         let shouldFocusNewTab = focus ?? (splitController.focusedPaneId == paneId)
-        let previousFocusedPanelId = focusedPanelId
-        let previousHostedView = focusedTerminalPanel?.hostedView
 
         var inheritedConfig = inheritedTerminalConfig(inPane: paneId)
         let remoteTerminalStartupCommand = remoteTerminalStartupCommand()

@@ -3365,7 +3365,11 @@ final class WorkspaceTabChromeDebugWindowController: NSWindowController, NSWindo
         showWindow(nil)
         window.orderFrontRegardless()
         window.makeKeyAndOrderFront(nil)
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        if #available(macOS 14.0, *) {
+            NSRunningApplication.current.activate(options: [.activateAllWindows])
+        } else {
+            NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        }
         if let windowIdPath = ProcessInfo.processInfo.environment["CMUX_WORKSPACE_TAB_CHROME_WINDOW_ID_FILE"],
            !windowIdPath.isEmpty {
             try? "\(window.windowNumber)\n".write(

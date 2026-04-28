@@ -218,7 +218,7 @@ final class WorkspaceLayoutNativeSplitView: NSSplitView, NSSplitViewDelegate {
         guard !isSyncingProgrammatically else { return }
         let next = normalizedDividerPosition()
         splitDividerPosition = next
-        hostBridge.setDividerPosition(next, forSplit: splitId)
+        _ = hostBridge.setDividerPosition(next, forSplit: splitId)
         lastAppliedPosition = next
         let eventType = NSApp.currentEvent?.type
         let isDragging = eventType == .leftMouseDragged

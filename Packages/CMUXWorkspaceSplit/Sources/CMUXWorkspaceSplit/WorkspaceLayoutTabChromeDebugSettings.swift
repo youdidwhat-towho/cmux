@@ -191,6 +191,8 @@ enum WorkspaceLayoutTabChromeTitleDrawMode: String {
     case noLeadingDeviceMetrics
     case disableScreenFontSubstitution
 
+    private static let disableScreenFontSubstitutionOption = NSString.DrawingOptions(rawValue: 1 << 2)
+
     static let selected: WorkspaceLayoutTabChromeTitleDrawMode = {
 #if DEBUG
         let environment = ProcessInfo.processInfo.environment
@@ -213,7 +215,7 @@ enum WorkspaceLayoutTabChromeTitleDrawMode: String {
         case .noLeadingDeviceMetrics:
             return [.usesLineFragmentOrigin, .truncatesLastVisibleLine, .usesDeviceMetrics]
         case .disableScreenFontSubstitution:
-            return [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine, .disableScreenFontSubstitution]
+            return [.usesLineFragmentOrigin, .usesFontLeading, .truncatesLastVisibleLine, Self.disableScreenFontSubstitutionOption]
         }
     }
 }

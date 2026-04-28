@@ -11900,9 +11900,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 object: nil,
                 queue: .main
             ) { [weak self] note in
-                guard let self, let window = note.object as? NSWindow else { return }
-                self.setActiveMainWindow(window)
-                self.reassertFocusedBrowserAfterWindowBecameKey(window)
+                MainActor.assumeIsolated {
+                    guard let self, let window = note.object as? NSWindow else { return }
+                    self.setActiveMainWindow(window)
+                    self.reassertFocusedBrowserAfterWindowBecameKey(window)
+                }
             }
         }
         if windowResignKeyObserver == nil {
@@ -11911,8 +11913,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 object: nil,
                 queue: .main
             ) { [weak self] note in
-                guard let self, let window = note.object as? NSWindow else { return }
-                self.suspendFocusedBrowserAfterWindowResignedKey(window)
+                MainActor.assumeIsolated {
+                    guard let self, let window = note.object as? NSWindow else { return }
+                    self.suspendFocusedBrowserAfterWindowResignedKey(window)
+                }
             }
         }
     }
@@ -11927,13 +11931,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            guard let panelId = notification.object as? UUID else { return }
-            self.browserAddressBarFocusedPanelId = panelId
-            self.stopBrowserOmnibarSelectionRepeat()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let panelId = notification.object as? UUID else { return }
+                self.browserAddressBarFocusedPanelId = panelId
+                self.stopBrowserOmnibarSelectionRepeat()
 #if DEBUG
-            dlog("addressBar FOCUS panelId=\(panelId.uuidString.prefix(8))")
+                dlog("addressBar FOCUS panelId=\(panelId.uuidString.prefix(8))")
 #endif
+            }
         }
 
         browserAddressBarBlurObserver = NotificationCenter.default.addObserver(
@@ -11941,14 +11947,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            guard let panelId = notification.object as? UUID else { return }
-            if self.browserAddressBarFocusedPanelId == panelId {
-                self.browserAddressBarFocusedPanelId = nil
-                self.stopBrowserOmnibarSelectionRepeat()
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let panelId = notification.object as? UUID else { return }
+                if self.browserAddressBarFocusedPanelId == panelId {
+                    self.browserAddressBarFocusedPanelId = nil
+                    self.stopBrowserOmnibarSelectionRepeat()
 #if DEBUG
-                dlog("addressBar BLUR panelId=\(panelId.uuidString.prefix(8))")
+                    dlog("addressBar BLUR panelId=\(panelId.uuidString.prefix(8))")
 #endif
+                }
             }
         }
 
@@ -11957,59 +11965,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            guard let webView = notification.object as? CmuxWebView else { return }
-            guard let panel = self.browserPanelOwning(webView) else { return }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                guard let webView = notification.object as? CmuxWebView else { return }
+                guard let panel = self.browserPanelOwning(webView) else { return }
 
-            let ownership = self.workspaceContainingPanel(
-                panelId: panel.id,
-                preferredWorkspaceId: panel.workspaceId
-            )
-
-            if let ownership,
-               ownership.tabManager.selectedTabId == ownership.workspace.id,
-               ownership.workspace.focusedPanelId != panel.id {
-                ownership.workspace.focusPanel(panel.id)
-            }
-
-            if let trackedPanelId = self.browserAddressBarFocusedPanelId,
-               trackedPanelId != panel.id,
-               let trackedPanel = self.browserPanel(for: trackedPanelId),
-               !self.shouldPreserveBrowserAddressBarTracking(for: trackedPanel) {
-                trackedPanel.setAddressBarFocused(false, reason: "staleOtherPanelWebViewFirstResponder")
-                self.browserAddressBarFocusedPanelId = nil
-                self.stopBrowserOmnibarSelectionRepeat()
-#if DEBUG
-                dlog(
-                    "addressBar CLEAR panelId=\(trackedPanelId.uuidString.prefix(8)) " +
-                    "reason=stale_other_panel_webViewFirstResponder"
+                let ownership = self.workspaceContainingPanel(
+                    panelId: panel.id,
+                    preferredWorkspaceId: panel.workspaceId
                 )
-#endif
-            }
 
-            guard !self.shouldPreserveBrowserAddressBarTracking(for: panel) else {
+                if let ownership,
+                   ownership.tabManager.selectedTabId == ownership.workspace.id,
+                   ownership.workspace.focusedPanelId != panel.id {
+                    ownership.workspace.focusPanel(panel.id)
+                }
+
+                if let trackedPanelId = self.browserAddressBarFocusedPanelId,
+                   trackedPanelId != panel.id,
+                   let trackedPanel = self.browserPanel(for: trackedPanelId),
+                   !self.shouldPreserveBrowserAddressBarTracking(for: trackedPanel) {
+                    trackedPanel.setAddressBarFocused(false, reason: "staleOtherPanelWebViewFirstResponder")
+                    self.browserAddressBarFocusedPanelId = nil
+                    self.stopBrowserOmnibarSelectionRepeat()
 #if DEBUG
-                dlog(
-                    "addressBar CLEAR panelId=\(panel.id.uuidString.prefix(8)) " +
-                    "reason=skip_preserve_omnibar_handoff"
-                )
+                    dlog(
+                        "addressBar CLEAR panelId=\(trackedPanelId.uuidString.prefix(8)) " +
+                        "reason=stale_other_panel_webViewFirstResponder"
+                    )
 #endif
-                return
-            }
-            let hasContentFirstResponder = webView.window.map { panel.hasWebContentFirstResponder(in: $0) } ?? false
-            if hasContentFirstResponder {
-                panel.noteWebViewFocused()
-            }
-            if hasContentFirstResponder, self.browserAddressBarFocusedPanelId == panel.id {
-                panel.setAddressBarFocused(false, reason: "webViewFirstResponder")
-                self.browserAddressBarFocusedPanelId = nil
-                self.stopBrowserOmnibarSelectionRepeat()
+                }
+
+                guard !self.shouldPreserveBrowserAddressBarTracking(for: panel) else {
 #if DEBUG
-                dlog(
-                    "addressBar CLEAR panelId=\(panel.id.uuidString.prefix(8)) " +
-                    "reason=webViewFirstResponder"
-                )
+                    dlog(
+                        "addressBar CLEAR panelId=\(panel.id.uuidString.prefix(8)) " +
+                        "reason=skip_preserve_omnibar_handoff"
+                    )
 #endif
+                    return
+                }
+                let hasContentFirstResponder = webView.window.map { panel.hasWebContentFirstResponder(in: $0) } ?? false
+                if hasContentFirstResponder {
+                    panel.noteWebViewFocused()
+                }
+                if hasContentFirstResponder, self.browserAddressBarFocusedPanelId == panel.id {
+                    panel.setAddressBarFocused(false, reason: "webViewFirstResponder")
+                    self.browserAddressBarFocusedPanelId = nil
+                    self.stopBrowserOmnibarSelectionRepeat()
+#if DEBUG
+                    dlog(
+                        "addressBar CLEAR panelId=\(panel.id.uuidString.prefix(8)) " +
+                        "reason=webViewFirstResponder"
+                    )
+#endif
+                }
             }
         }
     }

@@ -3795,7 +3795,7 @@ class GhosttyApp {
             if let handle = try? FileHandle(forWritingTo: backgroundLogURL) {
                 defer { try? handle.close() }
                 try? handle.seekToEnd()
-                try? handle.write(contentsOf: data)
+                _ = try? handle.write(contentsOf: data)
             }
         }
     }
@@ -4967,16 +4967,12 @@ final class TerminalSurface: Identifiable, ObservableObject {
     ) -> Bool {
         guard let surface = surface else { return false }
         _ = layerScale
-        let liveResizeActive = attachedView?.inLiveResize == true || attachedView?.window?.inLiveResize == true
-        let resizeStartedAt = liveResizeActive ? CACurrentMediaTime() : 0
 
         let resolvedBackingWidth = backingSize?.width ?? (width * xScale)
         let resolvedBackingHeight = backingSize?.height ?? (height * yScale)
         let wpx = pixelDimension(from: resolvedBackingWidth)
         let hpx = pixelDimension(from: resolvedBackingHeight)
         guard wpx > 0, hpx > 0 else { return false }
-        let previousPixelWidth = lastPixelWidth
-        let previousPixelHeight = lastPixelHeight
 
         let scaleChanged = !scaleApproximatelyEqual(xScale, lastXScale) || !scaleApproximatelyEqual(yScale, lastYScale)
         let sizeChanged = wpx != lastPixelWidth || hpx != lastPixelHeight
@@ -6949,7 +6945,6 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if let bindingFlags {
             let isConsumed = (bindingFlags.rawValue & GHOSTTY_BINDING_FLAGS_CONSUMED.rawValue) != 0
             let isAll = (bindingFlags.rawValue & GHOSTTY_BINDING_FLAGS_ALL.rawValue) != 0
-            let isPerformable = (bindingFlags.rawValue & GHOSTTY_BINDING_FLAGS_PERFORMABLE.rawValue) != 0
 
             // If the binding is consumed and not meant for the menu, allow menu first.
             // Performable bindings (e.g. paste_from_clipboard) also need the menu
