@@ -292,7 +292,22 @@ struct CodexAppServerModelInfo: Identifiable, Equatable, Sendable {
     }
 
     var pickerTitle: String {
-        displayName.isEmpty ? model : displayName
+        let trimmedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let humanizedModel = Self.humanizedModelName(model)
+        if trimmedDisplayName.isEmpty {
+            return humanizedModel
+        }
+        if trimmedDisplayName.count <= 8, !humanizedModel.isEmpty {
+            return humanizedModel
+        }
+        let lowerDisplayName = trimmedDisplayName.lowercased()
+        if lowerDisplayName.contains("gpt") || lowerDisplayName.contains("codex") {
+            return trimmedDisplayName
+        }
+        if model.lowercased().contains("codex"), !humanizedModel.isEmpty {
+            return humanizedModel
+        }
+        return trimmedDisplayName
     }
 
     var supportsFastMode: Bool {
@@ -325,6 +340,29 @@ struct CodexAppServerModelInfo: Identifiable, Equatable, Sendable {
             return value.boolValue
         }
         return nil
+    }
+
+    private static func humanizedModelName(_ model: String) -> String {
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        let parts = trimmed
+            .split(separator: "-")
+            .map { part -> String in
+                switch part.lowercased() {
+                case "gpt":
+                    return "GPT"
+                case "codex":
+                    return "Codex"
+                case "spark":
+                    return "Spark"
+                default:
+                    return String(part)
+                }
+            }
+        guard parts.count > 1, parts[0] == "GPT" else {
+            return parts.joined(separator: " ")
+        }
+        return (["GPT-\(parts[1])"] + parts.dropFirst(2)).joined(separator: " ")
     }
 }
 
@@ -468,6 +506,51 @@ enum CodexAppServerTranscriptPolicy {
             lines[0] = String(first.dropFirst("Warning: ".count))
         }
         return lines.joined(separator: "\n")
+    }
+
+    static func codexErrorDisplay(from params: [String: Any]?) -> (title: String, message: String) {
+        let error = params?["error"] as? [String: Any] ?? params
+        let info = stringValue(named: "codexErrorInfo", in: error)
+            ?? stringValue(named: "codex_error_info", in: error)
+            ?? stringValue(named: "code", in: error)
+        let message = stringValue(named: "message", in: error)
+            ?? stringValue(named: "message", in: params)
+            ?? prettyJSON(params)
+
+        let title: String
+        switch info?.lowercased() ?? "" {
+        case "usagelimitexceeded", "usage_limit_exceeded":
+            title = String(localized: "codexAppServer.error.usageLimitExceeded", defaultValue: "Usage limit reached")
+        case "contextwindowexceeded", "context_window_exceeded":
+            title = String(localized: "codexAppServer.error.contextWindowExceeded", defaultValue: "Context window exceeded")
+        case "serveroverloaded", "server_overloaded":
+            title = String(localized: "codexAppServer.error.serverOverloaded", defaultValue: "Server overloaded")
+        default:
+            title = String(localized: "codexAppServer.error.codexError", defaultValue: "Codex error")
+        }
+        return (title, message)
+    }
+
+    private static func stringValue(named key: String, in object: [String: Any]?) -> String? {
+        guard let object else { return nil }
+        if let value = object[key] as? String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        if let value = object[key] as? NSNumber {
+            return value.stringValue
+        }
+        return nil
+    }
+
+    private static func prettyJSON(_ value: Any?) -> String {
+        guard let value else { return "" }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return String(describing: value)
+        }
+        return text
     }
 }
 
@@ -1297,6 +1380,8 @@ final class CodexAppServerPanel: Panel, ObservableObject {
                 body: Self.prettyJSON(item),
                 presentation: .toolCall(name: "apply_patch")
             )
+        case "error":
+            appendCodexErrorEvent(item)
         default:
             appendEvent(title: type.isEmpty ? "item/completed" : type, body: Self.prettyJSON(item))
         }
@@ -1425,24 +1510,8 @@ final class CodexAppServerPanel: Panel, ObservableObject {
     }
 
     private func appendCodexErrorEvent(_ params: [String: Any]?) {
-        let error = params?["error"] as? [String: Any] ?? params
-        let info = Self.stringValue(named: "codexErrorInfo", in: error)
-            ?? Self.stringValue(named: "code", in: error)
-        let message = Self.stringValue(named: "message", in: error)
-            ?? Self.stringValue(named: "message", in: params)
-            ?? Self.prettyJSON(params)
-        let title: String
-        switch info ?? "" {
-        case "usageLimitExceeded":
-            title = String(localized: "codexAppServer.error.usageLimitExceeded", defaultValue: "Usage limit reached")
-        case "contextWindowExceeded":
-            title = String(localized: "codexAppServer.error.contextWindowExceeded", defaultValue: "Context window exceeded")
-        case "serverOverloaded":
-            title = String(localized: "codexAppServer.error.serverOverloaded", defaultValue: "Server overloaded")
-        default:
-            title = String(localized: "codexAppServer.error.codexError", defaultValue: "Codex error")
-        }
-        append(role: .error, title: title, body: message)
+        let display = CodexAppServerTranscriptPolicy.codexErrorDisplay(from: params)
+        append(role: .error, title: display.title, body: display.message)
     }
 
     private func appendCompactionEvent() {
@@ -1789,6 +1858,14 @@ final class CodexAppServerPanel: Panel, ObservableObject {
                 date: date,
                 presentation: .toolCall(name: "apply_patch")
             )
+        case "error":
+            let display = CodexAppServerTranscriptPolicy.codexErrorDisplay(from: item)
+            return CodexAppServerTranscriptItem(
+                role: .error,
+                title: display.title,
+                body: Self.truncatedTranscriptBody(display.message),
+                date: date
+            )
         default:
             let body = Self.stringValue(named: "text", in: item) ?? Self.prettyJSON(item)
             guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
@@ -1986,6 +2063,7 @@ enum CodexSessionHistoryLoader {
     private static let contextCompactedNeedle = Data(#""type":"context_compacted""#.utf8)
     private static let userMessageNeedle = Data(#""type":"user_message""#.utf8)
     private static let warningNeedle = Data(#""type":"warning""#.utf8)
+    private static let errorNeedle = Data(#""type":"error""#.utf8)
     private static let responseItemNeedle = Data(#""type":"response_item""#.utf8)
     private static let messageNeedle = Data(#""type":"message""#.utf8)
     private static let assistantRoleNeedle = Data(#""role":"assistant""#.utf8)
@@ -2514,6 +2592,7 @@ enum CodexSessionHistoryLoader {
             return line.range(of: contextCompactedNeedle) != nil
                 || line.range(of: userMessageNeedle) != nil
                 || line.range(of: warningNeedle) != nil
+                || line.range(of: errorNeedle) != nil
         }
         guard line.range(of: responseItemNeedle) != nil else { return false }
         if line.range(of: messageNeedle) != nil {
@@ -2591,6 +2670,14 @@ enum CodexSessionHistoryLoader {
                 body: CodexAppServerTranscriptPolicy.truncatedBody(
                     CodexAppServerTranscriptPolicy.normalizedWarningMessage(message)
                 ),
+                date: date
+            )
+        case "error":
+            let display = CodexAppServerTranscriptPolicy.codexErrorDisplay(from: payload)
+            return CodexAppServerTranscriptItem(
+                role: .error,
+                title: display.title,
+                body: CodexAppServerTranscriptPolicy.truncatedBody(display.message),
                 date: date
             )
         default:

@@ -1432,8 +1432,8 @@ private final class CodexTrajectoryTranscriptDocumentView: NSView, NSUserInterfa
     private var isSelectingText = false
     private var documentWidth: CGFloat = 1
     private let horizontalInset: CGFloat = 24
-    private let maxContentWidth: CGFloat = 740
-    private let maxUserBubbleWidth: CGFloat = 740
+    private let maxContentWidth: CGFloat = 860
+    private let maxUserBubbleWidth: CGFloat = 860
     private let rowSpacing: CGFloat = 15
     private let accordionHeaderTitleHeight: CGFloat = 28
     private let accordionSummaryRowHeight: CGFloat = 23

@@ -127,6 +127,18 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertNil(rateLimitRequest["params"])
     }
 
+    func testModelInfoPrefersFullCodexModelNameOverShortDisplayName() throws {
+        let model = try XCTUnwrap(
+            CodexAppServerModelInfo(object: [
+                "id": "gpt-5.5-codex-spark",
+                "model": "gpt-5.5-codex-spark",
+                "displayName": "5.5",
+            ])
+        )
+
+        XCTAssertEqual(model.pickerTitle, "GPT-5.5 Codex Spark")
+    }
+
     func testTurnSteerRequestUsesExpectedTurnPrecondition() throws {
         let request = CodexAppServerRequestFactory.turnSteerRequest(
             id: 10,
@@ -492,6 +504,51 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertEqual(snapshot.transcriptItems.map(\.body), ["actual user prompt", "agent reply"])
     }
 
+    func testLocalCodexHistoryLoaderRestoresCodexErrorEventsFromJsonl() throws {
+        let fileManager = FileManager.default
+        let threadId = "019d6637-e5cc-7cc0-a321-2c43b799036f"
+        let tempDirectory = fileManager.temporaryDirectory
+            .appendingPathComponent("cmux-codex-history-\(UUID().uuidString)", isDirectory: true)
+        defer { try? fileManager.removeItem(at: tempDirectory) }
+
+        let sessionDirectory = tempDirectory
+            .appendingPathComponent("2026/04/06", isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let fileURL = sessionDirectory
+            .appendingPathComponent("rollout-2026-04-06T21-33-52-\(threadId).jsonl")
+
+        let records: [[String: Any]] = [
+            [
+                "timestamp": "2026-04-06T21:33:52.000Z",
+                "type": "session_meta",
+                "payload": ["id": threadId],
+            ],
+            [
+                "timestamp": "2026-04-06T21:34:00.000Z",
+                "type": "event_msg",
+                "payload": [
+                    "type": "error",
+                    "message": "You've hit your usage limit.",
+                    "codex_error_info": "usage_limit_exceeded",
+                ],
+            ],
+        ]
+        let jsonl = try records.map(Self.jsonLine).joined(separator: "\n")
+        try jsonl.write(to: fileURL, atomically: true, encoding: .utf8)
+
+        let snapshot = CodexSessionHistoryLoader.loadHistorySync(
+            threadId: threadId,
+            limit: 10,
+            searchRoots: [tempDirectory]
+        )
+        let item = try XCTUnwrap(snapshot.transcriptItems.first)
+
+        XCTAssertEqual(snapshot.totalDisplayableItemCount, 1)
+        XCTAssertEqual(item.role, .error)
+        XCTAssertEqual(item.title, "Usage limit reached")
+        XCTAssertEqual(item.body, "You've hit your usage limit.")
+    }
+
     func testLocalCodexHistoryLoaderRestoresCustomToolsAndCompactionsFromJsonl() throws {
         let fileManager = FileManager.default
         let threadId = "019d6637-e5cc-7cc0-a321-2c43b799036c"
@@ -763,6 +820,42 @@ final class CodexAppServerRequestFactoryTests: XCTestCase {
         XCTAssertEqual(snapshot.threadId, "thread-large")
         XCTAssertTrue(snapshot.responseWasTruncated)
         XCTAssertTrue(snapshot.transcriptItems.isEmpty)
+    }
+
+    @MainActor
+    func testResumeSnapshotRendersCodexErrorsWithoutRawJSON() throws {
+        let response: [String: Any] = [
+            "thread": [
+                "id": "thread-errors",
+                "turns": [
+                    [
+                        "startedAt": 1_777_354_261,
+                        "items": [
+                            [
+                                "type": "error",
+                                "error": [
+                                    "codexErrorInfo": "usageLimitExceeded",
+                                    "message": "You've hit your usage limit for GPT-5.5 Codex.",
+                                    "threadId": "thread-errors",
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]
+
+        let snapshot = CodexAppServerPanel.resumeSnapshot(
+            from: response,
+            fallbackThreadId: "fallback-thread",
+            restoredItemLimit: 20
+        )
+        let item = try XCTUnwrap(snapshot.transcriptItems.first)
+
+        XCTAssertEqual(item.role, .error)
+        XCTAssertEqual(item.title, "Usage limit reached")
+        XCTAssertEqual(item.body, "You've hit your usage limit for GPT-5.5 Codex.")
+        XCTAssertFalse(item.body.contains("\"error\""))
     }
 
     func testGeneratedSchemasCoverCodexAppServerProtocolUnions() {

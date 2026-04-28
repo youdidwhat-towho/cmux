@@ -148,6 +148,7 @@ struct CodexAppServerPanelView: View {
         VStack(spacing: 0) {
             queuedPromptStrip
             composer
+            subtleRateLimitLine
         }
     }
 
@@ -217,34 +218,24 @@ struct CodexAppServerPanelView: View {
                 ? String(localized: "codexAppServer.composer.fastOn", defaultValue: "Fast on")
                 : String(localized: "codexAppServer.composer.fastOff", defaultValue: "Fast off")
         )
-        if let rateLimitText {
-            segments.append(rateLimitText)
-        }
         return segments.joined(separator: "  ")
-    }
-
-    private var rateLimitText: String? {
-        guard let summary = panel.rateLimitSummary else { return nil }
-        let parts = summary.windows.map { window in
-            "\(rateLimitName(window.name)) \(window.displayPercent)"
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: "  ")
-    }
-
-    private func rateLimitName(_ name: String) -> String {
-        switch name {
-        case "primary":
-            return String(localized: "codexAppServer.rateLimits.primary", defaultValue: "Primary")
-        case "secondary":
-            return String(localized: "codexAppServer.rateLimits.secondary", defaultValue: "Secondary")
-        default:
-            return name.capitalized
-        }
     }
 
     private var transcriptBottomSpacerHeight: CGFloat {
         CodexComposerMetrics.micro.transcriptSpacerHeight(forPromptHeight: promptInputHeight)
             + CodexQueuedPromptIntegratedView.estimatedHeight(for: panel.queuedPrompts.count)
+    }
+
+    @ViewBuilder
+    private var subtleRateLimitLine: some View {
+        if let summary = panel.rateLimitSummary, !summary.windows.isEmpty {
+            CodexRateLimitSubtleLine(summary: summary)
+                .frame(maxWidth: CodexComposerMetrics.maxWidth)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 24)
+                .padding(.top, 5)
+                .transition(.opacity)
+        }
     }
 
     @ViewBuilder
@@ -628,6 +619,87 @@ private struct CodexComposerSendButtonStyle: ButtonStyle {
     }
 }
 
+private struct CodexRateLimitSubtleLine: View {
+    let summary: CodexAppServerRateLimitSummary
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Text(String(localized: "codexAppServer.rateLimits.title", defaultValue: "Rate limits"))
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.tertiary)
+
+            ForEach(summary.windows, id: \.name) { window in
+                CodexRateLimitInlineStatus(window: window)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 4)
+        .frame(height: 16)
+    }
+}
+
+private struct CodexRateLimitInlineStatus: View {
+    let window: CodexAppServerRateLimitWindow
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(barColor.opacity(0.85))
+                .frame(width: 4, height: 4)
+            Text(localizedName)
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+            Text(window.displayPercent)
+                .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                .foregroundStyle(.secondary)
+            if let resetText {
+                Text(resetText)
+                    .font(.system(size: 10.5, weight: .regular))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private var localizedName: String {
+        switch window.name {
+        case "primary":
+            return String(localized: "codexAppServer.rateLimits.primary", defaultValue: "Primary")
+        case "secondary":
+            return String(localized: "codexAppServer.rateLimits.secondary", defaultValue: "Secondary")
+        default:
+            return window.name.capitalized
+        }
+    }
+
+    private var barColor: Color {
+        guard let used = window.usedPercent else { return Color(nsColor: .secondaryLabelColor) }
+        if used >= 85 {
+            return Color(nsColor: .systemRed)
+        }
+        if used >= 65 {
+            return Color(nsColor: .systemOrange)
+        }
+        return Color(nsColor: .systemGreen)
+    }
+
+    private var resetText: String? {
+        guard let resetsAt = window.resetsAt else { return nil }
+        let formatted = CodexRateLimitInlineStatus.resetFormatter.string(from: resetsAt)
+        let format = String(localized: "codexAppServer.rateLimits.resets", defaultValue: "resets %@")
+        return String(format: format, locale: Locale.current, formatted)
+    }
+
+    private static let resetFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .none
+        formatter.timeStyle = .short
+        formatter.doesRelativeDateFormatting = true
+        return formatter
+    }()
+}
+
 private struct CodexRateLimitFooterView: View {
     static let height: CGFloat = 28
 
@@ -1006,8 +1078,10 @@ private struct CodexQueuedPromptDebugLabView: View {
 #endif
 
 private struct CodexComposerMetrics {
-    static let maxWidth: CGFloat = 740
-    static let queuedPromptWidth = maxWidth - 44
+    static let maxWidth: CGFloat = 860
+    static var queuedPromptWidth: CGFloat {
+        maxWidth - micro.cornerRadius * 2
+    }
     static let micro = CodexComposerMetrics(
         minHeight: 76,
         cornerRadius: 22,
