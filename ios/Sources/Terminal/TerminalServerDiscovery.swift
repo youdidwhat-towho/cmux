@@ -279,10 +279,19 @@ final class TailscaleServerDiscovery: TerminalServerDiscovering {
         timer.schedule(deadline: .now() + 2.0, repeating: 5.0)
         timer.setEventHandler { [weak self] in
             guard let self else { return }
-            self.performScan(fullSweep: self.expectedInstanceID != nil)
+            self.performScan(fullSweep: self.needsTimerFullSweep())
         }
         timer.resume()
         probeTimer = timer
+    }
+
+    private func needsTimerFullSweep() -> Bool {
+        guard expectedInstanceID != nil else { return false }
+        guard forcedPorts == nil, hintedPorts.isEmpty else { return false }
+
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return !knownHosts.contains { $0.hostname == probeHostname && $0.wsPort != nil }
     }
 
     private static func probeReachability(hostname: String, port: Int) -> Bool {
