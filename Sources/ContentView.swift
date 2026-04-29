@@ -9256,8 +9256,28 @@ struct VerticalTabsSidebar: View {
     private let tabRowSpacing: CGFloat = 2
     private let hiddenTitlebarControlsLeadingInset: CGFloat = 72
 
-    private var workspaceScrollTopVisibilityInset: CGFloat {
+    static func workspaceScrollTopVisibilityInset(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
         titlebarHeight + 8
+    }
+
+    static func sidebarTopScrimHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
+        titlebarHeight + 20
+    }
+
+    static func titlebarDragHandleHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
+        titlebarHeight
+    }
+
+    private var workspaceScrollTopVisibilityInset: CGFloat {
+        Self.workspaceScrollTopVisibilityInset(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
+    }
+
+    private var sidebarTopScrimHeight: CGFloat {
+        Self.sidebarTopScrimHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
+    }
+
+    private var titlebarDragHandleHeight: CGFloat {
+        Self.titlebarDragHandleHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
     }
 
     private var isMinimalMode: Bool {
@@ -9463,14 +9483,14 @@ struct VerticalTabsSidebar: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
-                    SidebarTopScrim(height: titlebarHeight + 20)
+                    SidebarTopScrim(height: sidebarTopScrimHeight)
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
                     // Match native titlebar behavior in the sidebar top strip:
                     // drag-to-move and double-click action (zoom/minimize).
                     WindowDragHandleView()
-                        .frame(height: titlebarHeight)
+                        .frame(height: titlebarDragHandleHeight)
                         .background(TitlebarDoubleClickMonitorView())
                 }
                 .overlay(alignment: .topLeading) {

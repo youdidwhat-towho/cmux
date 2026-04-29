@@ -11742,6 +11742,12 @@ final class GhosttySurfaceScrollView: NSView {
         return fr === surfaceView || fr.isDescendant(of: surfaceView)
     }
 
+#if DEBUG
+    func debugRequestSurfaceFirstResponderForTesting(in window: NSWindow, reason: String) -> Bool {
+        window.makeFirstResponder(surfaceView)
+    }
+#endif
+
     func requestAutomaticFirstResponderApply(reason: String) {
         scheduleAutomaticFirstResponderApply(reason: reason)
     }
