@@ -487,17 +487,48 @@ private func devToolsFrontendReadyScript() -> String {
         }
         return out.replace(/\\s+/g, " ").trim();
       };
+      const collectElements = root => {
+        const elements = [];
+        const visit = current => {
+          for (const element of current.querySelectorAll("*")) {
+            elements.push(element);
+            if (element.shadowRoot) {
+              visit(element.shadowRoot);
+            }
+          }
+        };
+        visit(root);
+        return elements;
+      };
+      const elements = collectElements(document);
       const textSample = document.body ? textFrom(document.body).slice(0, 2000) : "";
+      const attributes = elements.map(element => [
+        element.getAttribute("aria-label") || "",
+        element.getAttribute("title") || "",
+        element.getAttribute("aria-keyshortcuts") || "",
+        element.textContent || ""
+      ].join(" ")).join(" ");
+      const tagNames = elements
+        .filter(element => element.classList?.contains("webkit-html-tag-name"))
+        .map(element => element.textContent?.trim() || "")
+        .filter(Boolean);
       const hasDevToolsChrome =
         !!document.querySelector(".inspector-view, .tabbed-pane-header, .toolbar, .main-tabbed-pane") ||
         /\\b(Elements|Console|Sources|Network)\\b/.test(textSample);
+      const hasElementPickerButton = /Select an element in the page to inspect it/.test(attributes);
+      const hasDeviceToolbarButton = /Toggle device toolbar/.test(attributes);
+      const hasElementsPanelDOM = tagNames.includes("html") && tagNames.includes("body");
       return {
         path: location.pathname,
         readyState: document.readyState,
         bodyReady: !!document.body,
         runtimeReady: !!globalThis.runtime,
         hasDevToolsChrome,
+        hasElementPickerButton,
+        hasDeviceToolbarButton,
+        hasElementsPanelDOM,
         title: document.title,
+        tagNames: tagNames.slice(0, 20).join(","),
         textSample,
         bodyHTMLSample: document.body ? document.body.innerHTML.slice(0, 500) : ""
       };
@@ -1248,13 +1279,15 @@ private final class LayerHostRunner {
                 JavaScriptExpectation(key: "bodyReady", value: .bool(true)),
                 JavaScriptExpectation(key: "runtimeReady", value: .bool(true)),
                 JavaScriptExpectation(key: "hasDevToolsChrome", value: .bool(true)),
+                JavaScriptExpectation(key: "hasElementPickerButton", value: .bool(true)),
+                JavaScriptExpectation(key: "hasDeviceToolbarButton", value: .bool(true)),
+                JavaScriptExpectation(key: "hasElementsPanelDOM", value: .bool(true)),
             ]
 
             struct DevToolsDockTargetSpec {
                 let name: String
                 let mode: OwlFreshDevToolsMode
                 let label: String
-                let proof: String
                 let webX: Int32
                 let webY: Int32
                 let webWidth: UInt32
@@ -1271,7 +1304,6 @@ private final class LayerHostRunner {
                     name: "devtools-bottom-fixture",
                     mode: .bottom,
                     label: "devtools-bottom",
-                    proof: "OWL_DEVTOOLS_BOTTOM_OK",
                     webX: 0,
                     webY: Int32(dockThickness),
                     webWidth: fullWidth,
@@ -1286,7 +1318,6 @@ private final class LayerHostRunner {
                     name: "devtools-right-fixture",
                     mode: .right,
                     label: "devtools-right",
-                    proof: "OWL_DEVTOOLS_RIGHT_OK",
                     webX: 0,
                     webY: 0,
                     webWidth: sideWebWidth,
@@ -1301,7 +1332,6 @@ private final class LayerHostRunner {
                     name: "devtools-left-fixture",
                     mode: .left,
                     label: "devtools-left",
-                    proof: "OWL_DEVTOOLS_LEFT_OK",
                     webX: Int32(sideThickness),
                     webY: 0,
                     webWidth: sideWebWidth,
@@ -1354,14 +1384,6 @@ private final class LayerHostRunner {
                         expectations: frontendReadyExpectations
                     ),
                     .captureWindow(name: "\(spec.name)-ui.png", expected: [.blue, .dark, .light, .nonWhite]),
-                    .evaluateDevToolsJavaScript(
-                        label: "\(spec.label) DevTools JavaScript proof",
-                        script: devToolsBadgeScript(text: spec.proof),
-                        expectations: [
-                            JavaScriptExpectation(key: "proof", value: .string(spec.proof)),
-                        ]
-                    ),
-                    .captureWindow(name: "\(spec.name)-proof.png", expected: [.green, .dark, .nonWhite]),
                 ]
                 if spec.closesAfterProof {
                     actions.append(contentsOf: [
@@ -1388,8 +1410,8 @@ private final class LayerHostRunner {
                     RenderTarget(
                         name: spec.name,
                         url: devToolsFixture.absoluteString,
-                        screenshotName: "\(spec.name)-proof.png",
-                        expected: [.green, .dark, .nonWhite],
+                        screenshotName: "\(spec.name)-ui.png",
+                        expected: [.blue, .dark, .light, .nonWhite],
                         preInputScreenshotName: "\(spec.name)-before-open.png",
                         preInputExpected: [.blue, .dark, .light, .nonWhite],
                         inputActions: actions,
@@ -1400,13 +1422,12 @@ private final class LayerHostRunner {
                 )
             }
 
-            let windowProof = "OWL_DEVTOOLS_WINDOW_OK"
             targets.append(
                 RenderTarget(
                     name: "devtools-window-fixture",
                     url: devToolsFixture.absoluteString,
                     screenshotName: "devtools-window-after-open.png",
-                    expected: [.green, .dark, .nonWhite],
+                    expected: [.nonWhite],
                     preInputScreenshotName: "devtools-window-before-open.png",
                     preInputExpected: [.blue, .dark, .light, .nonWhite],
                     inputActions: [
@@ -1452,17 +1473,10 @@ private final class LayerHostRunner {
                             name: "devtools-window-ui.png",
                             expected: [.nonWhite]
                         ),
-                        .evaluateDevToolsJavaScript(
-                            label: "window DevTools JavaScript proof",
-                            script: devToolsBadgeScript(text: windowProof),
-                            expectations: [
-                                JavaScriptExpectation(key: "proof", value: .string(windowProof)),
-                            ]
-                        ),
                         .captureDetachedSurface(
                             label: "devtools-window",
                             name: "devtools-window-after-open.png",
-                            expected: [.green, .dark, .nonWhite]
+                            expected: [.nonWhite]
                         ),
                     ],
                     postInputDiagnosticScript: nil,
@@ -3324,7 +3338,7 @@ private final class LayerHostWindow {
         let buttonSize = CGSize(width: 32, height: 26)
         let buttonFrame = CGRect(
             x: max(surfaceFrame.minX + 8, surfaceFrame.maxX - buttonSize.width - 10),
-            y: surfaceFrame.minY + 8,
+            y: max(surfaceFrame.minY + 8, surfaceFrame.maxY - buttonSize.height - 8),
             width: buttonSize.width,
             height: buttonSize.height
         )

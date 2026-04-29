@@ -2,8 +2,8 @@
   "name": "aws-m1-ultra-verified-owl-host",
   "chromiumBaseCommit": "0bd9366db7ef5eebf3cd6e3927b53b86f7b95899",
   "patchFile": "chromium-patches/aws-m1-ultra-verified-owl-host.patch",
-  "patchSHA256": "8474c23f415a246fa842b91a729a1b07c577d13d21a909a3a20f2a3b52d173ef",
-  "patchLineCount": 4584,
+  "patchSHA256": "99fc7eaa61a1b389ce017b88618ea54a15440306c23240e7fd9ea2bb8bdcb240",
+  "patchLineCount": 4721,
   "ninjaTargets": [
     "content_shell",
     "owl_fresh_mojo_runtime"
