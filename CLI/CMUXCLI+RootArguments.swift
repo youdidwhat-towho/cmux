@@ -13,6 +13,86 @@ extension CMUXCLI {
         }
     }
 
+    struct CompatibleCommandArguments: ParsableArguments {
+        @Argument(parsing: .allUnrecognized)
+        var tokens: [String] = []
+
+        init() {}
+
+        init(tokens: [String] = []) {
+            self.tokens = tokens
+        }
+
+        func option(_ name: String) -> (String?, [String]) {
+            var remaining: [String] = []
+            var value: String?
+            var skipNext = false
+            var pastTerminator = false
+
+            for (idx, arg) in tokens.enumerated() {
+                if skipNext {
+                    skipNext = false
+                    continue
+                }
+                if arg == "--" {
+                    pastTerminator = true
+                    remaining.append(arg)
+                    continue
+                }
+                if !pastTerminator, arg == name, idx + 1 < tokens.count {
+                    value = tokens[idx + 1]
+                    skipNext = true
+                    continue
+                }
+                remaining.append(arg)
+            }
+
+            return (value, remaining)
+        }
+
+        func repeatedOption(_ name: String) -> ([String], [String]) {
+            var remaining: [String] = []
+            var values: [String] = []
+            var skipNext = false
+            var pastTerminator = false
+
+            for (idx, arg) in tokens.enumerated() {
+                if skipNext {
+                    skipNext = false
+                    continue
+                }
+                if arg == "--" {
+                    pastTerminator = true
+                    remaining.append(arg)
+                    continue
+                }
+                if !pastTerminator, arg == name, idx + 1 < tokens.count {
+                    values.append(tokens[idx + 1])
+                    skipNext = true
+                    continue
+                }
+                remaining.append(arg)
+            }
+
+            return (values, remaining)
+        }
+
+        func value(for name: String) -> String? {
+            guard let index = tokens.firstIndex(of: name), index + 1 < tokens.count else {
+                return nil
+            }
+            return tokens[index + 1]
+        }
+
+        func hasFlag(_ name: String) -> Bool {
+            tokens.contains(name)
+        }
+    }
+
+    func parseCompatibleCommandArguments(_ args: [String]) -> CompatibleCommandArguments {
+        (try? parseCLIArguments(CompatibleCommandArguments.self, args)) ?? CompatibleCommandArguments(tokens: args)
+    }
+
     struct RootArguments: ParsableArguments {
         @Option(name: .long, parsing: .unconditional, help: "Override the Unix socket path.")
         var socket: String?

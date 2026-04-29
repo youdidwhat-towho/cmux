@@ -9812,62 +9812,19 @@ struct CMUXCLI {
         return "\"\(escaped)\""
     }
     func parseOption(_ args: [String], name: String) -> (String?, [String]) {
-        var remaining: [String] = []
-        var value: String?
-        var skipNext = false
-        var pastTerminator = false
-        for (idx, arg) in args.enumerated() {
-            if skipNext {
-                skipNext = false
-                continue
-            }
-            if arg == "--" {
-                pastTerminator = true
-                remaining.append(arg)
-                continue
-            }
-            if !pastTerminator, arg == name, idx + 1 < args.count {
-                value = args[idx + 1]
-                skipNext = true
-                continue
-            }
-            remaining.append(arg)
-        }
-        return (value, remaining)
+        parseCompatibleCommandArguments(args).option(name)
     }
 
     private func parseRepeatedOption(_ args: [String], name: String) -> ([String], [String]) {
-        var remaining: [String] = []
-        var values: [String] = []
-        var skipNext = false
-        var pastTerminator = false
-        for (idx, arg) in args.enumerated() {
-            if skipNext {
-                skipNext = false
-                continue
-            }
-            if arg == "--" {
-                pastTerminator = true
-                remaining.append(arg)
-                continue
-            }
-            if !pastTerminator, arg == name, idx + 1 < args.count {
-                values.append(args[idx + 1])
-                skipNext = true
-                continue
-            }
-            remaining.append(arg)
-        }
-        return (values, remaining)
+        parseCompatibleCommandArguments(args).repeatedOption(name)
     }
 
     private func optionValue(_ args: [String], name: String) -> String? {
-        guard let index = args.firstIndex(of: name), index + 1 < args.count else { return nil }
-        return args[index + 1]
+        parseCompatibleCommandArguments(args).value(for: name)
     }
 
     private func hasFlag(_ args: [String], name: String) -> Bool {
-        args.contains(name)
+        parseCompatibleCommandArguments(args).hasFlag(name)
     }
 
     private func replaceToken(_ args: [String], from: String, to: String) -> [String] {

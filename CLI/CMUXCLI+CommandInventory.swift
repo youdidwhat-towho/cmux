@@ -395,6 +395,10 @@ extension CMUXCLI {
         try verifyCommandNames(TmuxShimCommandName.self)
         try verifyCommandNames(ClaudeHookSubcommandName.self)
         try verifyCommandNames(GenericAgentHookSubcommandName.self)
+
+        for form in argumentParserInventoryForms {
+            try verifyArgumentParserCommandForm(form)
+        }
     }
 
     static func verifyCommandNames<Command: CLICommandName>(_ type: Command.Type) throws {
