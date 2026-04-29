@@ -312,19 +312,30 @@ enum GhosttyPasteboardHelper {
 
         let hasImagePayload = hasImageData(in: pasteboard)
         let hasRTFDAttachmentPayload = types.contains(.rtfd)
+        let plainText = plainTextContents(from: pasteboard)
         if hasImagePayload,
            let html = pasteboard.string(forType: .html),
            htmlHasNoVisibleText(html) {
             return nil
         }
 
+        if hasImagePayload || hasRTFDAttachmentPayload {
+            guard let richText = richTextContents(from: pasteboard) else {
+                return nil
+            }
+            if let plainText,
+               shouldPreferPlainText(plainText, overRichText: richText) {
+                return plainText
+            }
+            return richText
+        }
+
         // Match upstream Ghostty's fast plain-text path for normal text paste.
         // Large clipboard payloads often also advertise HTML/RTF variants, and
         // eagerly rendering those rich-text flavors makes Cmd-V much slower than
         // vanilla Ghostty before the bytes ever reach the PTY.
-        if !hasImagePayload && !hasRTFDAttachmentPayload,
-           let value = plainTextContents(from: pasteboard) {
-            return value
+        if let plainText {
+            return plainText
         }
 
         return richTextContents(from: pasteboard)
@@ -414,6 +425,42 @@ enum GhosttyPasteboardHelper {
         }
 
         return nil
+    }
+
+    private static func shouldPreferPlainText(
+        _ plainText: String,
+        overRichText richText: String
+    ) -> Bool {
+        guard plainText != richText else { return false }
+
+        let plainMetrics = textFidelityMetrics(plainText)
+        let richMetrics = textFidelityMetrics(richText)
+
+        guard plainMetrics.nonASCII > richMetrics.nonASCII else { return false }
+        return richMetrics.questionMarks > plainMetrics.questionMarks ||
+            richMetrics.replacementCharacters > plainMetrics.replacementCharacters
+    }
+
+    private static func textFidelityMetrics(
+        _ text: String
+    ) -> (nonASCII: Int, questionMarks: Int, replacementCharacters: Int) {
+        var nonASCII = 0
+        var questionMarks = 0
+        var replacementCharacters = 0
+
+        for scalar in text.unicodeScalars {
+            if scalar.value > 0x7F {
+                nonASCII += 1
+            }
+            if scalar.value == 0x3F {
+                questionMarks += 1
+            }
+            if scalar.value == 0xFFFD {
+                replacementCharacters += 1
+            }
+        }
+
+        return (nonASCII, questionMarks, replacementCharacters)
     }
 
     private static func hasPasteableContents(in pasteboard: NSPasteboard) -> Bool {
