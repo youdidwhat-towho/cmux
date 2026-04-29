@@ -653,6 +653,61 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
         XCTAssertNil(ShortcutStroke.parseConfig("cmd+f21"))
     }
 
+    func testShortcutConfigParsingRoundTripsSpaceKey() throws {
+        let spaceKeyCode = UInt16(0x31)
+        let shortcut = try XCTUnwrap(StoredShortcut.parseConfig("cmd+shift+space"))
+
+        XCTAssertEqual(shortcut.key, "space")
+        XCTAssertTrue(shortcut.command)
+        XCTAssertTrue(shortcut.shift)
+        XCTAssertFalse(shortcut.option)
+        XCTAssertFalse(shortcut.control)
+        XCTAssertEqual(
+            shortcut.firstStroke.resolvedKeyCode { keyCode, _ in
+                keyCode == spaceKeyCode ? " " : nil
+            },
+            spaceKeyCode
+        )
+        XCTAssertEqual(shortcut.configIdentifier, "cmd+shift+space")
+        XCTAssertTrue(
+            shortcut.matches(
+                keyCode: spaceKeyCode,
+                modifierFlags: [.command, .shift],
+                eventCharacter: " "
+            )
+        )
+    }
+
+    func testSettingsFileStoreParsesSpaceShortcutBinding() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try writeSettingsFile(
+            """
+            {
+              "shortcuts": {
+                "bindings": {
+                  "toggleSplitZoom": "cmd+shift+space"
+                }
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        let store = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(
+            store.override(for: .toggleSplitZoom),
+            StoredShortcut(key: "space", command: true, shift: true, option: false, control: false)
+        )
+    }
+
     override func setUp() {
         super.setUp()
         originalSettingsFileStore = KeyboardShortcutSettings.settingsFileStore
