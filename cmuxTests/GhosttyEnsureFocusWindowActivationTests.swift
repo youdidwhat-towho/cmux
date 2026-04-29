@@ -146,6 +146,61 @@ final class GhosttyEnsureFocusWindowActivationTests: XCTestCase {
 #endif
     }
 
+    func testRightSidebarResponderBlocksDeferredTerminalApplyAfterIntentDrift() {
+#if DEBUG
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let tabManager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = tabManager.selectedWorkspace,
+              let terminalPanel = workspace.focusedTerminalPanel else {
+            XCTFail("Expected a focused terminal panel")
+            return
+        }
+
+        let hostedView = terminalPanel.hostedView
+        hostedView.setVisibleInUI(true)
+        hostedView.setActive(true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertTrue(
+            appDelegate.focusRightSidebarInActiveMainWindow(preferredWindow: window),
+            "Test setup should move AppKit focus into the right sidebar"
+        )
+        guard let rightSidebarResponder = window.firstResponder else {
+            XCTFail("Expected a right sidebar first responder")
+            return
+        }
+        XCTAssertTrue(
+            appDelegate.isRightSidebarFocusResponder(rightSidebarResponder, in: window),
+            "Test setup should produce a right-sidebar-owned first responder"
+        )
+
+        appDelegate.noteMainPanelKeyboardFocusIntent(workspaceId: workspace.id, panelId: terminalPanel.id, in: window)
+
+        hostedView.debugApplyFirstResponderIfNeededForTesting()
+
+        XCTAssertTrue(
+            window.firstResponder === rightSidebarResponder,
+            "Deferred terminal focus must not steal AppKit focus from a right-sidebar responder even if model intent drifted"
+        )
+        XCTAssertFalse(
+            terminalPanel.surface.debugDesiredFocusState(),
+            "Deferred terminal focus must not restart Ghostty cursor blinking while right-sidebar AppKit focus is active"
+        )
+#else
+        XCTFail("debugApplyFirstResponderIfNeededForTesting is only available in DEBUG")
+#endif
+    }
+
     private func window(withId windowId: UUID) -> NSWindow? {
         let identifier = "cmux.main.\(windowId.uuidString)"
         return NSApp.windows.first(where: { $0.identifier?.rawValue == identifier })
