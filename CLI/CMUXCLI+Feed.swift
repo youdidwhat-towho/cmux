@@ -16,6 +16,7 @@ extension CMUXCLI {
 
     func runFeed(commandArgs: [String]) throws {
         let subcommand = commandArgs.first?.lowercased() ?? "help"
+        _ = parseKnownCommandName(FeedSubcommandName.self, raw: subcommand)
 
         switch subcommand {
         case "clear":

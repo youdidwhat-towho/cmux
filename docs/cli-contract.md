@@ -178,17 +178,23 @@ Auth subcommands:
 | `auth login` | Begin sign-in through the app and wait for completion. |
 | `auth logout` | Clear the current session. |
 
-VM subcommands:
+Feed subcommands:
 
 | Command | Contract |
 | --- | --- |
-| `vm ls`, `vm list` | List VMs. |
-| `vm new`, `vm create` | Create a VM. Supports `--image`, `--provider`, `--detach`, and `-d`. |
-| `vm shell`, `vm attach` | Open an interactive shell for an existing VM. |
-| `vm rm`, `vm destroy`, `vm delete` | Destroy a VM. |
-| `vm ssh`, `vm ssh-info` | Print SSH connection info. |
-| `vm ssh-attach` | Internal attach helper. |
-| `vm exec` | Run a shell command inside a VM. |
+| `feed clear` | Clear persisted Feed workstream history. Supports `--yes` and `-y`. |
+
+VM and cloud subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `vm|cloud ls`, `vm|cloud list` | List VMs. |
+| `vm|cloud new`, `vm|cloud create` | Create a VM. Supports `--image`, `--provider`, `--detach`, and `-d`. |
+| `vm|cloud shell`, `vm|cloud attach` | Open an interactive shell for an existing VM. |
+| `vm|cloud rm`, `vm|cloud destroy`, `vm|cloud delete` | Destroy a VM. |
+| `vm|cloud ssh`, `vm|cloud ssh-info` | Print SSH connection info. |
+| `vm|cloud ssh-attach` | Internal attach helper. |
+| `vm|cloud exec` | Run a shell command inside a VM. |
 
 Theme subcommands:
 
@@ -200,6 +206,13 @@ Theme subcommands:
 | `themes set --light <theme>` | Set the light appearance theme. |
 | `themes set --dark <theme>` | Set the dark appearance theme. |
 | `themes clear` | Remove the cmux theme override. |
+
+Agent hook installer subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `codex|opencode|cursor|gemini|copilot|codebuddy|factory|qoder install-hooks` | Install cmux hooks for the named agent. |
+| `codex|opencode|cursor|gemini|copilot|codebuddy|factory|qoder uninstall-hooks` | Remove cmux hooks for the named agent. |
 
 Workspace and tab action names:
 
@@ -218,12 +231,14 @@ tmux compatibility commands:
 | `__tmux-compat resize-pane`, `__tmux-compat resizep` | Internal tmux shim alias for resizing panes. |
 | `pipe-pane` | Pipe pane text to a shell command. |
 | `wait-for` | Signal or wait on a named synchronization point. |
+| `__tmux-compat wait-for` | Internal tmux shim alias for synchronization points. |
 | `swap-pane` | Swap two panes. |
 | `break-pane` | Move a pane into a new workspace. |
 | `join-pane` | Join a pane into another pane. |
 | `next-window`, `previous-window`, `last-window` | Move workspace selection. |
 | `__tmux-compat next-window`, `__tmux-compat previous-window`, `__tmux-compat last-window` | Internal tmux shim aliases for workspace selection. |
 | `last-pane` | Focus the last pane. |
+| `__tmux-compat last-pane` | Internal tmux shim alias for focusing the last pane. |
 | `find-window` | Find a workspace by title or content. |
 | `clear-history` | Clear terminal scrollback. |
 | `set-hook` | Manage tmux-compat hook definitions. |
@@ -273,26 +288,49 @@ Browser subcommands:
 | `browser scroll` | Scroll page or element. |
 | `browser screenshot` | Save a screenshot. |
 | `browser get` | Read URL, title, text, HTML, value, attr, count, box, or styles. |
+| `browser get url|title|text|html|value|attr|count|box|styles` | Concrete `browser get` read operations. |
 | `browser is` | Check visible, enabled, or checked state. |
+| `browser is visible|enabled|checked` | Concrete `browser is` predicates. |
 | `browser find` | Find by role, text, label, placeholder, alt, title, testid, first, last, or nth. |
+| `browser find role|text|label|placeholder|alt|title|testid|first|last|nth` | Concrete browser locator strategies. |
 | `browser frame` | Select frame context. |
+| `browser frame main` | Select the main frame. |
 | `browser dialog` | Accept or dismiss dialogs. |
+| `browser dialog accept|dismiss` | Concrete dialog operations. |
 | `browser download` | Wait for or save downloads. |
+| `browser download wait` | Explicit download wait form. |
 | `browser cookies` | Get, set, or clear cookies. |
+| `browser cookies get|set|clear` | Concrete cookie operations. |
 | `browser storage` | Get, set, or clear local/session storage. |
+| `browser storage local|session` | Select a storage namespace, defaulting to `get`. |
+| `browser storage local|session get|set|clear` | Concrete storage operations. |
 | `browser tab` | Create, list, switch, or close browser tabs. |
+| `browser tab new|list|switch|close` | Concrete browser tab operations. |
 | `browser console`, `browser errors` | List or clear console messages and errors. |
+| `browser console list|clear`, `browser errors list|clear` | Concrete browser log operations. |
 | `browser highlight` | Highlight an element. |
 | `browser state` | Save or load browser state. |
+| `browser state save|load` | Concrete browser state operations. |
 | `browser addinitscript`, `browser addscript`, `browser addstyle` | Inject scripts or CSS. |
 | `browser viewport` | Set viewport size. |
 | `browser geolocation`, `browser geo` | Set geolocation. |
 | `browser offline` | Toggle offline state. |
 | `browser trace` | Start or stop trace capture. |
+| `browser trace start|stop` | Concrete trace operations. |
 | `browser network` | Route, unroute, or list requests. |
+| `browser network route|unroute|requests` | Concrete network operations. |
 | `browser screencast` | Start or stop screencast. |
+| `browser screencast start|stop` | Concrete screencast operations. |
 | `browser input`, `browser input_mouse`, `browser input_keyboard`, `browser input_touch` | Send low-level input. |
+| `browser input mouse|keyboard|touch` | Concrete low-level input operations. |
 | `browser identify` | Identify browser surface context. |
+| `browser disable`, `browser enable`, `browser status` | Browser availability aliases for `disable-browser`, `enable-browser`, and `browser-status`. |
+
+Markdown subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `markdown open` | Open a markdown file in the formatted viewer. |
 
 Agent hook subcommands:
 
@@ -304,9 +342,13 @@ Agent hook subcommands:
 | `claude-hook prompt-submit` | Clear notification and set running status. |
 | `claude-hook session-end` | Mark Claude session ended. |
 | `claude-hook pre-tool-use` | Record Claude tool-use context. |
-| `codex-hook session-start` | Register a Codex session. |
-| `codex-hook prompt-submit` | Set Codex running status. |
-| `codex-hook stop` | Send completion notification and set idle. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook session-start` | Register an agent session. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook prompt-submit` | Set agent running status. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook stop` | Send completion notification and set idle. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook agent-response` | Treat an agent response as completion. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook shell-exec` | Treat shell execution as prompt activity. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook shell-done` | Accept shell completion as a no-op lifecycle event. |
+| `codex-hook|opencode-hook|cursor-hook|gemini-hook|copilot-hook|codebuddy-hook|factory-hook|qoder-hook session-end` | Mark an agent session ended. |
 | `feed-hook` | Convert agent hook events into Feed context. |
 | `<agent>-hook` | Generic hook surface for `opencode`, `cursor`, `gemini`, `copilot`, `codebuddy`, `factory`, and `qoder`. |
 

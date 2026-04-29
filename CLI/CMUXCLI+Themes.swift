@@ -183,6 +183,7 @@ extension CMUXCLI {
             try printThemesList(jsonOutput: jsonOutput)
             return
         }
+        _ = parseKnownCommandName(ThemeSubcommandName.self, raw: subcommand.lowercased())
 
         switch subcommand {
         case "list":

@@ -184,12 +184,43 @@ def documented_command_forms() -> list[str]:
         stripped = line.strip()
         if not stripped.startswith("|") or stripped.startswith("| ---"):
             continue
-        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        cells = split_markdown_table_row(stripped)
         if not cells or cells[0] == "Command":
             continue
         for code in re.findall(r"`([^`]+)`", cells[0]):
             forms.update(expand_command_form(code))
     return sorted(forms)
+
+
+def split_markdown_table_row(row: str) -> list[str]:
+    cells: list[str] = []
+    current: list[str] = []
+    in_code = False
+    escaped = False
+    for char in row.strip():
+        if escaped:
+            current.append(char)
+            escaped = False
+            continue
+        if char == "\\":
+            current.append(char)
+            escaped = True
+            continue
+        if char == "`":
+            in_code = not in_code
+            current.append(char)
+            continue
+        if char == "|" and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    cells.append("".join(current).strip())
+    if cells and cells[0] == "":
+        cells = cells[1:]
+    if cells and cells[-1] == "":
+        cells = cells[:-1]
+    return cells
 
 
 def expand_command_form(raw: str) -> list[str]:

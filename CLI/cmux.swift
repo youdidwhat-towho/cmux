@@ -1884,6 +1884,7 @@ struct CMUXCLI {
 
         let command = args[index]
         let commandArgs = Array(args[(index + 1)...])
+        _ = parseKnownCommandName(TopLevelCommandName.self, raw: command)
         let cliTelemetry = CLISocketSentryTelemetry(
             command: command,
             commandArgs: commandArgs,
@@ -1898,6 +1899,11 @@ struct CMUXCLI {
 
         if command == "version" {
             print(versionSummary())
+            return
+        }
+
+        if command == Self.argumentParserInventoryCommand {
+            try runArgumentParserInventory(commandArgs: commandArgs)
             return
         }
 
@@ -2018,6 +2024,7 @@ struct CMUXCLI {
         // Codex hooks management (no socket needed)
         if command == "codex" {
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks" {
                 try installAgentHooks(Self.agentDef(named: "codex")!)
                 return
@@ -2030,6 +2037,7 @@ struct CMUXCLI {
         // OpenCode plugin management (no socket needed)
         if command == "opencode" {
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks" {
                 try installAgentHooks(Self.agentDef(named: "opencode")!)
                 return
@@ -2059,6 +2067,7 @@ struct CMUXCLI {
         // Cursor hooks management (no socket needed)
         if command == "cursor" {
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks" {
                 try runCursorInstallHooks()
                 return
@@ -2079,6 +2088,7 @@ struct CMUXCLI {
         // Gemini hooks management (no socket needed)
         if command == "gemini" {
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks" {
                 try runGeminiInstallHooks()
                 return
@@ -2100,6 +2110,7 @@ struct CMUXCLI {
         for agentName in ["copilot", "codebuddy", "factory", "qoder"] {
             guard command == agentName else { continue }
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks", let def = Self.agentDef(named: agentName) {
                 try installAgentHooks(def)
                 return
@@ -2133,6 +2144,7 @@ struct CMUXCLI {
         // OpenCode plugin install/uninstall (plugin JS, not a hook file)
         if command == "opencode" {
             let sub = commandArgs.first?.lowercased() ?? "help"
+            _ = parseKnownCommandName(AgentInstallerSubcommandName.self, raw: sub)
             if sub == "install-hooks" {
                 try runOpenCodeInstallHooks()
                 return
@@ -2214,6 +2226,7 @@ struct CMUXCLI {
 
         case "auth":
             let sub = commandArgs.first?.lowercased() ?? "status"
+            _ = parseKnownCommandName(AuthSubcommandName.self, raw: sub)
             switch sub {
             case "status":
                 let response = try client.sendV2(method: "auth.status")
@@ -2281,6 +2294,7 @@ struct CMUXCLI {
         case "vm", "cloud":
             let sub = commandArgs.first?.lowercased() ?? "ls"
             let rest = Array(commandArgs.dropFirst())
+            _ = parseKnownCommandName(VMSubcommandName.self, raw: sub)
             switch sub {
             case "ls", "list":
                 let response = try client.sendV2(method: "vm.list")
@@ -3484,6 +3498,7 @@ struct CMUXCLI {
         // a single positional argument as shorthand path.
         let subArgs: [String]
         if let first = args.first, first.lowercased() == "open" {
+            _ = parseKnownCommandName(MarkdownSubcommandName.self, raw: first.lowercased())
             subArgs = Array(args.dropFirst())
         } else if args.count == 1, let first = args.first, !first.hasPrefix("-") {
             subArgs = [first]
@@ -6969,6 +6984,7 @@ struct CMUXCLI {
         }
         let subcommand = subcommandRaw.lowercased()
         let subArgs = Array(args.dropFirst())
+        _ = parseKnownCommandName(BrowserSubcommandName.self, raw: subcommand)
 
         func requireSurface() throws -> String {
             guard let raw = surfaceRaw else {
@@ -7590,6 +7606,7 @@ struct CMUXCLI {
             guard let getVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser get requires a subcommand")
             }
+            _ = parseKnownCommandName(BrowserGetSubcommandName.self, raw: getVerb)
             let getArgs = Array(subArgs.dropFirst())
 
             switch getVerb {
@@ -7660,6 +7677,7 @@ struct CMUXCLI {
             guard let isVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser is requires a subcommand")
             }
+            _ = parseKnownCommandName(BrowserIsSubcommandName.self, raw: isVerb)
             let isArgs = Array(subArgs.dropFirst())
             let (selectorOpt, rem1) = parseOption(isArgs, name: "--selector")
             let selector = selectorOpt ?? rem1.first
@@ -7692,6 +7710,7 @@ struct CMUXCLI {
             guard let locator = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser find requires a locator (role|text|label|placeholder|alt|title|testid|first|last|nth)")
             }
+            _ = parseKnownCommandName(BrowserFindSubcommandName.self, raw: locator)
             let locatorArgs = Array(subArgs.dropFirst())
 
             var params: [String: Any] = ["surface_id": sid]
@@ -7768,6 +7787,7 @@ struct CMUXCLI {
             guard let frameVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser frame requires <selector|main>")
             }
+            _ = parseKnownCommandName(BrowserFrameSubcommandName.self, raw: frameVerb)
             if frameVerb == "main" {
                 let payload = try client.sendV2(method: "browser.frame.main", params: ["surface_id": sid])
                 output(payload, fallback: "OK")
@@ -7788,6 +7808,7 @@ struct CMUXCLI {
             guard let dialogVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser dialog requires <accept|dismiss> [text]")
             }
+            _ = parseKnownCommandName(BrowserDialogSubcommandName.self, raw: dialogVerb)
             let remainder = Array(subArgs.dropFirst())
             switch dialogVerb {
             case "accept":
@@ -7809,6 +7830,9 @@ struct CMUXCLI {
 
         if subcommand == "download" {
             let sid = try requireSurface()
+            if let firstDownloadArg = subArgs.first?.lowercased() {
+                _ = parseKnownCommandName(BrowserDownloadSubcommandName.self, raw: firstDownloadArg)
+            }
             let argsForDownload: [String]
             if subArgs.first?.lowercased() == "wait" {
                 argsForDownload = Array(subArgs.dropFirst())
@@ -7844,6 +7868,7 @@ struct CMUXCLI {
         if subcommand == "cookies" {
             let sid = try requireSurface()
             let cookieVerb = subArgs.first?.lowercased() ?? "get"
+            _ = parseKnownCommandName(BrowserCookiesSubcommandName.self, raw: cookieVerb)
             let cookieArgs = subArgs.first != nil ? Array(subArgs.dropFirst()) : []
 
             let (nameOpt, rem1) = parseOption(cookieArgs, name: "--name")
@@ -7903,10 +7928,12 @@ struct CMUXCLI {
             let sid = try requireSurface()
             let storageArgs = subArgs
             let storageType = storageArgs.first?.lowercased() ?? "local"
+            _ = parseKnownCommandName(BrowserStorageTypeName.self, raw: storageType)
             guard storageType == "local" || storageType == "session" else {
                 throw CLIError(message: "browser storage requires type: local|session")
             }
             let op = storageArgs.count >= 2 ? storageArgs[1].lowercased() : "get"
+            _ = parseKnownCommandName(BrowserStorageOperationName.self, raw: op)
             let rest = storageArgs.count > 2 ? Array(storageArgs.dropFirst(2)) : []
             let positional = nonFlagArgs(rest)
 
@@ -7950,6 +7977,7 @@ struct CMUXCLI {
                 tabVerb = "list"
                 tabArgs = subArgs
             }
+            _ = parseKnownCommandName(BrowserTabSubcommandName.self, raw: tabVerb)
 
             switch tabVerb {
             case "list":
@@ -7985,6 +8013,7 @@ struct CMUXCLI {
         if subcommand == "console" {
             let sid = try requireSurface()
             let consoleVerb = subArgs.first?.lowercased() ?? "list"
+            _ = parseKnownCommandName(BrowserLogSubcommandName.self, raw: consoleVerb)
             let method = (consoleVerb == "clear") ? "browser.console.clear" : "browser.console.list"
             if consoleVerb != "list" && consoleVerb != "clear" {
                 throw CLIError(message: "Unsupported browser console subcommand: \(consoleVerb)")
@@ -8001,6 +8030,7 @@ struct CMUXCLI {
         if subcommand == "errors" {
             let sid = try requireSurface()
             let errorsVerb = subArgs.first?.lowercased() ?? "list"
+            _ = parseKnownCommandName(BrowserLogSubcommandName.self, raw: errorsVerb)
             var params: [String: Any] = ["surface_id": sid]
             if errorsVerb == "clear" {
                 params["clear"] = true
@@ -8033,6 +8063,7 @@ struct CMUXCLI {
             guard let stateVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser state requires save|load <path>")
             }
+            _ = parseKnownCommandName(BrowserStateSubcommandName.self, raw: stateVerb)
             guard subArgs.count >= 2 else {
                 throw CLIError(message: "browser state \(stateVerb) requires a file path")
             }
@@ -8105,6 +8136,7 @@ struct CMUXCLI {
             guard let traceVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser trace requires start|stop")
             }
+            _ = parseKnownCommandName(BrowserTraceSubcommandName.self, raw: traceVerb)
             let method: String
             switch traceVerb {
             case "start":
@@ -8128,6 +8160,7 @@ struct CMUXCLI {
             guard let networkVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser network requires route|unroute|requests")
             }
+            _ = parseKnownCommandName(BrowserNetworkSubcommandName.self, raw: networkVerb)
             let networkArgs = Array(subArgs.dropFirst())
             switch networkVerb {
             case "route":
@@ -8164,6 +8197,7 @@ struct CMUXCLI {
             guard let castVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser screencast requires start|stop")
             }
+            _ = parseKnownCommandName(BrowserScreencastSubcommandName.self, raw: castVerb)
             let method: String
             switch castVerb {
             case "start":
@@ -8183,6 +8217,7 @@ struct CMUXCLI {
             guard let inputVerb = subArgs.first?.lowercased() else {
                 throw CLIError(message: "browser input requires mouse|keyboard|touch")
             }
+            _ = parseKnownCommandName(BrowserInputSubcommandName.self, raw: inputVerb)
             let remainder = Array(subArgs.dropFirst())
             let method: String
             switch inputVerb {
@@ -12311,6 +12346,7 @@ struct CMUXCLI {
         windowOverride: String?
     ) throws {
         let (command, rawArgs) = try splitTmuxCommand(commandArgs)
+        _ = parseKnownCommandName(TmuxShimCommandName.self, raw: command)
 
         switch command {
         case "new-session", "new":
@@ -13005,6 +13041,8 @@ struct CMUXCLI {
         idFormat: CLIIDFormat,
         windowOverride: String?
     ) throws {
+        _ = parseKnownCommandName(TopLevelTmuxCommandName.self, raw: command)
+
         switch command {
         case "capture-pane":
             let (wsArg, rem0) = parseOption(commandArgs, name: "--workspace")
@@ -13382,6 +13420,7 @@ struct CMUXCLI {
         telemetry: CLISocketSentryTelemetry
     ) throws {
         let subcommand = commandArgs.first?.lowercased() ?? "help"
+        _ = parseKnownCommandName(ClaudeHookSubcommandName.self, raw: subcommand)
         let hookArgs = Array(commandArgs.dropFirst())
         let hookWsFlag = optionValue(hookArgs, name: "--workspace")
         let workspaceArg = hookWsFlag ?? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"]
@@ -15962,6 +16001,7 @@ export default CMUXSessionRestore;
     private func runGenericAgentHook(def: AgentHookDef, commandArgs: [String], client: SocketClient, telemetry: CLISocketSentryTelemetry) throws {
         let env = ProcessInfo.processInfo.environment
         let subcommand = commandArgs.first?.lowercased() ?? ""
+        _ = parseKnownCommandName(GenericAgentHookSubcommandName.self, raw: subcommand)
         let hookArgs = Array(commandArgs.dropFirst())
         telemetry.breadcrumb("\(def.name)-hook.\(subcommand)")
 
