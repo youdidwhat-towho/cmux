@@ -100,6 +100,26 @@ final class GhosttyPasteboardHelperTests: XCTestCase {
         )
     }
 
+    /// Regression test for issue #3069.
+    /// Some apps advertise both a valid UTF-8 plain-text payload and a lossy
+    /// rich-text/image representation of the same selection. cmux should prefer
+    /// the UTF-8 plain text for terminal paste instead of reconstructing text
+    /// from the lossy HTML/RTF path and turning CJK into literal question marks.
+    func testPrefersUTF8PlainTextOverLossyRichTextWhenImagePayloadAlsoExists() throws {
+        let pasteboard = NSPasteboard(name: .init("cmux-test-lossy-rich-image-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+
+        let koreanText = "한글 테스트 paste"
+        pasteboard.setString(koreanText, forType: .string)
+        pasteboard.setString("<p>?? ?? paste</p>", forType: .html)
+        pasteboard.setData(try make1x1PNG(color: .systemPink), forType: .png)
+
+        XCTAssertEqual(
+            cmuxPasteboardStringContentsForTesting(pasteboard),
+            koreanText
+        )
+    }
+
     func testEmptyPlainTextFallsBackToRichTextPayload() throws {
         let pasteboard = NSPasteboard(name: .init("cmux-test-empty-plain-rich-fallback-\(UUID().uuidString)"))
         pasteboard.clearContents()
