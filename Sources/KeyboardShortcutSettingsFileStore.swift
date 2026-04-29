@@ -53,6 +53,7 @@ final class CmuxSettingsFileStore {
         "sidebar.showNotificationMessage",
         "sidebar.showBranchDirectory",
         "sidebar.showPullRequests",
+        "sidebar.makePullRequestsClickable",
         "sidebar.openPullRequestLinksInCmuxBrowser",
         "sidebar.openPortLinksInCmuxBrowser",
         "sidebar.showSSH",
@@ -510,6 +511,9 @@ final class CmuxSettingsFileStore {
         }
         if let value = jsonBool(section["showPullRequests"]) {
             snapshot.managedUserDefaults["sidebarShowPullRequest"] = .bool(value)
+        }
+        if let value = jsonBool(section["makePullRequestsClickable"]) {
+            snapshot.managedUserDefaults[SidebarPullRequestClickabilitySettings.key] = .bool(value)
         }
         if let value = jsonBool(section["openPullRequestLinksInCmuxBrowser"]) {
             snapshot.managedUserDefaults[BrowserLinkOpenSettings.openSidebarPullRequestLinksInCmuxBrowserKey] = .bool(value)
@@ -1256,6 +1260,7 @@ final class CmuxSettingsFileStore {
                     "showNotificationMessage": SidebarWorkspaceDetailSettings.defaultShowNotificationMessage,
                     "showBranchDirectory": true,
                     "showPullRequests": true,
+                    "makePullRequestsClickable": SidebarPullRequestClickabilitySettings.defaultClickable,
                     "openPullRequestLinksInCmuxBrowser": BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser,
                     "openPortLinksInCmuxBrowser": BrowserLinkOpenSettings.defaultOpenSidebarPortLinksInCmuxBrowser,
                     "showSSH": true,

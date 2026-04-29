@@ -52027,6 +52027,23 @@
         }
       }
     },
+    "settings.app.openSidebarPRLinks.subtitleDisabled": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Enable sidebar PR clickability to choose where PR links open."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "PRリンクの開き先を選ぶには、サイドバーのPRクリックを有効にしてください。"
+          }
+        }
+      }
+    },
     "settings.app.openSidebarPortLinks": {
       "extractionState": "manual",
       "localizations": {
@@ -54867,6 +54884,57 @@
           "stringUnit": {
             "state": "translated",
             "value": "Відображати елементи перегляду (PR/MR тощо) зі статусом, номером та клікабельним посиланням."
+          }
+        }
+      }
+    },
+    "settings.app.showPullRequests.subtitle.basic": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Display review items (PR/MR/etc.) with status and number."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ステータスと番号付きのレビュー項目（PR/MRなど）を表示します。"
+          }
+        }
+      }
+    },
+    "settings.app.makeSidebarPullRequestClickable": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Make Sidebar PR Clickable"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイドバーのPRをクリック可能にする"
+          }
+        }
+      }
+    },
+    "settings.app.makeSidebarPullRequestClickable.subtitle": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "When off, review items stay visible as plain text and clicks in that area select the workspace row."
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オフにすると、レビュー項目は通常のテキストとして表示されたままになり、その領域をクリックするとワークスペース行が選択されます。"
           }
         }
       }
