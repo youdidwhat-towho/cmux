@@ -1851,70 +1851,32 @@ struct CMUXCLI {
             }
             return nil
         }()
-        var socketPath = envSocketPath ?? CLISocketPathResolver.defaultSocketPath
+        let root = try parseRootArguments()
+        let rootArguments = root.arguments
+        let socketPath = rootArguments.socket ?? envSocketPath ?? CLISocketPathResolver.defaultSocketPath
         var socketPathSource: CLISocketPathSource
-        if let envSocketPath {
+        if rootArguments.socket != nil {
+            socketPathSource = .explicitFlag
+        } else if let envSocketPath {
             socketPathSource = CLISocketPathResolver.isImplicitDefaultPath(envSocketPath) ? .implicitDefault : .environment
         } else {
             socketPathSource = .implicitDefault
         }
-        var jsonOutput = false
-        var idFormatArg: String? = nil
-        var windowId: String? = nil
-        var socketPasswordArg: String? = nil
+        let jsonOutput = rootArguments.json
+        let idFormatArg = rootArguments.idFormat
+        let windowId = rootArguments.window
+        let socketPasswordArg = rootArguments.password
 
-        var index = 1
-        while index < args.count {
-            let arg = args[index]
-            if arg == "--socket" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--socket requires a path")
-                }
-                socketPath = args[index + 1]
-                socketPathSource = .explicitFlag
-                index += 2
-                continue
-            }
-            if arg == "--json" {
-                jsonOutput = true
-                index += 1
-                continue
-            }
-            if arg == "--id-format" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--id-format requires a value (refs|uuids|both)")
-                }
-                idFormatArg = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "--window" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--window requires a window id")
-                }
-                windowId = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "--password" {
-                guard index + 1 < args.count else {
-                    throw CLIError(message: "--password requires a value")
-                }
-                socketPasswordArg = args[index + 1]
-                index += 2
-                continue
-            }
-            if arg == "-v" || arg == "--version" {
-                print(versionSummary())
-                return
-            }
-            if arg == "-h" || arg == "--help" {
-                print(usage())
-                return
-            }
-            break
+        if rootArguments.version {
+            print(versionSummary())
+            return
+        }
+        if rootArguments.help {
+            print(usage())
+            return
         }
 
+        let index = root.commandIndex
         guard index < args.count else {
             print(usage())
             throw CLIError(message: "Missing command")
@@ -2164,17 +2126,8 @@ struct CMUXCLI {
 
         // Feed helpers: clear the persistent workstream history.
         if command == "feed" {
-            let sub = commandArgs.first?.lowercased() ?? "help"
-            switch sub {
-            case "clear":
-                try runFeedClear()
-                return
-            case "help", "--help", "-h":
-                print("Usage: cmux feed clear [--yes]")
-                return
-            default:
-                throw CLIError(message: "Unknown feed subcommand: \(sub)")
-            }
+            try runFeed(commandArgs: commandArgs)
+            return
         }
 
         // OpenCode plugin install/uninstall (plugin JS, not a hook file)
@@ -16788,7 +16741,7 @@ export default CMUXSessionRestore;
 
     // MARK: - Feed history
 
-    private func runFeedClear() throws {
+    func runFeedClear(skipConfirm: Bool) throws {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let path = home
             .appendingPathComponent(".cmuxterm", isDirectory: true)
@@ -16798,8 +16751,6 @@ export default CMUXSessionRestore;
             print("No Feed history to clear (\(path.path) does not exist).")
             return
         }
-        let skipConfirm = ProcessInfo.processInfo.arguments.contains("--yes")
-            || ProcessInfo.processInfo.arguments.contains("-y")
         if !skipConfirm {
             print("This will permanently delete \(path.path). Proceed? [y/N] ", terminator: "")
             guard readLine()?.lowercased().hasPrefix("y") == true else {
