@@ -301,22 +301,16 @@ struct TerminalSidebarRootView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     LazyHStack(spacing: 14) {
                         ForEach(visibleHosts) { host in
-                            TerminalServerPinView(
-                                host: host,
-                                workspaceCount: store.workspaceCount(for: host),
-                                isConfigured: store.isConfigured(host)
-                            )
-                            .onTapGesture {
-                                if store.isConfigured(host) {
-                                    startWorkspace(host)
-                                } else if host.source == .custom {
-                                    pendingStartHostID = host.id
-                                    editorDraft = TerminalHostEditorDraft(
-                                        host: host,
-                                        credentials: store.credentials(for: host)
-                                    )
-                                }
+                            Button {
+                                activateServer(host, startWorkspace: startWorkspace)
+                            } label: {
+                                TerminalServerPinView(
+                                    host: host,
+                                    workspaceCount: store.workspaceCount(for: host),
+                                    isConfigured: store.isConfigured(host)
+                                )
                             }
+                            .buttonStyle(.plain)
                             .contextMenu {
                                 Button(TerminalHomeStrings.renameServerLabel) {
                                     renameText = host.name
@@ -494,6 +488,21 @@ struct TerminalSidebarRootView: View {
                         .accessibilityLabel(TerminalHomeStrings.moreLabel)
                 }
             }
+        }
+    }
+
+    private func activateServer(
+        _ host: TerminalHost,
+        startWorkspace: @escaping (TerminalHost) -> Void
+    ) {
+        if store.isConfigured(host) {
+            startWorkspace(host)
+        } else if host.source == .custom {
+            pendingStartHostID = host.id
+            editorDraft = TerminalHostEditorDraft(
+                host: host,
+                credentials: store.credentials(for: host)
+            )
         }
     }
 
