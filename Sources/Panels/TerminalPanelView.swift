@@ -23,7 +23,26 @@ extension GhosttySurfaceScrollView {
     }
 #endif
 
-    func canRequestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
+    func foreignTerminalFocusBlockReason(in window: NSWindow) -> String? {
+        guard let firstResponder = window.firstResponder else { return nil }
+        if let view = firstResponder as? NSView,
+           view === surfaceView || view.isDescendant(of: surfaceView) {
+            return nil
+        }
+        if firstResponder is NSText {
+            return "textEditorFocused"
+        }
+        if AppDelegate.shared?.isRightSidebarFocusResponder(firstResponder, in: window) == true {
+            return "rightSidebarFocused"
+        }
+        return nil
+    }
+
+    func canRequestSurfaceFirstResponder(
+        in window: NSWindow,
+        reason: String,
+        respectForeignFirstResponder: Bool = false
+    ) -> Bool {
         guard let terminalSurface = surfaceView.terminalSurface else {
             return true
         }
@@ -47,8 +66,26 @@ extension GhosttySurfaceScrollView {
     }
 
     @discardableResult
-    func requestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
-        guard canRequestSurfaceFirstResponder(in: window, reason: reason) else {
+    func requestSurfaceFirstResponder(
+        in window: NSWindow,
+        reason: String,
+        respectForeignFirstResponder: Bool = false
+    ) -> Bool {
+        guard canRequestSurfaceFirstResponder(
+            in: window,
+            reason: reason,
+            respectForeignFirstResponder: respectForeignFirstResponder
+        ) else {
+            return false
+        }
+        if respectForeignFirstResponder,
+           let blockReason = foreignTerminalFocusBlockReason(in: window) {
+#if DEBUG
+            dlog(
+                "focus.apply.skip surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+                "reason=\(reason).\(blockReason)"
+            )
+#endif
             return false
         }
         return window.makeFirstResponder(surfaceView)

@@ -10776,7 +10776,7 @@ final class GhosttySurfaceScrollView: NSView {
             },
             onMoveFocusToTerminal: { [weak self] in
                 self?.searchFocusTarget = .terminal
-                self?.moveFocus()
+                self?.moveFocus(respectForeignFirstResponder: false)
             },
             onNavigateSearch: { [weak terminalSurface] action in
                 _ = terminalSurface?.performBindingAction(action)
@@ -10787,7 +10787,7 @@ final class GhosttySurfaceScrollView: NSView {
             },
             onClose: { [weak self, weak terminalSurface] in
                 terminalSurface?.searchState = nil
-                self?.moveFocus()
+                self?.moveFocus(respectForeignFirstResponder: false)
             }
         )
     }
@@ -11360,7 +11360,11 @@ final class GhosttySurfaceScrollView: NSView {
     }
 #endif
 
-    func moveFocus(from previous: GhosttySurfaceScrollView? = nil, delay: TimeInterval? = nil) {
+    func moveFocus(
+        from previous: GhosttySurfaceScrollView? = nil,
+        delay: TimeInterval? = nil,
+        respectForeignFirstResponder: Bool = true
+    ) {
 #if DEBUG
         let surfaceShort = String(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil")
         let searchActive = self.surfaceView.terminalSurface?.searchState != nil
@@ -11378,6 +11382,16 @@ final class GhosttySurfaceScrollView: NSView {
             let before = String(describing: window.firstResponder)
 #endif
             guard self.canRequestSurfaceFirstResponder(in: window, reason: "moveFocus") else { return }
+            if respectForeignFirstResponder,
+               let blockReason = self.foreignTerminalFocusBlockReason(in: window) {
+#if DEBUG
+                dlog(
+                    "find.moveFocus.skip to=\(self.surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
+                    "reason=\(blockReason) firstResponder=\(String(describing: window.firstResponder))"
+                )
+#endif
+                return
+            }
             if let previous, previous !== self {
                 _ = previous.surfaceView.resignFirstResponder()
             }
@@ -11708,6 +11722,12 @@ final class GhosttySurfaceScrollView: NSView {
         guard surfaceView.isVisibleInUI else { return }
         guard let window, window.isKeyWindow else { return }
         guard canRequestSurfaceFirstResponder(in: window, reason: "clearSuppressReparentFocus") else { return }
+        if let blockReason = foreignTerminalFocusBlockReason(in: window) {
+#if DEBUG
+            dlog("focus.reparent.resume.skip surface=\(surfaceShort) reason=\(blockReason)")
+#endif
+            return
+        }
         surfaceView.terminalSurface?.recordExternalFocusState(true)
         guard !isHiddenForFocus, hasUsablePortalGeometry else {
 #if DEBUG
@@ -11727,7 +11747,11 @@ final class GhosttySurfaceScrollView: NSView {
                 "firstResponder=\(String(describing: window.firstResponder))"
             )
 #endif
-            guard requestSurfaceFirstResponder(in: window, reason: "clearSuppressReparentFocus"),
+            guard requestSurfaceFirstResponder(
+                    in: window,
+                    reason: "clearSuppressReparentFocus",
+                    respectForeignFirstResponder: true
+                  ),
                   isSurfaceViewFirstResponder() else { return }
         }
 #if DEBUG
@@ -11793,6 +11817,16 @@ final class GhosttySurfaceScrollView: NSView {
         guard let terminalSurface = surfaceView.terminalSurface else { return }
         if let window,
            !canRequestSurfaceFirstResponder(in: window, reason: "\(reason).reassert") {
+            return
+        }
+        if let window,
+           let blockReason = foreignTerminalFocusBlockReason(in: window) {
+#if DEBUG
+            dlog(
+                "focus.surface.reassert.skip surface=\(terminalSurface.id.uuidString.prefix(5)) " +
+                "reason=\(reason).\(blockReason)"
+            )
+#endif
             return
         }
         if terminalSurface.surface == nil {
@@ -11875,10 +11909,20 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+        if let blockReason = foreignTerminalFocusBlockReason(in: window) {
+#if DEBUG
+            dlog("find.applyFirstResponder SKIP surface=\(surfaceShort) reason=\(blockReason)")
+#endif
+            return
+        }
 #if DEBUG
         dlog("find.applyFirstResponder APPLY surface=\(surfaceShort) prevFirstResponder=\(String(describing: window.firstResponder))")
 #endif
-        let result = requestSurfaceFirstResponder(in: window, reason: "applyFirstResponder")
+        let result = requestSurfaceFirstResponder(
+            in: window,
+            reason: "applyFirstResponder",
+            respectForeignFirstResponder: true
+        )
         if result, isSurfaceViewFirstResponder() {
             reassertTerminalSurfaceFocus(reason: "applyFirstResponder.afterMakeFirstResponder")
         }
