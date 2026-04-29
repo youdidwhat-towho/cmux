@@ -409,7 +409,6 @@ private class PopupUIDelegate: NSObject, WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        // External URL check
         if let url = navigationAction.request.url,
            browserShouldOpenURLExternally(url) {
             NSWorkspace.shared.open(url)
@@ -420,16 +419,7 @@ private class PopupUIDelegate: NSObject, WKUIDelegate {
             navigationType: navigationAction.navigationType,
             modifierFlags: navigationAction.modifierFlags,
             buttonNumber: navigationAction.buttonNumber,
-            popupFeaturesWereSpecified: browserNavigationPopupFeaturesWereSpecified(
-                x: windowFeatures.x,
-                y: windowFeatures.y,
-                width: windowFeatures.width,
-                height: windowFeatures.height,
-                menuBarVisibility: windowFeatures.menuBarVisibility,
-                statusBarVisibility: windowFeatures.statusBarVisibility,
-                toolbarsVisibility: windowFeatures.toolbarsVisibility,
-                allowsResizing: windowFeatures.allowsResizing
-            ),
+            popupFeaturesWereSpecified: browserNavigationPopupFeaturesWereSpecified(windowFeatures: windowFeatures),
             hasRecentMiddleClickIntent: CmuxWebView.hasRecentMiddleClickIntent(for: webView)
         )
 

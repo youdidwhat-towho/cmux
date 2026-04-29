@@ -6017,9 +6017,7 @@ func browserNavigationShouldCreatePopup(
         currentEventType: currentEventType,
         currentEventButtonNumber: currentEventButtonNumber
     )
-    return navigationType == .other &&
-        popupFeaturesWereSpecified &&
-        !isUserNewTab
+    return navigationType == .other && popupFeaturesWereSpecified && !isUserNewTab
 }
 
 func browserNavigationShouldFallbackNilTargetToNewTab(
@@ -6061,6 +6059,18 @@ func browserNavigationPopupFeaturesWereSpecified(
         allowsResizing != nil
 }
 
+func browserNavigationPopupFeaturesWereSpecified(windowFeatures: WKWindowFeatures) -> Bool {
+    browserNavigationPopupFeaturesWereSpecified(
+        x: windowFeatures.x,
+        y: windowFeatures.y,
+        width: windowFeatures.width,
+        height: windowFeatures.height,
+        menuBarVisibility: windowFeatures.menuBarVisibility,
+        statusBarVisibility: windowFeatures.statusBarVisibility,
+        toolbarsVisibility: windowFeatures.toolbarsVisibility,
+        allowsResizing: windowFeatures.allowsResizing
+    )
+}
 // Keep popup retargeting intentionally narrow. Explicit cross-host alias groups
 // preserve known first-party search flows without guessing at the public suffix
 // list for arbitrary hosted tenants, while same-host scripted popups stay on
@@ -6586,16 +6596,7 @@ private class BrowserUIDelegate: NSObject, WKUIDelegate {
         }
 
         let hasRecentMiddleClickIntent = CmuxWebView.hasRecentMiddleClickIntent(for: webView)
-        let popupFeaturesWereSpecified = browserNavigationPopupFeaturesWereSpecified(
-            x: windowFeatures.x,
-            y: windowFeatures.y,
-            width: windowFeatures.width,
-            height: windowFeatures.height,
-            menuBarVisibility: windowFeatures.menuBarVisibility,
-            statusBarVisibility: windowFeatures.statusBarVisibility,
-            toolbarsVisibility: windowFeatures.toolbarsVisibility,
-            allowsResizing: windowFeatures.allowsResizing
-        )
+        let popupFeaturesWereSpecified = browserNavigationPopupFeaturesWereSpecified(windowFeatures: windowFeatures)
         let shouldOpenSimpleUserGesturePopupInCurrentTab = browserNavigationShouldOpenSimpleUserGesturePopupInCurrentTab(
             navigationType: navigationAction.navigationType,
             requestMethod: navigationAction.request.httpMethod,
@@ -6624,15 +6625,8 @@ private class BrowserUIDelegate: NSObject, WKUIDelegate {
             return nil
         }
 
-        // Classifier: scripted requests only become popup windows when WebKit
-        // surfaces explicit popup/window features. Bare window.open(url, "_blank")
-        // falls through to the existing new-tab path.
-        // User-initiated actions (link clicks, context menu "Open Link in New Tab",
-        // Cmd+click, middle-click) also fall through to new-tab behavior.
-        //
-        // WebKit sometimes delivers .other for Cmd+click / middle-click, so we
-        // reuse browserNavigationShouldOpenInNewTab to recover user intent before
-        // treating .other as a scripted popup.
+        // Only treat scripted `.other` requests as popups when WebKit surfaced
+        // explicit window features; bare `_blank` falls through to tabs.
         let isScriptedPopup = browserNavigationShouldCreatePopup(
             navigationType: navigationAction.navigationType,
             modifierFlags: navigationAction.modifierFlags,
