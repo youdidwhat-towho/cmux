@@ -2149,7 +2149,7 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
         XCTAssertEqual(index, 5)
     }
 
-    func testCurrentPlacementDefaultsToAfterCurrentWhenUnset() {
+    func testCurrentPlacementDefaultsToEndWhenUnset() {
         let suiteName = "WorkspacePlacementSettingsTests.Default.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
             XCTFail("Failed to create isolated UserDefaults suite")
@@ -2157,7 +2157,7 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
         }
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .afterCurrent)
+        XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .end)
     }
 
     func testCurrentPlacementReadsStoredValidValueAndFallsBackForInvalid() {
@@ -2172,7 +2172,7 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
         XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .top)
 
         defaults.set("nope", forKey: WorkspacePlacementSettings.placementKey)
-        XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .afterCurrent)
+        XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .end)
     }
 
     func testInsertionIndexTopInsertsBeforeUnpinned() {
