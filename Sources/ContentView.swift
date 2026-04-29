@@ -9257,15 +9257,15 @@ struct VerticalTabsSidebar: View {
     private let hiddenTitlebarControlsLeadingInset: CGFloat = 72
 
     static func workspaceScrollTopVisibilityInset(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        titlebarHeight + 8
+        isMinimalMode ? 0 : titlebarHeight + 8
     }
 
     static func sidebarTopScrimHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        titlebarHeight + 20
+        isMinimalMode ? 0 : titlebarHeight + 20
     }
 
     static func titlebarDragHandleHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        titlebarHeight
+        isMinimalMode ? 0 : titlebarHeight
     }
 
     private var workspaceScrollTopVisibilityInset: CGFloat {

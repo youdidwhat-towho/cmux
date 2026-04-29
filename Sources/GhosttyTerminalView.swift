@@ -11640,7 +11640,7 @@ final class GhosttySurfaceScrollView: NSView {
             }
             window.makeKeyAndOrderFront(nil)
         }
-        let result = window.makeFirstResponder(surfaceView)
+        let result = requestSurfaceFirstResponder(in: window, reason: "ensureFocus")
 #if DEBUG
         dlog(
             "focus.ensure.apply surface=\(surfaceView.terminalSurface?.id.uuidString.prefix(5) ?? "nil") " +
@@ -11726,7 +11726,8 @@ final class GhosttySurfaceScrollView: NSView {
                 "firstResponder=\(String(describing: window.firstResponder))"
             )
 #endif
-            guard window.makeFirstResponder(surfaceView), isSurfaceViewFirstResponder() else { return }
+            guard requestSurfaceFirstResponder(in: window, reason: "clearSuppressReparentFocus"),
+                  isSurfaceViewFirstResponder() else { return }
         }
 #if DEBUG
         dlog("focus.reparent.resume surface=\(surfaceShort) firstResponder=\(String(describing: window.firstResponder))")
@@ -11744,12 +11745,43 @@ final class GhosttySurfaceScrollView: NSView {
 
 #if DEBUG
     func debugRequestSurfaceFirstResponderForTesting(in window: NSWindow, reason: String) -> Bool {
-        window.makeFirstResponder(surfaceView)
+        requestSurfaceFirstResponder(in: window, reason: reason)
     }
 #endif
 
     func requestAutomaticFirstResponderApply(reason: String) {
         scheduleAutomaticFirstResponderApply(reason: reason)
+    }
+
+    private func canRequestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
+        guard let terminalSurface = surfaceView.terminalSurface else {
+            return true
+        }
+
+        let allowed = AppDelegate.shared?.allowsTerminalKeyboardFocus(
+            workspaceId: terminalSurface.tabId,
+            panelId: terminalSurface.id,
+            in: window
+        ) ?? true
+
+#if DEBUG
+        if !allowed {
+            dlog(
+                "focus.apply.skip surface=\(terminalSurface.id.uuidString.prefix(5)) " +
+                "reason=\(reason).coordinatorRightSidebar"
+            )
+        }
+#endif
+
+        return allowed
+    }
+
+    @discardableResult
+    private func requestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
+        guard canRequestSurfaceFirstResponder(in: window, reason: reason) else {
+            return false
+        }
+        return window.makeFirstResponder(surfaceView)
     }
 
     private func scheduleAutomaticFirstResponderApply(reason: String) {
@@ -11871,8 +11903,8 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
         dlog("find.applyFirstResponder APPLY surface=\(surfaceShort) prevFirstResponder=\(String(describing: window.firstResponder))")
 #endif
-        window.makeFirstResponder(surfaceView)
-        if isSurfaceViewFirstResponder() {
+        let result = requestSurfaceFirstResponder(in: window, reason: "applyFirstResponder")
+        if result, isSurfaceViewFirstResponder() {
             reassertTerminalSurfaceFocus(reason: "applyFirstResponder.afterMakeFirstResponder")
         }
     }
@@ -11924,7 +11956,7 @@ final class GhosttySurfaceScrollView: NSView {
             )
 #endif
         case .terminal:
-            let result = window.makeFirstResponder(surfaceView)
+            let result = requestSurfaceFirstResponder(in: window, reason: "restoreSearchFocus.terminal")
 #if DEBUG
             dlog(
                 "find.restoreSearchFocus surface=\(surfaceShort) target=terminal " +
