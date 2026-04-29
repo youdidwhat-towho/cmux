@@ -101,6 +101,51 @@ final class GhosttyEnsureFocusWindowActivationTests: XCTestCase {
 #endif
     }
 
+    func testRightSidebarFocusOwnerBlocksAlreadyFirstResponderTerminalReassertion() {
+#if DEBUG
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let tabManager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = tabManager.selectedWorkspace,
+              let terminalPanel = workspace.focusedTerminalPanel else {
+            XCTFail("Expected a focused terminal panel")
+            return
+        }
+
+        let hostedView = terminalPanel.hostedView
+        hostedView.setVisibleInUI(true)
+        hostedView.setActive(true)
+        window.makeKeyAndOrderFront(nil)
+
+        XCTAssertTrue(
+            hostedView.debugRequestSurfaceFirstResponderForTesting(in: window, reason: "test.initialTerminal"),
+            "Test setup should put the terminal surface in the responder chain"
+        )
+        XCTAssertTrue(hostedView.isSurfaceViewFirstResponder())
+        XCTAssertTrue(terminalPanel.surface.debugDesiredFocusState())
+
+        appDelegate.noteRightSidebarKeyboardFocusIntent(mode: .files, in: window)
+        hostedView.yieldTerminalSurfaceFocusForForeignResponder(reason: "test.rightSidebar")
+        XCTAssertFalse(terminalPanel.surface.debugDesiredFocusState())
+
+        hostedView.debugApplyFirstResponderIfNeededForTesting()
+
+        XCTAssertFalse(
+            terminalPanel.surface.debugDesiredFocusState(),
+            "Deferred terminal focus applies must not restart Ghostty cursor blinking while the right sidebar owns keyboard focus"
+        )
+#else
+        XCTFail("debugApplyFirstResponderIfNeededForTesting is only available in DEBUG")
+#endif
+    }
+
     private func window(withId windowId: UUID) -> NSWindow? {
         let identifier = "cmux.main.\(windowId.uuidString)"
         return NSApp.windows.first(where: { $0.identifier?.rawValue == identifier })

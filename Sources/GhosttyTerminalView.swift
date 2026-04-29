@@ -11746,6 +11746,12 @@ final class GhosttySurfaceScrollView: NSView {
         scheduleAutomaticFirstResponderApply(reason: reason)
     }
 
+#if DEBUG
+    func debugApplyFirstResponderIfNeededForTesting() {
+        applyFirstResponderIfNeeded()
+    }
+#endif
+
     private func scheduleAutomaticFirstResponderApply(reason: String) {
         automaticFirstResponderTask?.cancel()
 
