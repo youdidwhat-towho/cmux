@@ -6919,6 +6919,31 @@ struct ContentView: View {
             return String(localized: "commandPalette.subtitle.terminalWithName", defaultValue: "Terminal • \(name)")
         }
 
+        func workspaceColorCommandTitle(_ paletteName: String) -> String {
+            switch paletteName {
+            case "Red":
+                return String(localized: "shortcut.setWorkspaceColorRed.label", defaultValue: "Workspace Color: Red")
+            case "Crimson":
+                return String(localized: "shortcut.setWorkspaceColorCrimson.label", defaultValue: "Workspace Color: Crimson")
+            case "Orange":
+                return String(localized: "shortcut.setWorkspaceColorOrange.label", defaultValue: "Workspace Color: Orange")
+            case "Amber":
+                return String(localized: "shortcut.setWorkspaceColorAmber.label", defaultValue: "Workspace Color: Amber")
+            case "Olive":
+                return String(localized: "shortcut.setWorkspaceColorOlive.label", defaultValue: "Workspace Color: Olive")
+            case "Green":
+                return String(localized: "shortcut.setWorkspaceColorGreen.label", defaultValue: "Workspace Color: Green")
+            case "Teal":
+                return String(localized: "shortcut.setWorkspaceColorTeal.label", defaultValue: "Workspace Color: Teal")
+            case "Aqua":
+                return String(localized: "shortcut.setWorkspaceColorAqua.label", defaultValue: "Workspace Color: Aqua")
+            case "Blue":
+                return String(localized: "shortcut.setWorkspaceColorBlue.label", defaultValue: "Workspace Color: Blue")
+            default:
+                return String(localized: "shortcut.resetWorkspaceColor.label", defaultValue: "Reset Workspace Color")
+            }
+        }
+
         var contributions: [CommandPaletteCommandContribution] = []
 
         contributions.append(
@@ -7231,6 +7256,36 @@ struct ContentView: View {
                 when: { $0.bool(CommandPaletteContextKeys.hasWorkspace) }
             )
         )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.resetWorkspaceColor",
+                title: constant(String(localized: "shortcut.resetWorkspaceColor.label", defaultValue: "Reset Workspace Color")),
+                subtitle: workspaceSubtitle,
+                keywords: ["workspace", "color", "reset", "clear", "palette"],
+                when: { $0.bool(CommandPaletteContextKeys.hasWorkspace) }
+            )
+        )
+        for entry in [
+            ("palette.setWorkspaceColorRed", "Red"),
+            ("palette.setWorkspaceColorCrimson", "Crimson"),
+            ("palette.setWorkspaceColorOrange", "Orange"),
+            ("palette.setWorkspaceColorAmber", "Amber"),
+            ("palette.setWorkspaceColorOlive", "Olive"),
+            ("palette.setWorkspaceColorGreen", "Green"),
+            ("palette.setWorkspaceColorTeal", "Teal"),
+            ("palette.setWorkspaceColorAqua", "Aqua"),
+            ("palette.setWorkspaceColorBlue", "Blue"),
+        ] {
+            contributions.append(
+                CommandPaletteCommandContribution(
+                    commandId: entry.0,
+                    title: constant(workspaceColorCommandTitle(entry.1)),
+                    subtitle: workspaceSubtitle,
+                    keywords: ["workspace", "color", "palette", entry.1.lowercased()],
+                    when: { $0.bool(CommandPaletteContextKeys.hasWorkspace) }
+                )
+            )
+        }
         contributions.append(
             CommandPaletteCommandContribution(
                 commandId: "palette.nextWorkspace",
@@ -7992,6 +8047,32 @@ struct ContentView: View {
                 return
             }
             tabManager.setPinned(workspace, pinned: !workspace.isPinned)
+        }
+        registry.register(commandId: "palette.resetWorkspaceColor") {
+            guard let workspace = tabManager.selectedWorkspace else {
+                NSSound.beep()
+                return
+            }
+            tabManager.applyWorkspaceColor(nil, toWorkspaceIds: [workspace.id])
+        }
+        for entry in [
+            ("palette.setWorkspaceColorRed", "Red"),
+            ("palette.setWorkspaceColorCrimson", "Crimson"),
+            ("palette.setWorkspaceColorOrange", "Orange"),
+            ("palette.setWorkspaceColorAmber", "Amber"),
+            ("palette.setWorkspaceColorOlive", "Olive"),
+            ("palette.setWorkspaceColorGreen", "Green"),
+            ("palette.setWorkspaceColorTeal", "Teal"),
+            ("palette.setWorkspaceColorAqua", "Aqua"),
+            ("palette.setWorkspaceColorBlue", "Blue"),
+        ] {
+            registry.register(commandId: entry.0) {
+                guard let workspace = tabManager.selectedWorkspace else {
+                    NSSound.beep()
+                    return
+                }
+                tabManager.applyWorkspacePaletteColor(named: entry.1, toWorkspaceIds: [workspace.id])
+            }
         }
         registry.register(commandId: "palette.nextWorkspace") {
             tabManager.selectNextTab()
