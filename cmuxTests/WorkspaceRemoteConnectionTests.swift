@@ -1757,6 +1757,59 @@ final class CLINotifyProcessIntegrationTests: XCTestCase {
         XCTAssertEqual(persistedEnvironment, ["CODEX_HOME": "/tmp/codex home"])
     }
 
+    func testClaudeHookPromptSubmitSilentlySucceedsWhenWorkspaceTabManagerIsUnavailable() throws {
+        let cliPath = try bundledCLIPath()
+        let socketPath = makeSocketPath("hook")
+        let listenerFD = try bindUnixSocket(at: socketPath)
+        let state = MockSocketServerState()
+        let workspaceId = "11111111-1111-1111-1111-111111111111"
+        let surfaceId = "22222222-2222-2222-2222-222222222222"
+
+        defer {
+            Darwin.close(listenerFD)
+            unlink(socketPath)
+        }
+
+        let serverHandled = startMockServer(listenerFD: listenerFD, state: state) { line in
+            if let data = line.data(using: .utf8),
+               let payload = try? JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+               let id = payload["id"] as? String {
+                return self.v2Response(id: id, ok: true, result: [:])
+            }
+
+            if line == "clear_notifications --tab=\(workspaceId)" {
+                return "ERROR: TabManager not available"
+            }
+
+            return "ERROR: Unexpected command \(line)"
+        }
+
+        var environment = ProcessInfo.processInfo.environment
+        environment["CMUX_SOCKET_PATH"] = socketPath
+        environment["CMUX_WORKSPACE_ID"] = workspaceId
+        environment["CMUX_SURFACE_ID"] = surfaceId
+        environment["CMUX_CLI_SENTRY_DISABLED"] = "1"
+        environment["CMUX_CLAUDE_HOOK_SENTRY_DISABLED"] = "1"
+
+        let result = runProcess(
+            executablePath: cliPath,
+            arguments: ["claude-hook", "prompt-submit"],
+            environment: environment,
+            timeout: 5
+        )
+
+        wait(for: [serverHandled], timeout: 5)
+        XCTAssertFalse(result.timedOut, result.stderr)
+        XCTAssertEqual(result.status, 0, result.stderr)
+        XCTAssertTrue(result.stdout.isEmpty, result.stdout)
+        XCTAssertFalse(result.stderr.localizedCaseInsensitiveContains("TabManager"), result.stderr)
+        XCTAssertFalse(result.stderr.localizedCaseInsensitiveContains("error"), result.stderr)
+        XCTAssertTrue(
+            state.commands.contains("clear_notifications --tab=\(workspaceId)"),
+            "Expected claude-hook prompt-submit to target the stale workspace, saw \(state.commands)"
+        )
+    }
+
     private func base64NULSeparated(_ values: [String]) -> String {
         var data = Data()
         for value in values {
