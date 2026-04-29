@@ -56,6 +56,8 @@ Environment:
 
 | Command | Contract |
 | --- | --- |
+| `help` | Print top-level CLI usage and command list. |
+| `version` | Print version summary. |
 | `welcome` | Print the welcome screen. |
 | `shortcuts` | Open Settings to Keyboard Shortcuts. |
 | `restore-session` | Restore the previously saved cmux session. |
@@ -148,6 +150,9 @@ Environment:
 | `set-app-focus` | Override app focus state for tests. |
 | `simulate-app-active` | Trigger app-active handling for tests. |
 | `browser` | Run browser automation commands. |
+| `disable-browser` | Disable browser creation and link interception. |
+| `enable-browser` | Re-enable browser creation and link interception. |
+| `browser-status` | Print whether browser creation and link interception are enabled. |
 | `open-browser` | Legacy alias for `browser open`. |
 | `navigate` | Legacy alias for `browser navigate`. |
 | `browser-back` | Legacy alias for `browser back`. |
@@ -208,24 +213,46 @@ tmux compatibility commands:
 | Command | Contract |
 | --- | --- |
 | `capture-pane` | Read pane text. |
+| `__tmux-compat capture-pane`, `__tmux-compat capturep` | Internal tmux shim alias for reading pane text. |
 | `resize-pane` | Resize a pane with direction flags. |
+| `__tmux-compat resize-pane`, `__tmux-compat resizep` | Internal tmux shim alias for resizing panes. |
 | `pipe-pane` | Pipe pane text to a shell command. |
 | `wait-for` | Signal or wait on a named synchronization point. |
 | `swap-pane` | Swap two panes. |
 | `break-pane` | Move a pane into a new workspace. |
 | `join-pane` | Join a pane into another pane. |
 | `next-window`, `previous-window`, `last-window` | Move workspace selection. |
+| `__tmux-compat next-window`, `__tmux-compat previous-window`, `__tmux-compat last-window` | Internal tmux shim aliases for workspace selection. |
 | `last-pane` | Focus the last pane. |
 | `find-window` | Find a workspace by title or content. |
 | `clear-history` | Clear terminal scrollback. |
 | `set-hook` | Manage tmux-compat hook definitions. |
+| `__tmux-compat set-hook` | Internal tmux shim alias for hook definitions. |
 | `popup` | Placeholder, currently unsupported. |
 | `bind-key`, `unbind-key`, `copy-mode` | Placeholders, currently unsupported. |
 | `set-buffer` | Set a tmux-compat buffer. |
+| `__tmux-compat set-buffer` | Internal tmux shim alias for setting a buffer. |
 | `paste-buffer` | Paste a tmux-compat buffer. |
 | `list-buffers` | List tmux-compat buffers. |
+| `__tmux-compat list-buffers` | Internal tmux shim alias for listing buffers. |
 | `respawn-pane` | Send a restart command to a surface. |
 | `display-message` | Print or display a message. |
+| `__tmux-compat new-session`, `__tmux-compat new` | Internal tmux shim alias for creating a workspace. |
+| `__tmux-compat new-window`, `__tmux-compat neww` | Internal tmux shim alias for creating a workspace. |
+| `__tmux-compat split-window`, `__tmux-compat splitw` | Internal tmux shim alias for creating a split. |
+| `__tmux-compat select-window`, `__tmux-compat selectw` | Internal tmux shim alias for selecting a workspace. |
+| `__tmux-compat select-pane`, `__tmux-compat selectp` | Internal tmux shim alias for focusing a pane. |
+| `__tmux-compat kill-window`, `__tmux-compat killw` | Internal tmux shim alias for closing a workspace. |
+| `__tmux-compat kill-pane`, `__tmux-compat killp` | Internal tmux shim alias for closing a pane. |
+| `__tmux-compat send-keys`, `__tmux-compat send` | Internal tmux shim alias for sending keys/text. |
+| `__tmux-compat display-message`, `__tmux-compat display`, `__tmux-compat displayp` | Internal tmux shim aliases for display-message. |
+| `__tmux-compat list-windows`, `__tmux-compat lsw` | Internal tmux shim alias for listing workspaces. |
+| `__tmux-compat list-panes`, `__tmux-compat lsp` | Internal tmux shim alias for listing panes. |
+| `__tmux-compat rename-window`, `__tmux-compat renamew` | Internal tmux shim alias for renaming a workspace. |
+| `__tmux-compat show-buffer`, `__tmux-compat showb` | Internal tmux shim compatibility no-op. |
+| `__tmux-compat save-buffer`, `__tmux-compat saveb` | Internal tmux shim compatibility no-op. |
+| `__tmux-compat has-session`, `__tmux-compat has` | Internal tmux shim compatibility check. |
+| `__tmux-compat select-layout`, `__tmux-compat set-option`, `__tmux-compat set`, `__tmux-compat set-window-option`, `__tmux-compat setw`, `__tmux-compat source-file`, `__tmux-compat refresh-client`, `__tmux-compat attach-session`, `__tmux-compat detach-client`, `__tmux-compat -V`, `__tmux-compat -v` | Internal tmux shim compatibility no-ops or version output. |
 
 Browser subcommands:
 
@@ -235,11 +262,11 @@ Browser subcommands:
 | `browser goto`, `browser navigate` | Navigate to a URL. |
 | `browser back`, `browser forward`, `browser reload` | Navigate browser history or reload. |
 | `browser url`, `browser get-url` | Print current URL. |
-| `browser focus-webview`, `browser is-webview-focused` | Focus or query webview focus. |
+| `browser focus-webview`, `browser focus_webview`, `browser is-webview-focused`, `browser is_webview_focused` | Focus or query webview focus. |
 | `browser snapshot` | Print a DOM snapshot. |
 | `browser eval` | Evaluate JavaScript. |
 | `browser wait` | Wait for selector, text, URL, load state, or JS predicate. |
-| `browser click`, `browser dblclick`, `browser hover`, `browser focus`, `browser check`, `browser uncheck`, `browser scroll-into-view` | Run element interaction. |
+| `browser click`, `browser dblclick`, `browser hover`, `browser focus`, `browser check`, `browser uncheck`, `browser scroll-into-view`, `browser scrollinto`, `browser scrollintoview` | Run element interaction. |
 | `browser type`, `browser fill` | Type into or set an input. |
 | `browser press`, `browser key`, `browser keydown`, `browser keyup` | Send keyboard input. |
 | `browser select` | Select an option. |
@@ -299,6 +326,9 @@ the expected text without connecting to a cmux socket.
 - `cmux help --help` -> `Usage: cmux help`
 - `cmux welcome --help` -> `Usage: cmux welcome`
 - `cmux shortcuts --help` -> `Usage: cmux shortcuts`
+- `cmux disable-browser --help` -> `Usage: cmux disable-browser`
+- `cmux enable-browser --help` -> `Usage: cmux enable-browser`
+- `cmux browser-status --help` -> `Usage: cmux browser-status`
 - `cmux restore-session --help` -> `Usage: cmux restore-session`
 - `cmux feedback --help` -> `Usage: cmux feedback`
 - `cmux feed --help` -> `Usage: cmux feed clear [--yes|-y]`
