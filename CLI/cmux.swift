@@ -1840,6 +1840,10 @@ struct CMUXCLI {
     }
 
     func run() throws {
+        if Self.isArgumentParserCompletionRequest(args) {
+            Self.runArgumentParserCompletion(args)
+        }
+
         let processEnv = ProcessInfo.processInfo.environment
         let envSocketPath: String? = {
             for key in ["CMUX_SOCKET_PATH", "CMUX_SOCKET"] {

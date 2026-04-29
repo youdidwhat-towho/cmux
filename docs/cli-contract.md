@@ -30,6 +30,7 @@ written around user-visible behavior so the implementation can change behind it.
 | `cmux [global-options] <command> [options]` | Run a named command. |
 | `cmux --help`, `cmux -h` | Print top-level usage without a socket. |
 | `cmux --version`, `cmux -v`, `cmux version` | Print version summary without a socket. |
+| `cmux --generate-completion-script <zsh\|bash\|fish>` | Print a shell completion script without a socket. |
 
 Global options:
 
@@ -40,6 +41,17 @@ Global options:
 | `--json` | Prefer machine-readable JSON output for commands that support it. |
 | `--id-format <refs\|uuids\|both>` | Select handle format in JSON and supported text output. |
 | `--window <id\|ref\|index>` | Route the command through a specific window when supported. |
+
+Shell completion:
+
+| Shell | Install command |
+| --- | --- |
+| zsh | `cmux --generate-completion-script zsh > "${fpath[1]}/_cmux"` |
+| bash | `cmux --generate-completion-script bash > ~/.cmux-completion.bash` |
+| fish | `cmux --generate-completion-script fish > ~/.config/fish/completions/cmux.fish` |
+
+Generated completions must cover every command form in the ArgumentParser
+inventory, expose global options, and avoid connecting to the cmux socket.
 
 Environment:
 
