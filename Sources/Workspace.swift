@@ -11964,6 +11964,11 @@ final class Workspace: Identifiable, ObservableObject {
         )
     }
 
+    func didProgrammaticallyChangeSplitGeometry() {
+        tmuxLayoutSnapshot = bonsplitController.layoutSnapshot()
+        scheduleTerminalGeometryReconcile()
+    }
+
     private func renderedVisiblePanelIdsForCurrentLayout() -> Set<UUID> {
         let renderedPaneIds = bonsplitController.zoomedPaneId.map { [$0] } ?? bonsplitController.allPaneIds
         var visiblePanelIds: Set<UUID> = []

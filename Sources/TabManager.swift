@@ -5517,6 +5517,16 @@ class TabManager: ObservableObject {
     func equalizeSplits(tabId: UUID) -> Bool {
         guard let tab = tabs.first(where: { $0.id == tabId }) else { return false }
 
+        let didEqualize = equalizeSplitsOnce(in: tab)
+        if didEqualize {
+            tab.didProgrammaticallyChangeSplitGeometry()
+            scheduleEqualizeSplitsFollowUp(tabId: tabId)
+        }
+        return didEqualize
+    }
+
+    @discardableResult
+    private func equalizeSplitsOnce(in tab: Workspace) -> Bool {
         var foundSplit = false
         var allSucceeded = true
         equalizeSplits(
@@ -5526,6 +5536,22 @@ class TabManager: ObservableObject {
             allSucceeded: &allSucceeded
         )
         return foundSplit && allSucceeded
+    }
+
+    private func scheduleEqualizeSplitsFollowUp(tabId: UUID) {
+        DispatchQueue.main.async { [weak self] in
+            self?.runEqualizeSplitsFollowUp(tabId: tabId)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+            self?.runEqualizeSplitsFollowUp(tabId: tabId)
+        }
+    }
+
+    private func runEqualizeSplitsFollowUp(tabId: UUID) {
+        guard let tab = tabs.first(where: { $0.id == tabId }) else { return }
+        if equalizeSplitsOnce(in: tab) {
+            tab.didProgrammaticallyChangeSplitGeometry()
+        }
     }
 
     /// Toggle zoom on a panel.

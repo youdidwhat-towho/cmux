@@ -676,6 +676,7 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
             {
               "shortcuts": {
                 "toggleSidebar": "cmd+b",
+                "equalizeSplits": "cmd+ctrl+e",
                 "newTab": ["ctrl+b", "c"],
                 "selectWorkspaceByNumber": ["ctrl+b", "7"]
               }
@@ -693,6 +694,10 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
         XCTAssertEqual(
             store.override(for: .toggleSidebar),
             StoredShortcut(key: "b", command: true, shift: false, option: false, control: false)
+        )
+        XCTAssertEqual(
+            store.override(for: .equalizeSplits),
+            StoredShortcut(key: "e", command: true, shift: false, option: false, control: true)
         )
         XCTAssertEqual(
             store.override(for: .newTab),

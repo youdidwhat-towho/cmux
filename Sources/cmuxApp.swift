@@ -694,10 +694,8 @@ struct cmuxApp: App {
                 }
 
                 splitCommandButton(title: String(localized: "command.equalizeSplits.title", defaultValue: "Equalize Splits"), shortcut: menuShortcut(for: .equalizeSplits)) {
-                    guard let workspace = activeTabManager.selectedWorkspace,
-                          activeTabManager.equalizeSplits(tabId: workspace.id) else {
-                        NSSound.beep()
-                        return
+                    if let workspace = activeTabManager.selectedWorkspace {
+                        _ = activeTabManager.equalizeSplits(tabId: workspace.id)
                     }
                 }
 

@@ -22,6 +22,31 @@ private func shortcutRoutingSplitNodes(in node: ExternalTreeNode) -> [ExternalSp
     }
 }
 
+private func shortcutRoutingPaneFramesById(in snapshot: LayoutSnapshot) -> [String: PixelRect] {
+    Dictionary(uniqueKeysWithValues: snapshot.panes.map { ($0.paneId, $0.frame) })
+}
+
+private func shortcutRoutingAssertPaneFramesMatch(
+    _ lhs: LayoutSnapshot,
+    _ rhs: LayoutSnapshot,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let lhsFrames = shortcutRoutingPaneFramesById(in: lhs)
+    let rhsFrames = shortcutRoutingPaneFramesById(in: rhs)
+    XCTAssertEqual(Set(lhsFrames.keys), Set(rhsFrames.keys), file: file, line: line)
+
+    for paneId in lhsFrames.keys {
+        guard let lhsFrame = lhsFrames[paneId], let rhsFrame = rhsFrames[paneId] else {
+            continue
+        }
+        XCTAssertEqual(lhsFrame.x, rhsFrame.x, accuracy: 0.000_1, file: file, line: line)
+        XCTAssertEqual(lhsFrame.y, rhsFrame.y, accuracy: 0.000_1, file: file, line: line)
+        XCTAssertEqual(lhsFrame.width, rhsFrame.width, accuracy: 0.000_1, file: file, line: line)
+        XCTAssertEqual(lhsFrame.height, rhsFrame.height, accuracy: 0.000_1, file: file, line: line)
+    }
+}
+
 private final class GhosttyCommandEquivalentProbeView: GhosttyNSView {
     var afterMenuMissCallCount = 0
     var pasteCallCount = 0
@@ -716,13 +741,32 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         let seededSplits = shortcutRoutingSplitNodes(in: workspace.bonsplitController.treeSnapshot())
         XCTAssertGreaterThanOrEqual(seededSplits.count, 2, "Expected nested splits")
 
+        var seededTargetsBySplitId: [String: Double] = [:]
         for (index, split) in seededSplits.enumerated() {
             guard let splitId = UUID(uuidString: split.id) else {
                 XCTFail("Expected split ID to be a UUID")
                 return
             }
             let targetPosition: CGFloat = index.isMultiple(of: 2) ? 0.2 : 0.8
+            seededTargetsBySplitId[split.id] = Double(targetPosition)
             XCTAssertTrue(workspace.bonsplitController.setDividerPosition(targetPosition, forSplit: splitId))
+        }
+
+        let postSeedSplits = shortcutRoutingSplitNodes(in: workspace.bonsplitController.treeSnapshot())
+        XCTAssertEqual(postSeedSplits.count, seededSplits.count)
+        for split in postSeedSplits {
+            guard let targetPosition = seededTargetsBySplitId[split.id] else {
+                XCTFail("Expected seeded split to remain present")
+                return
+            }
+            XCTAssertEqual(split.dividerPosition, targetPosition, accuracy: 0.000_1)
+            XCTAssertNotEqual(split.dividerPosition, 0.5, accuracy: 0.000_1)
+        }
+
+        workspace.splitTabBar(workspace.bonsplitController, didChangeGeometry: workspace.bonsplitController.layoutSnapshot())
+        guard let seededLayoutSnapshot = workspace.tmuxLayoutSnapshot else {
+            XCTFail("Expected cached layout snapshot after seeding split geometry")
+            return
         }
 
         guard let event = makeKeyDownEvent(
@@ -740,12 +784,24 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.2))
 
         let equalizedSplits = shortcutRoutingSplitNodes(in: workspace.bonsplitController.treeSnapshot())
         XCTAssertEqual(equalizedSplits.count, seededSplits.count)
         for split in equalizedSplits {
             XCTAssertEqual(split.dividerPosition, 0.5, accuracy: 0.000_1)
         }
+
+        let liveEqualizedLayout = workspace.bonsplitController.layoutSnapshot()
+        guard let cachedEqualizedLayout = workspace.tmuxLayoutSnapshot else {
+            XCTFail("Expected cached layout snapshot after equalizing split geometry")
+            return
+        }
+        XCTAssertNotEqual(
+            shortcutRoutingPaneFramesById(in: seededLayoutSnapshot),
+            shortcutRoutingPaneFramesById(in: liveEqualizedLayout)
+        )
+        shortcutRoutingAssertPaneFramesMatch(cachedEqualizedLayout, liveEqualizedLayout)
     }
 
     func testCreateMainWindowDoesNotDisallowFullScreenTilingByDefault() {

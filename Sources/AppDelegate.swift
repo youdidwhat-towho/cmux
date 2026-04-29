@@ -10610,10 +10610,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
 
         if matchConfiguredShortcut(event: event, action: .equalizeSplits) {
-            guard let workspace = tabManager?.selectedWorkspace,
-                  tabManager?.equalizeSplits(tabId: workspace.id) == true else {
-                NSSound.beep()
-                return true
+            if let workspace = tabManager?.selectedWorkspace {
+                _ = tabManager?.equalizeSplits(tabId: workspace.id)
             }
             return true
         }
