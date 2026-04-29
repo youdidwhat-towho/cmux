@@ -825,14 +825,13 @@ fn handleWorkspaceOpenPane(service: *session_service.Service, req: *const json_r
 
     // Resolve the target pane id: either splitPane creates a fresh
     // sibling, or we reuse the workspace's first existing leaf.
-    var owned_pane_id: ?[]const u8 = null;
-    defer if (owned_pane_id) |pid| alloc.free(pid);
+    var copied_pane_id: ?[]const u8 = null;
+    defer if (copied_pane_id) |pid| alloc.free(pid);
     const target_pane_id: []const u8 = blk: {
         if (parent_pane_id) |pid| {
             const new_pid = service.workspace_reg.splitPane(workspace_id, pid, direction, .terminal) catch |err| {
                 return try errorResponse(alloc, req.id, "not_found", @errorName(err));
             };
-            owned_pane_id = new_pid;
             break :blk new_pid;
         }
         const ws = service.workspace_reg.workspaces.getPtr(workspace_id) orelse
@@ -845,8 +844,8 @@ fn handleWorkspaceOpenPane(service: *session_service.Service, req: *const json_r
             return try errorResponse(alloc, req.id, "internal_error", "workspace has no panes");
         }
         // Take ownership of a copy so the slice survives `defer alloc.free(leaves)`.
-        owned_pane_id = try alloc.dupe(u8, leaves[0].id);
-        break :blk owned_pane_id.?;
+        copied_pane_id = try alloc.dupe(u8, leaves[0].id);
+        break :blk copied_pane_id.?;
     };
 
     // Mint the session. `workspace.open_pane` does NOT create a bootstrap
