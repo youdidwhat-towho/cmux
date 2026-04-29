@@ -186,6 +186,7 @@ extension CMUXCLI {
 
     enum FeedSubcommandName: String, CLICommandName {
         case clear
+        case tui
         case help
     }
 
@@ -322,7 +323,7 @@ extension CMUXCLI {
         var forms = Set(TopLevelCommandName.rawValues)
 
         forms.formUnion(prefixedForms("auth", AuthSubcommandName.rawValues))
-        forms.formUnion(prefixedForms("feed", ["clear"]))
+        forms.formUnion(prefixedForms("feed", ["clear", "tui"]))
         forms.formUnion(prefixedForms("themes", ThemeSubcommandName.rawValues))
         forms.formUnion(["themes set --light", "themes set --dark"])
         for agent in ["codex", "opencode", "cursor", "gemini", "copilot", "codebuddy", "factory", "qoder"] {

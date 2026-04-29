@@ -194,6 +194,7 @@ Feed subcommands:
 
 | Command | Contract |
 | --- | --- |
+| `feed tui` | Open the keyboard-first Feed TUI. Supports `--opentui` and `--legacy`. |
 | `feed clear` | Clear persisted Feed workstream history. Supports `--yes` and `-y`. |
 
 VM and cloud subcommands:
@@ -385,7 +386,7 @@ the expected text without connecting to a cmux socket.
 - `cmux browser-status --help` -> `Usage: cmux browser-status`
 - `cmux restore-session --help` -> `Usage: cmux restore-session`
 - `cmux feedback --help` -> `Usage: cmux feedback`
-- `cmux feed --help` -> `Usage: cmux feed clear [--yes|-y]`
+- `cmux feed --help` -> `Usage: cmux feed tui [--opentui|--legacy]`
 - `cmux opencode --help` -> `Usage: cmux opencode <install-hooks|uninstall-hooks>`
 - `cmux themes --help` -> `Usage: cmux themes`
 - `cmux omo --help` -> `Usage: cmux omo [opencode-args...]`
