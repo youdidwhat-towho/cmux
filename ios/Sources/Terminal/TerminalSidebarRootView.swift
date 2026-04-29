@@ -329,6 +329,10 @@ struct TerminalSidebarRootView: View {
                                 }
                             }
                             .accessibilityIdentifier("terminal.server.\(host.accessibilityIdentifierSlug)")
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityLabel(host.name)
+                            .accessibilityValue(host.subtitle)
                         }
                     }
                     .padding(.horizontal, 12)
@@ -1144,6 +1148,7 @@ struct TerminalWorkspaceScreen: View {
                 )
             }
         }
+        .navigationTitle(workspace.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(resolvedBackground, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
