@@ -423,10 +423,12 @@ enum FeedNotificationDispatcher {
         frontmostContext: FrontmostContext,
         lookupTarget: (String, String) -> FeedJumpResolver.Target? = FeedJumpResolver.lookup
     ) -> Bool {
-        _ = event
-        _ = frontmostContext.activeTerminalTarget
-        _ = lookupTarget
-        return frontmostContext.isAppFrontmost
+        guard frontmostContext.isAppFrontmost,
+              let activeTerminalTarget = frontmostContext.activeTerminalTarget,
+              let notificationTarget = resolvedTarget(for: event, lookupTarget: lookupTarget) else {
+            return false
+        }
+        return activeTerminalTarget == notificationTarget
     }
 
     static func request(
@@ -493,7 +495,10 @@ enum FeedNotificationDispatcher {
     }
 
     static func currentFrontmostContext() -> FrontmostContext {
-        FrontmostContext(isAppFrontmost: NSApp.isActive, activeTerminalTarget: nil)
+        FrontmostContext(
+            isAppFrontmost: AppFocusState.isAppFocused(),
+            activeTerminalTarget: currentFocusedTerminalTarget()
+        )
     }
 
     static func deliver(_ request: UNNotificationRequest) {
@@ -510,6 +515,31 @@ enum FeedNotificationDispatcher {
                 break
             }
         }
+    }
+
+    private static func resolvedTarget(
+        for event: WorkstreamEvent,
+        lookupTarget: (String, String) -> FeedJumpResolver.Target?
+    ) -> ActiveTerminalTarget? {
+        guard let target = lookupTarget(event.source, event.sessionId),
+              let workspaceId = UUID(uuidString: target.workspaceId),
+              let surfaceId = UUID(uuidString: target.surfaceId) else {
+            return nil
+        }
+        return ActiveTerminalTarget(workspaceId: workspaceId, surfaceId: surfaceId)
+    }
+
+    private static func currentFocusedTerminalTarget() -> ActiveTerminalTarget? {
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        let responder = window?.firstResponder
+            ?? NSApp.keyWindow?.firstResponder
+            ?? NSApp.mainWindow?.firstResponder
+        guard let ghosttyView = cmuxOwningGhosttyView(for: responder),
+              let workspaceId = ghosttyView.tabId,
+              let surfaceId = ghosttyView.terminalSurface?.id else {
+            return nil
+        }
+        return ActiveTerminalTarget(workspaceId: workspaceId, surfaceId: surfaceId)
     }
 }
 
