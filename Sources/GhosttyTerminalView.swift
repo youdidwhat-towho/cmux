@@ -6914,6 +6914,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private var markedText = NSMutableAttributedString()
     private var lastPerformKeyEvent: TimeInterval?
     private var externalCommittedTextDepth = 0
+    private struct PendingNumpadIMECommitDedup {
+        let text: String
+        let keyCode: UInt16
+        let sourceId: String?
+        let timestamp: TimeInterval
+    }
+    private var pendingNumpadIMECommitDedup: PendingNumpadIMECommitDedup?
     private struct SelectionSnapshot {
         let range: NSRange
         let string: String
@@ -7488,6 +7495,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 if shouldSendText(text),
                    !suppressShiftSpaceFallbackText,
                    !suppressComposingFallbackText {
+                    notePotentialDeferredNumpadIMECommit(text: text, event: translationEvent)
                     shouldRefreshAfterTextInput = true
 #if DEBUG
                     let sendTimingStart = CmuxTypingTiming.start()
@@ -7810,6 +7818,53 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if text.count == 1, let scalar = text.unicodeScalars.first {
             return !isControlCharacterScalar(scalar)
         }
+        return true
+    }
+
+    private func notePotentialDeferredNumpadIMECommit(text: String, event: NSEvent) {
+        let flags = event.modifierFlags
+            .intersection(.deviceIndependentFlagsMask)
+            .subtracting([.function, .capsLock])
+        guard flags == [.numericPad], text.allSatisfy(\.isNumber) else {
+            pendingNumpadIMECommitDedup = nil
+            return
+        }
+
+        pendingNumpadIMECommitDedup = PendingNumpadIMECommitDedup(
+            text: text,
+            keyCode: event.keyCode,
+            sourceId: KeyboardLayout.id,
+            timestamp: ProcessInfo.processInfo.systemUptime
+        )
+    }
+
+    private func shouldSuppressDeferredNumpadIMECommit(_ text: String) -> Bool {
+        guard externalCommittedTextDepth == 0,
+              keyTextAccumulator == nil,
+              let pending = pendingNumpadIMECommitDedup else {
+            return false
+        }
+
+        let now = ProcessInfo.processInfo.systemUptime
+        guard now - pending.timestamp <= 0.25 else {
+            pendingNumpadIMECommitDedup = nil
+            return false
+        }
+
+        guard pending.text == text, pending.sourceId == KeyboardLayout.id else {
+            return false
+        }
+
+        if let currentEvent = NSApp.currentEvent, currentEvent.type == .keyDown {
+            let currentFlags = currentEvent.modifierFlags
+                .intersection(.deviceIndependentFlagsMask)
+                .subtracting([.function, .capsLock])
+            guard currentFlags == [.numericPad], currentEvent.keyCode == pending.keyCode else {
+                return false
+            }
+        }
+
+        pendingNumpadIMECommitDedup = nil
         return true
     }
 
@@ -12760,6 +12815,10 @@ extension GhosttyNSView: NSTextInputClient {
         // Some IME/input-method paths call insertText with an empty payload to
         // flush state. There is no terminal text to send in that case.
         guard !chars.isEmpty else { return }
+
+        if shouldSuppressDeferredNumpadIMECommit(chars) {
+            return
+        }
 
 #if DEBUG
         if NSApp.currentEvent == nil {
