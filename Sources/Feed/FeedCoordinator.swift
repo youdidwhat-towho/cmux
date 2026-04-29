@@ -124,7 +124,7 @@ final class FeedCoordinator: @unchecked Sendable {
         // If this is a blocking actionable event and the app window isn't
         // focused, post a native notification banner with inline action
         // buttons so the user can respond without switching windows.
-        postFeedNotification(event: event, requestId: requestId)
+        FeedNotificationDispatcher.post(event: event, requestId: requestId)
 
         let deadline: DispatchTime = .now() + waitTimeout
         let waitResult = semaphore.wait(timeout: deadline)
@@ -384,16 +384,55 @@ extension Notification.Name {
 
 // MARK: - Native notification banner
 
-/// Posts a UNUserNotificationCenter banner with inline action buttons
-/// for the given Feed event. Skips if the app window is already key/
-/// focused so the user isn't double-notified.
-private func postFeedNotification(event: WorkstreamEvent, requestId: String) {
-    DispatchQueue.main.async {
-        // Don't pester users while the app is already up front.
-        if NSApp.isActive {
-            return
-        }
+enum FeedNotificationDispatcher {
+    struct ActiveTerminalTarget: Equatable {
+        let workspaceId: UUID
+        let surfaceId: UUID
+    }
 
+    struct FrontmostContext {
+        let isAppFrontmost: Bool
+        let activeTerminalTarget: ActiveTerminalTarget?
+    }
+
+    static func post(
+        event: WorkstreamEvent,
+        requestId: String,
+        enqueue: @escaping (@escaping () -> Void) -> Void = { work in
+            DispatchQueue.main.async(execute: work)
+        },
+        frontmostContext: @escaping () -> FrontmostContext = currentFrontmostContext,
+        lookupTarget: @escaping (String, String) -> FeedJumpResolver.Target? = FeedJumpResolver.lookup,
+        deliverRequest: @escaping (UNNotificationRequest) -> Void = deliver
+    ) {
+        enqueue {
+            guard !shouldSuppress(
+                event: event,
+                frontmostContext: frontmostContext(),
+                lookupTarget: lookupTarget
+            ) else {
+                return
+            }
+            guard let request = request(for: event, requestId: requestId) else { return }
+            deliverRequest(request)
+        }
+    }
+
+    static func shouldSuppress(
+        event: WorkstreamEvent,
+        frontmostContext: FrontmostContext,
+        lookupTarget: (String, String) -> FeedJumpResolver.Target? = FeedJumpResolver.lookup
+    ) -> Bool {
+        _ = event
+        _ = frontmostContext.activeTerminalTarget
+        _ = lookupTarget
+        return frontmostContext.isAppFrontmost
+    }
+
+    static func request(
+        for event: WorkstreamEvent,
+        requestId: String
+    ) -> UNNotificationRequest? {
         let categoryId: String
         let title: String
         let body: String
@@ -434,7 +473,7 @@ private func postFeedNotification(event: WorkstreamEvent, requestId: String) {
                 defaultValue: "Agent is asking a question"
             )
         default:
-            return
+            return nil
         }
 
         let content = UNMutableNotificationContent()
@@ -446,12 +485,18 @@ private func postFeedNotification(event: WorkstreamEvent, requestId: String) {
             "workstreamId": event.sessionId,
         ]
 
-        let request = UNNotificationRequest(
+        return UNNotificationRequest(
             identifier: "feed.\(requestId)",
             content: content,
             trigger: nil
         )
+    }
 
+    static func currentFrontmostContext() -> FrontmostContext {
+        FrontmostContext(isAppFrontmost: NSApp.isActive, activeTerminalTarget: nil)
+    }
+
+    static func deliver(_ request: UNNotificationRequest) {
         let center = UNUserNotificationCenter.current()
         center.getNotificationSettings { settings in
             switch settings.authorizationStatus {

@@ -1,5 +1,6 @@
 import XCTest
 import CMUXWorkstream
+import UserNotifications
 
 #if canImport(cmux_DEV)
 @testable import cmux_DEV
@@ -49,6 +50,86 @@ final class FeedCoordinatorTests: XCTestCase {
             XCTFail("timed-out hook item should be expired")
             return
         }
+    }
+
+    func testPermissionRequestNotificationSuppressesWhenFrontmostTerminalMatches() {
+        let target = FeedNotificationDispatcher.ActiveTerminalTarget(
+            workspaceId: UUID(),
+            surfaceId: UUID()
+        )
+        let event = WorkstreamEvent(
+            sessionId: "notif-match",
+            hookEventName: .permissionRequest,
+            source: "claude",
+            toolName: "Bash",
+            requestId: "notif-match-request"
+        )
+
+        var deliveredRequests: [UNNotificationRequest] = []
+
+        FeedNotificationDispatcher.post(
+            event: event,
+            requestId: "notif-match-request",
+            enqueue: { work in work() },
+            frontmostContext: {
+                FeedNotificationDispatcher.FrontmostContext(
+                    isAppFrontmost: true,
+                    activeTerminalTarget: target
+                )
+            },
+            lookupTarget: { _, _ in
+                FeedJumpResolver.Target(
+                    workspaceId: target.workspaceId.uuidString,
+                    surfaceId: target.surfaceId.uuidString
+                )
+            },
+            deliverRequest: { deliveredRequests.append($0) }
+        )
+
+        XCTAssertTrue(deliveredRequests.isEmpty)
+    }
+
+    func testPermissionRequestNotificationStillPostsWhenDifferentTerminalIsActive() {
+        let eventTarget = FeedNotificationDispatcher.ActiveTerminalTarget(
+            workspaceId: UUID(),
+            surfaceId: UUID()
+        )
+        let activeTarget = FeedNotificationDispatcher.ActiveTerminalTarget(
+            workspaceId: UUID(),
+            surfaceId: UUID()
+        )
+        let event = WorkstreamEvent(
+            sessionId: "notif-different",
+            hookEventName: .permissionRequest,
+            source: "claude",
+            toolName: "Bash",
+            requestId: "notif-different-request"
+        )
+
+        var deliveredRequests: [UNNotificationRequest] = []
+
+        FeedNotificationDispatcher.post(
+            event: event,
+            requestId: "notif-different-request",
+            enqueue: { work in work() },
+            frontmostContext: {
+                FeedNotificationDispatcher.FrontmostContext(
+                    isAppFrontmost: true,
+                    activeTerminalTarget: activeTarget
+                )
+            },
+            lookupTarget: { _, _ in
+                FeedJumpResolver.Target(
+                    workspaceId: eventTarget.workspaceId.uuidString,
+                    surfaceId: eventTarget.surfaceId.uuidString
+                )
+            },
+            deliverRequest: { deliveredRequests.append($0) }
+        )
+
+        XCTAssertEqual(deliveredRequests.count, 1)
+        XCTAssertEqual(deliveredRequests.first?.identifier, "feed.notif-different-request")
+        XCTAssertEqual(deliveredRequests.first?.content.categoryIdentifier, "CMUXFeedPermission")
     }
 }
 
