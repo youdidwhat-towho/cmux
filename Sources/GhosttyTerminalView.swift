@@ -6733,6 +6733,20 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let result = super.becomeFirstResponder()
         var shouldApplySurfaceFocus = false
         if result {
+            if let terminalSurface,
+               AppDelegate.shared?.allowsTerminalKeyboardFocus(
+                   workspaceId: terminalSurface.tabId,
+                   panelId: terminalSurface.id,
+                   in: window
+               ) == false {
+                desiredFocus = false
+                terminalSurface.recordExternalFocusState(false)
+#if DEBUG
+                dlog("focus.firstResponder SUPPRESSED (coordinator) surface=\(terminalSurface.id.uuidString.prefix(5))")
+#endif
+                return result
+            }
+
             // If we become first responder before the ghostty surface exists (e.g. during
             // split/tab creation while the surface is still being created), record the desired focus.
             desiredFocus = true
@@ -7887,6 +7901,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         // Split reparent/layout churn can suppress the later `becomeFirstResponder -> onFocus`
         // callback. Treat pointer-down as explicit focus intent so clicking a ghost pane still
         // repairs workspace/pane active state before key routing runs.
+        if let terminalSurface {
+            AppDelegate.shared?.noteTerminalKeyboardFocusIntent(
+                workspaceId: terminalSurface.tabId,
+                panelId: terminalSurface.id,
+                in: window
+            )
+        }
         requestPointerFocusRecovery()
         window?.makeFirstResponder(self)
         if let terminalSurface {
