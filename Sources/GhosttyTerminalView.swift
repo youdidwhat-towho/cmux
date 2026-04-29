@@ -11377,6 +11377,7 @@ final class GhosttySurfaceScrollView: NSView {
 #if DEBUG
             let before = String(describing: window.firstResponder)
 #endif
+            guard self.canRequestSurfaceFirstResponder(in: window, reason: "moveFocus") else { return }
             if let previous, previous !== self {
                 _ = previous.surfaceView.resignFirstResponder()
             }
@@ -11705,8 +11706,9 @@ final class GhosttySurfaceScrollView: NSView {
 
         guard surfaceView.desiredFocus || surfaceOwnsFirstResponder else { return }
         guard surfaceView.isVisibleInUI else { return }
-        surfaceView.terminalSurface?.recordExternalFocusState(true)
         guard let window, window.isKeyWindow else { return }
+        guard canRequestSurfaceFirstResponder(in: window, reason: "clearSuppressReparentFocus") else { return }
+        surfaceView.terminalSurface?.recordExternalFocusState(true)
         guard !isHiddenForFocus, hasUsablePortalGeometry else {
 #if DEBUG
             dlog(
@@ -11789,6 +11791,10 @@ final class GhosttySurfaceScrollView: NSView {
 
     private func reassertTerminalSurfaceFocus(reason: String) {
         guard let terminalSurface = surfaceView.terminalSurface else { return }
+        if let window,
+           !canRequestSurfaceFirstResponder(in: window, reason: "\(reason).reassert") {
+            return
+        }
         if terminalSurface.surface == nil {
             terminalSurface.requestBackgroundSurfaceStartIfNeeded()
         }
@@ -11845,6 +11851,7 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+        guard canRequestSurfaceFirstResponder(in: window, reason: "applyFirstResponder") else { return }
         if AppDelegate.shared?.isCommandPaletteEffectivelyVisible(for: window) == true {
 #if DEBUG
             dlog("find.applyFirstResponder SKIP surface=\(surfaceShort) reason=commandPaletteVisible")
