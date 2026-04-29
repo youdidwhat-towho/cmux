@@ -9416,7 +9416,6 @@ final class TerminalViewportLifecycleController {
 }
 
 final class GhosttySurfaceScrollView: NSView {
-
     enum FlashStyle {
         case navigation
         case notification
@@ -9449,7 +9448,7 @@ final class GhosttySurfaceScrollView: NSView {
     private let backgroundView: NSView
     private let scrollView: GhosttyScrollView
     private let documentView: NSView
-    private let surfaceView: GhosttyNSView
+    let surfaceView: GhosttyNSView
     private let inactiveOverlayView: GhosttyFlashOverlayView
     private let dropZoneOverlayView: GhosttyFlashOverlayView
     private let notificationRingOverlayView: GhosttyFlashOverlayView
@@ -11743,45 +11742,8 @@ final class GhosttySurfaceScrollView: NSView {
         return fr === surfaceView || fr.isDescendant(of: surfaceView)
     }
 
-#if DEBUG
-    func debugRequestSurfaceFirstResponderForTesting(in window: NSWindow, reason: String) -> Bool {
-        requestSurfaceFirstResponder(in: window, reason: reason)
-    }
-#endif
-
     func requestAutomaticFirstResponderApply(reason: String) {
         scheduleAutomaticFirstResponderApply(reason: reason)
-    }
-
-    private func canRequestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
-        guard let terminalSurface = surfaceView.terminalSurface else {
-            return true
-        }
-
-        let allowed = AppDelegate.shared?.allowsTerminalKeyboardFocus(
-            workspaceId: terminalSurface.tabId,
-            panelId: terminalSurface.id,
-            in: window
-        ) ?? true
-
-#if DEBUG
-        if !allowed {
-            dlog(
-                "focus.apply.skip surface=\(terminalSurface.id.uuidString.prefix(5)) " +
-                "reason=\(reason).coordinatorRightSidebar"
-            )
-        }
-#endif
-
-        return allowed
-    }
-
-    @discardableResult
-    private func requestSurfaceFirstResponder(in window: NSWindow, reason: String) -> Bool {
-        guard canRequestSurfaceFirstResponder(in: window, reason: reason) else {
-            return false
-        }
-        return window.makeFirstResponder(surfaceView)
     }
 
     private func scheduleAutomaticFirstResponderApply(reason: String) {

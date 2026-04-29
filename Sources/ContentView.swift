@@ -9256,28 +9256,8 @@ struct VerticalTabsSidebar: View {
     private let tabRowSpacing: CGFloat = 2
     private let hiddenTitlebarControlsLeadingInset: CGFloat = 72
 
-    static func workspaceScrollTopVisibilityInset(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        isMinimalMode ? 0 : titlebarHeight + 8
-    }
-
-    static func sidebarTopScrimHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        isMinimalMode ? 0 : titlebarHeight + 20
-    }
-
-    static func titlebarDragHandleHeight(titlebarHeight: CGFloat, isMinimalMode: Bool) -> CGFloat {
-        isMinimalMode ? 0 : titlebarHeight
-    }
-
     private var workspaceScrollTopVisibilityInset: CGFloat {
-        Self.workspaceScrollTopVisibilityInset(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
-    }
-
-    private var sidebarTopScrimHeight: CGFloat {
-        Self.sidebarTopScrimHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
-    }
-
-    private var titlebarDragHandleHeight: CGFloat {
-        Self.titlebarDragHandleHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
+        VerticalTabsSidebarLayoutMetrics.workspaceScrollTopVisibilityInset(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode)
     }
 
     private var isMinimalMode: Bool {
@@ -9483,14 +9463,14 @@ struct VerticalTabsSidebar: View {
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
-                    SidebarTopScrim(height: sidebarTopScrimHeight)
+                    SidebarTopScrim(height: VerticalTabsSidebarLayoutMetrics.sidebarTopScrimHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode))
                         .allowsHitTesting(false)
                 }
                 .overlay(alignment: .top) {
                     // Match native titlebar behavior in the sidebar top strip:
                     // drag-to-move and double-click action (zoom/minimize).
                     WindowDragHandleView()
-                        .frame(height: titlebarDragHandleHeight)
+                        .frame(height: VerticalTabsSidebarLayoutMetrics.titlebarDragHandleHeight(titlebarHeight: titlebarHeight, isMinimalMode: isMinimalMode))
                         .background(TitlebarDoubleClickMonitorView())
                 }
                 .overlay(alignment: .topLeading) {
