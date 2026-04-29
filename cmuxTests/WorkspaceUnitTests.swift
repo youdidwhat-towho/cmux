@@ -2136,6 +2136,19 @@ final class WorkspaceCustomDescriptionTests: XCTestCase {
     }
 }
 final class WorkspacePlacementSettingsTests: XCTestCase {
+    func testDefaultPlacementIsEndAndEndPlacementAppends() {
+        XCTAssertEqual(WorkspacePlacementSettings.defaultPlacement, .end)
+
+        let index = WorkspacePlacementSettings.insertionIndex(
+            placement: .end,
+            selectedIndex: 1,
+            selectedIsPinned: false,
+            pinnedCount: 1,
+            totalCount: 5
+        )
+        XCTAssertEqual(index, 5)
+    }
+
     func testCurrentPlacementDefaultsToAfterCurrentWhenUnset() {
         let suiteName = "WorkspacePlacementSettingsTests.Default.\(UUID().uuidString)"
         guard let defaults = UserDefaults(suiteName: suiteName) else {
