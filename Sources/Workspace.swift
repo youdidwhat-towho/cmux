@@ -11638,6 +11638,17 @@ final class Workspace: Identifiable, ObservableObject {
         scheduleLayoutFollowUpAttempt()
     }
 
+    func scheduleSelectionRenderFollowUp(panelId: UUID) {
+        let browserPanelId = browserPanel(for: panelId) != nil ? panelId : nil
+        let terminalPanelId = terminalPanel(for: panelId) != nil ? panelId : nil
+        beginEventDrivenLayoutFollowUp(
+            reason: "workspace.selection",
+            browserPanelId: browserPanelId,
+            terminalFocusPanelId: terminalPanelId,
+            includeGeometry: true
+        )
+    }
+
     private func installLayoutFollowUpObservers() {
         guard layoutFollowUpTimeoutWorkItem == nil else { return }
 
