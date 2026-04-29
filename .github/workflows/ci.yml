@@ -308,6 +308,7 @@ jobs:
           CMUX_CLI_BIN="$CLI_BIN" python3 tests/test_cli_explicit_socket_no_autodiscovery.py
           CMUX_CLI_BIN="$CLI_BIN" python3 tests/test_cli_argument_parser_inventory.py
           CMUX_CLI_BIN="$CLI_BIN" python3 tests/test_cli_shell_completion.py
+          CMUX_CLI_BIN="$CLI_BIN" python3 tests/test_cli_themes_contract.py
 
       - name: Compare CLI golden contract against base branch
         if: github.event_name == 'pull_request'

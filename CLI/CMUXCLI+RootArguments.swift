@@ -2,6 +2,17 @@ import ArgumentParser
 import Foundation
 
 extension CMUXCLI {
+    func parseCLIArguments<Arguments: ParsableArguments>(
+        _ type: Arguments.Type,
+        _ args: [String]
+    ) throws -> Arguments {
+        do {
+            return try Arguments.parse(args)
+        } catch {
+            throw CLIError(message: String(describing: error))
+        }
+    }
+
     struct RootArguments: ParsableArguments {
         @Option(name: .long, parsing: .unconditional, help: "Override the Unix socket path.")
         var socket: String?

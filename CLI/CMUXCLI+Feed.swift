@@ -30,10 +30,6 @@ extension CMUXCLI {
     }
 
     private func parseFeedClearArguments(_ args: [String]) throws -> FeedClearArguments {
-        do {
-            return try FeedClearArguments.parse(args)
-        } catch {
-            throw CLIError(message: String(describing: error))
-        }
+        try parseCLIArguments(FeedClearArguments.self, args)
     }
 }
