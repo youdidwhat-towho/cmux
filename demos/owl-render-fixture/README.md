@@ -6,18 +6,19 @@ This verifier is the first visual gate for the OWL effort. It launches a Chromiu
 
 ## Current status
 
-The real compositor path is Mojo plus Chromium-owned `CAContext` plus Swift `CALayerHost`. It does not use Unix sockets or remote debugging. The current Swift shape has an `OwlBrowserCore` library for the runtime protocol, C-ABI symbol-table bridge, direct linked-symbol runtime entry point, session events, generated bind graph ownership, and typed browser commands; `OwlLayerHostVerifier` is now a client that owns the dynamic-library compatibility adapter, AppKit hosting, screenshots, fixture orchestration, and artifact reporting. The current Chromium patch adds `fresh-owl-hosted-frame-pump`, a scoped Owl switch that maps hosted surfaces into Chromium's existing renderer, root compositor, and GPU frame-pump settings without passing the broad `--disable-frame-rate-limit` command-line switch.
+The real compositor path is Mojo plus Chromium-owned `CAContext` plus Swift `CALayerHost`. It does not use Unix sockets or remote debugging. The current Swift shape has an `OwlBrowserCore` library for the runtime protocol, C-ABI symbol-table bridge, direct linked-symbol runtime entry point, session events, generated bind graph ownership, and typed browser commands; `OwlLayerHostVerifier` is now a client that owns the dynamic-library compatibility adapter, AppKit hosting, screenshots, fixture orchestration, and artifact reporting. The current Chromium source of truth is the full fork `https://github.com/manaflow-ai/chromium-src` at branch `feat/owl-fresh-host`, commit `7523a3a72320b403d509860f8ffaec9ac20d150e`. The retained checkpoint patch adds `fresh-owl-hosted-frame-pump`, a scoped Owl switch that maps hosted surfaces into Chromium's existing renderer, root compositor, and GPU frame-pump settings without passing the broad `--disable-frame-rate-limit` command-line switch.
 
 The current visual gates are intentionally small but behavioral: example.com, deterministic canvas, click, form typing, modifier keys, resize-small, resize-roundtrip, `CALayerHost` detach/reattach, host-window hide/show, surface scale propagation into hosted layers, crash/restart recovery, scroll, text-edit selection replacement, widget controls, a browser-default `<select>` with no select CSS, collapsed `<select>` popup publication, right-click context menu publication, and live Google search-box typing. `Scripts/run-layer-host-focused-suites-gui.sh` is the default broad gate: it first verifies the checked-out Chromium tree matches `chromium-patches/aws-m1-ultra-verified-owl-host.json`, then splits the checks into focused render, input, resize, lifecycle, scale, recovery, scroll-text, widgets, and Google batches, writes one artifact directory per suite, and emits a screenshot checklist at `artifacts/layer-host-focused-gui-latest/focused-suites.txt`. The old full all-target run is still useful as a stress test, but it is not the default pass/fail gate because it is flaky after many sequential sessions.
 
 ## Next gates
 
-1. Move the manifest-pinned checkpoint patch into an owned Chromium fork or DEPS-pinned patch application step that can be built reproducibly in CI.
-2. Promote the focused-suite runner to CI on the AWS Mac so each suite reports its own summary and visual artifact bundle.
-3. Add real browser-surface coverage for file pickers, permission prompts, authentication prompts, and other separate native or `RenderWidgetHostView` surfaces by wiring those browser surfaces into the Mojo surface tree. Do not represent those as ordinary HTML fixtures.
-4. Add Chrome-browser-only coverage, including extension bubbles and macOS color chooser, when the host moves beyond content shell. The current content shell path does not expose those as real macOS browser delegate surfaces.
-5. Add lifecycle coverage for device scale changes across displays and cross-display moves.
-6. Continue moving verifier-only behavior out of `OwlBrowserCore`, keeping screenshots, pixels, and fixture HTML in the verifier while the library owns reusable browser sessions.
+1. Split the fork commit into smaller production commits by subsystem: Mojo runtime, content shell host, LayerHost portal, input/native surfaces, DevTools.
+2. Build release artifacts from the fork commit and make the local dogfood app link those artifacts through `OwlLinkedBrowserRuntime`.
+3. Promote the focused-suite runner to CI on the AWS Mac so each suite reports its own summary and visual artifact bundle.
+4. Add real browser-surface coverage for permission prompts, authentication prompts, and other separate native or `RenderWidgetHostView` surfaces by wiring those browser surfaces into the Mojo surface tree. Do not represent those as ordinary HTML fixtures.
+5. Add Chrome-browser-only coverage, including extension bubbles and macOS color chooser, when the host moves beyond content shell. The current content shell path does not expose those as real macOS browser delegate surfaces.
+6. Add lifecycle coverage for device scale changes across displays and cross-display moves.
+7. Continue moving verifier-only behavior out of `OwlBrowserCore`, keeping screenshots, pixels, and fixture HTML in the verifier while the library owns reusable browser sessions.
 
 `OwlLayerHostSelfTest` is the smallest local rendering gate. Direct mode draws deterministic red, green, blue, and text layers into a normal Swift layer-backed `NSWindow`, proving the window capture environment. Layer-host mode creates a private `CAContext` in Swift, draws the same layers into it, hosts that context in the same Swift `CALayerHost` window path, screenshots the window, and checks the pixels. This isolates whether `CAContext` plus `CALayerHost` plus screenshot capture works before involving Chromium.
 
@@ -74,7 +75,7 @@ cd ~/cmux-owl-render-fixture
 ./Scripts/run-layer-host-focused-suites-gui.sh
 ```
 
-The focused runner executes seven separate GUI-launched batches by default:
+The focused runner executes eight separate GUI-launched batches by default:
 
 - `render`: example.com plus deterministic canvas
 - `input`: click, text input, form submit, and modifier keys
@@ -82,6 +83,7 @@ The focused runner executes seven separate GUI-launched batches by default:
 - `lifecycle`: detach/reattach the primary `CALayerHost`, hide/show the Swift host window, then verify edge coverage
 - `scale`: verify Chromium surface scale is applied to hosted `CALayerHost` contents scale, then verify edge coverage
 - `recovery`: crash the active Content Shell host, observe Mojo disconnect, then start a new session and verify a fresh Swift-hosted `CALayerHost` screenshot
+- `file-picker`: native file picker surface publication, file selection, cancellation, and DOM state verification
 - `scroll-text`: wheel scrolling and text-edit selection replacement
 
 It also has two optional real-world or widget suites:

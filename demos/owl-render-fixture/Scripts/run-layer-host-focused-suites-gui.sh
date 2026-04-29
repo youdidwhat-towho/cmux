@@ -27,7 +27,7 @@ rm -rf "$OUT_ROOT"
 mkdir -p "$OUT_ROOT"
 
 if [ "${OWL_CHROMIUM_PATCH_CHECK:-1}" != "0" ]; then
-  echo "== OWL Chromium patch check =="
+  echo "== OWL Chromium source check =="
   "$SCRIPT_DIR/check-chromium-patch.sh" --mode applied | tee "$OUT_ROOT/chromium-patch-check.txt"
 fi
 

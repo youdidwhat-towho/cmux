@@ -1,21 +1,28 @@
 # Chromium host notes
 
-The verified AWS host is `cmux-aws-mac` at Chromium checkout `~/chromium/src`,
-base commit `0bd9366db7`.
+The verified AWS host is `cmux-aws-mac` at Chromium checkout `~/chromium/src`.
+The production source of truth is now the full Chromium fork
+`https://github.com/manaflow-ai/chromium-src` on branch `feat/owl-fresh-host`,
+commit `7523a3a72320b403d509860f8ffaec9ac20d150e`, based on Chromium
+`0bd9366db7`.
 
-`chromium-patches/aws-m1-ultra-verified-owl-host.patch` captures the exact
-dirty Chromium working tree that produced the verified artifacts. It is a
-checkpoint patch, not an upstream-ready Chromium change. The companion manifest
-`chromium-patches/aws-m1-ultra-verified-owl-host.json` records the base commit,
-patch SHA-256, patch line count, ninja targets, and required build outputs.
-`Scripts/check-chromium-patch.sh --mode applied` verifies the AWS checkout is
-that base plus that exact patch and has the expected build products.
+`chromium-patches/aws-m1-ultra-verified-owl-host.patch` is retained as a
+reviewable checkpoint patch and clean-apply fallback. The companion manifest
+`chromium-patches/aws-m1-ultra-verified-owl-host.json` records the fork repo,
+fork branch, fork commit, base commit, patch SHA-256, patch line count, ninja
+targets, and required build outputs. `Scripts/check-chromium-patch.sh --mode
+applied` verifies the AWS checkout is either the clean fork commit or the legacy
+base plus exact patch, and has the expected build products.
+`Scripts/check-chromium-patch.sh --mode fork-remote` verifies the recorded fork
+branch still points at the recorded commit.
 `Scripts/check-chromium-patch.sh --mode clean-apply` verifies the patch applies
-cleanly to the recorded base in a temporary shared clone. `Scripts/apply-chromium-patch.sh`
-applies the recorded patch to a clean checkout at the recorded base.
+cleanly to the recorded base in a temporary shared clone.
+`Scripts/checkout-chromium-fork.sh` fetches and checks out the recorded fork
+commit in an existing Chromium checkout. `Scripts/apply-chromium-patch.sh`
+still applies the recorded patch to a clean checkout at the recorded base.
 
-Keep this manifest-pinned patch until the Chromium work is split into a smaller
-proper branch or owned fork. The focused GUI runner keeps the patch check
+Keep the manifest fork commit pinned until there is a release artifact pipeline
+for the Chromium runtime. The focused GUI runner keeps the Chromium source check
 enabled by default through `OWL_CHROMIUM_PATCH_CHECK=1`.
 
 The Swift verifier expects a Chromium build with:
@@ -73,11 +80,12 @@ Mojo disconnect event, then starts a fresh session and captures the same fixture
 again. This is a host restart gate, not just a process cleanup check.
 
 The current content shell host has real native menu surface coverage for
-`<select>` popups and right-click context menus. It does not yet claim real
-coverage for file pickers, permission prompts, authentication prompts, extension
-bubbles, or macOS color chooser. Those need browser delegate plumbing into the
-Mojo surface tree. Extension bubbles and macOS color chooser are Chrome-browser
-surfaces rather than surfaces exposed by this content shell path.
+`<select>` popups and right-click context menus, plus real file picker surface
+selection and cancellation coverage. It does not yet claim real coverage for
+permission prompts, authentication prompts, extension bubbles, or macOS color
+chooser. Those need browser delegate plumbing into the Mojo surface tree.
+Extension bubbles and macOS color chooser are Chrome-browser surfaces rather
+than surfaces exposed by this content shell path.
 
 The AWS build used for the current screenshots was rebuilt with:
 
