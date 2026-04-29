@@ -44,7 +44,7 @@ final class VoiceAgentViewModel: ObservableObject {
         Task {
             do {
                 let configuration = OpenAIRealtimeSessionConfiguration(
-                    instructions: Self.instructions,
+                    instructions: VoicePromptSettings.instructions(defaultInstructions: Self.defaultInstructions),
                     tools: toolExecutor.toolDefinitions
                 )
                 let secret = try await clientSecretProvider.createClientSecret(configuration: configuration)
@@ -301,7 +301,7 @@ final class VoiceAgentViewModel: ObservableObject {
         String(localized: "voice.activity.listening", defaultValue: "Listening")
     }
 
-    private static let instructions = """
+    static let defaultInstructions = """
     You are the cmux in-app voice agent. Keep spoken responses brief.
 
     You can inspect and control cmux through the provided tools. Use cmux_get_context before acting when the target workspace, terminal, pane, surface, or browser is ambiguous. Prefer the currently focused workspace and surface when the user's request clearly refers to "this", "here", or "current".
@@ -310,6 +310,12 @@ final class VoiceAgentViewModel: ObservableObject {
 
     Close the loop on actions: after a successful tool call, give one short final result. If a tool fails, say what failed and ask for the single missing detail needed to continue. Do not claim you changed something unless a tool result confirms it.
     When an action requires a tool, call the tool first without a spoken filler sentence. After the tool result arrives, say one short final result.
+
+    Common workspace agent workflows:
+    - When the user asks to create, open, or start a workspace in a directory, call cmux_create_workspace with working_directory and focus true. Treat "cd into DIR" for a new workspace as the workspace working_directory, not as a separate cd command.
+    - When the user asks to start Claude Code, or the transcription says "Cloud Code" in an agent-starting context, use initial_command "claude --dangerously-skip-permissions" in the new workspace.
+    - When the user asks to start Codex in a workspace, use initial_command "codex --yolo" in the new workspace.
+    - If the user explicitly asks to start Claude Code or Codex in the current terminal instead of a new workspace, use cmux_run_command with confirmed true for the exact command above.
 
     For literal typing or translation requests:
     - Use cmux_type_text only when the user asks to type into cmux.

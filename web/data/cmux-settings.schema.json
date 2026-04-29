@@ -363,6 +363,24 @@
         }
       }
     },
+    "voice": {
+      "title": "voice",
+      "description": "Voice agent prompt customization.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "systemPromptPrefix": {
+          "type": "string",
+          "default": "",
+          "description": "Text prepended to the default cmux voice agent system prompt. Leave empty to use only the default prompt."
+        },
+        "systemPromptOverride": {
+          "type": "string",
+          "default": "",
+          "description": "Full replacement for the cmux voice agent system prompt. When set, the default prompt and prefix are ignored."
+        }
+      }
+    },
     "automation": {
       "title": "automation",
       "description": "Socket control and automation settings from Settings > Automation.",

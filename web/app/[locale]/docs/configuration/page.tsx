@@ -40,6 +40,7 @@ const sectionOrder = [
   "sidebar",
   "workspaceColors",
   "sidebarAppearance",
+  "voice",
   "automation",
   "customCommands",
   "browser",
@@ -71,6 +72,11 @@ const settingsFileExample = `{
   //     "Blue": "#1565C0",
   //     "Neon Mint": "#00F5D4"
   //   }
+  // },
+
+  // "voice": {
+  //   "systemPromptPrefix": "Prefer terse replies and always focus the workspace you create.",
+  //   "systemPromptOverride": ""
   // },
 
   // "shortcuts": {
@@ -222,9 +228,6 @@ export default function ConfigurationPage() {
     schemaVersion: schemaProperties.schemaVersion,
   } satisfies Record<string, SchemaProperty | undefined>;
 
-  const shortcutsSection = schemaProperties.shortcuts;
-  const shortcutProperties = shortcutsSection?.properties ?? {};
-
   return (
     <>
       <h1>{t("title")}</h1>
@@ -292,7 +295,7 @@ working-directory = ~/code`}</CodeBlock>
       <h2>Schema reference</h2>
       <p>
         This reference covers every supported key in <code>settings.json</code>. The embedded
-        browser, terminal, sidebar, notifications, automation, and cmux-owned keyboard shortcuts
+        browser, terminal, sidebar, notifications, voice, automation, and cmux-owned keyboard shortcuts
         all live here.
       </p>
 

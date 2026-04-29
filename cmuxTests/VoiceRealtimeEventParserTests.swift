@@ -7,6 +7,8 @@ import XCTest
 #endif
 
 final class VoiceRealtimeEventParserTests: XCTestCase {
+    private let settingsFileBackupsDefaultsKey = "cmux.settingsFile.backups.v1"
+
     @MainActor
     func testVoiceToolsExposeWorkspaceFocusAndImplicitFocusTarget() {
         let tools = VoiceToolExecutor().toolDefinitions
@@ -30,6 +32,81 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
         let focusParameters = focus?["parameters"] as? [String: Any]
         let required = focusParameters?["required"] as? [String]
         XCTAssertTrue(required?.isEmpty ?? false)
+    }
+
+    func testDefaultPromptDescribesAgentWorkspaceCommands() {
+        let instructions = VoiceAgentViewModel.defaultInstructions
+
+        XCTAssertTrue(instructions.contains("working_directory"))
+        XCTAssertTrue(instructions.contains("claude --dangerously-skip-permissions"))
+        XCTAssertTrue(instructions.contains("codex --yolo"))
+        XCTAssertTrue(instructions.contains("Cloud Code"))
+    }
+
+    func testVoicePromptSettingsPrefixAndOverrideComposition() {
+        XCTAssertEqual(
+            VoicePromptSettings.compose(defaultInstructions: "DEFAULT", prefix: "PREFIX", override: ""),
+            "PREFIX\n\nDEFAULT"
+        )
+        XCTAssertEqual(
+            VoicePromptSettings.compose(defaultInstructions: "DEFAULT", prefix: "PREFIX", override: "OVERRIDE"),
+            "OVERRIDE"
+        )
+        XCTAssertEqual(
+            VoicePromptSettings.compose(defaultInstructions: "DEFAULT", prefix: "  ", override: nil),
+            "DEFAULT"
+        )
+    }
+
+    func testSettingsFileStoreParsesVoicePromptSettings() throws {
+        let defaults = UserDefaults.standard
+        let previousPrefix = defaults.object(forKey: VoicePromptSettings.systemPromptPrefixKey)
+        let previousOverride = defaults.object(forKey: VoicePromptSettings.systemPromptOverrideKey)
+        let previousBackups = defaults.data(forKey: settingsFileBackupsDefaultsKey)
+        defer {
+            restoreDefaultsValue(previousPrefix, key: VoicePromptSettings.systemPromptPrefixKey, defaults: defaults)
+            restoreDefaultsValue(previousOverride, key: VoicePromptSettings.systemPromptOverrideKey, defaults: defaults)
+            if let previousBackups {
+                defaults.set(previousBackups, forKey: settingsFileBackupsDefaultsKey)
+            } else {
+                defaults.removeObject(forKey: settingsFileBackupsDefaultsKey)
+            }
+        }
+
+        defaults.removeObject(forKey: VoicePromptSettings.systemPromptPrefixKey)
+        defaults.removeObject(forKey: VoicePromptSettings.systemPromptOverrideKey)
+        defaults.removeObject(forKey: settingsFileBackupsDefaultsKey)
+
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try writeSettingsFile(
+            """
+            {
+              "voice": {
+                "systemPromptPrefix": "Always focus created workspaces.",
+                "systemPromptOverride": "You are a custom cmux voice agent."
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        _ = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(
+            defaults.string(forKey: VoicePromptSettings.systemPromptPrefixKey),
+            "Always focus created workspaces."
+        )
+        XCTAssertEqual(
+            defaults.string(forKey: VoicePromptSettings.systemPromptOverrideKey),
+            "You are a custom cmux voice agent."
+        )
     }
 
     @MainActor
@@ -230,5 +307,24 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
             "kind": "server_event",
             "event": event
         ]
+    }
+
+    private func makeTemporaryDirectory() throws -> URL {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        return directoryURL
+    }
+
+    private func writeSettingsFile(_ contents: String, to url: URL) throws {
+        try contents.write(to: url, atomically: true, encoding: .utf8)
+    }
+
+    private func restoreDefaultsValue(_ value: Any?, key: String, defaults: UserDefaults) {
+        if let value {
+            defaults.set(value, forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
     }
 }

@@ -18,11 +18,11 @@ extension VoiceToolExecutor {
             ),
             voiceTool(
                 name: "cmux_create_workspace",
-                description: "Create a new cmux workspace.",
+                description: "Create a new cmux workspace, optionally in a working directory with an initial command. Prefer this over create-then-run when starting Claude Code or Codex in a new workspace.",
                 properties: [
                     "title": voiceStringProperty("Optional workspace title."),
                     "working_directory": voiceStringProperty("Optional working directory."),
-                    "initial_command": voiceStringProperty("Optional command to run in the initial terminal."),
+                    "initial_command": voiceStringProperty("Optional command to run in the initial terminal, for example claude --dangerously-skip-permissions or codex --yolo."),
                     "description": voiceStringProperty("Optional workspace description."),
                     "focus": voiceBooleanProperty("Select and focus the new workspace. Defaults to true.")
                 ]

@@ -117,11 +117,13 @@
 		A5008383 /* CommandPaletteSearchEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5008382 /* CommandPaletteSearchEngineTests.swift */; };
 		A500RG01 /* ReactGrab.swift in Sources */ = {isa = PBXBuildFile; fileRef = A500RG00 /* ReactGrab.swift */; };
 		A5F10011A1B2C3D4E5F60719 /* KeyboardShortcutSettingsFileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5F10010A1B2C3D4E5F60719 /* KeyboardShortcutSettingsFileStore.swift */; };
+		A5F10013A1B2C3D4E5F60719 /* CmuxSettingsFileStoreTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5F10012A1B2C3D4E5F60719 /* CmuxSettingsFileStoreTypes.swift */; };
 		AC10A001A1B2C3D4E5F60718 /* VoiceRealtimeModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B001A1B2C3D4E5F60718 /* VoiceRealtimeModels.swift */; };
 		AC10A002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift */; };
 		AC10A003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */; };
 		AC10A007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */; };
 		AC10A008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */; };
+		AC10A009A1B2C3D4E5F60718 /* VoicePromptSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B009A1B2C3D4E5F60718 /* VoicePromptSettings.swift */; };
 		AC10A004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */; };
 		AC10A005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */; };
 		AC10A006A1B2C3D4E5F60718 /* VoicePanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */; };
@@ -335,6 +337,7 @@
 		A50012F2 /* KeyboardShortcutSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardShortcutSettings.swift; sourceTree = "<group>"; };
 		A50012F4 /* KeyboardLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardLayout.swift; sourceTree = "<group>"; };
 		A5001301 /* SurfaceSearchOverlay.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Find/SurfaceSearchOverlay.swift; sourceTree = "<group>"; };
+		A5F10012A1B2C3D4E5F60719 /* CmuxSettingsFileStoreTypes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxSettingsFileStoreTypes.swift; sourceTree = "<group>"; };
 		A5001410 /* Panel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/Panel.swift; sourceTree = "<group>"; };
 		A5001411 /* TerminalPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/TerminalPanel.swift; sourceTree = "<group>"; };
 		A5001412 /* BrowserPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/BrowserPanel.swift; sourceTree = "<group>"; };
@@ -376,6 +379,7 @@
 		AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceToolExecutor.swift; sourceTree = "<group>"; };
 		AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceToolDefinitions.swift; sourceTree = "<group>"; };
 		AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceResponseCreateSequencer.swift; sourceTree = "<group>"; };
+		AC10B009A1B2C3D4E5F60718 /* VoicePromptSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePromptSettings.swift; sourceTree = "<group>"; };
 		AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRealtimeWebRTCBridge.swift; sourceTree = "<group>"; };
 		AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentViewModel.swift; sourceTree = "<group>"; };
 		AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePanelView.swift; sourceTree = "<group>"; };
@@ -605,6 +609,7 @@
 				A50012F0 /* Backport.swift */,
 				A50012F2 /* KeyboardShortcutSettings.swift */,
 				A5F10010A1B2C3D4E5F60719 /* KeyboardShortcutSettingsFileStore.swift */,
+				A5F10012A1B2C3D4E5F60719 /* CmuxSettingsFileStoreTypes.swift */,
 				A50012F4 /* KeyboardLayout.swift */,
 				A5001013 /* TabManager.swift */,
 				A5001511 /* UITestRecorder.swift */,
@@ -673,6 +678,7 @@
 				AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */,
 				AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */,
 				AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */,
+				AC10B009A1B2C3D4E5F60718 /* VoicePromptSettings.swift */,
 				AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */,
 				AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */,
 				AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */,
@@ -1000,6 +1006,7 @@
 				A50012F1 /* Backport.swift in Sources */,
 				A50012F3 /* KeyboardShortcutSettings.swift in Sources */,
 				A5F10011A1B2C3D4E5F60719 /* KeyboardShortcutSettingsFileStore.swift in Sources */,
+				A5F10013A1B2C3D4E5F60719 /* CmuxSettingsFileStoreTypes.swift in Sources */,
 				A50012F5 /* KeyboardLayout.swift in Sources */,
 				A5001003 /* TabManager.swift in Sources */,
 				A5001501 /* UITestRecorder.swift in Sources */,
@@ -1067,6 +1074,7 @@
 				AC10A003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift in Sources */,
 				AC10A007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift in Sources */,
 				AC10A008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift in Sources */,
+				AC10A009A1B2C3D4E5F60718 /* VoicePromptSettings.swift in Sources */,
 				AC10A004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift in Sources */,
 				AC10A005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift in Sources */,
 				AC10A006A1B2C3D4E5F60718 /* VoicePanelView.swift in Sources */,
