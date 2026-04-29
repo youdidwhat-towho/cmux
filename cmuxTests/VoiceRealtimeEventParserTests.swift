@@ -101,6 +101,78 @@ final class VoiceRealtimeEventParserTests: XCTestCase {
         )
     }
 
+    func testExtractsFunctionCallOnlyAfterOutputItemDone() {
+        let item: [String: Any] = [
+            "type": "function_call",
+            "status": "completed",
+            "name": "cmux_create_split",
+            "call_id": "call_done",
+            "arguments": "{\"direction\":\"right\"}"
+        ]
+
+        XCTAssertEqual(
+            VoiceRealtimeEventParser.functionCalls(in: [
+                "type": "response.output_item.added",
+                "item": item
+            ]),
+            []
+        )
+
+        XCTAssertEqual(
+            VoiceRealtimeEventParser.functionCalls(in: [
+                "type": "response.output_item.done",
+                "item": item
+            ]),
+            [
+                VoiceRealtimeFunctionCall(
+                    callID: "call_done",
+                    name: "cmux_create_split",
+                    arguments: "{\"direction\":\"right\"}"
+                )
+            ]
+        )
+    }
+
+    @MainActor
+    func testResponseCreateSequencerWaitsForResponseDoneAndCoalescesRequests() {
+        var sentEvents: [[String: Any]] = []
+        let sequencer = VoiceResponseCreateSequencer(
+            isConnected: { true },
+            hasBlockers: { false },
+            sendEvent: { sentEvents.append($0) }
+        )
+
+        sequencer.markResponseCreated()
+        sequencer.requestResponseCreate()
+        sequencer.requestResponseCreate()
+        XCTAssertTrue(sentEvents.isEmpty)
+
+        sequencer.markResponseDone()
+        XCTAssertEqual(sentEvents.count, 1)
+        XCTAssertEqual(sentEvents.first?["type"] as? String, "response.create")
+    }
+
+    @MainActor
+    func testResponseCreateSequencerRetriesAfterActiveResponseConflict() {
+        var sentEvents: [[String: Any]] = []
+        let sequencer = VoiceResponseCreateSequencer(
+            isConnected: { true },
+            hasBlockers: { false },
+            sendEvent: { sentEvents.append($0) }
+        )
+
+        sequencer.requestResponseCreate()
+        XCTAssertEqual(sentEvents.count, 1)
+
+        sequencer.markActiveResponseConflict()
+        sequencer.markResponseDone()
+        XCTAssertEqual(sentEvents.count, 2)
+        XCTAssertNotEqual(
+            sentEvents[0]["event_id"] as? String,
+            sentEvents[1]["event_id"] as? String
+        )
+    }
+
     func testParsesOpenAIKeyFromEnvFile() {
         let key = OpenAIAPIKeyResolver.parseAPIKey(from: """
         # comment

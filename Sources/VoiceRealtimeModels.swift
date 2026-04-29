@@ -261,29 +261,38 @@ enum VoiceRealtimeEventParser {
     }
 
     static func functionCalls(in event: [String: Any]) -> [VoiceRealtimeFunctionCall] {
-        var calls: [VoiceRealtimeFunctionCall] = []
-
-        if let item = event["item"] as? [String: Any],
-           let call = functionCall(from: item) {
-            calls.append(call)
-        }
-
-        if let response = event["response"] as? [String: Any],
-           let output = response["output"] as? [[String: Any]] {
+        switch eventType(in: event) {
+        case "response.output_item.done":
+            guard let item = event["item"] as? [String: Any],
+                  let call = functionCall(from: item) else {
+                return []
+            }
+            return [call]
+        case "response.done":
+            var calls: [VoiceRealtimeFunctionCall] = []
+            guard let response = event["response"] as? [String: Any],
+                  let output = response["output"] as? [[String: Any]] else {
+                return []
+            }
             for item in output {
                 if let call = functionCall(from: item) {
                     calls.append(call)
                 }
             }
+            return calls
+        default:
+            return []
         }
-
-        return calls
     }
 
     private static func functionCall(from item: [String: Any]) -> VoiceRealtimeFunctionCall? {
         guard item["type"] as? String == "function_call",
               let name = nonEmptyString(item["name"]),
               let callID = nonEmptyString(item["call_id"]) else {
+            return nil
+        }
+        if let status = nonEmptyString(item["status"]),
+           status != "completed" {
             return nil
         }
         return VoiceRealtimeFunctionCall(

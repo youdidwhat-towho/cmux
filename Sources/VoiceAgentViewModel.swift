@@ -18,9 +18,18 @@ final class VoiceAgentViewModel: ObservableObject {
     private var activeAssistantItemID: UUID?
     private var userTranscriptItemIDsByRealtimeItemID: [String: UUID] = [:]
     private var pendingUserTranscriptItemID: UUID?
-    private var isResponseActive = false
-    private var pendingResponseCreate = false
     private var inFlightFunctionCallCount = 0
+    private lazy var responseSequencer = VoiceResponseCreateSequencer(
+        isConnected: { [weak self] in
+            self?.state.isConnected == true
+        },
+        hasBlockers: { [weak self] in
+            (self?.inFlightFunctionCallCount ?? 0) > 0
+        },
+        sendEvent: { [weak self] event in
+            self?.bridge.sendClientEvent(event)
+        }
+    )
 
     init() {
         bridge.delegate = self
@@ -180,7 +189,7 @@ final class VoiceAgentViewModel: ObservableObject {
 
     private func handleServerEvent(_ event: [String: Any]) {
         if VoiceRealtimeEventParser.isActiveResponseError(in: event) {
-            pendingResponseCreate = true
+            responseSequencer.markActiveResponseConflict()
             currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
             return
         }
@@ -192,7 +201,7 @@ final class VoiceAgentViewModel: ObservableObject {
         }
 
         let eventType = VoiceRealtimeEventParser.eventType(in: event)
-        var shouldFlushPendingResponse = false
+        let isResponseDone = eventType == "response.done"
 
         switch eventType {
         case "input_audio_buffer.speech_started":
@@ -201,13 +210,11 @@ final class VoiceAgentViewModel: ObservableObject {
         case "input_audio_buffer.speech_stopped", "response.created":
             currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
             if eventType == "response.created" {
-                isResponseActive = true
+                responseSequencer.markResponseCreated()
             }
         case "response.done":
-            isResponseActive = false
             currentActivity = ""
             finishAssistantMessage()
-            shouldFlushPendingResponse = true
         default:
             break
         }
@@ -233,8 +240,8 @@ final class VoiceAgentViewModel: ObservableObject {
             handleFunctionCall(call)
         }
 
-        if shouldFlushPendingResponse && functionCalls.isEmpty {
-            flushPendingResponseCreateIfNeeded()
+        if isResponseDone {
+            responseSequencer.markResponseDone()
         }
     }
 
@@ -277,23 +284,8 @@ final class VoiceAgentViewModel: ObservableObject {
 
     private func requestResponseCreate() {
         guard state.isConnected else { return }
-        if inFlightFunctionCallCount > 0 {
-            pendingResponseCreate = true
-            return
-        }
-        if isResponseActive {
-            pendingResponseCreate = true
-            return
-        }
-        pendingResponseCreate = false
-        isResponseActive = true
         currentActivity = String(localized: "voice.activity.thinking", defaultValue: "Thinking")
-        bridge.sendClientEvent(["type": "response.create"])
-    }
-
-    private func flushPendingResponseCreateIfNeeded() {
-        guard pendingResponseCreate else { return }
-        requestResponseCreate()
+        responseSequencer.requestResponseCreate()
     }
 
     private func resetSessionState() {
@@ -301,9 +293,8 @@ final class VoiceAgentViewModel: ObservableObject {
         activeAssistantItemID = nil
         userTranscriptItemIDsByRealtimeItemID.removeAll()
         pendingUserTranscriptItemID = nil
-        isResponseActive = false
-        pendingResponseCreate = false
         inFlightFunctionCallCount = 0
+        responseSequencer.reset()
     }
 
     private var listeningPlaceholderText: String {
@@ -318,6 +309,7 @@ final class VoiceAgentViewModel: ObservableObject {
     Treat every user utterance as a fresh instruction unless it is clearly answering your immediately previous clarification question. If a new utterance is not an answer, abandon the pending clarification and handle the new request.
 
     Close the loop on actions: after a successful tool call, give one short final result. If a tool fails, say what failed and ask for the single missing detail needed to continue. Do not claim you changed something unless a tool result confirms it.
+    When an action requires a tool, call the tool first without a spoken filler sentence. After the tool result arrives, say one short final result.
 
     For literal typing or translation requests:
     - Use cmux_type_text only when the user asks to type into cmux.

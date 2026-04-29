@@ -121,6 +121,7 @@
 		AC10A002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift */; };
 		AC10A003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */; };
 		AC10A007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */; };
+		AC10A008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */; };
 		AC10A004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */; };
 		AC10A005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */; };
 		AC10A006A1B2C3D4E5F60718 /* VoicePanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */; };
@@ -374,6 +375,7 @@
 		AC10B002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenAIRealtimeClientSecretProvider.swift; sourceTree = "<group>"; };
 		AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceToolExecutor.swift; sourceTree = "<group>"; };
 		AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceToolDefinitions.swift; sourceTree = "<group>"; };
+		AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceResponseCreateSequencer.swift; sourceTree = "<group>"; };
 		AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRealtimeWebRTCBridge.swift; sourceTree = "<group>"; };
 		AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceAgentViewModel.swift; sourceTree = "<group>"; };
 		AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoicePanelView.swift; sourceTree = "<group>"; };
@@ -670,6 +672,7 @@
 				AC10B002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift */,
 				AC10B003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift */,
 				AC10B007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift */,
+				AC10B008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift */,
 				AC10B004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift */,
 				AC10B005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift */,
 				AC10B006A1B2C3D4E5F60718 /* VoicePanelView.swift */,
@@ -1063,6 +1066,7 @@
 				AC10A002A1B2C3D4E5F60718 /* OpenAIRealtimeClientSecretProvider.swift in Sources */,
 				AC10A003A1B2C3D4E5F60718 /* VoiceToolExecutor.swift in Sources */,
 				AC10A007A1B2C3D4E5F60718 /* VoiceToolDefinitions.swift in Sources */,
+				AC10A008A1B2C3D4E5F60718 /* VoiceResponseCreateSequencer.swift in Sources */,
 				AC10A004A1B2C3D4E5F60718 /* VoiceRealtimeWebRTCBridge.swift in Sources */,
 				AC10A005A1B2C3D4E5F60718 /* VoiceAgentViewModel.swift in Sources */,
 				AC10A006A1B2C3D4E5F60718 /* VoicePanelView.swift in Sources */,
