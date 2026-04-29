@@ -25,10 +25,28 @@ enum TerminalDesktopNotificationBridge {
 
     static func shouldSuppressNotification(
         workspaceAgentPIDs: [String: pid_t],
-        title _: String,
-        body _: String
+        title: String,
+        body: String
     ) -> Bool {
-        workspaceAgentPIDs["claude_code"] != nil
+        guard workspaceAgentPIDs["claude_code"] != nil else {
+            return false
+        }
+        return matchesClaudeAttentionDuplicate(title: title, body: body)
+    }
+
+    private static func matchesClaudeAttentionDuplicate(title: String, body: String) -> Bool {
+        let normalized = normalizedText("\(title) \(body)")
+        guard normalized.contains("claude") else {
+            return false
+        }
+        return normalized.contains("needs your attention") || normalized.contains("needs your input")
+    }
+
+    private static func normalizedText(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
     }
 }
 
@@ -3274,9 +3292,10 @@ class GhosttyApp {
                           let tabId = tabManager.selectedTabId else {
                         return false
                     }
-                    // Suppress OSC notifications for workspaces with active Claude hook sessions.
-                    // The hook system manages notifications with proper lifecycle tracking;
-                    // raw OSC notifications would duplicate or outlive the structured hooks.
+                    // Suppress only the generic Claude raw-OSC attention banners when
+                    // Claude hooks are active. Other terminal notifications in the same
+                    // workspace (for example Codex OSC prompts) should still flow into
+                    // the cmux notification pipeline.
                     let owningManager = AppDelegate.shared?.tabManagerFor(tabId: tabId) ?? tabManager
                     if let workspace = owningManager.tabs.first(where: { $0.id == tabId }),
                        TerminalDesktopNotificationBridge.shouldSuppressNotification(
@@ -3561,7 +3580,8 @@ class GhosttyApp {
             let actionBody = action.action.desktop_notification.body
                 .flatMap { String(cString: $0) } ?? ""
             performOnMain {
-                // Suppress OSC notifications for workspaces with active Claude hook sessions.
+                // Suppress only generic Claude raw-OSC attention banners when Claude hooks
+                // are active; preserve other terminal notification sources in the workspace.
                 let owningManager = AppDelegate.shared?.tabManagerFor(tabId: tabId) ?? AppDelegate.shared?.tabManager
                 if let workspace = owningManager?.tabs.first(where: { $0.id == tabId }),
                    TerminalDesktopNotificationBridge.shouldSuppressNotification(
