@@ -1422,6 +1422,8 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
 
     // Connect a victim client and subscribe.
     var victim = try test_util.Client.connect(alloc, fx.socket_path);
+    var victim_alive = true;
+    defer if (victim_alive) victim.deinit();
     {
         const id = victim.allocId();
         try victim.sendRequest(id, "terminal.subscribe", .{
@@ -1458,6 +1460,7 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
     // typically be mid-frame here because the pump is firing flat-out.
     std.posix.shutdown(victim.fd, .both) catch {};
     victim.deinit();
+    victim_alive = false;
 
     // Wait for the Worker's defer chain (read EOF → unsubscribeAllForStream
     // → wait for in-flight push → destroy sub) to actually complete, using

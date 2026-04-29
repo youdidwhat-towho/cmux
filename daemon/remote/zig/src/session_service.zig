@@ -301,6 +301,7 @@ pub const Service = struct {
     /// bug as the debouncer's init race. Publication-safe: the flag is
     /// the `pump != null` check itself, which is set under this mutex.
     pump_init_mutex: std.Thread.Mutex = .{},
+    pump_notify_thread_id: std.atomic.Value(u64) = .init(0),
     sub_mutex: std.Thread.Mutex = .{},
     terminal_subs: std.ArrayListUnmanaged(*TerminalSubscription) = .empty,
     /// Optional hook invoked when an unread-state transition occurs so the
@@ -392,6 +393,14 @@ pub const Service = struct {
         var reply: service_command.PendingReply(void) = .{};
         self.command_queue.submit(.{ .persist_workspaces = .{ .reply = &reply } }) catch return;
         reply.wait() catch {};
+    }
+
+    pub fn persistWorkspacesAsync(self: *Service) void {
+        if (self.shouldRunWriterCommandDirectly()) {
+            self.persistWorkspacesImpl();
+            return;
+        }
+        self.command_queue.submit(.{ .persist_workspaces = .{} }) catch {};
     }
 
     fn persistWorkspacesImpl(self: *Service) void {
@@ -583,7 +592,7 @@ pub const Service = struct {
             },
             .persist_workspaces => |c| {
                 self.persistWorkspacesImpl();
-                c.reply.fulfillOk({});
+                if (c.reply) |reply| reply.fulfillOk({});
             },
             .append_history => |c| {
                 self.appendHistoryImpl(c.workspace_id, c.event_type, c.payload_json);
@@ -1321,7 +1330,15 @@ pub const Service = struct {
 
     fn pumpNotifyTrampoline(ctx: ?*anyopaque, entry: pty_pump.Entry) void {
         const self: *Service = @ptrCast(@alignCast(ctx orelse return));
+        self.pump_notify_thread_id.store(std.Thread.getCurrentId(), .seq_cst);
+        defer self.pump_notify_thread_id.store(0, .seq_cst);
         self.deliverTerminalPushes(entry);
+    }
+
+    pub fn isOnPumpNotifyThread(self: *Service) bool {
+        const tid = self.pump_notify_thread_id.load(.seq_cst);
+        if (tid == 0) return false;
+        return tid == std.Thread.getCurrentId();
     }
 
     fn deliverTerminalPushes(self: *Service, entry: pty_pump.Entry) void {

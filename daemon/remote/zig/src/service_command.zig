@@ -162,7 +162,7 @@ pub const ListSessionsCmd = struct {
 const persistence = @import("persistence.zig");
 
 pub const PersistWorkspacesCmd = struct {
-    reply: *PendingReply(void),
+    reply: ?*PendingReply(void) = null,
 };
 
 pub const AppendHistoryCmd = struct {

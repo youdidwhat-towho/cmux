@@ -1604,9 +1604,15 @@ pub fn encodeWorkspaceChangedEvent(service: *session_service.Service, alloc: std
 
 pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
     const alloc = service.alloc;
-    // Persist first so a crash between mutation and broadcast still lands
-    // the state on disk. No-op if no DB is attached.
-    service.persistWorkspaces();
+    // Persist first for normal workspace mutations so a crash between mutation
+    // and broadcast still lands the state on disk. Pump-origin unread updates
+    // cannot block on the writer queue: closeSession may be waiting for the
+    // pump to quiesce, so a synchronous writer round trip deadlocks.
+    if (service.isOnPumpNotifyThread()) {
+        service.persistWorkspacesAsync();
+    } else {
+        service.persistWorkspaces();
+    }
     const event = encodeWorkspaceChangedEvent(service, alloc) orelse return;
     defer alloc.free(event);
     service.subscriptions.notifyAllAlloc(alloc, event);
