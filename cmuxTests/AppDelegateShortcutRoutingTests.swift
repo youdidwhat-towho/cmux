@@ -215,6 +215,61 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(manager.tabs.count, initialCount + 1, "Chord second key should dispatch the configured shortcut")
     }
 
+    func testEmptySettingsFileShortcutBindingPassesThroughDefaultKeypress() throws {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cmux-shortcut-unbinding-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try """
+        {
+          "shortcuts": {
+            "newTab": ""
+          }
+        }
+        """.write(to: settingsFileURL, atomically: true, encoding: .utf8)
+
+        KeyboardShortcutSettings.settingsFileStore = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let manager = appDelegate.tabManagerFor(windowId: windowId),
+              let event = makeKeyDownEvent(
+                  key: "n",
+                  modifiers: [.command],
+                  keyCode: 45,
+                  windowNumber: window.windowNumber
+              ) else {
+            XCTFail("Expected test window, manager, and Cmd+N event")
+            return
+        }
+
+        let initialCount = manager.tabs.count
+
+#if DEBUG
+        XCTAssertFalse(
+            appDelegate.debugHandleCustomShortcut(event: event),
+            "An empty shortcut binding should pass the keypress through to the focused surface"
+        )
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+
+        XCTAssertEqual(manager.tabs.count, initialCount)
+    }
+
     func testSettingsFileChordDispatchesNewWorkspaceShortcut() throws {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
