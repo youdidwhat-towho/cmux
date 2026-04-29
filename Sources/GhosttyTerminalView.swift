@@ -18,6 +18,20 @@ private func ghostty_surface_clear_selection_compat(_ surface: ghostty_surface_t
 @_silgen_name("ghostty_surface_select_cursor_cell")
 private func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> Bool
 
+enum TerminalDesktopNotificationBridge {
+    static func resolvedTitle(actionTitle: String, fallbackTabTitle: String) -> String {
+        actionTitle.isEmpty ? fallbackTabTitle : actionTitle
+    }
+
+    static func shouldSuppressNotification(
+        workspaceAgentPIDs: [String: pid_t],
+        title _: String,
+        body _: String
+    ) -> Bool {
+        workspaceAgentPIDs["claude_code"] != nil
+    }
+}
+
 enum GhosttyStartupAppearancePreviewProfile: String, CaseIterable, Identifiable {
     case realUserConfig
     case freshInstall
@@ -3265,11 +3279,18 @@ class GhosttyApp {
                     // raw OSC notifications would duplicate or outlive the structured hooks.
                     let owningManager = AppDelegate.shared?.tabManagerFor(tabId: tabId) ?? tabManager
                     if let workspace = owningManager.tabs.first(where: { $0.id == tabId }),
-                       workspace.agentPIDs["claude_code"] != nil {
+                       TerminalDesktopNotificationBridge.shouldSuppressNotification(
+                           workspaceAgentPIDs: workspace.agentPIDs,
+                           title: actionTitle,
+                           body: actionBody
+                       ) {
                         return true
                     }
                     let tabTitle = owningManager.titleForTab(tabId) ?? "Terminal"
-                    let command = actionTitle.isEmpty ? tabTitle : actionTitle
+                    let command = TerminalDesktopNotificationBridge.resolvedTitle(
+                        actionTitle: actionTitle,
+                        fallbackTabTitle: tabTitle
+                    )
                     let body = actionBody
                     let surfaceId = tabManager.focusedSurfaceId(for: tabId)
                     TerminalNotificationStore.shared.addNotification(
@@ -3543,11 +3564,18 @@ class GhosttyApp {
                 // Suppress OSC notifications for workspaces with active Claude hook sessions.
                 let owningManager = AppDelegate.shared?.tabManagerFor(tabId: tabId) ?? AppDelegate.shared?.tabManager
                 if let workspace = owningManager?.tabs.first(where: { $0.id == tabId }),
-                   workspace.agentPIDs["claude_code"] != nil {
+                   TerminalDesktopNotificationBridge.shouldSuppressNotification(
+                       workspaceAgentPIDs: workspace.agentPIDs,
+                       title: actionTitle,
+                       body: actionBody
+                   ) {
                     return
                 }
                 let tabTitle = owningManager?.titleForTab(tabId) ?? "Terminal"
-                let command = actionTitle.isEmpty ? tabTitle : actionTitle
+                let command = TerminalDesktopNotificationBridge.resolvedTitle(
+                    actionTitle: actionTitle,
+                    fallbackTabTitle: tabTitle
+                )
                 let body = actionBody
                 TerminalNotificationStore.shared.addNotification(
                     tabId: tabId,
