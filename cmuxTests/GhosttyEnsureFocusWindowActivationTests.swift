@@ -201,6 +201,110 @@ final class GhosttyEnsureFocusWindowActivationTests: XCTestCase {
 #endif
     }
 
+    func testRightSidebarIntentBlocksDirectTerminalFirstResponderSteal() {
+#if DEBUG
+        AppDelegate.installWindowResponderSwizzlesForTesting()
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let tabManager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = tabManager.selectedWorkspace,
+              let terminalPanel = workspace.focusedTerminalPanel,
+              let terminalSurfaceView = surfaceView(in: terminalPanel.hostedView) else {
+            XCTFail("Expected a focused terminal surface")
+            return
+        }
+
+        terminalPanel.hostedView.setVisibleInUI(true)
+        terminalPanel.hostedView.setActive(true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertTrue(
+            appDelegate.focusRightSidebarInActiveMainWindow(preferredWindow: window),
+            "Test setup should move AppKit focus into the right sidebar"
+        )
+        guard let rightSidebarResponder = window.firstResponder else {
+            XCTFail("Expected a right sidebar first responder")
+            return
+        }
+        XCTAssertTrue(appDelegate.isRightSidebarFocusResponder(rightSidebarResponder, in: window))
+
+        XCTAssertFalse(
+            window.makeFirstResponder(terminalSurfaceView),
+            "Programmatic AppKit first responder changes must not steal focus back from the right sidebar"
+        )
+        XCTAssertTrue(
+            window.firstResponder === rightSidebarResponder,
+            "The right sidebar first responder should remain active after a blocked terminal focus request"
+        )
+        XCTAssertFalse(
+            terminalPanel.surface.debugDesiredFocusState(),
+            "Blocked AppKit focus requests must not restart Ghostty cursor blinking"
+        )
+#else
+        XCTFail("Debug-only regression test")
+#endif
+    }
+
+    func testPointerTerminalFocusEscapesRightSidebarIntent() {
+#if DEBUG
+        AppDelegate.installWindowResponderSwizzlesForTesting()
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let tabManager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = tabManager.selectedWorkspace,
+              let terminalPanel = workspace.focusedTerminalPanel,
+              let terminalSurfaceView = surfaceView(in: terminalPanel.hostedView) else {
+            XCTFail("Expected a focused terminal surface")
+            return
+        }
+
+        terminalPanel.hostedView.setVisibleInUI(true)
+        terminalPanel.hostedView.setActive(true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        XCTAssertTrue(
+            appDelegate.focusRightSidebarInActiveMainWindow(preferredWindow: window),
+            "Test setup should move AppKit focus into the right sidebar"
+        )
+        guard let event = makeMouseDownEvent(in: window) else {
+            XCTFail("Failed to build mouse event")
+            return
+        }
+        AppDelegate.setWindowFirstResponderGuardTesting(currentEvent: event, hitView: terminalSurfaceView)
+        defer { AppDelegate.clearWindowFirstResponderGuardTesting() }
+
+        XCTAssertTrue(
+            window.makeFirstResponder(terminalSurfaceView),
+            "A real pointer click on the terminal should be allowed to move focus back from the right sidebar"
+        )
+        XCTAssertTrue(terminalPanel.hostedView.isSurfaceViewFirstResponder())
+        XCTAssertTrue(
+            terminalPanel.surface.debugDesiredFocusState(),
+            "Pointer-initiated terminal focus should restart Ghostty cursor focus"
+        )
+#else
+        XCTFail("Debug-only regression test")
+#endif
+    }
+
     private func window(withId windowId: UUID) -> NSWindow? {
         let identifier = "cmux.main.\(windowId.uuidString)"
         return NSApp.windows.first(where: { $0.identifier?.rawValue == identifier })
@@ -210,5 +314,30 @@ final class GhosttyEnsureFocusWindowActivationTests: XCTestCase {
         guard let window = window(withId: windowId) else { return }
         window.performClose(nil)
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+    }
+
+    private func surfaceView(in hostedView: GhosttySurfaceScrollView) -> GhosttyNSView? {
+        var stack: [NSView] = [hostedView]
+        while let current = stack.popLast() {
+            if let surfaceView = current as? GhosttyNSView {
+                return surfaceView
+            }
+            stack.append(contentsOf: current.subviews)
+        }
+        return nil
+    }
+
+    private func makeMouseDownEvent(in window: NSWindow) -> NSEvent? {
+        NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1.0
+        )
     }
 }
