@@ -3290,6 +3290,10 @@ struct CMUXCLI {
                 try runClaudeHook(commandArgs: commandArgs, client: client, telemetry: cliTelemetry)
                 cliTelemetry.breadcrumb("claude-hook.completed")
             } catch {
+                if shouldSilentlyExitClaudeHookWorkspaceUnavailableError(error) {
+                    cliTelemetry.breadcrumb("claude-hook.workspace-unavailable")
+                    return
+                }
                 cliTelemetry.breadcrumb("claude-hook.failure")
                 cliTelemetry.captureError(stage: "claude_hook_dispatch", error: error)
                 throw error
@@ -13816,6 +13820,17 @@ struct CMUXCLI {
             "not connected"
         ]
         return benignFragments.contains { message.contains($0) }
+    }
+
+    private func shouldSilentlyExitClaudeHookWorkspaceUnavailableError(_ error: Error) -> Bool {
+        let message = String(describing: error).lowercased()
+        let closedWorkspaceFragments = [
+            "tabmanager not available",
+            "workspace not found",
+            "workspace ref not found",
+            "workspace index not found"
+        ]
+        return closedWorkspaceFragments.contains { message.contains($0) }
     }
 
     private func describeAskUserQuestion(_ object: [String: Any]?) -> String? {
