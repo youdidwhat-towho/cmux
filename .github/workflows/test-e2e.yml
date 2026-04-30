@@ -31,6 +31,10 @@ on:
     branches:
       - task-move-ios-app-into-cmux-repo
 
+concurrency:
+  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   ghosttykit:
     name: prepare GhosttyKit

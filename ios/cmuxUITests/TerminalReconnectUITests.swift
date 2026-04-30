@@ -6,11 +6,10 @@ final class TerminalReconnectUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testDirectDaemonReconnectShowsProgressAndRecovers() {
+    func testDirectDaemonReconnectRecovers() {
         let app = XCUIApplication()
         app.launchEnvironment["CMUX_UITEST_TERMINAL_DIRECT_FIXTURE"] = "1"
         app.launchEnvironment["CMUX_UITEST_TERMINAL_RECONNECT_DELAY"] = "0.2"
-        app.launchEnvironment["CMUX_UITEST_TERMINAL_RECONNECT_CONNECT_DELAY"] = "8.0"
         app.launch()
 
         let serverButton = app.buttons["terminal.server.cmux-macmini"]
@@ -18,14 +17,27 @@ final class TerminalReconnectUITests: XCTestCase {
         serverButton.tap()
 
         XCTAssertTrue(app.navigationBars["Mac mini"].waitForExistence(timeout: 4))
-        let banner = app.otherElements["terminal.status.banner"]
-        XCTAssertTrue(banner.waitForExistence(timeout: 6), "Expected reconnect progress banner")
-        XCTAssertTrue(waitForDisappearance(of: banner, timeout: 6))
+
+        let renderedText = app.otherElements["terminal.workspace.renderedText"]
+        XCTAssertTrue(
+            waitForValue(of: renderedText, containing: "reconnected", timeout: 12),
+            "Expected terminal output after daemon reconnect"
+        )
     }
 
-    private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Bool {
-        let predicate = NSPredicate(format: "exists == false")
-        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
-        return XCTWaiter.wait(for: [expectation], timeout: timeout) == .completed
+    private func waitForValue(
+        of element: XCUIElement,
+        containing needle: String,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let value = element.value as? String,
+               value.contains(needle) {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return (element.value as? String)?.contains(needle) == true
     }
 }

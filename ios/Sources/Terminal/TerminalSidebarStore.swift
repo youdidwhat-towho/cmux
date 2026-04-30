@@ -2859,11 +2859,10 @@ private final class TerminalUITestDirectReconnectTransport: TerminalTransport, @
                 return
             }
 
-            let reconnectConnectDelay = UITestConfig.terminalReconnectConnectDelayOverride ?? 2.0
-            try? await Task.sleep(for: .seconds(reconnectConnectDelay))
+            try? await Task.sleep(for: .milliseconds(2_000))
             guard !Task.isCancelled else { return }
             self.eventHandler?(.connected)
-            self.eventHandler?(.output(Data("cmux@fixture:~$ ".utf8)))
+            self.eventHandler?(.output(Data("cmux@fixture:reconnected$ ".utf8)))
         }
     }
 
