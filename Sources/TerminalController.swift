@@ -6470,18 +6470,20 @@ class TerminalController {
             )
 
             var text = ghostty_text_s()
-            guard ghostty_surface_read_text(surface, selection, &text) else {
-                return nil
-            }
-            defer {
-                ghostty_surface_free_text(surface, &text)
-            }
+            return GhosttySurfaceOperationGate.sync {
+                guard ghostty_surface_read_text(surface, selection, &text) else {
+                    return nil
+                }
+                defer {
+                    ghostty_surface_free_text(surface, &text)
+                }
 
-            guard let ptr = text.text, text.text_len > 0 else {
-                return ""
+                guard let ptr = text.text, text.text_len > 0 else {
+                    return ""
+                }
+                let rawData = Data(bytes: ptr, count: Int(text.text_len))
+                return String(decoding: rawData, as: UTF8.self)
             }
-            let rawData = Data(bytes: ptr, count: Int(text.text_len))
-            return String(decoding: rawData, as: UTF8.self)
         }
 
         var output: String
@@ -14417,11 +14419,15 @@ class TerminalController {
         if let text {
             text.withCString { ptr in
                 keyEvent.text = ptr
-                _ = ghostty_surface_key(surface, keyEvent)
+                _ = GhosttySurfaceOperationGate.sync {
+                    ghostty_surface_key(surface, keyEvent)
+                }
             }
         } else {
             keyEvent.text = nil
-            _ = ghostty_surface_key(surface, keyEvent)
+            _ = GhosttySurfaceOperationGate.sync {
+                ghostty_surface_key(surface, keyEvent)
+            }
         }
     }
 

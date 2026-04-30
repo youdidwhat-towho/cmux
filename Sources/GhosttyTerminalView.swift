@@ -19,8 +19,16 @@ private func ghostty_surface_clear_selection_compat(_ surface: ghostty_surface_t
 private func ghostty_surface_select_cursor_cell_compat(_ surface: ghostty_surface_t) -> Bool
 
 enum GhosttySurfaceOperationGate {
+    private static let lock: NSRecursiveLock = {
+        let lock = NSRecursiveLock()
+        lock.name = "com.cmux.ghostty-surface-operation-gate"
+        return lock
+    }()
+
     static func sync<T>(_ operation: () throws -> T) rethrows -> T {
-        try operation()
+        lock.lock()
+        defer { lock.unlock() }
+        return try operation()
     }
 }
 
@@ -4572,7 +4580,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         Task { @MainActor in
             // Keep free behavior aligned with deinit: perform the runtime teardown on
             // the next main-actor turn so SIGHUP delivery is deterministic but non-reentrant.
-            ghostty_surface_free(surfaceToFree)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_free(surfaceToFree)
+            }
             callbackContext?.release()
         }
     }
@@ -4685,7 +4695,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
                let displayID = screen.displayID,
                displayID != 0,
                let s = surface {
-                ghostty_surface_set_display_id(s, displayID)
+                GhosttySurfaceOperationGate.sync {
+                    ghostty_surface_set_display_id(s, displayID)
+                }
             }
             return
         }
@@ -4735,7 +4747,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
                   displayID != 0,
                   let s = surface {
             // Surface exists but we're (re)attaching after a view hierarchy move; ensure display id.
-            ghostty_surface_set_display_id(s, displayID)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_display_id(s, displayID)
+            }
 #if DEBUG
             cmuxDebugLog("surface.attach.displayId surface=\(id.uuidString.prefix(5)) display=\(displayID)")
 #endif
@@ -5032,15 +5046,21 @@ final class TerminalSurface: Identifiable, ObservableObject {
         if let screen = view.window?.screen ?? NSScreen.main,
            let displayID = screen.displayID,
            displayID != 0 {
-            ghostty_surface_set_display_id(createdSurface, displayID)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_display_id(createdSurface, displayID)
+            }
         }
 
-        ghostty_surface_set_content_scale(createdSurface, scaleFactors.x, scaleFactors.y)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_set_content_scale(createdSurface, scaleFactors.x, scaleFactors.y)
+        }
         let backingSize = view.convertToBacking(NSRect(origin: .zero, size: view.bounds.size)).size
         let wpx = pixelDimension(from: backingSize.width)
         let hpx = pixelDimension(from: backingSize.height)
         if wpx > 0, hpx > 0 {
-            ghostty_surface_set_size(createdSurface, wpx, hpx)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_size(createdSurface, wpx, hpx)
+            }
             lastPixelWidth = wpx
             lastPixelHeight = hpx
             lastXScale = scaleFactors.x
@@ -5067,15 +5087,19 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Re-apply the desired focus state after creation so the live runtime
         // surface converges with any focus changes that happened while the
         // surface was being initialized.
-        ghostty_surface_set_focus(createdSurface, desiredFocusState)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_set_focus(createdSurface, desiredFocusState)
+        }
 
         flushPendingSocketInputIfNeeded()
 
         // Kick an initial draw after creation/size setup. On some startup paths Ghostty can
         // miss the first vsync callback and sit on a blank frame until another focus/visibility
         // transition nudges the renderer.
-        view.forceRefreshSurface()
-        ghostty_surface_refresh(createdSurface)
+        GhosttySurfaceOperationGate.sync {
+            view.forceRefreshSurface()
+            ghostty_surface_refresh(createdSurface)
+        }
 
         NotificationCenter.default.post(
             name: .terminalSurfaceDidBecomeReady,
@@ -5132,13 +5156,17 @@ final class TerminalSurface: Identifiable, ObservableObject {
         #endif
 
         if scaleChanged {
-            ghostty_surface_set_content_scale(surface, xScale, yScale)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_content_scale(surface, xScale, yScale)
+            }
             lastXScale = xScale
             lastYScale = yScale
         }
 
         if sizeChanged {
-            ghostty_surface_set_size(surface, wpx, hpx)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_size(surface, wpx, hpx)
+            }
             lastPixelWidth = wpx
             lastPixelHeight = hpx
         }
@@ -5182,14 +5210,16 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Reassert display id on topology churn (split close/reparent) before forcing a refresh.
         // This avoids a first-run stuck-vsync state where Ghostty believes vsync is active
         // but callbacks have not resumed for the current display.
-        if let displayID = (view.window?.screen ?? NSScreen.main)?.displayID,
-           displayID != 0 {
-            ghostty_surface_set_display_id(currentSurface, displayID)
-        }
+        GhosttySurfaceOperationGate.sync {
+            if let displayID = (view.window?.screen ?? NSScreen.main)?.displayID,
+               displayID != 0 {
+                ghostty_surface_set_display_id(currentSurface, displayID)
+            }
 
-        view.forceRefreshSurface()
-        guard let surface = self.surface else { return }
-        ghostty_surface_refresh(surface)
+            view.forceRefreshSurface()
+            guard let surface = self.surface else { return }
+            ghostty_surface_refresh(surface)
+        }
     }
 
     func applyWindowBackgroundIfActive() {
@@ -5211,7 +5241,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // Track desired state even before the C surface exists (e.g. during
         // layout restoration). createSurface syncs the state once created.
         guard let surface = surface else { return }
-        ghostty_surface_set_focus(surface, focused)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_set_focus(surface, focused)
+        }
 
         // If we focus a surface while it is being rapidly reparented (closing splits, etc),
         // Ghostty's CVDisplayLink can end up started before the display id is valid, leaving
@@ -5221,14 +5253,18 @@ final class TerminalSurface: Identifiable, ObservableObject {
             if let view = attachedView,
                let displayID = (view.window?.screen ?? NSScreen.main)?.displayID,
                displayID != 0 {
-                ghostty_surface_set_display_id(surface, displayID)
+                GhosttySurfaceOperationGate.sync {
+                    ghostty_surface_set_display_id(surface, displayID)
+                }
             }
         }
     }
 
     func setOcclusion(_ visible: Bool) {
         guard let surface = surface else { return }
-        ghostty_surface_set_occlusion(surface, visible)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_set_occlusion(surface, visible)
+        }
     }
 
     func needsConfirmClose() -> Bool {
@@ -5238,7 +5274,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
 #endif
         guard let surface = surface else { return false }
-        return ghostty_surface_needs_confirm_quit(surface)
+        return GhosttySurfaceOperationGate.sync {
+            ghostty_surface_needs_confirm_quit(surface)
+        }
     }
 
     func sendText(_ text: String) {
@@ -5309,7 +5347,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         keyEvent.composing = false
         buffer.withCString { ptr in
             keyEvent.text = ptr
-            _ = ghostty_surface_key(surface, keyEvent)
+            _ = GhosttySurfaceOperationGate.sync {
+                ghostty_surface_key(surface, keyEvent)
+            }
         }
         buffer.removeAll(keepingCapacity: true)
     }
@@ -5327,7 +5367,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         keyEvent.unshifted_codepoint = 0
         keyEvent.composing = false
         keyEvent.text = nil
-        _ = ghostty_surface_key(surface, keyEvent)
+        _ = GhosttySurfaceOperationGate.sync {
+            ghostty_surface_key(surface, keyEvent)
+        }
     }
 
     func requestBackgroundSurfaceStartIfNeeded() {
@@ -5372,7 +5414,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
     private func writeTextData(_ data: Data, to surface: ghostty_surface_t) {
         data.withUnsafeBytes { rawBuffer in
             guard let baseAddress = rawBuffer.baseAddress?.assumingMemoryBound(to: CChar.self) else { return }
-            ghostty_surface_text(surface, baseAddress, UInt(rawBuffer.count))
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_text(surface, baseAddress, UInt(rawBuffer.count))
+            }
         }
     }
 
@@ -5614,7 +5658,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
         TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
         surface = nil
-        ghostty_surface_free(surfaceToFree)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_free(surfaceToFree)
+        }
         callbackContext?.release()
     }
 
@@ -5633,7 +5679,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         }
 
         TerminalSurfaceRegistry.shared.unregisterRuntimeSurface(surfaceToFree, ownerId: id)
-        ghostty_surface_free(surfaceToFree)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_free(surfaceToFree)
+        }
         runtimeSurfaceFreedOutOfBandForTesting = true
         callbackContext?.release()
     }
@@ -5689,7 +5737,9 @@ final class TerminalSurface: Identifiable, ObservableObject {
         // callback userdata until surface free completes so callbacks never dereference
         // a deallocated view pointer.
         Task { @MainActor in
-            ghostty_surface_free(surfaceToFree)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_free(surfaceToFree)
+            }
             callbackContext?.release()
 #if DEBUG
             cmuxDebugLog(
@@ -6136,7 +6186,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         if let surface = terminalSurface?.surface,
            let displayID = window.screen?.displayID,
            displayID != 0 {
-            ghostty_surface_set_display_id(surface, displayID)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_display_id(surface, displayID)
+            }
         }
 
         // Recompute from current bounds after layout. Pending size is only a fallback
@@ -6428,7 +6480,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             }
             return
         }
-        ghostty_surface_set_color_scheme(surface, scheme)
+        GhosttySurfaceOperationGate.sync {
+            ghostty_surface_set_color_scheme(surface, scheme)
+        }
         appliedColorScheme = scheme
         if GhosttyApp.shared.backgroundLogEnabled {
             let schemeLabel = scheme == GHOSTTY_COLOR_SCHEME_DARK ? "dark" : "light"
@@ -6533,19 +6587,21 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     }
 
     private func keyboardCopyModeSelectionAnchor(surface: ghostty_surface_t) -> (row: Int, y: Double)? {
-        let size = ghostty_surface_size(surface)
-        guard size.rows > 0, size.columns > 0 else { return nil }
-        guard ghostty_surface_select_cursor_cell_compat(surface) else { return nil }
+        GhosttySurfaceOperationGate.sync {
+            let size = ghostty_surface_size(surface)
+            guard size.rows > 0, size.columns > 0 else { return nil }
+            guard ghostty_surface_select_cursor_cell_compat(surface) else { return nil }
 
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_selection(surface, &text) else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
+            var text = ghostty_text_s()
+            guard ghostty_surface_read_selection(surface, &text) else { return nil }
+            defer { ghostty_surface_free_text(surface, &text) }
 
-        let rows = max(Int(size.rows), 1)
-        let cols = max(Int(size.columns), 1)
-        let rawRow = Int(text.offset_start) / cols
-        let clampedRow = max(0, min(rows - 1, rawRow))
-        return (row: clampedRow, y: text.tl_px_y)
+            let rows = max(Int(size.rows), 1)
+            let cols = max(Int(size.columns), 1)
+            let rawRow = Int(text.offset_start) / cols
+            let clampedRow = max(0, min(rows - 1, rawRow))
+            return (row: clampedRow, y: text.tl_px_y)
+        }
     }
 
     private func refreshKeyboardCopyModeViewportRowFromVisibleAnchor(surface: ghostty_surface_t) {
@@ -6803,23 +6859,25 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     private func readSelectionSnapshot() -> SelectionSnapshot? {
         guard let surface else { return nil }
 
-        var text = ghostty_text_s()
-        guard ghostty_surface_read_selection(surface, &text) else { return nil }
-        defer { ghostty_surface_free_text(surface, &text) }
+        return GhosttySurfaceOperationGate.sync {
+            var text = ghostty_text_s()
+            guard ghostty_surface_read_selection(surface, &text) else { return nil }
+            defer { ghostty_surface_free_text(surface, &text) }
 
-        let selected: String
-        if let ptr = text.text, text.text_len > 0 {
-            let selectedData = Data(bytes: ptr, count: Int(text.text_len))
-            selected = String(decoding: selectedData, as: UTF8.self)
-        } else {
-            selected = ""
+            let selected: String
+            if let ptr = text.text, text.text_len > 0 {
+                let selectedData = Data(bytes: ptr, count: Int(text.text_len))
+                selected = String(decoding: selectedData, as: UTF8.self)
+            } else {
+                selected = ""
+            }
+
+            return SelectionSnapshot(
+                range: NSRange(location: Int(text.offset_start), length: Int(text.offset_len)),
+                string: selected,
+                topLeft: CGPoint(x: text.tl_px_x, y: text.tl_px_y)
+            )
         }
-
-        return SelectionSnapshot(
-            range: NSRange(location: Int(text.offset_start), length: Int(text.offset_len)),
-            string: selected,
-            topLeft: CGPoint(x: text.tl_px_x, y: text.tl_px_y)
-        )
     }
 
     private func visibleDocumentRectInScreenCoordinates() -> NSRect {
@@ -6920,7 +6978,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 )
             }
             terminalSurface?.recordExternalFocusState(true)
-            ghostty_surface_set_focus(surface, true)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_focus(surface, true)
+            }
 
             // Ghostty only restarts its vsync display link on display-id changes while focused.
             // During rapid split close / SwiftUI reparenting, the view can reattach to a window
@@ -6928,7 +6988,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             // renderer can remain stuck until some later screen/focus transition. Reassert the
             // display id now that we're focused to ensure the renderer is running.
             if let displayID = window?.screen?.displayID, displayID != 0 {
-                ghostty_surface_set_display_id(surface, displayID)
+                GhosttySurfaceOperationGate.sync {
+                    ghostty_surface_set_display_id(surface, displayID)
+                }
             }
         }
         return result
@@ -6944,7 +7006,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             let now = CACurrentMediaTime()
             let deltaMs = (now - lastScrollEventTime) * 1000
             Self.focusLog("resignFirstResponder: surface=\(terminalSurface?.id.uuidString ?? "nil") deltaSinceScrollMs=\(String(format: "%.2f", deltaMs))")
-            ghostty_surface_set_focus(surface, false)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_focus(surface, false)
+            }
         }
         return result
     }
@@ -7077,7 +7141,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             var flags = ghostty_binding_flags_e(0)
             let isBinding = text.withCString { ptr in
                 keyEvent.text = ptr
-                return ghostty_surface_key_is_binding(surface, keyEvent, &flags)
+                return GhosttySurfaceOperationGate.sync {
+                    ghostty_surface_key_is_binding(surface, keyEvent, &flags)
+                }
             }
             return isBinding ? flags : nil
         }()
@@ -7266,7 +7332,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags.contains(.control) && !flags.contains(.command) && !flags.contains(.option) && !hasMarkedText() {
             terminalSurface?.recordExternalFocusState(true)
-            ghostty_surface_set_focus(surface, true)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_focus(surface, true)
+            }
             var keyEvent = ghostty_input_key_s()
             keyEvent.action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
             keyEvent.keycode = UInt32(event.keyCode)
@@ -7289,7 +7357,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 )
                 ghosttySendMs = (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                 #else
-                handled = ghostty_surface_key(surface, keyEvent)
+                handled = sendGhosttyKey(surface, keyEvent)
                 #endif
             } else {
                 #if DEBUG
@@ -7298,7 +7366,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 #endif
                 handled = text.withCString { ptr in
                     keyEvent.text = ptr
-                    return ghostty_surface_key(surface, keyEvent)
+                    return sendGhosttyKey(surface, keyEvent)
                 }
                 #if DEBUG
                 ghosttySendMs = (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
@@ -7326,7 +7394,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let action = event.isARepeat ? GHOSTTY_ACTION_REPEAT : GHOSTTY_ACTION_PRESS
 
         // Translate mods to respect Ghostty config (e.g., macos-option-as-alt)
-        let translationModsGhostty = ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+        let translationModsGhostty = GhosttySurfaceOperationGate.sync {
+            ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+        }
         var translationMods = event.modifierFlags
         for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
             let hasFlag: Bool
@@ -7490,7 +7560,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     )
                     ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                     #else
-                    _ = ghostty_surface_key(surface, keyEvent)
+                    _ = sendGhosttyKey(surface, keyEvent)
                     #endif
                 }
             }
@@ -7511,7 +7581,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 )
                 ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
 #else
-                _ = ghostty_surface_key(surface, keyEvent)
+                _ = sendGhosttyKey(surface, keyEvent)
 #endif
             }
         } else {
@@ -7569,7 +7639,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                     )
                     ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                     #else
-                    _ = ghostty_surface_key(surface, keyEvent)
+                    _ = sendGhosttyKey(surface, keyEvent)
                     #endif
                 }
             } else {
@@ -7585,7 +7655,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 )
                 ghosttySendMs += (ProcessInfo.processInfo.systemUptime - ghosttySendStart) * 1000.0
                 #else
-                _ = ghostty_surface_key(surface, keyEvent)
+                _ = sendGhosttyKey(surface, keyEvent)
                 #endif
             }
         }
@@ -7608,7 +7678,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 #if DEBUG
         Self.debugGhosttySurfaceKeyEventObserver?(keyEvent)
 #endif
-        return ghostty_surface_key(surface, keyEvent)
+        return GhosttySurfaceOperationGate.sync {
+            ghostty_surface_key(surface, keyEvent)
+        }
     }
 
 #if DEBUG
@@ -7881,7 +7953,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         keyEvent.mods = modsFromEvent(event)
 
         // Translate mods to respect Ghostty config (e.g., macos-option-as-alt).
-        let translationModsGhostty = ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+        let translationModsGhostty = GhosttySurfaceOperationGate.sync {
+            ghostty_surface_key_translation_mods(surface, modsFromEvent(event))
+        }
         var translationMods = event.modifierFlags
         for flag in [NSEvent.ModifierFlags.shift, .control, .option, .command] {
             let hasFlag: Bool
@@ -8086,34 +8160,44 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
             )
         }
 
-        var text = ghostty_text_s()
-        if ghostty_surface_quicklook_word(surface, &text) {
+        let quicklookSnapshot: (word: String?, offsetStart: Int, offsetLen: Int)? = GhosttySurfaceOperationGate.sync {
+            var text = ghostty_text_s()
+            guard ghostty_surface_quicklook_word(surface, &text) else { return nil }
             defer { ghostty_surface_free_text(surface, &text) }
-            var quicklookResolution: WordPathResolution?
+
+            let word: String?
             if text.text_len > 0, let ptr = text.text {
                 let wordData = Data(bytes: ptr, count: Int(text.text_len))
-                if let decodedWord = String(bytes: wordData, encoding: .utf8) {
+                word = String(bytes: wordData, encoding: .utf8)
+            } else {
+                word = nil
+            }
+
+            return (word: word, offsetStart: Int(text.offset_start), offsetLen: Int(text.offset_len))
+        }
+        if let quicklookSnapshot {
+            var quicklookResolution: WordPathResolution?
+            if let decodedWord = quicklookSnapshot.word {
 #if DEBUG
-                    let resolvedQuicklookWord = cmuxTerminalCmdClickQuicklookOverride(decodedWord)
+                let resolvedQuicklookWord = cmuxTerminalCmdClickQuicklookOverride(decodedWord)
 #else
-                    let resolvedQuicklookWord = decodedWord
+                let resolvedQuicklookWord = decodedWord
 #endif
-                    if let resolvedPath = cmuxResolveQuicklookPath(resolvedQuicklookWord, cwd: cwd) {
-                        quicklookResolution = makeWordPathResolution(
-                            path: resolvedPath,
-                            source: .quicklook,
-                            rawToken: resolvedQuicklookWord
-                        )
-                    }
+                if let resolvedPath = cmuxResolveQuicklookPath(resolvedQuicklookWord, cwd: cwd) {
+                    quicklookResolution = makeWordPathResolution(
+                        path: resolvedPath,
+                        source: .quicklook,
+                        rawToken: resolvedQuicklookWord
+                    )
                 }
             }
 
             var viewportResolution: WordPathResolution?
-            if text.offset_len > 0 {
+            if quicklookSnapshot.offsetLen > 0 {
 #if DEBUG
-                let viewportOffsetStart = cmuxTerminalCmdClickViewportOffsetDelta(Int(text.offset_start))
+                let viewportOffsetStart = cmuxTerminalCmdClickViewportOffsetDelta(quicklookSnapshot.offsetStart)
 #else
-                let viewportOffsetStart = Int(text.offset_start)
+                let viewportOffsetStart = quicklookSnapshot.offsetStart
 #endif
                 viewportResolution = resolveVisibleWordPathFromViewportOffset(
                     viewportOffsetStart,
@@ -8981,7 +9065,9 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
 
         if let displayID = screen.displayID,
            displayID != 0 {
-            ghostty_surface_set_display_id(surface, displayID)
+            GhosttySurfaceOperationGate.sync {
+                ghostty_surface_set_display_id(surface, displayID)
+            }
         }
 
         DispatchQueue.main.async { [weak self] in
