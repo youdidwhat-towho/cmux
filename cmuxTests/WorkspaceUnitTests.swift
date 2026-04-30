@@ -622,6 +622,43 @@ final class WorkspaceRenameShortcutDefaultsTests: XCTestCase {
 #endif
     }
 
+    func testShortcutRecorderLocalMonitorSwallowsRejectedBareKeyWhileRecording() {
+#if DEBUG
+        KeyboardShortcutSettings.resetAll()
+        defer { KeyboardShortcutSettings.resetAll() }
+
+        let button = ShortcutRecorderNSButton(frame: .zero)
+        var rejectedAttempt: ShortcutRecorderRejectedAttempt?
+        button.onRecorderFeedbackChanged = { rejectedAttempt = $0 }
+        button.performClick(nil)
+
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            characters: "a",
+            charactersIgnoringModifiers: "a",
+            isARepeat: false,
+            keyCode: 0
+        ) else {
+            XCTFail("Failed to construct bare A event")
+            return
+        }
+
+        XCTAssertNil(
+            button.debugHandleMonitoredRecordingEvent(event),
+            "The recorder's local monitor must swallow consumed key events so Settings search and sidebar type-selection cannot see them."
+        )
+        XCTAssertEqual(rejectedAttempt?.reason, .bareKeyNotAllowed)
+        XCTAssertFalse(button.debugIsRecording)
+#else
+        XCTFail("Shortcut recorder debug hooks are only available in DEBUG")
+#endif
+    }
+
     func testShortcutRecorderStopAllNotificationStopsActiveRecorder() {
 #if DEBUG
         let button = ShortcutRecorderNSButton(frame: .zero)

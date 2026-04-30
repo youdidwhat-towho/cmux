@@ -2533,7 +2533,7 @@ final class ShortcutRecorderNSButton: NSButton {
         updateTitle()
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .systemDefined]) { [weak self] event in
-            self?.handleRecordingEvent(event) ?? event
+            self?.handleMonitoredRecordingEvent(event) ?? event
         }
 
         // Also stop recording if window loses focus
@@ -2609,6 +2609,10 @@ final class ShortcutRecorderNSButton: NSButton {
         return nil
     }
 
+    private func handleMonitoredRecordingEvent(_ event: NSEvent) -> NSEvent? {
+        handleRecordingEvent(event) ?? event
+    }
+
     private func stopRecording() {
         guard isRecording else { return }
         isRecording = false
@@ -2673,6 +2677,10 @@ final class ShortcutRecorderNSButton: NSButton {
 
     func debugHandleRecordingEvent(_ event: NSEvent) -> NSEvent? {
         handleRecordingEvent(event)
+    }
+
+    func debugHandleMonitoredRecordingEvent(_ event: NSEvent) -> NSEvent? {
+        handleMonitoredRecordingEvent(event)
     }
 #endif
 
