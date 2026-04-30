@@ -11,11 +11,17 @@ import WebKit
 
 enum DragOverlayRoutingPolicy {
     static let bonsplitTabTransferType = NSPasteboard.PasteboardType("com.splittabbar.tabtransfer")
+    static let filePreviewTransferType = NSPasteboard.PasteboardType("com.cmux.filepreview.transfer")
     static let sidebarTabReorderType = NSPasteboard.PasteboardType(SidebarTabDragPayload.typeIdentifier)
 
     static func hasBonsplitTabTransfer(_ pasteboardTypes: [NSPasteboard.PasteboardType]?) -> Bool {
         guard let pasteboardTypes else { return false }
         return pasteboardTypes.contains(bonsplitTabTransferType)
+    }
+
+    static func hasFilePreviewTransfer(_ pasteboardTypes: [NSPasteboard.PasteboardType]?) -> Bool {
+        guard let pasteboardTypes else { return false }
+        return pasteboardTypes.contains(filePreviewTransferType)
     }
 
     static func hasSidebarTabReorder(_ pasteboardTypes: [NSPasteboard.PasteboardType]?) -> Bool {
@@ -32,17 +38,11 @@ enum DragOverlayRoutingPolicy {
         pasteboardTypes: [NSPasteboard.PasteboardType]?,
         hasLocalDraggingSource: Bool
     ) -> Bool {
-        // Local file drags (e.g. in-app draggable folder views) are valid drop
-        // inputs; rely on explicit non-file drag types below to avoid hijacking
-        // Bonsplit/sidebar drags.
+        // File URL drops are routed at the Bonsplit pane layer so center/edge
+        // drop targets stay visible and the host can open previews or splits.
         _ = hasLocalDraggingSource
         guard hasFileURL(pasteboardTypes) else { return false }
-
-        // Prefer explicit non-file drag types so stale fileURL entries cannot hijack
-        // Bonsplit tab drags or sidebar tab reorder drags.
-        if hasBonsplitTabTransfer(pasteboardTypes) { return false }
-        if hasSidebarTabReorder(pasteboardTypes) { return false }
-        return true
+        return false
     }
 
     static func shouldCaptureFileDropDestination(
@@ -86,7 +86,20 @@ enum DragOverlayRoutingPolicy {
         eventType: NSEvent.EventType?
     ) -> Bool {
         guard isPortalDragEvent(eventType) else { return false }
-        return hasBonsplitTabTransfer(pasteboardTypes) || hasSidebarTabReorder(pasteboardTypes)
+        return hasBonsplitTabTransfer(pasteboardTypes)
+            || hasFilePreviewTransfer(pasteboardTypes)
+            || hasSidebarTabReorder(pasteboardTypes)
+    }
+
+    static func shouldPassThroughTerminalPortalHitTesting(
+        pasteboardTypes: [NSPasteboard.PasteboardType]?,
+        eventType: NSEvent.EventType?
+    ) -> Bool {
+        guard isPortalDragEvent(eventType) else { return false }
+        return shouldPassThroughPortalHitTesting(
+            pasteboardTypes: pasteboardTypes,
+            eventType: eventType
+        ) || hasFileURL(pasteboardTypes)
     }
 
     private static func isDragMouseEvent(_ eventType: NSEvent.EventType?) -> Bool {
@@ -373,6 +386,12 @@ final class FileDropOverlayView: NSView {
             activeDragWebView = nil
         }
         guard let sender else { return }
+        guard DragOverlayRoutingPolicy.shouldCaptureFileDropDestination(
+            pasteboardTypes: sender.draggingPasteboard.types,
+            hasLocalDraggingSource: sender.draggingSource != nil
+        ) else {
+            return
+        }
         let webView = preparedDragWebView ?? activeDragWebView ?? webViewUnderPoint(sender.draggingLocation)
         webView?.concludeDragOperation(sender)
     }
@@ -1469,6 +1488,21 @@ private func attachFileDropOverlay(_ overlay: FileDropOverlayView, to contentVie
     ])
 }
 
+private func fileDropOverlay(_ overlay: FileDropOverlayView, isAttachedTo contentView: NSView, in themeFrame: NSView) -> Bool {
+    guard overlay.superview === themeFrame else { return false }
+    let requiredAttributes: [NSLayoutConstraint.Attribute] = [.top, .bottom, .leading, .trailing]
+    return requiredAttributes.allSatisfy { attribute in
+        themeFrame.constraints.contains { constraint in
+            let firstView = constraint.firstItem as? NSView
+            let secondView = constraint.secondItem as? NSView
+            return firstView === overlay &&
+                secondView === contentView &&
+                constraint.firstAttribute == attribute &&
+                constraint.secondAttribute == attribute
+        }
+    }
+}
+
 @discardableResult
 func installFileDropOverlay(on window: NSWindow, tabManager: TabManager) -> Bool {
     guard let contentView = window.contentView,
@@ -1481,7 +1515,9 @@ func installFileDropOverlay(on window: NSWindow, tabManager: TabManager) -> Bool
     if let existingOverlay {
         configureFileDropOverlay(existingOverlay, tabManager: tabManager)
         objc_setAssociatedObject(window, &fileDropOverlayKey, existingOverlay, .OBJC_ASSOCIATION_RETAIN)
-        guard existingOverlay.superview !== themeFrame else { return true }
+        guard !fileDropOverlay(existingOverlay, isAttachedTo: contentView, in: themeFrame) else {
+            return true
+        }
         existingOverlay.removeFromSuperview()
         attachFileDropOverlay(existingOverlay, to: contentView, in: themeFrame)
         return true
@@ -1958,7 +1994,6 @@ struct ContentView: View {
         static let workspaceHasUnread = "workspace.hasUnread"
         static let workspaceHasRead = "workspace.hasRead"
         static let sidebarMatchTerminalBackground = "sidebar.matchTerminalBackground"
-
         static let hasFocusedPanel = "panel.hasFocus"
         static let panelName = "panel.name"
         static let panelIsBrowser = "panel.isBrowser"
@@ -1967,11 +2002,10 @@ struct ContentView: View {
         static let panelHasCustomName = "panel.hasCustomName"
         static let panelShouldPin = "panel.shouldPin"
         static let panelHasUnread = "panel.hasUnread"
-
+        static let panelCanMoveToNewWorkspace = "panel.canMoveToNewWorkspace"
         static let updateHasAvailable = "update.hasAvailable"
         static let cliInstalledInPATH = "cli.installedInPATH"
         static let browserDisabled = "browser.disabled"
-
         static func terminalOpenTargetAvailable(_ target: TerminalDirectoryOpenTarget) -> String {
             "terminal.openTarget.\(target.rawValue).available"
         }
@@ -2498,8 +2532,8 @@ struct ContentView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// Native titlebar inset reported by AppKit. Standard mode keeps content below this zone;
-    /// minimal WindowGroup hosts can still need it cancelled.
+    /// Native titlebar inset reported by AppKit. Standard mode follows cmux's visual chrome;
+    /// minimal WindowGroup hosts can still need the reported safe area cancelled.
     @State private var titlebarPadding: CGFloat = WindowChromeMetrics.defaultTitlebarHeight
     /// SwiftUI WindowGroup windows can still report a titlebar safe area; manually created
     /// main windows use MainWindowHostingView and report zero.
@@ -2526,7 +2560,7 @@ struct ContentView: View {
         titlebarPadding: CGFloat,
         hostingSafeAreaTop: CGFloat
     ) -> CGFloat {
-        guard isMinimalMode else { return titlebarPadding }
+        guard isMinimalMode else { return WindowChromeMetrics.appTitlebarHeight }
         guard !isFullScreen else { return 0 }
         return -max(0, min(titlebarPadding, hostingSafeAreaTop))
     }
@@ -2679,6 +2713,9 @@ struct ContentView: View {
             workspaceId: tabManager.selectedTabId,
             onResumeSession: { entry in
                 resumeSession(entry: entry)
+            },
+            onOpenFilePreview: { filePath in
+                openFilePreviewFromSidebar(filePath: filePath)
             }
         )
         .frame(width: rightSidebarWidth)
@@ -2835,8 +2872,8 @@ struct ContentView: View {
     }
 
     private func refreshWindowChromeMetrics(for window: NSWindow) {
-        // Keep content below the titlebar so drags on Bonsplit's tab bar don't
-        // get interpreted as window drags.
+        // Keep native measurements around for minimal WindowGroup safe-area cancellation.
+        // Standard mode uses cmux's visual chrome height for layout.
         let computedTitlebarHeight = window.frame.height - window.contentLayoutRect.height
         let nextPadding = WindowChromeMetrics.clampedTitlebarHeight(computedTitlebarHeight)
         let nextSafeAreaTop = max(0, window.contentView?.safeAreaInsets.top ?? 0)
@@ -2953,6 +2990,16 @@ struct ContentView: View {
             workingDirectory: targetCwd,
             initialTerminalInput: inputWithReturn
         )
+    }
+
+    private func openFilePreviewFromSidebar(filePath: String) {
+        guard let workspace = tabManager.selectedWorkspace else { return }
+        guard let paneId = workspace.bonsplitController.focusedPaneId ?? workspace.bonsplitController.allPaneIds.first else {
+            return
+        }
+
+        sidebarSelectionState.selection = .tabs
+        _ = workspace.openOrFocusFilePreviewSurface(inPane: paneId, filePath: filePath)
     }
 
     private func syncFileExplorerDirectory() {
@@ -3685,7 +3732,7 @@ struct ContentView: View {
             removeSidebarResizerPointerMonitor()
         })
 
-        view = AnyView(view.background(WindowAccessor { [appearance] window in
+        view = AnyView(view.background(WindowAccessor(refreshID: appearance.appKitWindowMutationID) { [appearance] window in
             window.identifier = NSUserInterfaceItemIdentifier(windowIdentifier)
             window.isRestorable = false
             setMinimalModeSidebarTitlebarControlsAvailable(sidebarState.isVisible, in: window)
@@ -3733,7 +3780,7 @@ struct ContentView: View {
                 // terminal focus-driven updates can leave stale opaque window fills.
                 window.backgroundColor = NSColor.white.withAlphaComponent(0.001)
                 // Configure contentView hierarchy for transparency.
-                if let contentView = window.contentView {
+                if let contentView = WindowGlassEffect.originalContentView(for: window) ?? window.contentView {
                     makeViewHierarchyTransparent(contentView)
                 }
             } else {
@@ -3745,9 +3792,20 @@ struct ContentView: View {
 
             if shouldApplyWindowGlass {
                 // Apply liquid glass effect to the window with tint from settings
-                WindowGlassEffect.apply(to: window, tintColor: appearance.windowGlassSettings.tintColor)
+                let didChangeGlassRoot = WindowGlassEffect.apply(
+                    to: window,
+                    tintColor: appearance.windowGlassSettings.tintColor,
+                    style: appearance.windowGlassSettings.style
+                )
+                if didChangeGlassRoot {
+                    TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: window)
+                    BrowserWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: window)
+                }
             } else {
-                WindowGlassEffect.remove(from: window)
+                if WindowGlassEffect.remove(from: window) {
+                    TerminalWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: window)
+                    BrowserWindowPortalRegistry.scheduleExternalGeometrySynchronize(for: window)
+                }
             }
             AppDelegate.shared?.attachUpdateAccessory(to: window)
             AppDelegate.shared?.applyWindowDecorations(to: window)
@@ -3755,7 +3813,8 @@ struct ContentView: View {
             // material otherwise blends a lighter strip over the terminal area.
             syncNativeTitlebarBackdrop(
                 in: window,
-                enabled: true
+                enabled: true,
+                usesGlassStyle: shouldApplyWindowGlass
             )
             AppDelegate.shared?.registerMainWindow(
                 window,
@@ -4038,7 +4097,8 @@ struct ContentView: View {
 
     private func syncNativeTitlebarBackdrop(
         in window: NSWindow,
-        enabled: Bool
+        enabled: Bool,
+        usesGlassStyle: Bool
     ) {
         guard let titlebarContainer = nativeTitlebarContainer(in: window) else { return }
         let titlebarView = firstNativeDescendant(
@@ -4070,10 +4130,10 @@ struct ContentView: View {
         }
 
         titlebarContainer.wantsLayer = true
-        titlebarContainer.layer?.backgroundColor = nil
+        titlebarContainer.layer?.backgroundColor = usesGlassStyle ? NSColor.clear.cgColor : nil
         titlebarContainer.layer?.isOpaque = false
         titlebarView?.wantsLayer = true
-        titlebarView?.layer?.backgroundColor = nil
+        titlebarView?.layer?.backgroundColor = usesGlassStyle ? NSColor.clear.cgColor : nil
         titlebarView?.layer?.isOpaque = false
         for titlebarBackgroundView in titlebarBackgroundViews {
             titlebarBackgroundView.isHidden = true
@@ -6521,6 +6581,8 @@ struct ContentView: View {
             return String(localized: "commandPalette.kind.browser", defaultValue: "Browser")
         case .markdown:
             return String(localized: "commandPalette.kind.markdown", defaultValue: "Markdown")
+        case .filePreview:
+            return String(localized: "commandPalette.kind.filePreview", defaultValue: "File Preview")
         }
     }
 
@@ -6532,6 +6594,8 @@ struct ContentView: View {
             return ["browser", "web", "page"]
         case .markdown:
             return ["markdown", "note", "preview"]
+        case .filePreview:
+            return ["file", "preview", "text", "pdf", "image"]
         }
     }
 
@@ -6696,6 +6760,8 @@ struct ContentView: View {
             return .splitRight
         case "palette.terminalSplitDown":
             return .splitDown
+        case "palette.findInDirectory":
+            return .findInDirectory
         case "palette.terminalFind":
             return .find
         case "palette.terminalFindNext":
@@ -6704,6 +6770,8 @@ struct ContentView: View {
             return .findPrevious
         case "palette.terminalHideFind":
             return .hideFind
+        case "palette.terminalUseSelectionForFind":
+            return .useSelectionForFind
         case "palette.toggleSplitZoom":
             return .toggleSplitZoom
         case "palette.triggerFlash":
@@ -6744,7 +6812,7 @@ struct ContentView: View {
         case "palette.terminalFindPrevious":
             return "⌥⌘G"
         case "palette.terminalHideFind":
-            return "⌘⇧F"
+            return "⌥⌘⇧F"
         case "palette.terminalUseSelectionForFind":
             return "⌘E"
         case "palette.toggleFullScreen":
@@ -6798,17 +6866,14 @@ struct ContentView: View {
             let panelId = panelContext.panelId
             let panelIsTerminal = panelContext.panel.panelType == .terminal
             snapshot.setBool(CommandPaletteContextKeys.hasFocusedPanel, true)
-            snapshot.setString(
-                CommandPaletteContextKeys.panelName,
-                panelDisplayName(workspace: workspace, panelId: panelId, fallback: panelContext.panel.displayTitle)
-            )
+            snapshot.setString(CommandPaletteContextKeys.panelName, panelDisplayName(workspace: workspace, panelId: panelId, fallback: panelContext.panel.displayTitle))
             snapshot.setBool(CommandPaletteContextKeys.panelIsBrowser, panelContext.panel.panelType == .browser)
             snapshot.setBool(CommandPaletteContextKeys.panelIsTerminal, panelIsTerminal)
             snapshot.setBool(CommandPaletteContextKeys.panelHasPane, workspace.paneId(forPanelId: panelId) != nil)
             snapshot.setBool(CommandPaletteContextKeys.panelHasCustomName, workspace.panelCustomTitles[panelId] != nil)
             snapshot.setBool(CommandPaletteContextKeys.panelShouldPin, !workspace.isPanelPinned(panelId))
-            let hasUnread = workspace.manualUnreadPanelIds.contains(panelId)
-                || notificationStore.hasUnreadNotification(forTabId: workspace.id, surfaceId: panelId)
+            snapshot.setBool(CommandPaletteContextKeys.panelCanMoveToNewWorkspace, workspace.panels.count > 1)
+            let hasUnread = workspace.manualUnreadPanelIds.contains(panelId) || notificationStore.hasUnreadNotification(forTabId: workspace.id, surfaceId: panelId)
             snapshot.setBool(CommandPaletteContextKeys.panelHasUnread, hasUnread)
 
             if panelIsTerminal {
@@ -7292,6 +7357,7 @@ struct ContentView: View {
                 }
             )
         )
+        appendMoveTabToNewWorkspaceCommandContribution(to: &contributions, panelSubtitle: panelSubtitle)
         contributions.append(
             CommandPaletteCommandContribution(
                 commandId: "palette.toggleTabPin",
@@ -7533,6 +7599,14 @@ struct ContentView: View {
         )
         contributions.append(
             CommandPaletteCommandContribution(
+                commandId: "palette.findInDirectory",
+                title: constant(String(localized: "menu.find.findInDirectory", defaultValue: "Find in Directory…")),
+                subtitle: constant(String(localized: "command.findInDirectory.subtitle", defaultValue: "Right Sidebar")),
+                keywords: ["files", "directory", "find", "search"]
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
                 commandId: "palette.terminalFind",
                 title: constant(String(localized: "command.terminalFind.title", defaultValue: "Find…")),
                 subtitle: terminalPanelSubtitle,
@@ -7566,7 +7640,7 @@ struct ContentView: View {
                 commandId: "palette.terminalHideFind",
                 title: constant(String(localized: "command.terminalHideFind.title", defaultValue: "Hide Find Bar")),
                 subtitle: terminalPanelSubtitle,
-                shortcutHint: "⌘⇧F",
+                shortcutHint: "⌥⌘⇧F",
                 keywords: ["terminal", "hide", "find", "search"],
                 when: { $0.bool(CommandPaletteContextKeys.panelIsTerminal) }
             )
@@ -7974,6 +8048,9 @@ struct ContentView: View {
             }
             panelContext.workspace.setPanelCustomTitle(panelId: panelContext.panelId, title: nil)
         }
+        registry.register(commandId: "palette.moveTabToNewWorkspace") {
+            guard moveFocusedPanelToNewWorkspace() else { NSSound.beep(); return }
+        }
         registry.register(commandId: "palette.toggleTabPin") {
             guard let panelContext = focusedPanelContext else {
                 NSSound.beep()
@@ -8062,6 +8139,11 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.browserClearHistory") {
             BrowserHistoryStore.shared.clearHistory()
+        }
+        registry.register(commandId: "palette.findInDirectory") {
+            _ = AppDelegate.shared?.focusFileSearchInActiveMainWindow(
+                preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow
+            )
         }
         registry.register(commandId: "palette.browserSplitRight") {
             _ = tabManager.createBrowserSplit(direction: .right)
@@ -8992,6 +9074,20 @@ struct ContentView: View {
             return "browser.addressBar"
         case .browser(.findField):
             return "browser.findField"
+        case .filePreview(.textEditor):
+            return "filePreview.textEditor"
+        case .filePreview(.pdfCanvas):
+            return "filePreview.pdfCanvas"
+        case .filePreview(.pdfThumbnails):
+            return "filePreview.pdfThumbnails"
+        case .filePreview(.pdfOutline):
+            return "filePreview.pdfOutline"
+        case .filePreview(.imageCanvas):
+            return "filePreview.imageCanvas"
+        case .filePreview(.mediaPlayer):
+            return "filePreview.mediaPlayer"
+        case .filePreview(.quickLook):
+            return "filePreview.quickLook"
         }
     }
 
@@ -9529,6 +9625,7 @@ private struct SidebarTabItemSettingsSnapshot: Equatable {
     let selectionColorHex: String?
     let notificationBadgeColorHex: String?
     let visibleAuxiliaryDetails: SidebarWorkspaceAuxiliaryDetailVisibility
+    let iMessageModeEnabled: Bool
 
     init(defaults: UserDefaults = .standard) {
         sidebarShortcutHintXOffset = Self.double(
@@ -9585,6 +9682,7 @@ private struct SidebarTabItemSettingsSnapshot: Equatable {
         activeTabIndicatorStyle = SidebarActiveTabIndicatorSettings.current(defaults: defaults)
         selectionColorHex = defaults.string(forKey: "sidebarSelectionColorHex")
         notificationBadgeColorHex = defaults.string(forKey: "sidebarNotificationBadgeColorHex")
+        iMessageModeEnabled = IMessageModeSettings.isEnabled(defaults: defaults)
     }
 
     private static func bool(
@@ -9603,6 +9701,12 @@ private struct SidebarTabItemSettingsSnapshot: Equatable {
     ) -> Double {
         guard let value = defaults.object(forKey: key) as? NSNumber else { return defaultValue }
         return value.doubleValue
+    }
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }
 
@@ -9900,6 +10004,23 @@ struct VerticalTabsSidebar: View {
                     WindowDragHandleView()
                         .frame(height: sidebarTitlebarInteractionHeight)
                         .background(TitlebarDoubleClickMonitorView())
+                }
+                .overlay(alignment: .top) {
+                    if draggedTabId != nil, let firstWorkspaceId = renderContext.workspaceIds.first {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .frame(height: workspaceScrollTopVisibilityInset + 8)
+                            .onDrop(of: SidebarTabDragPayload.dropContentTypes, delegate: SidebarTabDropDelegate(
+                                targetTabId: firstWorkspaceId,
+                                tabManager: tabManager,
+                                draggedTabId: $draggedTabId,
+                                selectedTabIds: $selectedTabIds,
+                                lastSidebarSelectionIndex: $lastSidebarSelectionIndex,
+                                targetRowHeight: nil,
+                                dragAutoScrollController: dragAutoScrollController,
+                                dropIndicator: $dropIndicator
+                            ))
+                    }
                 }
                 .overlay(alignment: .topLeading) {
                     if isMinimalMode {
@@ -12289,6 +12410,7 @@ private struct SidebarEmptyArea: View {
                 dragAutoScrollController: dragAutoScrollController,
                 dropIndicator: $dropIndicator
             ))
+            .overlay { SidebarBonsplitTabNewWorkspaceDropOverlay(tabManager: tabManager, selectedTabIds: $selectedTabIds, lastSidebarSelectionIndex: $lastSidebarSelectionIndex, dropIndicator: $dropIndicator).frame(maxWidth: .infinity, maxHeight: .infinity) }
             .overlay(alignment: .top) {
                 if shouldShowTopDropIndicator {
                     Rectangle()
@@ -12301,7 +12423,7 @@ private struct SidebarEmptyArea: View {
     }
 
     private var shouldShowTopDropIndicator: Bool {
-        guard draggedTabId != nil, let indicator = dropIndicator else { return false }
+        guard let indicator = dropIndicator else { return false }
         if indicator.tabId == nil {
             return true
         }
@@ -12426,6 +12548,7 @@ struct SidebarWorkspaceSnapshotBuilder {
         let remoteConnectionStatusText: String
         let remoteStateHelpText: String
         let copyableSidebarSSHError: String?
+        let latestSubmittedMessage: String?
         let metadataEntries: [SidebarStatusEntry]
         let metadataBlocks: [SidebarMetadataBlock]
         let latestLog: SidebarLogEntry?
@@ -12743,7 +12866,13 @@ private struct TabItemView: View, Equatable {
         let accessibilityHintText = String(localized: "sidebar.workspace.accessibilityHint", defaultValue: "Activate to focus this workspace. Drag to reorder, or use Move Up and Move Down actions.")
         let moveUpActionText = String(localized: "sidebar.workspace.moveUpAction", defaultValue: "Move Up")
         let moveDownActionText = String(localized: "sidebar.workspace.moveDownAction", defaultValue: "Move Down")
-        let effectiveSubtitle = latestNotificationText
+        let latestNotificationSubtitle = latestNotificationText
+        let submittedMessageSubtitle = settings.iMessageModeEnabled
+            ? workspaceSnapshot.latestSubmittedMessage?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .nilIfEmpty
+            : nil
+        let effectiveSubtitle = latestNotificationSubtitle ?? submittedMessageSubtitle
         let detailVisibility = visibleAuxiliaryDetails
 
         VStack(alignment: .leading, spacing: 4) {
@@ -13733,6 +13862,7 @@ private struct TabItemView: View, Equatable {
             remoteConnectionStatusText: remoteConnectionStatusText,
             remoteStateHelpText: remoteStateHelpText,
             copyableSidebarSSHError: copyableSidebarSSHError,
+            latestSubmittedMessage: tab.latestSubmittedMessage,
             metadataEntries: detailVisibility.showsMetadata ? tab.sidebarStatusEntriesInDisplayOrder() : [],
             metadataBlocks: detailVisibility.showsMetadata ? tab.sidebarMetadataBlocksInDisplayOrder() : [],
             latestLog: detailVisibility.showsLog ? tab.logEntries.last : nil,
@@ -14777,7 +14907,7 @@ private enum SidebarTabDragPayload {
     }
 }
 
-private enum BonsplitTabDragPayload {
+enum BonsplitTabDragPayload {
     static let typeIdentifier = "com.splittabbar.tabtransfer"
     static let dropContentType = UTType(exportedAs: typeIdentifier)
     static let dropContentTypes: [UTType] = [dropContentType]
@@ -14786,6 +14916,7 @@ private enum BonsplitTabDragPayload {
     struct Transfer: Decodable {
         struct TabInfo: Decodable {
             let id: UUID
+            let kind: String?
         }
 
         let tab: TabInfo
@@ -14812,7 +14943,13 @@ private enum BonsplitTabDragPayload {
     }
 
     static func currentTransfer() -> Transfer? {
-        let pasteboard = NSPasteboard(name: .drag)
+        transfer(from: NSPasteboard(name: .drag))
+    }
+
+    static func transfer(from pasteboard: NSPasteboard) -> Transfer? {
+        guard !DragOverlayRoutingPolicy.hasFilePreviewTransfer(pasteboard.types) else {
+            return nil
+        }
         let type = NSPasteboard.PasteboardType(typeIdentifier)
 
         if let data = pasteboard.data(forType: type),
@@ -15457,7 +15594,6 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
     }
 }
 
-
 /// Reads the leading inset required to clear traffic lights + left titlebar accessories.
 final class TitlebarLeadingInsetPassthroughView: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
@@ -15483,7 +15619,6 @@ private struct TitlebarLeadingInsetReader: NSViewRepresentable {
                 where accessory.layoutAttribute == .leading || accessory.layoutAttribute == .left {
                 leading += accessory.view.frame.width
             }
-            leading += 0
             if leading != inset {
                 inset = leading
             }
