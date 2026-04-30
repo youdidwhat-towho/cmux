@@ -117,7 +117,7 @@ struct KeyboardShortcutRecorder: View {
                 .accessibilityIdentifier("ShortcutRecorderValidationMessage")
             }
         }
-        .onChange(of: shortcut) { newValue in
+        .onChange(of: shortcut) { _, newValue in
             if !newValue.isUnbound {
                 restoreShortcut = nil
             }
