@@ -13,6 +13,34 @@ pub const supported = switch (builtin.os.tag) {
 /// bounded queues. MUST be non-blocking — never do network I/O here.
 pub const NotifyFn = *const fn (ctx: ?*anyopaque, entry: Entry) void;
 
+pub const InflightCounter = struct {
+    mutex: std.Thread.Mutex = .{},
+    cv: std.Thread.Condition = .{},
+    count: u32 = 0,
+
+    pub fn retain(self: *InflightCounter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.count += 1;
+    }
+
+    pub fn release(self: *InflightCounter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        std.debug.assert(self.count > 0);
+        self.count -= 1;
+        if (self.count == 0) self.cv.broadcast();
+    }
+
+    pub fn waitUntilZero(self: *InflightCounter) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        while (self.count > 0) {
+            self.cv.wait(&self.mutex);
+        }
+    }
+};
+
 pub const Entry = struct {
     pty: *pty_host.PtyHost,
     terminal: *terminal_session.TerminalSession,
@@ -22,14 +50,13 @@ pub const Entry = struct {
     lock: *std.Thread.Mutex,
     session_id: []const u8,
     /// Per-entry reference count the pump bumps while it holds this entry's
-    /// pointers in its local copy. `unregister` removes the entry from the
-    /// map and then spin-waits for this counter to reach zero before
-    /// returning, so callers can safely free the owning RuntimeSession
-    /// without the pump racing ahead with stale `pty` / `terminal` /
-    /// `lock` / `session_id` pointers. The owner of this pointer (the
-    /// caller of `register`) must keep the atomic itself alive until
-    /// `unregister` has returned.
-    in_flight: *std.atomic.Value(u32),
+    /// pointers in its local copy. `unregister` removes the entry from the map
+    /// and then waits for this counter to reach zero before returning, so
+    /// callers can safely free the owning RuntimeSession without the pump
+    /// racing ahead with stale `pty` / `terminal` / `lock` / `session_id`
+    /// pointers. The owner of this pointer (the caller of `register`) must
+    /// keep the counter itself alive until `unregister` has returned.
+    in_flight: *InflightCounter,
 };
 
 pub const Pump = if (supported) KqueuePump else StubPump;
@@ -138,9 +165,7 @@ const KqueuePump = struct {
         // No new iterations can start referencing this fd because we've
         // already removed it from the map (entries.get(fd) returns null).
         if (removed) |kv| {
-            while (kv.value.in_flight.load(.seq_cst) > 0) {
-                std.atomic.spinLoopHint();
-            }
+            kv.value.in_flight.waitUntilZero();
         }
     }
 
@@ -170,11 +195,11 @@ const KqueuePump = struct {
                 // `fetchRemove` under the same lock) can't observe a
                 // stale 0 and free the backing RuntimeSession before
                 // we're done using its pointers.
-                if (maybe_entry) |e| _ = e.in_flight.fetchAdd(1, .seq_cst);
+                if (maybe_entry) |e| e.in_flight.retain();
                 self.map_mutex.unlock();
 
                 const entry = maybe_entry orelse continue;
-                defer _ = entry.in_flight.fetchSub(1, .seq_cst);
+                defer entry.in_flight.release();
 
                 entry.lock.lock();
                 entry.pty.pump(entry.terminal) catch |err| {

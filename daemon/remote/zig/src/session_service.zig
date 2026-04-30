@@ -106,6 +106,34 @@ pub const ReadTerminalResult = struct {
 };
 
 const RuntimeSession = struct {
+    const RefCount = struct {
+        mutex: std.Thread.Mutex = .{},
+        cv: std.Thread.Condition = .{},
+        count: u32 = 0,
+
+        fn retain(self: *RefCount) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            self.count += 1;
+        }
+
+        fn release(self: *RefCount) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            std.debug.assert(self.count > 0);
+            self.count -= 1;
+            if (self.count == 0) self.cv.broadcast();
+        }
+
+        fn waitUntilZero(self: *RefCount) void {
+            self.mutex.lock();
+            defer self.mutex.unlock();
+            while (self.count > 0) {
+                self.cv.wait(&self.mutex);
+            }
+        }
+    };
+
     alloc: std.mem.Allocator,
     pty: pty_host.PtyHost,
     terminal: terminal_session.TerminalSession,
@@ -114,11 +142,11 @@ const RuntimeSession = struct {
     /// Serializes pump-thread access to `pty`/`terminal` against any
     /// foreground caller (read/write/history/resize/deinit).
     lock: std.Thread.Mutex = .{},
-    /// Published to the pump via `pty_pump.Entry.in_flight`. The pump
-    /// bumps this while it holds pointers into this RuntimeSession and
-    /// `unregister` spin-waits for it to hit zero before returning, so
-    /// `closeSession` can safely free the struct after unregister.
-    pump_in_flight: std.atomic.Value(u32) = .init(0),
+    /// Published to the pump via `pty_pump.Entry.in_flight`. The pump bumps
+    /// this while it holds pointers into this RuntimeSession and `unregister`
+    /// waits for it to hit zero before returning, so `closeSession` can safely
+    /// free the struct after unregister.
+    pump_in_flight: pty_pump.InflightCounter = .{},
     /// True when the pump observed new PTY output while no client was
     /// subscribed. Cleared on terminal.subscribe or session.markRead.
     has_unread_output: std.atomic.Value(bool) = .init(false),
@@ -135,18 +163,18 @@ const RuntimeSession = struct {
     last_resize_dims: std.atomic.Value(u32) = .init(0),
     /// Transport-thread refcount. Incremented by `Service.acquireRuntime`
     /// under the runtimes-map shared lock; decremented by
-    /// `RuntimeSession.release` when the caller is done dereferencing
-    /// the pointer. `Service.removeRuntime` spin-waits for this to hit
-    /// zero after `fetchRemove` so no transport thread can touch freed
-    /// memory. Writer-thread paths (actor-routed methods) do not use
-    /// the refcount — the writer is single-threaded against removal so
-    /// the pointer stays valid for the duration of the command handler.
-    users: std.atomic.Value(u32) = .init(0),
+    /// `RuntimeSession.release` when the caller is done dereferencing the
+    /// pointer. `Service.removeRuntime` waits for this to hit zero after
+    /// `fetchRemove` so no transport thread can touch freed memory.
+    /// Writer-thread paths (actor-routed methods) do not use the refcount —
+    /// the writer is single-threaded against removal so the pointer stays
+    /// valid for the duration of the command handler.
+    users: RefCount = .{},
 
     /// Decrement the transport refcount. Call exactly once per successful
     /// `Service.acquireRuntime`.
     fn release(self: *RuntimeSession) void {
-        _ = self.users.fetchSub(1, .seq_cst);
+        self.users.release();
     }
 
     fn init(alloc: std.mem.Allocator, command: []const u8, cols: u16, rows: u16) !RuntimeSession {
@@ -1040,7 +1068,7 @@ pub const Service = struct {
         self.runtimes.withSharedLock(&ctx, struct {
             fn run(inner: *RuntimeMap.Inner, c: *Ctx) void {
                 if (inner.get(c.sid)) |rt| {
-                    _ = rt.users.fetchAdd(1, .seq_cst);
+                    rt.users.retain();
                     c.result = rt;
                 }
             }
@@ -1093,18 +1121,12 @@ pub const Service = struct {
         // Drop any subscriptions pointing at this session_id so their
         // borrowed `session_id` pointer doesn't outlive the hashmap key.
         self.removeSubscriptionsBySessionId(entry.key);
-        // Spin-wait for any transport thread that acquired this runtime
-        // via `acquireRuntime` before the map removal committed to
-        // release its refcount. The map's RwLock guarantees that
-        // acquireRuntime either ran entirely before fetchRemove
-        // (incremented users; we wait) or entirely after (lookup
-        // returned null; no ref taken). Yield rather than busy-loop;
-        // the hold time is bounded by the longest active read/write
-        // call — typically microseconds, bounded worst-case by the
-        // read timeout.
-        while (entry.value.users.load(.seq_cst) != 0) {
-            std.Thread.yield() catch {};
-        }
+        // Wait for any transport thread that acquired this runtime via
+        // `acquireRuntime` before the map removal committed to release its
+        // refcount. The map's RwLock guarantees that acquireRuntime either ran
+        // entirely before fetchRemove (incremented users; we wait) or entirely
+        // after (lookup returned null; no ref taken).
+        entry.value.users.waitUntilZero();
         self.alloc.free(entry.key);
         entry.value.deinit();
         self.alloc.destroy(entry.value);
