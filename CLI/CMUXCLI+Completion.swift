@@ -76,8 +76,13 @@ extension CMUXCLI {
         completingArgumentIndex: Int,
         completingPrefix: String
     ) -> [String] {
-        let completedTokens = completedCommandTokens(
+        let relevantArguments = completionArguments(
             arguments: arguments,
+            completingArgumentIndex: completingArgumentIndex,
+            completingPrefix: completingPrefix
+        )
+        let completedTokens = completedCommandTokens(
+            arguments: relevantArguments,
             completingPrefix: completingPrefix
         )
         let candidateIndex = completedTokens.count
@@ -96,6 +101,26 @@ extension CMUXCLI {
         }
 
         return Array(Set(candidates)).sorted()
+    }
+
+    private static func completionArguments(
+        arguments: [String],
+        completingArgumentIndex: Int,
+        completingPrefix: String
+    ) -> [String] {
+        guard completingArgumentIndex >= 0,
+              completingArgumentIndex < arguments.count else {
+            return arguments
+        }
+
+        if completingPrefix.isEmpty {
+            if completingArgumentIndex + 1 < arguments.count {
+                return Array(arguments.prefix(completingArgumentIndex))
+            }
+            return arguments
+        }
+
+        return Array(arguments.prefix(completingArgumentIndex))
     }
 
     private static var argumentParserInventoryTokenPaths: [[String]] {

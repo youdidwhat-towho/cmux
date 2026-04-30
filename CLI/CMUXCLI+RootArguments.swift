@@ -124,7 +124,7 @@ extension CMUXCLI {
     func parseRootArguments() throws -> RootParseResult {
         let split = try rootArgumentPrefix()
         do {
-            let arguments = try RootArguments.parse(split.prefix)
+            let arguments = try RootArguments.parse(normalizedRootArgumentPrefix(split.prefix))
             return RootParseResult(arguments: arguments, commandIndex: split.commandIndex)
         } catch {
             throw CLIError(message: String(describing: error))
@@ -132,12 +132,19 @@ extension CMUXCLI {
     }
 
     private func rootArgumentPrefix() throws -> (prefix: [String], commandIndex: Int) {
-        // Keep this prefix scanner in sync with RootArguments until command dispatch is fully migrated.
         var prefix: [String] = []
         var index = 1
 
         while index < args.count {
             let arg = args[index]
+
+            if let attached = attachedRootOption(arg) {
+                prefix.append(attached.option)
+                prefix.append(attached.value)
+                index += 1
+                continue
+            }
+
             switch arg {
             case "--socket":
                 try appendRootOption(arg, to: &prefix, index: &index, missingValueMessage: "--socket requires a path")
@@ -147,15 +154,66 @@ extension CMUXCLI {
                 try appendRootOption(arg, to: &prefix, index: &index, missingValueMessage: "--window requires a window id")
             case "--password":
                 try appendRootOption(arg, to: &prefix, index: &index, missingValueMessage: "--password requires a value")
-            case "--json", "-v", "--version", "-h", "--help":
+            case "--json":
                 prefix.append(arg)
                 index += 1
+            case "-v", "--version", "-h", "--help":
+                prefix.append(arg)
+                return (prefix, index + 1)
             default:
                 return (prefix, index)
             }
         }
 
         return (prefix, index)
+    }
+
+    private func attachedRootOption(_ arg: String) -> (option: String, value: String)? {
+        for option in rootArgumentOptionTokens where arg.hasPrefix("\(option)=") {
+            return (option, String(arg.dropFirst(option.count + 1)))
+        }
+        return nil
+    }
+
+    private func normalizedRootArgumentPrefix(_ prefix: [String]) -> [String] {
+        var optionValues: [String: String] = [:]
+        var optionOrder: [String] = []
+        var flags: Set<String> = []
+        var flagOrder: [String] = []
+        var index = 0
+
+        while index < prefix.count {
+            let token = prefix[index]
+            if rootArgumentOptionTokens.contains(token), index + 1 < prefix.count {
+                if optionValues[token] == nil {
+                    optionOrder.append(token)
+                }
+                optionValues[token] = prefix[index + 1]
+                index += 2
+                continue
+            }
+
+            if rootArgumentFlagTokens.contains(token) {
+                if flags.insert(token).inserted {
+                    flagOrder.append(token)
+                }
+                index += 1
+                continue
+            }
+
+            index += 1
+        }
+
+        var normalized: [String] = []
+        for option in optionOrder {
+            guard let value = optionValues[option] else {
+                continue
+            }
+            normalized.append(option)
+            normalized.append(value)
+        }
+        normalized.append(contentsOf: flagOrder)
+        return normalized
     }
 
     private func appendRootOption(
@@ -170,5 +228,24 @@ extension CMUXCLI {
         prefix.append(option)
         prefix.append(args[index + 1])
         index += 2
+    }
+
+    private var rootArgumentFlagTokens: Set<String> {
+        [
+            "--json",
+            "-v",
+            "--version",
+            "-h",
+            "--help"
+        ]
+    }
+
+    private var rootArgumentOptionTokens: Set<String> {
+        [
+            "--socket",
+            "--id-format",
+            "--window",
+            "--password"
+        ]
     }
 }

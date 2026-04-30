@@ -79,30 +79,42 @@ def load_inventory(cli_path: str) -> list[str]:
     return [str(form) for form in forms]
 
 
-def completion_candidates(cli_path: str, completed_tokens: list[str], prefix: str = "") -> set[str]:
-    command_line = ["cmux", *completed_tokens]
-    if prefix:
-        command_line.append(prefix)
-    cursor_index = str(len(prefix))
-    current_word_index = str(len(command_line) - 1)
+def raw_completion_candidates(
+    cli_path: str,
+    command_line: list[str],
+    current_word_index: int,
+    cursor_index: int,
+) -> set[str]:
     proc = run_cli(
         cli_path,
         [
             "---completion",
             "--",
             "positional@0",
-            current_word_index,
-            cursor_index,
+            str(current_word_index),
+            str(cursor_index),
             *command_line,
         ],
     )
     if proc.returncode != 0:
         raise RuntimeError(
             "completion callback failed for "
-            f"completed={completed_tokens!r} prefix={prefix!r}\n"
+            f"command_line={command_line!r} current_word_index={current_word_index} cursor_index={cursor_index}\n"
             f"stdout={proc.stdout!r}\nstderr={proc.stderr!r}"
         )
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def completion_candidates(cli_path: str, completed_tokens: list[str], prefix: str = "") -> set[str]:
+    command_line = ["cmux", *completed_tokens]
+    if prefix:
+        command_line.append(prefix)
+    return raw_completion_candidates(
+        cli_path,
+        command_line,
+        len(command_line) - 1,
+        len(prefix),
+    )
 
 
 def assert_script(cli_path: str, shell: str) -> None:
@@ -132,6 +144,30 @@ def main() -> int:
             assert_script(cli_path, shell)
 
         failures: list[str] = []
+        middle_prefixed = raw_completion_candidates(
+            cli_path,
+            ["cmux", "browser", "tab", "new", "s"],
+            2,
+            1,
+        )
+        if "screenshot" not in middle_prefixed:
+            failures.append(
+                "middle-of-line completion for 'cmux browser s tab new' did not ignore trailing tokens; "
+                f"got {sorted(middle_prefixed)!r}"
+            )
+
+        middle_empty = raw_completion_candidates(
+            cli_path,
+            ["cmux", "browser", "tab", "new"],
+            2,
+            0,
+        )
+        if "tab" not in middle_empty:
+            failures.append(
+                "empty middle-of-line completion for 'cmux browser tab new' did not suggest browser subcommands; "
+                f"got {sorted(middle_empty)!r}"
+            )
+
         for form in forms:
             tokens = form.split()
             for index, expected in enumerate(tokens):

@@ -63,44 +63,54 @@ def main() -> int:
         env.pop("CMUX_SOCKET", None)
         env.pop("CMUX_SOCKET_PATH", None)
 
+        cases = [
+            ("separate --socket", ["--socket", explicit_socket_path, "ping"]),
+            ("attached --socket", [f"--socket={explicit_socket_path}", "ping"]),
+            (
+                "repeated --socket last wins",
+                ["--socket", tagged_socket_path, "--socket", explicit_socket_path, "ping"],
+            ),
+        ]
+
         try:
-            proc = subprocess.run(  # noqa: S603
-                [cli_path, "--socket", explicit_socket_path, "ping"],
-                text=True,
-                capture_output=True,
-                env=env,
-                timeout=8,
-                check=False,
-            )
+            for name, args in cases:
+                proc = subprocess.run(  # noqa: S603
+                    [cli_path, *args],
+                    text=True,
+                    capture_output=True,
+                    env=env,
+                    timeout=8,
+                    check=False,
+                )
+
+                if proc.returncode == 0:
+                    print(f"FAIL: {name} unexpectedly succeeded")
+                    print(f"stdout={proc.stdout!r}")
+                    print(f"stderr={proc.stderr!r}")
+                    return 1
+
+                merged = f"{proc.stdout}\n{proc.stderr}"
+                if explicit_socket_path not in merged:
+                    print(f"FAIL: {name} error did not mention the requested socket")
+                    print(f"expected={explicit_socket_path!r}")
+                    print(f"tagged_socket={tagged_socket_path!r}")
+                    print(f"stdout={proc.stdout!r}")
+                    print(f"stderr={proc.stderr!r}")
+                    return 1
+                if tagged_socket_path in merged:
+                    print(f"FAIL: {name} was replaced with a tagged discovered socket")
+                    print(f"explicit_socket={explicit_socket_path!r}")
+                    print(f"tagged_socket={tagged_socket_path!r}")
+                    print(f"stdout={proc.stdout!r}")
+                    print(f"stderr={proc.stderr!r}")
+                    return 1
         finally:
             try:
                 os.remove(tagged_socket_path)
             except OSError:
                 pass
 
-        if proc.returncode == 0:
-            print("FAIL: explicit missing socket unexpectedly succeeded")
-            print(f"stdout={proc.stdout!r}")
-            print(f"stderr={proc.stderr!r}")
-            return 1
-
-        merged = f"{proc.stdout}\n{proc.stderr}"
-        if explicit_socket_path not in merged:
-            print("FAIL: explicit missing socket error did not mention the requested socket")
-            print(f"expected={explicit_socket_path!r}")
-            print(f"tagged_socket={tagged_socket_path!r}")
-            print(f"stdout={proc.stdout!r}")
-            print(f"stderr={proc.stderr!r}")
-            return 1
-        if tagged_socket_path in merged:
-            print("FAIL: explicit --socket was replaced with a tagged discovered socket")
-            print(f"explicit_socket={explicit_socket_path!r}")
-            print(f"tagged_socket={tagged_socket_path!r}")
-            print(f"stdout={proc.stdout!r}")
-            print(f"stderr={proc.stderr!r}")
-            return 1
-
-    print("PASS: explicit --socket bypasses implicit socket autodiscovery")
+    print("PASS: explicit --socket forms bypass implicit socket autodiscovery")
     return 0
 
 

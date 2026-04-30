@@ -148,10 +148,12 @@ def resolve_cli(env_name: str) -> str:
 def load_marked_commands(start_marker: str, end_marker: str, pattern: re.Pattern[str]) -> list[str]:
     lines = (repo_root() / "docs" / "cli-contract.md").read_text(encoding="utf-8").splitlines()
     in_block = False
+    found_start = False
     commands: list[str] = []
     for line in lines:
         if line.strip() == start_marker:
             in_block = True
+            found_start = True
             continue
         if line.strip() == end_marker:
             in_block = False
@@ -168,6 +170,8 @@ def load_marked_commands(start_marker: str, end_marker: str, pattern: re.Pattern
 
     if in_block:
         raise RuntimeError(f"Missing end marker: {end_marker}")
+    if not found_start:
+        raise RuntimeError(f"Missing start marker: {start_marker}")
     return commands
 
 
@@ -188,6 +192,7 @@ def documented_command_forms() -> list[str]:
         if not cells or cells[0] == "Command":
             continue
         for code in re.findall(r"`([^`]+)`", cells[0]):
+            code = code.replace("\\|", "|")
             forms.update(expand_command_form(code))
     return sorted(forms)
 
@@ -233,7 +238,14 @@ def expand_command_form(raw: str) -> list[str]:
     tokens = raw.split()
     literal_tokens: list[list[str]] = []
     for token in tokens:
-        if token.startswith("<") or token.startswith("[") or token.startswith("("):
+        if token.startswith("<") or token.startswith("["):
+            inner = token.strip("<>[]")
+            previous = literal_tokens[-1][0] if literal_tokens else ""
+            if "|" in inner and not previous.startswith("--"):
+                literal_tokens.append([part for part in inner.split("|") if part])
+                continue
+            break
+        if token.startswith("("):
             break
         if token == "...":
             break
@@ -264,6 +276,9 @@ def build_probes() -> list[Probe]:
         Probe("legacy help command help", "cmux help --help"),
         Probe("version command", "cmux version"),
         Probe("version command help", "cmux version --help"),
+        Probe("root help before version preserves input order", "cmux --help --version"),
+        Probe("root version before help preserves input order", "cmux --version --help"),
+        Probe("root short version before dangling socket", "cmux -v --socket"),
         Probe("feed default help", "cmux feed"),
         Probe("feed help subcommand", "cmux feed help"),
         Probe("feed tui help", "cmux feed tui --help"),
@@ -295,6 +310,11 @@ def build_probes() -> list[Probe]:
         Probe("double dash forwarding", "cmux vm exec demo -- --help"),
         Probe("fake socket ping", "cmux --socket {socket} ping", fake_socket=True),
         Probe("fake socket json ping", "cmux --socket {socket} --json ping", fake_socket=True),
+        Probe(
+            "fake socket repeated root socket last wins",
+            "cmux --socket /tmp/cmux-golden-missing.sock --socket {socket} ping",
+            fake_socket=True,
+        ),
     ]
 
     for command in load_marked_commands(START_MARKER, END_MARKER, PROBE_RE):
@@ -308,10 +328,10 @@ def build_probes() -> list[Probe]:
 
 
 def dedupe_probes(probes: Iterable[Probe]) -> list[Probe]:
-    seen: set[tuple[str, str, str, bool]] = set()
+    seen: set[tuple[str, str, bool]] = set()
     result: list[Probe] = []
     for probe in probes:
-        key = (probe.command, probe.stdin, probe.name, probe.fake_socket)
+        key = (probe.command, probe.stdin, probe.fake_socket)
         if key in seen:
             continue
         seen.add(key)

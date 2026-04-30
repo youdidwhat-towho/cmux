@@ -15432,7 +15432,6 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: NSView, context: Context) {
-        // Configure based on view type
         if nsView.className == "NSGlassEffectView" {
             // NSGlassEffectView configuration via private API
             nsView.alphaValue = max(0.0, min(1.0, opacity))
@@ -15458,7 +15457,6 @@ private struct SidebarVisualEffectBackground: NSViewRepresentable {
         }
     }
 }
-
 
 /// Reads the leading inset required to clear traffic lights + left titlebar accessories.
 final class TitlebarLeadingInsetPassthroughView: NSView {
