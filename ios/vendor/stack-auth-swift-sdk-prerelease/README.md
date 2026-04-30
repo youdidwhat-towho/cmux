@@ -94,7 +94,7 @@ try await stack.signInWithOAuth(provider: "google")
 
 **2. Manual URL handling** - For custom implementations:
 
-> **Note:** The `stack-auth-mobile-oauth-url://` scheme is automatically accepted. 
+> **Note:** The `stack-auth-mobile-oauth-url://` scheme is automatically accepted.
 
 ```swift
 // Get the OAuth URL (must provide absolute URLs)

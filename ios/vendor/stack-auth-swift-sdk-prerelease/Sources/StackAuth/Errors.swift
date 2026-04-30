@@ -12,11 +12,11 @@ public struct StackAuthError: StackAuthErrorProtocol {
     public let code: String
     public let message: String
     public let details: [String: Any]?
-    
+
     public var description: String {
         "StackAuthError(\(code)): \(message)"
     }
-    
+
     public init(code: String, message: String, details: [String: Any]? = nil) {
         self.code = code
         self.message = message
@@ -87,7 +87,7 @@ public struct PasskeyWebAuthnError: StackAuthErrorProtocol {
     public let message: String
     public let details: [String: Any]? = nil
     public var description: String { "PasskeyWebAuthnError: \(message)" }
-    
+
     public init(errorName: String) {
         self.message = "WebAuthn error: \(errorName)."
     }
@@ -99,7 +99,7 @@ public struct MultiFactorAuthenticationRequiredError: StackAuthErrorProtocol {
     public let attemptCode: String
     public var details: [String: Any]? { ["attempt_code": attemptCode] }
     public var description: String { "MultiFactorAuthenticationRequiredError: \(message)" }
-    
+
     public init(attemptCode: String) {
         self.attemptCode = attemptCode
     }
@@ -117,7 +117,7 @@ public struct OAuthError: StackAuthErrorProtocol {
     public let message: String
     public let details: [String: Any]?
     public var description: String { "OAuthError(\(code)): \(message)" }
-    
+
     public init(code: String, message: String, details: [String: Any]? = nil) {
         self.code = code
         self.message = message

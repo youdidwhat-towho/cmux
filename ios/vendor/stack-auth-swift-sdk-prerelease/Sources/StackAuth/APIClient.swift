@@ -23,14 +23,14 @@ func formURLEncode(_ string: String) -> String {
 struct JWTPayload {
     let exp: TimeInterval?  // Expiration time (Unix timestamp in seconds)
     let iat: TimeInterval?  // Issued at time (Unix timestamp in seconds)
-    
+
     /// Milliseconds until token expires (Int.max if no exp claim, 0 if expired)
     var expiresInMillis: Int {
         guard let exp = exp else { return Int.max }
         let expiresIn = (exp * 1000) - (Date().timeIntervalSince1970 * 1000)
         return max(0, Int(expiresIn))
     }
-    
+
     /// Milliseconds since token was issued (0 if no iat claim)
     var issuedMillisAgo: Int {
         guard let iat = iat else { return 0 }
@@ -43,7 +43,7 @@ struct JWTPayload {
 func decodeJWTPayload(_ token: String) -> JWTPayload? {
     let segments = token.split(separator: ".")
     guard segments.count >= 2 else { return nil }
-    
+
     var base64 = String(segments[1])
     // Convert base64url to base64
     base64 = base64.replacingOccurrences(of: "-", with: "+")
@@ -53,12 +53,12 @@ func decodeJWTPayload(_ token: String) -> JWTPayload? {
     if remainder > 0 {
         base64 += String(repeating: "=", count: 4 - remainder)
     }
-    
+
     guard let data = Data(base64Encoded: base64),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
         return nil
     }
-    
+
     let exp = json["exp"] as? TimeInterval
     let iat = json["iat"] as? TimeInterval
     return JWTPayload(exp: exp, iat: iat)
@@ -80,10 +80,10 @@ func isTokenFreshEnough(_ accessToken: String?) -> Bool {
           let payload = decodeJWTPayload(token) else {
         return false  // Can't decode, should refresh
     }
-    
+
     let expiresInMoreThan20s = payload.expiresInMillis > 20_000
     let issuedLessThan75sAgo = payload.issuedMillisAgo < 75_000
-    
+
     return expiresInMoreThan20s && issuedLessThan75sAgo
 }
 
@@ -93,10 +93,10 @@ func isTokenFreshEnough(_ accessToken: String?) -> Bool {
 /// Uses ObjectIdentifier to key locks since token stores no longer have an id property.
 actor RefreshLockManager {
     static let shared = RefreshLockManager()
-    
+
     private var activeLocks: [ObjectIdentifier: Bool] = [:]
     private var waiters: [ObjectIdentifier: [CheckedContinuation<Void, Never>]] = [:]
-    
+
     func acquireLock(for store: any TokenStoreProtocol) async {
         let key = ObjectIdentifier(store)
         // Use WHILE loop to re-check condition after waking up.
@@ -109,7 +109,7 @@ actor RefreshLockManager {
         }
         activeLocks[key] = true
     }
-    
+
     func releaseLock(for store: any TokenStoreProtocol) {
         let key = ObjectIdentifier(store)
         activeLocks[key] = false
@@ -135,9 +135,9 @@ actor APIClient {
     let publishableClientKey: String
     let secretServerKey: String?
     private let tokenStore: any TokenStoreProtocol
-    
+
     private static let sdkVersion = "1.0.0"
-    
+
     init(
         baseUrl: String,
         projectId: String,
@@ -151,9 +151,9 @@ actor APIClient {
         self.secretServerKey = secretServerKey
         self.tokenStore = tokenStore
     }
-    
+
     // MARK: - Request Methods
-    
+
     func sendRequest(
         path: String,
         method: String = "GET",
@@ -169,7 +169,7 @@ actor APIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        
+
         // Required headers
         request.setValue(projectId, forHTTPHeaderField: "x-stack-project-id")
         request.setValue(publishableClientKey, forHTTPHeaderField: "x-stack-publishable-client-key")
@@ -177,7 +177,7 @@ actor APIClient {
         request.setValue(serverOnly ? "server" : "client", forHTTPHeaderField: "x-stack-access-type")
         request.setValue("true", forHTTPHeaderField: "x-stack-override-error-status")
         request.setValue(UUID().uuidString, forHTTPHeaderField: "x-stack-random-nonce")
-        
+
         // Server key if required
         if serverOnly {
             guard let serverKey = secretServerKey else {
@@ -185,7 +185,7 @@ actor APIClient {
             }
             request.setValue(serverKey, forHTTPHeaderField: "x-stack-secret-server-key")
         }
-        
+
         // Auth headers
         if authenticated {
             if let accessToken = await effectiveTokenStore.getStoredAccessToken() {
@@ -195,7 +195,7 @@ actor APIClient {
                 request.setValue(refreshToken, forHTTPHeaderField: "x-stack-refresh-token")
             }
         }
-        
+
         // Body - always include for mutating methods
         if let body = body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -205,11 +205,11 @@ actor APIClient {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = "{}".data(using: .utf8)
         }
-        
+
         // Send request with retry logic
         return try await sendWithRetry(request: request, authenticated: authenticated, tokenStore: effectiveTokenStore)
     }
-    
+
     private func sendWithRetry(
         request: URLRequest,
         authenticated: Bool,
@@ -218,11 +218,11 @@ actor APIClient {
     ) async throws -> (Data, HTTPURLResponse) {
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            
+
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw StackAuthError(code: "invalid_response", message: "Invalid HTTP response")
             }
-            
+
             // Check for actual status code in header
             let actualStatus: Int
             if let statusHeader = httpResponse.value(forHTTPHeaderField: "x-stack-actual-status"),
@@ -231,7 +231,7 @@ actor APIClient {
             } else {
                 actualStatus = httpResponse.statusCode
             }
-            
+
             // Handle 401 with token refresh
             if actualStatus == 401 && authenticated {
                 // Check if it's an invalid access token error
@@ -247,7 +247,7 @@ actor APIClient {
                     }
                 }
             }
-            
+
             // Handle rate limiting (max 5 retries)
             if actualStatus == 429 && attempt < 5 {
                 if let retryAfter = httpResponse.value(forHTTPHeaderField: "Retry-After"),
@@ -261,12 +261,12 @@ actor APIClient {
                 }
                 return try await sendWithRetry(request: request, authenticated: authenticated, tokenStore: tokenStore, attempt: attempt + 1)
             }
-            
+
             // Rate limit exhausted after max retries
             if actualStatus == 429 {
                 throw StackAuthError(code: "RATE_LIMITED", message: "Too many requests, please try again later")
             }
-            
+
             // Check for known error
             if let errorCode = httpResponse.value(forHTTPHeaderField: "x-stack-known-error") {
                 let errorData = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
@@ -274,15 +274,15 @@ actor APIClient {
                 let details = errorData?["details"] as? [String: Any]
                 throw StackAuthError.from(code: errorCode, message: message, details: details)
             }
-            
+
             // Success
             if actualStatus >= 200 && actualStatus < 300 {
                 return (data, httpResponse)
             }
-            
+
             // Other error
             throw StackAuthError(code: "http_error", message: "HTTP \(actualStatus)")
-            
+
         } catch let error as URLError {
             // Network error - retry for idempotent requests
             let idempotent = ["GET", "HEAD", "OPTIONS", "PUT", "DELETE"].contains(request.httpMethod ?? "")
@@ -294,9 +294,9 @@ actor APIClient {
             throw StackAuthError(code: "network_error", message: error.localizedDescription)
         }
     }
-    
+
     // MARK: - Token Refresh
-    
+
     /// Performs the actual token refresh request.
     /// Returns (wasValid, newAccessToken) where wasValid indicates if the refresh token was valid.
     private func refresh(refreshToken: String) async -> (wasValid: Bool, accessToken: String?) {
@@ -306,73 +306,73 @@ actor APIClient {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
         request.setValue(projectId, forHTTPHeaderField: "x-stack-project-id")
         request.setValue(publishableClientKey, forHTTPHeaderField: "x-stack-publishable-client-key")
-        
+
         let body = [
             "grant_type=refresh_token",
             "refresh_token=\(formURLEncode(refreshToken))",
             "client_id=\(formURLEncode(projectId))",
             "client_secret=\(formURLEncode(publishableClientKey))"
         ].joined(separator: "&")
-        
+
         request.httpBody = body.data(using: .utf8)
-        
+
         do {
             let (data, response) = try await URLSession.shared.data(for: request)
-            
+
             guard let httpResponse = response as? HTTPURLResponse,
                   httpResponse.statusCode == 200 else {
                 return (wasValid: false, accessToken: nil)
             }
-            
+
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let newAccessToken = json["access_token"] as? String else {
                 return (wasValid: false, accessToken: nil)
             }
-            
+
             return (wasValid: true, accessToken: newAccessToken)
         } catch {
             return (wasValid: false, accessToken: nil)
         }
     }
-    
+
     // MARK: - Token Management
-    
+
     func setTokens(accessToken: String?, refreshToken: String?) async {
         await tokenStore.setTokens(accessToken: accessToken, refreshToken: refreshToken)
     }
-    
+
     func setTokens(accessToken: String?, refreshToken: String?, tokenStoreOverride: any TokenStoreProtocol) async {
         await tokenStoreOverride.setTokens(accessToken: accessToken, refreshToken: refreshToken)
     }
-    
+
     func clearTokens() async {
         await tokenStore.clearTokens()
     }
-    
+
     func clearTokens(tokenStoreOverride: any TokenStoreProtocol) async {
         await tokenStoreOverride.clearTokens()
     }
-    
+
     /// Gets tokens, refreshing if needed. See spec for algorithm.
     /// This is the main function to use for getting an access token.
     func getOrFetchLikelyValidTokens() async -> TokenPair {
         return await getOrFetchLikelyValidTokensFromStore(tokenStore)
     }
-    
+
     func getOrFetchLikelyValidTokens(tokenStoreOverride: any TokenStoreProtocol) async -> TokenPair {
         return await getOrFetchLikelyValidTokensFromStore(tokenStoreOverride)
     }
-    
+
     /// Internal implementation of getOrFetchLikelyValidTokens algorithm.
     private func getOrFetchLikelyValidTokensFromStore(_ ts: any TokenStoreProtocol) async -> TokenPair {
         // Acquire lock to ensure only one refresh per token store
         await RefreshLockManager.shared.acquireLock(for: ts)
-        
+
         let originalRefreshToken = await ts.getStoredRefreshToken()
         let originalAccessToken = await ts.getStoredAccessToken()
-        
+
         let result: TokenPair
-        
+
         // Case 1: No refresh token
         if originalRefreshToken == nil {
             // If access token expires in > 0 seconds, return it
@@ -385,14 +385,14 @@ actor APIClient {
         } else {
             // Case 2: Refresh token exists
             let refreshToken = originalRefreshToken!
-            
+
             // Check if token is fresh enough (expires in > 20s AND issued < 75s ago)
             if isTokenFreshEnough(originalAccessToken) {
                 result = TokenPair(refreshToken: refreshToken, accessToken: originalAccessToken)
             } else {
                 // Need to refresh
                 let (wasValid, newAccessToken) = await refresh(refreshToken: refreshToken)
-                
+
                 if wasValid, let newToken = newAccessToken {
                     // Refresh succeeded - update tokens atomically
                     await ts.compareAndSet(
@@ -412,30 +412,30 @@ actor APIClient {
                 }
             }
         }
-        
+
         // Release lock synchronously before returning
         await RefreshLockManager.shared.releaseLock(for: ts)
         return result
     }
-    
+
     /// Forcefully fetches a new access token from the server if possible.
     func fetchNewAccessToken() async -> TokenPair {
         return await fetchNewAccessToken(tokenStore: tokenStore)
     }
-    
+
     func fetchNewAccessToken(tokenStoreOverride: any TokenStoreProtocol) async -> TokenPair {
         return await fetchNewAccessToken(tokenStore: tokenStoreOverride)
     }
-    
+
     private func fetchNewAccessToken(tokenStore ts: any TokenStoreProtocol) async -> TokenPair {
         // Acquire lock to ensure only one refresh per token store
         await RefreshLockManager.shared.acquireLock(for: ts)
-        
+
         let result: TokenPair
-        
+
         if let refreshToken = await ts.getStoredRefreshToken() {
             let (wasValid, newAccessToken) = await refresh(refreshToken: refreshToken)
-            
+
             if wasValid, let newToken = newAccessToken {
                 await ts.compareAndSet(
                     compareRefreshToken: refreshToken,
@@ -454,28 +454,28 @@ actor APIClient {
         } else {
             result = TokenPair(refreshToken: nil, accessToken: nil)
         }
-        
+
         // Release lock synchronously before returning
         await RefreshLockManager.shared.releaseLock(for: ts)
         return result
     }
-    
+
     /// Get access token, refreshing if needed. Convenience wrapper around getOrFetchLikelyValidTokens.
     func getAccessToken() async -> String? {
         let tokens = await getOrFetchLikelyValidTokens()
         return tokens.accessToken
     }
-    
+
     func getAccessToken(tokenStoreOverride: any TokenStoreProtocol) async -> String? {
         let tokens = await getOrFetchLikelyValidTokens(tokenStoreOverride: tokenStoreOverride)
         return tokens.accessToken
     }
-    
+
     /// Get refresh token (simple getter from store).
     func getRefreshToken() async -> String? {
         return await tokenStore.getStoredRefreshToken()
     }
-    
+
     func getRefreshToken(tokenStoreOverride: any TokenStoreProtocol) async -> String? {
         return await tokenStoreOverride.getStoredRefreshToken()
     }

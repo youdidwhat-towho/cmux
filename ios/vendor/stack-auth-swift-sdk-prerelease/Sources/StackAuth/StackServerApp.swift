@@ -3,9 +3,9 @@ import Foundation
 /// Server-side Stack Auth client with elevated privileges
 public actor StackServerApp {
     public let projectId: String
-    
+
     let client: APIClient
-    
+
     public init(
         projectId: String,
         publishableClientKey: String,
@@ -13,7 +13,7 @@ public actor StackServerApp {
         baseUrl: String = "https://api.stack-auth.com"
     ) {
         self.projectId = projectId
-        
+
         self.client = APIClient(
             baseUrl: baseUrl,
             projectId: projectId,
@@ -22,9 +22,9 @@ public actor StackServerApp {
             tokenStore: NullTokenStore()
         )
     }
-    
+
     // MARK: - Users
-    
+
     public func listUsers(
         limit: Int? = nil,
         cursor: String? = nil,
@@ -36,30 +36,30 @@ public actor StackServerApp {
         if let cursor = cursor { query.append("cursor=\(cursor)") }
         if let orderBy = orderBy { query.append("order_by=\(orderBy)") }
         if let desc = descending { query.append("desc=\(desc)") }
-        
+
         var path = "/users"
         if !query.isEmpty {
             path += "?" + query.joined(separator: "&")
         }
-        
+
         let (data, _) = try await client.sendRequest(
             path: path,
             method: "GET",
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["items"] as? [[String: Any]] else {
             return PaginatedResult(items: [], pagination: Pagination(hasPreviousPage: false, hasNextPage: false, startCursor: nil, endCursor: nil))
         }
-        
+
         let pagination = parsePagination(from: json)
         return PaginatedResult(
             items: items.map { ServerUser(client: client, json: $0) },
             pagination: pagination
         )
     }
-    
+
     public func getUser(id userId: String) async throws -> ServerUser? {
         do {
             let (data, _) = try await client.sendRequest(
@@ -67,17 +67,17 @@ public actor StackServerApp {
                 method: "GET",
                 serverOnly: true
             )
-            
+
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return nil
             }
-            
+
             return ServerUser(client: client, json: json)
         } catch let error as StackAuthErrorProtocol where error.code == "USER_NOT_FOUND" {
             return nil
         }
     }
-    
+
     public func createUser(
         email: String? = nil,
         password: String? = nil,
@@ -103,48 +103,48 @@ public actor StackServerApp {
         if let totp = totpSecretBase32 { body["totp_secret_base32"] = totp }
         if let teamId = selectedTeamId { body["selected_team_id"] = teamId }
         if let url = profileImageUrl { body["profile_image_url"] = url }
-        
+
         let (data, _) = try await client.sendRequest(
             path: "/users",
             method: "POST",
             body: body,
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw StackAuthError(code: "parse_error", message: "Failed to parse user response")
         }
-        
+
         return ServerUser(client: client, json: json)
     }
-    
+
     // MARK: - Teams
-    
+
     public func listTeams(
         userId: String? = nil
     ) async throws -> [ServerTeam] {
         var query: [String] = []
         if let userId = userId { query.append("user_id=\(userId)") }
-        
+
         var path = "/teams"
         if !query.isEmpty {
             path += "?" + query.joined(separator: "&")
         }
-        
+
         let (data, _) = try await client.sendRequest(
             path: path,
             method: "GET",
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let items = json["items"] as? [[String: Any]] else {
             return []
         }
-        
+
         return items.map { ServerTeam(client: client, json: $0) }
     }
-    
+
     public func getTeam(id teamId: String) async throws -> ServerTeam? {
         do {
             let (data, _) = try await client.sendRequest(
@@ -152,17 +152,17 @@ public actor StackServerApp {
                 method: "GET",
                 serverOnly: true
             )
-            
+
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 return nil
             }
-            
+
             return ServerTeam(client: client, json: json)
         } catch let error as StackAuthErrorProtocol where error.code == "TEAM_NOT_FOUND" {
             return nil
         }
     }
-    
+
     public func createTeam(
         displayName: String,
         creatorUserId: String? = nil,
@@ -175,66 +175,66 @@ public actor StackServerApp {
         if let url = profileImageUrl { body["profile_image_url"] = url }
         if let clientMeta = clientMetadata { body["client_metadata"] = clientMeta }
         if let serverMeta = serverMetadata { body["server_metadata"] = serverMeta }
-        
+
         let (data, _) = try await client.sendRequest(
             path: "/teams",
             method: "POST",
             body: body,
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw StackAuthError(code: "parse_error", message: "Failed to parse team response")
         }
-        
+
         return ServerTeam(client: client, json: json)
     }
-    
+
     // MARK: - Project
-    
+
     public func getProject() async throws -> Project {
         let (data, _) = try await client.sendRequest(
             path: "/projects/current",
             method: "GET",
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw StackAuthError(code: "parse_error", message: "Failed to parse project response")
         }
-        
+
         return Project(from: json)
     }
-    
+
     // MARK: - Create Session (Impersonation)
-    
+
     public func createSession(userId: String, expiresInSeconds: Int = 3600) async throws -> SessionTokens {
         let body: [String: Any] = [
             "user_id": userId,
             "expires_in_millis": expiresInSeconds * 1000
         ]
-        
+
         let (data, _) = try await client.sendRequest(
             path: "/auth/sessions",
             method: "POST",
             body: body,
             serverOnly: true
         )
-        
+
         guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accessToken = json["access_token"] as? String,
               let refreshToken = json["refresh_token"] as? String else {
             throw StackAuthError(code: "parse_error", message: "Failed to parse session response")
         }
-        
+
         return SessionTokens(
             accessToken: accessToken,
             refreshToken: refreshToken
         )
     }
-    
+
     // MARK: - Helpers
-    
+
     private func parsePagination(from json: [String: Any]) -> Pagination {
         let pagination = json["pagination"] as? [String: Any] ?? [:]
         return Pagination(

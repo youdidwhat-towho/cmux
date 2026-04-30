@@ -24,7 +24,7 @@ struct SignInView: View {
             ZStack {
                 GameOfLifeHeader()
                     .ignoresSafeArea()
-                
+
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture {

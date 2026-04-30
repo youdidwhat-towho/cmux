@@ -141,4 +141,3 @@ final class PushNotificationConfigurator: @unchecked Sendable {
         )
     }
 }
-
