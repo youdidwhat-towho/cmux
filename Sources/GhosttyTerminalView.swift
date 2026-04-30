@@ -7093,6 +7093,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 return false
             }
 
+            if !shouldRetryMainMenu { lastPerformKeyEvent = nil; keyDown(with: event); return true }
             if let lastPerformKeyEvent {
                 self.lastPerformKeyEvent = nil
                 if lastPerformKeyEvent == event.timestamp {
@@ -7101,8 +7102,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 }
             }
 
-            lastPerformKeyEvent = event.timestamp
-            return false
+            lastPerformKeyEvent = event.timestamp; return false
         }
 
         let finalEvent = NSEvent.keyEvent(
