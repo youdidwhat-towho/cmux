@@ -30,7 +30,6 @@ written around user-visible behavior so the implementation can change behind it.
 | `cmux [global-options] <command> [options]` | Run a named command. |
 | `cmux --help`, `cmux -h` | Print top-level usage without a socket. |
 | `cmux --version`, `cmux -v`, `cmux version` | Print version summary without a socket. |
-| `cmux --generate-completion-script <zsh\|bash\|fish>` | Print a shell completion script without a socket. |
 
 Global options:
 
@@ -41,17 +40,6 @@ Global options:
 | `--json` | Prefer machine-readable JSON output for commands that support it. |
 | `--id-format <refs\|uuids\|both>` | Select handle format in JSON and supported text output. |
 | `--window <id\|ref\|index>` | Route the command through a specific window when supported. |
-
-Shell completion:
-
-| Shell | Install command |
-| --- | --- |
-| zsh | `cmux --generate-completion-script zsh > "${fpath[1]}/_cmux"` |
-| bash | `cmux --generate-completion-script bash > ~/.cmux-completion.bash` |
-| fish | `cmux --generate-completion-script fish > ~/.config/fish/completions/cmux.fish` |
-
-Generated completions must cover every command form in the ArgumentParser
-inventory, expose global options, and avoid connecting to the cmux socket.
 
 Environment:
 
@@ -68,28 +56,21 @@ Environment:
 
 | Command | Contract |
 | --- | --- |
-| `help` | Print top-level CLI usage and command list. |
-| `version` | Print version summary. |
 | `welcome` | Print the welcome screen. |
 | `shortcuts` | Open Settings to Keyboard Shortcuts. |
+| `disable-browser` | Disable cmux browser creation and link interception until re-enabled. |
+| `enable-browser` | Re-enable cmux browser creation and link interception. |
+| `browser-status` | Print whether cmux browser creation and link interception are enabled. |
 | `restore-session` | Restore the previously saved cmux session. |
 | `feedback` | Open feedback UI or submit feedback with `--email`, `--body`, and repeated `--image`. |
-| `feed` | Manage persisted Feed workstream history. Current public subcommand: `clear`. |
+| `feed` | Open the keyboard-first Feed TUI or manage persisted Feed workstream history. |
 | `themes` | List, set, clear, or interactively pick Ghostty themes. |
 | `claude-teams` | Launch Claude Code with cmux/tmux-style agent team integration. |
 | `omo` | Launch OpenCode with oh-my-openagent integration. |
 | `omx` | Launch Oh My Codex with cmux pane integration. |
 | `omc` | Launch Oh My Claude Code with cmux pane integration. |
-| `codex` | Install or uninstall Codex hooks. |
-| `opencode` | Install or uninstall OpenCode integration hooks. |
-| `cursor` | Install or uninstall Cursor hooks. |
-| `gemini` | Install or uninstall Gemini hooks. |
-| `copilot` | Install or uninstall Copilot hooks. |
-| `codebuddy` | Install or uninstall CodeBuddy hooks. |
-| `factory` | Install or uninstall Factory hooks. |
-| `qoder` | Install or uninstall Qoder hooks. |
-| `setup-hooks` | Install hooks for all supported agents. |
-| `uninstall-hooks` | Remove hooks for all supported agents. |
+| `hooks` | Install, uninstall, and run agent hook integrations under one namespace. |
+| `codex` | Compatibility alias for installing or uninstalling Codex hooks. |
 | `ping` | Check socket connectivity. |
 | `capabilities` | Print server capabilities as JSON. |
 | `auth` | Manage auth status, login, and logout through the app. |
@@ -149,22 +130,10 @@ Environment:
 | `clear-log` | Clear sidebar log entries. |
 | `list-log` | List sidebar log entries. |
 | `sidebar-state` | Dump sidebar metadata state. |
-| `claude-hook` | Handle Claude Code hook events from stdin JSON. |
-| `feed-hook` | Handle Feed hook events from stdin JSON. |
-| `codex-hook` | Handle Codex hook events from stdin JSON. |
-| `opencode-hook` | Handle OpenCode hook events from stdin JSON. |
-| `cursor-hook` | Handle Cursor hook events from stdin JSON. |
-| `gemini-hook` | Handle Gemini hook events from stdin JSON. |
-| `copilot-hook` | Handle Copilot hook events from stdin JSON. |
-| `codebuddy-hook` | Handle CodeBuddy hook events from stdin JSON. |
-| `factory-hook` | Handle Factory hook events from stdin JSON. |
-| `qoder-hook` | Handle Qoder hook events from stdin JSON. |
+| `claude-hook` | Compatibility alias for Claude Code hook events from stdin JSON. |
 | `set-app-focus` | Override app focus state for tests. |
 | `simulate-app-active` | Trigger app-active handling for tests. |
 | `browser` | Run browser automation commands. |
-| `disable-browser` | Disable browser creation and link interception. |
-| `enable-browser` | Re-enable browser creation and link interception. |
-| `browser-status` | Print whether browser creation and link interception are enabled. |
 | `open-browser` | Legacy alias for `browser open`. |
 | `navigate` | Legacy alias for `browser navigate`. |
 | `browser-back` | Legacy alias for `browser back`. |
@@ -190,24 +159,17 @@ Auth subcommands:
 | `auth login` | Begin sign-in through the app and wait for completion. |
 | `auth logout` | Clear the current session. |
 
-Feed subcommands:
+VM subcommands:
 
 | Command | Contract |
 | --- | --- |
-| `feed tui` | Open the keyboard-first Feed TUI. Supports `--opentui` and `--legacy`. |
-| `feed clear` | Clear persisted Feed workstream history. Supports `--yes` and `-y`. |
-
-VM and cloud subcommands:
-
-| Command | Contract |
-| --- | --- |
-| `vm\|cloud ls`, `vm\|cloud list` | List VMs. |
-| `vm\|cloud new`, `vm\|cloud create` | Create a VM. Supports `--image`, `--provider`, `--detach`, and `-d`. |
-| `vm\|cloud shell`, `vm\|cloud attach` | Open an interactive shell for an existing VM. |
-| `vm\|cloud rm`, `vm\|cloud destroy`, `vm\|cloud delete` | Destroy a VM. |
-| `vm\|cloud ssh`, `vm\|cloud ssh-info` | Print SSH connection info. |
-| `vm\|cloud ssh-attach` | Internal attach helper. |
-| `vm\|cloud exec` | Run a shell command inside a VM. |
+| `vm ls`, `vm list` | List VMs. |
+| `vm new`, `vm create` | Create a VM. Supports `--image`, `--provider`, `--detach`, and `-d`. |
+| `vm shell`, `vm attach` | Open an interactive shell for an existing VM. |
+| `vm rm`, `vm destroy`, `vm delete` | Destroy a VM. |
+| `vm ssh`, `vm ssh-info` | Print SSH connection info. |
+| `vm ssh-attach` | Internal attach helper. |
+| `vm exec` | Run a shell command inside a VM. |
 
 Theme subcommands:
 
@@ -219,13 +181,6 @@ Theme subcommands:
 | `themes set --light <theme>` | Set the light appearance theme. |
 | `themes set --dark <theme>` | Set the dark appearance theme. |
 | `themes clear` | Remove the cmux theme override. |
-
-Agent hook installer subcommands:
-
-| Command | Contract |
-| --- | --- |
-| `codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder install-hooks` | Install cmux hooks for the named agent. |
-| `codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder uninstall-hooks` | Remove cmux hooks for the named agent. |
 
 Workspace and tab action names:
 
@@ -239,48 +194,24 @@ tmux compatibility commands:
 | Command | Contract |
 | --- | --- |
 | `capture-pane` | Read pane text. |
-| `__tmux-compat capture-pane`, `__tmux-compat capturep` | Internal tmux shim alias for reading pane text. |
 | `resize-pane` | Resize a pane with direction flags. |
-| `__tmux-compat resize-pane`, `__tmux-compat resizep` | Internal tmux shim alias for resizing panes. |
 | `pipe-pane` | Pipe pane text to a shell command. |
 | `wait-for` | Signal or wait on a named synchronization point. |
-| `__tmux-compat wait-for` | Internal tmux shim alias for synchronization points. |
 | `swap-pane` | Swap two panes. |
 | `break-pane` | Move a pane into a new workspace. |
 | `join-pane` | Join a pane into another pane. |
 | `next-window`, `previous-window`, `last-window` | Move workspace selection. |
-| `__tmux-compat next-window`, `__tmux-compat previous-window`, `__tmux-compat last-window` | Internal tmux shim aliases for workspace selection. |
 | `last-pane` | Focus the last pane. |
-| `__tmux-compat last-pane` | Internal tmux shim alias for focusing the last pane. |
 | `find-window` | Find a workspace by title or content. |
 | `clear-history` | Clear terminal scrollback. |
 | `set-hook` | Manage tmux-compat hook definitions. |
-| `__tmux-compat set-hook` | Internal tmux shim alias for hook definitions. |
 | `popup` | Placeholder, currently unsupported. |
 | `bind-key`, `unbind-key`, `copy-mode` | Placeholders, currently unsupported. |
 | `set-buffer` | Set a tmux-compat buffer. |
-| `__tmux-compat set-buffer` | Internal tmux shim alias for setting a buffer. |
 | `paste-buffer` | Paste a tmux-compat buffer. |
 | `list-buffers` | List tmux-compat buffers. |
-| `__tmux-compat list-buffers` | Internal tmux shim alias for listing buffers. |
 | `respawn-pane` | Send a restart command to a surface. |
 | `display-message` | Print or display a message. |
-| `__tmux-compat new-session`, `__tmux-compat new` | Internal tmux shim alias for creating a workspace. |
-| `__tmux-compat new-window`, `__tmux-compat neww` | Internal tmux shim alias for creating a workspace. |
-| `__tmux-compat split-window`, `__tmux-compat splitw` | Internal tmux shim alias for creating a split. |
-| `__tmux-compat select-window`, `__tmux-compat selectw` | Internal tmux shim alias for selecting a workspace. |
-| `__tmux-compat select-pane`, `__tmux-compat selectp` | Internal tmux shim alias for focusing a pane. |
-| `__tmux-compat kill-window`, `__tmux-compat killw` | Internal tmux shim alias for closing a workspace. |
-| `__tmux-compat kill-pane`, `__tmux-compat killp` | Internal tmux shim alias for closing a pane. |
-| `__tmux-compat send-keys`, `__tmux-compat send` | Internal tmux shim alias for sending keys/text. |
-| `__tmux-compat display-message`, `__tmux-compat display`, `__tmux-compat displayp` | Internal tmux shim aliases for display-message. |
-| `__tmux-compat list-windows`, `__tmux-compat lsw` | Internal tmux shim alias for listing workspaces. |
-| `__tmux-compat list-panes`, `__tmux-compat lsp` | Internal tmux shim alias for listing panes. |
-| `__tmux-compat rename-window`, `__tmux-compat renamew` | Internal tmux shim alias for renaming a workspace. |
-| `__tmux-compat show-buffer`, `__tmux-compat showb` | Internal tmux shim compatibility no-op. |
-| `__tmux-compat save-buffer`, `__tmux-compat saveb` | Internal tmux shim compatibility no-op. |
-| `__tmux-compat has-session`, `__tmux-compat has` | Internal tmux shim compatibility check. |
-| `__tmux-compat select-layout`, `__tmux-compat set-option`, `__tmux-compat set`, `__tmux-compat set-window-option`, `__tmux-compat setw`, `__tmux-compat source-file`, `__tmux-compat refresh-client`, `__tmux-compat attach-session`, `__tmux-compat detach-client`, `__tmux-compat -V`, `__tmux-compat -v` | Internal tmux shim compatibility no-ops or version output. |
 
 Browser subcommands:
 
@@ -290,80 +221,50 @@ Browser subcommands:
 | `browser goto`, `browser navigate` | Navigate to a URL. |
 | `browser back`, `browser forward`, `browser reload` | Navigate browser history or reload. |
 | `browser url`, `browser get-url` | Print current URL. |
-| `browser focus-webview`, `browser focus_webview`, `browser is-webview-focused`, `browser is_webview_focused` | Focus or query webview focus. |
+| `browser focus-webview`, `browser is-webview-focused` | Focus or query webview focus. |
 | `browser snapshot` | Print a DOM snapshot. |
 | `browser eval` | Evaluate JavaScript. |
 | `browser wait` | Wait for selector, text, URL, load state, or JS predicate. |
-| `browser click`, `browser dblclick`, `browser hover`, `browser focus`, `browser check`, `browser uncheck`, `browser scroll-into-view`, `browser scrollinto`, `browser scrollintoview` | Run element interaction. |
+| `browser click`, `browser dblclick`, `browser hover`, `browser focus`, `browser check`, `browser uncheck`, `browser scroll-into-view` | Run element interaction. |
 | `browser type`, `browser fill` | Type into or set an input. |
 | `browser press`, `browser key`, `browser keydown`, `browser keyup` | Send keyboard input. |
 | `browser select` | Select an option. |
 | `browser scroll` | Scroll page or element. |
 | `browser screenshot` | Save a screenshot. |
 | `browser get` | Read URL, title, text, HTML, value, attr, count, box, or styles. |
-| `browser get url\|title\|text\|html\|value\|attr\|count\|box\|styles` | Concrete `browser get` read operations. |
 | `browser is` | Check visible, enabled, or checked state. |
-| `browser is visible\|enabled\|checked` | Concrete `browser is` predicates. |
 | `browser find` | Find by role, text, label, placeholder, alt, title, testid, first, last, or nth. |
-| `browser find role\|text\|label\|placeholder\|alt\|title\|testid\|first\|last\|nth` | Concrete browser locator strategies. |
 | `browser frame` | Select frame context. |
-| `browser frame main` | Select the main frame. |
 | `browser dialog` | Accept or dismiss dialogs. |
-| `browser dialog accept\|dismiss` | Concrete dialog operations. |
 | `browser download` | Wait for or save downloads. |
-| `browser download wait` | Explicit download wait form. |
 | `browser cookies` | Get, set, or clear cookies. |
-| `browser cookies get\|set\|clear` | Concrete cookie operations. |
 | `browser storage` | Get, set, or clear local/session storage. |
-| `browser storage local\|session` | Select a storage namespace, defaulting to `get`. |
-| `browser storage local\|session get\|set\|clear` | Concrete storage operations. |
 | `browser tab` | Create, list, switch, or close browser tabs. |
-| `browser tab new\|list\|switch\|close` | Concrete browser tab operations. |
 | `browser console`, `browser errors` | List or clear console messages and errors. |
-| `browser console list\|clear`, `browser errors list\|clear` | Concrete browser log operations. |
 | `browser highlight` | Highlight an element. |
 | `browser state` | Save or load browser state. |
-| `browser state save\|load` | Concrete browser state operations. |
 | `browser addinitscript`, `browser addscript`, `browser addstyle` | Inject scripts or CSS. |
 | `browser viewport` | Set viewport size. |
 | `browser geolocation`, `browser geo` | Set geolocation. |
 | `browser offline` | Toggle offline state. |
 | `browser trace` | Start or stop trace capture. |
-| `browser trace start\|stop` | Concrete trace operations. |
 | `browser network` | Route, unroute, or list requests. |
-| `browser network route\|unroute\|requests` | Concrete network operations. |
 | `browser screencast` | Start or stop screencast. |
-| `browser screencast start\|stop` | Concrete screencast operations. |
 | `browser input`, `browser input_mouse`, `browser input_keyboard`, `browser input_touch` | Send low-level input. |
-| `browser input mouse\|keyboard\|touch` | Concrete low-level input operations. |
 | `browser identify` | Identify browser surface context. |
-| `browser disable`, `browser enable`, `browser status` | Browser availability aliases for `disable-browser`, `enable-browser`, and `browser-status`. |
 
-Markdown subcommands:
-
-| Command | Contract |
-| --- | --- |
-| `markdown open` | Open a markdown file in the formatted viewer. |
-
-Agent hook subcommands:
+Hook subcommands:
 
 | Command | Contract |
 | --- | --- |
-| `claude-hook session-start`, `claude-hook active` | Mark a Claude session active. |
-| `claude-hook stop`, `claude-hook idle` | Mark a Claude session stopped or idle. |
-| `claude-hook notification`, `claude-hook notify` | Forward a Claude notification. |
-| `claude-hook prompt-submit` | Clear notification and set running status. |
-| `claude-hook session-end` | Mark Claude session ended. |
-| `claude-hook pre-tool-use` | Record Claude tool-use context. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook session-start` | Register an agent session. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook prompt-submit` | Set agent running status. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook stop` | Send completion notification and set idle. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook agent-response` | Treat an agent response as completion. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook shell-exec` | Treat shell execution as prompt activity. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook shell-done` | Accept shell completion as a no-op lifecycle event. |
-| `codex-hook\|opencode-hook\|cursor-hook\|gemini-hook\|copilot-hook\|codebuddy-hook\|factory-hook\|qoder-hook session-end` | Mark an agent session ended. |
-| `feed-hook` | Convert agent hook events into Feed context. |
-| `<agent>-hook` | Generic hook surface for `opencode`, `cursor`, `gemini`, `copilot`, `codebuddy`, `factory`, and `qoder`. |
+| `hooks setup` | Install hooks for all supported agents whose binaries are on `PATH`. Supports `--agent <name>` and `--yes`. |
+| `hooks uninstall` | Remove hooks for all supported agents. Supports `--agent <name>` and `--yes`. |
+| `hooks <agent> install` | Install hooks for one supported agent. `opencode` also supports `--project` for the project-local Feed plugin. |
+| `hooks <agent> uninstall` | Remove hooks for one supported agent. |
+| `hooks claude <event>` | Handle Claude Code hook events. `claude-hook <event>` remains as the main-compatibility alias. |
+| `hooks codex <event>` | Handle Codex hook events. `codex install-hooks` remains as the main-compatibility installer alias. |
+| `hooks feed --source <agent>` | Convert agent hook events into Feed context. |
+| `hooks <agent> <event>` | Generic hook surface for `opencode`, `cursor`, `gemini`, `copilot`, `codebuddy`, `factory`, and `qoder`. |
 
 ## No-Socket Help Probes
 
@@ -381,13 +282,14 @@ the expected text without connecting to a cmux socket.
 - `cmux help --help` -> `Usage: cmux help`
 - `cmux welcome --help` -> `Usage: cmux welcome`
 - `cmux shortcuts --help` -> `Usage: cmux shortcuts`
-- `cmux disable-browser --help` -> `Usage: cmux disable-browser`
-- `cmux enable-browser --help` -> `Usage: cmux enable-browser`
-- `cmux browser-status --help` -> `Usage: cmux browser-status`
+- `cmux disable-browser --help` -> `Usage: cmux disable-browser [--json]`
+- `cmux enable-browser --help` -> `Usage: cmux enable-browser [--json]`
+- `cmux browser-status --help` -> `Usage: cmux browser-status [--json]`
 - `cmux restore-session --help` -> `Usage: cmux restore-session`
 - `cmux feedback --help` -> `Usage: cmux feedback`
 - `cmux feed --help` -> `Usage: cmux feed tui [--opentui|--legacy]`
-- `cmux opencode --help` -> `Usage: cmux opencode <install-hooks|uninstall-hooks>`
+- `cmux hooks --help` -> `Usage: cmux hooks setup [--agent <name>] [--yes|-y]`
+- `cmux codex --help` -> `Usage: cmux codex <install-hooks|uninstall-hooks>`
 - `cmux themes --help` -> `Usage: cmux themes`
 - `cmux omo --help` -> `Usage: cmux omo [opencode-args...]`
 - `cmux omx --help` -> `Usage: cmux omx [omx-args...]`
@@ -472,7 +374,6 @@ the expected text without connecting to a cmux socket.
 - `cmux set-app-focus --help` -> `Usage: cmux set-app-focus`
 - `cmux simulate-app-active --help` -> `Usage: cmux simulate-app-active`
 - `cmux claude-hook --help` -> `Usage: cmux claude-hook`
-- `cmux codex-hook --help` -> `Usage: cmux codex-hook`
 - `cmux browser --help` -> `Usage: cmux browser`
 - `cmux open-browser --help` -> `Legacy alias for 'cmux browser open'`
 - `cmux navigate --help` -> `Legacy alias for 'cmux browser navigate'`
@@ -503,7 +404,6 @@ changes them:
   `cmux --help` or `cmux help --help` for no-socket help.
 - `cmux version --help` currently prints the version summary because `version`
   is handled before subcommand help dispatch.
-- `cmux codex --help` currently is not a no-socket help probe.
 - `cmux claude-teams --help` is handled by the command launcher, not by the
   pre-socket help dispatcher.
 - `cmux remote-daemon-status --help` currently prints status because the command
