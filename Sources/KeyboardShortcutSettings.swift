@@ -2336,6 +2336,7 @@ struct KeyboardShortcutRecorder: View {
     var onRecordingChanged: (Bool) -> Void = { _ in }
     var onRecorderFeedbackChanged: (ShortcutRecorderRejectedAttempt?) -> Void = { _ in }
     @State private var isRecording = false
+    @State private var restoreShortcut: StoredShortcut?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -2365,6 +2366,7 @@ struct KeyboardShortcutRecorder: View {
 
                 Button {
                     KeyboardShortcutRecorderActivity.stopAllRecording()
+                    restoreShortcut = shortcut.isUnbound ? restoreShortcut : shortcut
                     shortcut = .unbound
                     onRecorderFeedbackChanged(nil)
                 } label: {
@@ -2376,6 +2378,22 @@ struct KeyboardShortcutRecorder: View {
                 .safeHelp(String(localized: "shortcut.recorder.clear.help", defaultValue: "Unbind shortcut"))
                 .accessibilityLabel(String(localized: "shortcut.recorder.clear", defaultValue: "Unbind"))
                 .accessibilityIdentifier("ShortcutRecorderClearButton")
+
+                Button {
+                    guard let restoreShortcut else { return }
+                    KeyboardShortcutRecorderActivity.stopAllRecording()
+                    shortcut = restoreShortcut
+                    self.restoreShortcut = nil
+                    onRecorderFeedbackChanged(nil)
+                } label: {
+                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(.borderless)
+                .disabled(isDisabled || !shortcut.isUnbound || restoreShortcut == nil)
+                .safeHelp(String(localized: "shortcut.recorder.restore.help", defaultValue: "Restore previous shortcut"))
+                .accessibilityLabel(String(localized: "shortcut.recorder.restore", defaultValue: "Restore"))
+                .accessibilityIdentifier("ShortcutRecorderRestoreButton")
             }
 
             if let validationMessage {
@@ -2413,6 +2431,11 @@ struct KeyboardShortcutRecorder: View {
                         .stroke(Color.red.opacity(0.35), lineWidth: 1)
                 }
                 .accessibilityIdentifier("ShortcutRecorderValidationMessage")
+            }
+        }
+        .onChange(of: shortcut) { newValue in
+            if !newValue.isUnbound {
+                restoreShortcut = nil
             }
         }
     }

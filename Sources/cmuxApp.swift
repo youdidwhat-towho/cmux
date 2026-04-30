@@ -7018,6 +7018,27 @@ struct SettingsView: View {
 
                         SettingsCardDivider()
 
+                        SettingsCardRow(
+                            configurationReview: .settingsOnly,
+                            String(localized: "settings.shortcuts.resetDefaults", defaultValue: "Reset Default Shortcuts"),
+                            subtitle: String(localized: "settings.shortcuts.resetDefaults.subtitle", defaultValue: "Restore built-in shortcut values for shortcuts managed in app settings."),
+                            searchAnchorID: SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "reset-defaults")
+                        ) {
+                            Button {
+                                resetDefaultShortcuts()
+                            } label: {
+                                Label(
+                                    String(localized: "settings.shortcuts.resetDefaults.button", defaultValue: "Reset Defaults"),
+                                    systemImage: "arrow.counterclockwise"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("SettingsKeyboardShortcutsResetDefaultsButton")
+                        }
+
+                        SettingsCardDivider()
+
                         let actions = KeyboardShortcutSettings.Action.allCases.filter {
                             $0 != SystemWideHotkeySettings.action
                         }
@@ -7033,7 +7054,7 @@ struct SettingsView: View {
                     .id(shortcutResetToken)
                     .settingsSearchAnchor(SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "shortcuts"))
 
-                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use the X button to unbind."))
+                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use X to unbind, or restore to undo a clear."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)
@@ -7478,6 +7499,14 @@ struct SettingsView: View {
         reloadWorkspaceTabColorSettings()
         shortcutResetToken = UUID()
         DispatchQueue.main.async { isResettingSettings = false }
+    }
+
+    private func resetDefaultShortcuts() {
+        KeyboardShortcutRecorderActivity.stopAllRecording()
+        for action in KeyboardShortcutSettings.Action.allCases where action != SystemWideHotkeySettings.action {
+            KeyboardShortcutSettings.resetShortcut(for: action)
+        }
+        shortcutResetToken = UUID()
     }
 
     private func tabColorBinding(for name: String) -> Binding<Color> {
