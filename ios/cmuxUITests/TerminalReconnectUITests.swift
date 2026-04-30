@@ -10,6 +10,7 @@ final class TerminalReconnectUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["CMUX_UITEST_TERMINAL_DIRECT_FIXTURE"] = "1"
         app.launchEnvironment["CMUX_UITEST_TERMINAL_RECONNECT_DELAY"] = "0.2"
+        app.launchEnvironment["CMUX_UITEST_TERMINAL_RECONNECT_CONNECT_DELAY"] = "8.0"
         app.launch()
 
         let serverButton = app.buttons["terminal.server.cmux-macmini"]

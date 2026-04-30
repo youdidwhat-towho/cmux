@@ -88,15 +88,27 @@ enum UITestConfig {
 
     static var terminalReconnectDelayOverride: Double? {
         #if DEBUG
+        return nonNegativeDoubleOverride("CMUX_UITEST_TERMINAL_RECONNECT_DELAY")
+        #else
+        return nil
+        #endif
+    }
+
+    static var terminalReconnectConnectDelayOverride: Double? {
+        #if DEBUG
+        return nonNegativeDoubleOverride("CMUX_UITEST_TERMINAL_RECONNECT_CONNECT_DELAY")
+        #else
+        return nil
+        #endif
+    }
+
+    private static func nonNegativeDoubleOverride(_ key: String) -> Double? {
         let env = ProcessInfo.processInfo.environment
-        guard let rawValue = env["CMUX_UITEST_TERMINAL_RECONNECT_DELAY"],
+        guard let rawValue = env[key],
               let seconds = Double(rawValue),
               seconds >= 0 else {
             return nil
         }
         return seconds
-        #else
-        return nil
-        #endif
     }
 }

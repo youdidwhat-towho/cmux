@@ -30,7 +30,7 @@ final class TerminalInputUITests: XCTestCase {
         XCTAssertTrue(preview.waitForExistence(timeout: 4), "Expected workspace preview to reflect typed input")
     }
 
-    func testInputFixtureAccessoryTabUpdatesWorkspacePreview() {
+    func testInputFixtureAccessoryEscapeUpdatesWorkspacePreview() {
         let app = XCUIApplication()
         app.launchEnvironment["CMUX_UITEST_TERMINAL_INPUT_FIXTURE"] = "1"
         app.launch()
@@ -43,14 +43,14 @@ final class TerminalInputUITests: XCTestCase {
         XCTAssertTrue(detail.waitForExistence(timeout: 4), "Expected terminal workspace detail")
         detail.tap()
 
-        let tabButton = app.buttons["terminal.inputAccessory.tab"]
-        XCTAssertTrue(tabButton.waitForExistence(timeout: 4), "Expected tab accessory button")
-        tapEvenIfKeyboardAccessoryReportsCovered(tabButton)
+        let escapeButton = app.buttons["terminal.inputAccessory.escape"]
+        XCTAssertTrue(escapeButton.waitForExistence(timeout: 4), "Expected escape accessory button")
+        tapEvenIfKeyboardAccessoryReportsCovered(escapeButton)
 
         terminalBackButton(in: app, title: "Input Fixture").tap()
 
-        let preview = app.staticTexts["[TAB]"]
-        XCTAssertTrue(preview.waitForExistence(timeout: 4), "Expected workspace preview to reflect accessory tab")
+        let preview = app.staticTexts["[ESC]"]
+        XCTAssertTrue(preview.waitForExistence(timeout: 4), "Expected workspace preview to reflect accessory escape")
     }
 
     private func terminalBackButton(in app: XCUIApplication, title: String) -> XCUIElement {
