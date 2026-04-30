@@ -7054,7 +7054,7 @@ struct SettingsView: View {
                     .id(shortcutResetToken)
                     .settingsSearchAnchor(SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "shortcuts"))
 
-                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use X to unbind, or restore to undo a clear."))
+                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use X to unbind; it changes to restore after a clear."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)

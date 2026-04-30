@@ -68075,13 +68075,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Click a shortcut value to record. Use X to unbind, or restore to undo a clear."
+            "value": "Click a shortcut value to record. Use X to unbind; it changes to restore after a clear."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "ショートカット値をクリックして記録します。割り当て解除は X、取り消しは復元を使います。"
+            "value": "ショートカット値をクリックして記録します。X で割り当て解除でき、解除後は復元に変わります。"
           }
         },
         "zh-Hans": {

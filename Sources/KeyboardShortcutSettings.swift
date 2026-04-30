@@ -2364,36 +2364,36 @@ struct KeyboardShortcutRecorder: View {
                     .frame(width: 160)
                     .disabled(isDisabled)
 
+                let canRestoreShortcut = shortcut.isUnbound && restoreShortcut != nil
                 Button {
                     KeyboardShortcutRecorderActivity.stopAllRecording()
-                    restoreShortcut = shortcut.isUnbound ? restoreShortcut : shortcut
-                    shortcut = .unbound
-                    onRecorderFeedbackChanged(nil)
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .imageScale(.medium)
-                }
-                .buttonStyle(.borderless)
-                .disabled(isDisabled || shortcut.isUnbound)
-                .safeHelp(String(localized: "shortcut.recorder.clear.help", defaultValue: "Unbind shortcut"))
-                .accessibilityLabel(String(localized: "shortcut.recorder.clear", defaultValue: "Unbind"))
-                .accessibilityIdentifier("ShortcutRecorderClearButton")
 
-                Button {
-                    guard let restoreShortcut else { return }
-                    KeyboardShortcutRecorderActivity.stopAllRecording()
-                    shortcut = restoreShortcut
-                    self.restoreShortcut = nil
+                    if canRestoreShortcut, let restoreShortcut {
+                        shortcut = restoreShortcut
+                        self.restoreShortcut = nil
+                    } else if !shortcut.isUnbound {
+                        restoreShortcut = shortcut
+                        shortcut = .unbound
+                    }
+
                     onRecorderFeedbackChanged(nil)
                 } label: {
-                    Image(systemName: "arrow.counterclockwise.circle.fill")
+                    Image(systemName: canRestoreShortcut ? "arrow.counterclockwise.circle.fill" : "xmark.circle.fill")
                         .imageScale(.medium)
                 }
                 .buttonStyle(.borderless)
-                .disabled(isDisabled || !shortcut.isUnbound || restoreShortcut == nil)
-                .safeHelp(String(localized: "shortcut.recorder.restore.help", defaultValue: "Restore previous shortcut"))
-                .accessibilityLabel(String(localized: "shortcut.recorder.restore", defaultValue: "Restore"))
-                .accessibilityIdentifier("ShortcutRecorderRestoreButton")
+                .disabled(isDisabled || (shortcut.isUnbound && restoreShortcut == nil))
+                .safeHelp(
+                    canRestoreShortcut
+                        ? String(localized: "shortcut.recorder.restore.help", defaultValue: "Restore previous shortcut")
+                        : String(localized: "shortcut.recorder.clear.help", defaultValue: "Unbind shortcut")
+                )
+                .accessibilityLabel(
+                    canRestoreShortcut
+                        ? String(localized: "shortcut.recorder.restore", defaultValue: "Restore")
+                        : String(localized: "shortcut.recorder.clear", defaultValue: "Unbind")
+                )
+                .accessibilityIdentifier("ShortcutRecorderClearRestoreButton")
             }
 
             if let validationMessage {
