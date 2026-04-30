@@ -1414,8 +1414,10 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
     var fx = try Fixture.init(alloc, "midframe");
     defer fx.deinit();
 
-    // Flood output so there are pushes in flight when we kill the socket.
-    var opened = try fx.service.openTerminal("s-midframe", "yes", 80, 24);
+    // Flood enough output that pushes are in flight when we kill the socket.
+    // Keep it finite so this test does not saturate the pump indefinitely when
+    // the full randomized suite runs on a loaded host.
+    var opened = try fx.service.openTerminal("s-midframe", "yes y | head -c 33554432", 80, 24);
     defer opened.status.deinit(alloc);
     defer alloc.free(opened.attachment_id);
     defer fx.service.closeSession("s-midframe") catch {};
