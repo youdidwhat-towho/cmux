@@ -303,10 +303,6 @@ extension TabID {
 }
 
 extension Workspace {
-    private static var compatibilityToggleZoomContextAction: TabContextAction? {
-        TabContextAction(rawValue: "toggleZoom")
-    }
-
     nonisolated static let remoteDaemonManifestInfoKey = WorkspaceRemoteSessionController.remoteDaemonManifestInfoKey
     typealias LocalRemoteDaemonBuildPlan = WorkspaceRemoteSessionController.LocalRemoteDaemonBuildPlan
 
@@ -368,12 +364,35 @@ extension Workspace {
         initialEnvironmentOverrides: [String: String] = [:],
         additionalEnvironment: [String: String] = [:]
     ) -> TerminalPanel {
+        let surfaceID = UUID()
+        let effectiveInitialCommand: String?
+        let localDaemonCommandApplied: Bool
+        if let startupCommandOverride {
+            effectiveInitialCommand = startupCommandOverride
+            localDaemonCommandApplied = false
+        } else if let localDaemonStartupCommand = LocalTerminalDaemonBridge.startupCommand(
+            sessionID: surfaceID,
+            workspaceID: workspaceId,
+            portOrdinal: portOrdinal,
+            workingDirectory: workingDirectory,
+            intendedCommand: intendedInitialCommand,
+            initialEnvironmentOverrides: initialEnvironmentOverrides,
+            additionalEnvironment: additionalEnvironment
+        ) {
+            effectiveInitialCommand = localDaemonStartupCommand
+            localDaemonCommandApplied = true
+        } else {
+            effectiveInitialCommand = intendedInitialCommand
+            localDaemonCommandApplied = false
+        }
+
         let surface = TerminalSurface(
+            id: surfaceID,
             tabId: workspaceId,
             context: context,
             configTemplate: configTemplate,
             workingDirectory: workingDirectory,
-            initialCommand: startupCommandOverride ?? intendedInitialCommand,
+            initialCommand: effectiveInitialCommand,
             initialInput: initialInput,
             initialEnvironmentOverrides: initialEnvironmentOverrides,
             additionalEnvironment: additionalEnvironment
@@ -388,16 +407,7 @@ extension Workspace {
             "intended=\(intendedInitialCommand?.isEmpty == false ? 1 : 0)"
         )
 #endif
-        if startupCommandOverride == nil,
-           let localDaemonStartupCommand = LocalTerminalDaemonBridge.startupCommand(
-               sessionID: surface.id,
-               workspaceID: workspaceId,
-               portOrdinal: portOrdinal,
-               workingDirectory: workingDirectory,
-               intendedCommand: intendedInitialCommand,
-               initialEnvironmentOverrides: initialEnvironmentOverrides,
-               additionalEnvironment: additionalEnvironment
-           ) {
+        if localDaemonCommandApplied {
 #if DEBUG
             dlog(
                 "localDaemon.panel.command " +
@@ -406,8 +416,6 @@ extension Workspace {
                 "applied=1"
             )
 #endif
-            // TODO: setInitialCommand not yet in TerminalSurface
-            _ = localDaemonStartupCommand
         } else {
 #if DEBUG
             dlog(
@@ -625,38 +633,23 @@ extension Workspace {
     /// shell integration, CMUX_*, TERM, etc.). Must stay in sync with the env
     /// var injection in GhosttyTerminalView.createSurface().
     private static func buildPreCreateShellCommand(workspaceID: UUID, surfaceID: UUID) -> String {
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        var env: [String: String] = [
-            "TERM": "xterm-256color",
-            "COLORTERM": "truecolor",
-            "CMUX_SURFACE_ID": surfaceID.uuidString,
-            "CMUX_WORKSPACE_ID": workspaceID.uuidString,
-            "CMUX_PANEL_ID": surfaceID.uuidString,
-            "CMUX_TAB_ID": workspaceID.uuidString,
-            "CMUX_SOCKET_PATH": SocketControlSettings.socketPath(),
-            "CMUX_SOCKET": SocketControlSettings.socketPath(),
-            "CMUX_SHELL_INTEGRATION": "1",
-        ]
-        if let bundleId = Bundle.main.bundleIdentifier {
-            env["CMUX_BUNDLE_ID"] = bundleId
-        }
-        CmuxBundleTerminalEnvironment.applyCurrentBundle(to: &env)
-        if let shellIntegrationDir = env["CMUX_SHELL_INTEGRATION_DIR"] {
-            // For zsh, set ZDOTDIR so shell integration loads
-            let shellName = URL(fileURLWithPath: shell).lastPathComponent
-            if shellName == "zsh" {
-                env["ZDOTDIR"] = shellIntegrationDir
-                env["CMUX_LOAD_GHOSTTY_ZSH_INTEGRATION"] = "1"
-            }
-        }
-
-        var envPairs: [String] = []
-        for (key, value) in env {
-            guard !value.isEmpty else { continue }
-            let escaped = value.replacingOccurrences(of: "'", with: "'\\''")
-            envPairs.append("\(key)='\(escaped)'")
-        }
-        return "env \(envPairs.joined(separator: " ")) \(shell) -l"
+        let env = TerminalSurface.managedStartupEnvironment(
+            surfaceID: surfaceID,
+            workspaceID: workspaceID,
+            portOrdinal: 0,
+            baseEnvironment: [:],
+            additionalEnvironment: [:],
+            initialEnvironmentOverrides: [:]
+        )
+        let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
+            ?? ProcessInfo.processInfo.environment["SHELL"]
+            ?? "/bin/zsh"
+        return TerminalSurface.daemonShellCommand(
+            environment: env,
+            workingDirectory: nil,
+            command: nil,
+            fallbackShell: shell
+        )
     }
     #endif
 
@@ -7620,36 +7613,20 @@ enum LocalTerminalDaemonBridge {
         // Auto-enable WebSocket listener for mobile connections. The iOS app
         // scans 52100-52199 for daemons (see TerminalServerDiscovery), so the
         // port MUST land in that range or the scanner never sees it. Use a
-        // stable per-tag / per-bundle-id hash within 52101-52199, matching
-        // MobileDaemonBridgeInline.resolvePort so both code paths pick the
-        // same port and the Swift side can reuse an already-running daemon.
+        // stable per-tag / per-bundle-id hash within 52101-52199. The helper
+        // is shared with MobileDaemonBridgeInline so both daemon startup paths
+        // pick the same port.
         //
         // `CMUX_PORT` (used historically as the base here) is the shell's
         // workspace port range — it bleeds in through inherited environment
         // when the app is launched from a cmux terminal, producing out-of-
         // range values like 9121. That silently breaks iOS discovery even
         // when everything else is wired up correctly.
-        let wsPort: Int = {
-            if let explicit = Int(environment["CMUX_MOBILE_WS_PORT"] ?? "") {
-                return explicit
-            }
-            if let tag = environment["CMUX_TAG"]?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !tag.isEmpty {
-                return firstAvailablePort(seed: tag)
-            }
-            if let bundleId = bundle.bundleIdentifier {
-                let basePrefixes = ["com.cmuxterm.app.debug", "dev.cmux.app.dev"]
-                for prefix in basePrefixes {
-                    if bundleId.count > prefix.count, bundleId.hasPrefix(prefix) {
-                        let suffix = String(bundleId.dropFirst(prefix.count + 1))
-                        if !suffix.isEmpty {
-                            return firstAvailablePort(seed: suffix)
-                        }
-                    }
-                }
-            }
-            return firstAvailablePort(seed: URL(fileURLWithPath: rawSocketPath).deletingPathExtension().lastPathComponent)
-        }()
+        let wsPort = CmuxMobileWebSocketPortResolver.resolvePort(
+            environment: environment,
+            bundle: bundle,
+            fallbackSeed: URL(fileURLWithPath: rawSocketPath).deletingPathExtension().lastPathComponent
+        )
         config?.wsPort = wsPort
         config?.wsSecret = resolveWebSocketSecret(environment: environment)
 
@@ -7662,51 +7639,6 @@ enum LocalTerminalDaemonBridge {
             return explicit
         }
         return persistedWebSocketSecret()
-    }
-
-    /// FNV-1a 32-bit hash. `String.hashValue` is randomized per process, so
-    /// we use a stable hash for deterministic port selection across launches.
-    fileprivate static func stableFNV1a(_ s: String) -> Int {
-        var hash: UInt32 = 2_166_136_261
-        for byte in s.utf8 {
-            hash ^= UInt32(byte)
-            hash &*= 16_777_619
-        }
-        return Int(hash)
-    }
-
-    private static func firstAvailablePort(seed: String) -> Int {
-        let candidates = portCandidates(seed: seed)
-        return candidates.first(where: isTCPPortAvailable) ?? candidates.first ?? 52100
-    }
-
-    private static func portCandidates(seed: String) -> [Int] {
-        let count = 99
-        let start = stableFNV1a(seed) % count
-        var ports: [Int] = []
-        ports.reserveCapacity(count + 1)
-        for offset in 0..<count {
-            ports.append(52101 + ((start + offset) % count))
-        }
-        ports.append(52100)
-        return ports
-    }
-
-    private static func isTCPPortAvailable(_ port: Int) -> Bool {
-        let fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)
-        guard fd >= 0 else { return false }
-        defer { Darwin.close(fd) }
-
-        var addr = sockaddr_in()
-        addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = in_port_t(port).bigEndian
-        addr.sin_addr = in_addr(s_addr: 0)
-        return withUnsafePointer(to: &addr) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
-            }
-        } == 0
     }
 
     private static func persistedWebSocketSecret() -> String {
@@ -7961,21 +7893,26 @@ enum LocalTerminalDaemonBridge {
             return nil
         }
 
-        // Build startup environment inline (startupEnvironment is not yet on TerminalSurface)
-        var managedEnvironment = environment
-        for (k, v) in additionalEnvironment { managedEnvironment[k] = v }
-        for (k, v) in initialEnvironmentOverrides { managedEnvironment[k] = v }
-        CmuxBundleTerminalEnvironment.applyCurrentBundle(
-            to: &managedEnvironment,
+        let managedEnvironment = TerminalSurface.managedStartupEnvironment(
+            surfaceID: sessionID,
+            workspaceID: workspaceID,
+            portOrdinal: portOrdinal,
+            baseEnvironment: environment,
+            additionalEnvironment: additionalEnvironment,
+            initialEnvironmentOverrides: initialEnvironmentOverrides,
             processEnvironment: environment,
             bundle: bundle,
             fileManager: fileManager
         )
 
-        let daemonCommand = daemonSessionCommand(
+        let shell = (managedEnvironment["SHELL"]?.isEmpty == false ? managedEnvironment["SHELL"] : nil)
+            ?? (environment["SHELL"]?.isEmpty == false ? environment["SHELL"] : nil)
+            ?? "/bin/zsh"
+        let daemonCommand = TerminalSurface.daemonShellCommandBody(
             environment: sanitizedDaemonEnvironment(managedEnvironment),
             workingDirectory: workingDirectory,
-            intendedCommand: intendedCommand
+            command: intendedCommand,
+            fallbackShell: shell
         )
 
 #if DEBUG
@@ -7996,33 +7933,6 @@ enum LocalTerminalDaemonBridge {
         exec \(shellSingleQuoted(configuration.daemonBinaryPath)) amux new \(shellSingleQuoted(sessionID.uuidString)) --quiet --socket \(shellSingleQuoted(configuration.socketPath)) -- \(shellSingleQuoted(daemonCommand))
         """
         return "sh -c \(shellSingleQuoted(startupScript))"
-    }
-
-    private static func daemonSessionCommand(
-        environment: [String: String],
-        workingDirectory: String?,
-        intendedCommand: String?
-    ) -> String {
-        var commands: [String] = []
-        for key in environment.keys.sorted() {
-            guard let value = environment[key] else { continue }
-            commands.append("export \(key)=\(shellSingleQuoted(value))")
-        }
-        if let workingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !workingDirectory.isEmpty {
-            commands.append("cd \(shellSingleQuoted(workingDirectory))")
-        }
-
-        let trimmedCommand = intendedCommand?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedCommand, !trimmedCommand.isEmpty {
-            commands.append(trimmedCommand)
-        } else {
-            let shellPath = environment["SHELL"]?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let resolvedShellPath = (shellPath?.isEmpty == false) ? shellPath! : "/bin/zsh"
-            commands.append("exec \(shellSingleQuoted(resolvedShellPath)) -l")
-        }
-
-        return commands.joined(separator: " && ")
     }
 
     private static func sanitizedDaemonEnvironment(_ environment: [String: String]) -> [String: String] {
@@ -12275,13 +12185,11 @@ final class Workspace: Identifiable, ObservableObject {
 
     static func buildContextMenuShortcuts() -> [TabContextAction: KeyboardShortcut] {
         var shortcuts: [TabContextAction: KeyboardShortcut] = [:]
-        var mappings: [(TabContextAction, KeyboardShortcutSettings.Action)] = [
+        let mappings: [(TabContextAction, KeyboardShortcutSettings.Action)] = [
             (.rename, .renameTab),
             (.newTerminalToRight, .newSurface),
+            (.toggleZoom, .toggleSplitZoom),
         ]
-        if let toggleZoomAction = compatibilityToggleZoomContextAction {
-            mappings.append((toggleZoomAction, .toggleSplitZoom))
-        }
         for (contextAction, settingsAction) in mappings {
             let stored = KeyboardShortcutSettings.shortcut(for: settingsAction)
             if let key = stored.keyEquivalent {
@@ -14563,16 +14471,11 @@ extension Workspace: BonsplitDelegate {
         case .markAsUnread:
             guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
             markPanelUnread(panelId)
+        case .toggleZoom:
+            guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
+            toggleSplitZoom(panelId: panelId)
         @unknown default:
-            switch action.rawValue {
-            case "move":
-                promptMovePanel(tabId: tab.id)
-            case "toggleZoom":
-                guard let panelId = panelIdFromSurfaceId(tab.id) else { return }
-                toggleSplitZoom(panelId: panelId)
-            default:
-                break
-            }
+            break
         }
     }
 

@@ -1275,15 +1275,10 @@ fn handlePaneResize(service: *session_service.Service, req: *const json_rpc.Requ
         else => 0.5,
     } else 0.5;
 
-    const ws = service.workspace_reg.get(workspace_id) orelse
-        return try errorResponse(alloc, req.id, "not_found", "workspace not found");
-    // Find the split parent of this pane and adjust its ratio.
-    const updated = adjustSplitRatioForChild(ws.root_pane, pane_id, ratio);
-    if (!updated) {
-        return try errorResponse(alloc, req.id, "not_found", "pane has no parent split");
-    }
-    ws.last_activity_at = std.time.milliTimestamp();
-    service.workspace_reg.change_seq += 1;
+    service.workspace_reg.resizePane(workspace_id, pane_id, ratio) catch |err| switch (err) {
+        error.WorkspaceNotFound => return try errorResponse(alloc, req.id, "not_found", "workspace not found"),
+        else => return try errorResponse(alloc, req.id, "not_found", "pane has no parent split"),
+    };
 
     if (service.on_workspace_changed) |cb| cb(service);
 
@@ -1292,26 +1287,6 @@ fn handlePaneResize(service: *session_service.Service, req: *const json_rpc.Requ
         .ok = true,
         .result = .{ .change_seq = service.workspace_reg.change_seq },
     });
-}
-
-fn adjustSplitRatioForChild(node: *workspace_registry.PaneNode, pane_id: []const u8, ratio: f32) bool {
-    switch (node.*) {
-        .leaf => return false,
-        .split => |*s| {
-            if (s.first.* == .leaf and std.mem.eql(u8, s.first.leaf.id, pane_id)) {
-                s.ratio = std.math.clamp(ratio, 0.05, 0.95);
-                return true;
-            }
-            if (s.second.* == .leaf and std.mem.eql(u8, s.second.leaf.id, pane_id)) {
-                // Ratio is stored from the `first` side; flip if caller
-                // specified ratio for the second child.
-                s.ratio = std.math.clamp(1.0 - ratio, 0.05, 0.95);
-                return true;
-            }
-            return adjustSplitRatioForChild(s.first, pane_id, ratio) or
-                adjustSplitRatioForChild(s.second, pane_id, ratio);
-        },
-    }
 }
 
 fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {

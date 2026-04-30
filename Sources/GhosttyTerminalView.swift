@@ -4329,6 +4329,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
     var currentKeyStateIndicatorText: String? { surfaceView.currentKeyStateIndicatorText }
 
     init(
+        id: UUID = UUID(),
         tabId: UUID,
         context: ghostty_surface_context_e,
         configTemplate: CmuxSurfaceConfigTemplate?,
@@ -4339,7 +4340,7 @@ final class TerminalSurface: Identifiable, ObservableObject {
         additionalEnvironment: [String: String] = [:],
         focusPlacement: TerminalSurfaceFocusPlacement = .workspace
     ) {
-        self.id = UUID()
+        self.id = id
         self.tabId = tabId
         self.surfaceContext = context
         self.configTemplate = configTemplate
@@ -4420,99 +4421,50 @@ final class TerminalSurface: Identifiable, ObservableObject {
         return merged
     }
 
-    private static func daemonShellCommand(
-        environment: [String: String],
-        workingDirectory: String?,
-        command: String?,
-        fallbackShell: String
-    ) -> String {
-        var commands: [String] = []
-        for key in environment.keys.sorted() {
-            guard let value = environment[key],
-                  !value.isEmpty,
-                  isShellEnvironmentName(key) else {
-                continue
-            }
-            commands.append("export \(key)=\(shellSingleQuoted(value))")
-        }
-
-        let trimmedWorkingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedWorkingDirectory, !trimmedWorkingDirectory.isEmpty {
-            commands.append("cd \(shellSingleQuoted(trimmedWorkingDirectory))")
-        }
-
-        let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let trimmedCommand, !trimmedCommand.isEmpty {
-            commands.append(trimmedCommand)
-        } else {
-            let trimmedShell = fallbackShell.trimmingCharacters(in: .whitespacesAndNewlines)
-            let shell = trimmedShell.isEmpty ? "/bin/zsh" : trimmedShell
-            commands.append("exec \(shellSingleQuoted(shell)) -l")
-        }
-
-        return "sh -c \(shellSingleQuoted(commands.joined(separator: " && ")))"
-    }
-
-    private static func isShellEnvironmentName(_ key: String) -> Bool {
-        guard let first = key.unicodeScalars.first,
-              first == "_" || CharacterSet.letters.contains(first) else {
-            return false
-        }
-        return key.unicodeScalars.dropFirst().allSatisfy {
-            $0 == "_" || CharacterSet.alphanumerics.contains($0)
-        }
-    }
-
-    private static func shellSingleQuoted(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
-    }
-
-    private func resolvedWorkingDirectory(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
-        if let workingDirectory, !workingDirectory.isEmpty {
-            return workingDirectory
-        }
-        return baseConfig.workingDirectory
-    }
-
-    private func resolvedCommand(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
-        if let initialCommand, !initialCommand.isEmpty {
-            return initialCommand
-        }
-        return baseConfig.command
-    }
-
-    private func startupEnvironment(baseConfig: CmuxSurfaceConfigTemplate) -> [String: String] {
-        var env = baseConfig.environmentVariables
-
+    static func managedStartupEnvironment(
+        surfaceID: UUID,
+        workspaceID: UUID,
+        portOrdinal: Int,
+        baseEnvironment: [String: String],
+        additionalEnvironment: [String: String],
+        initialEnvironmentOverrides: [String: String],
+        processEnvironment: [String: String] = cmuxCurrentProcessEnvironment(),
+        bundle: Bundle = .main,
+        fileManager: FileManager = .default
+    ) -> [String: String] {
+        var env = baseEnvironment
         var protectedStartupEnvironmentKeys: Set<String> = []
-        Self.applyManagedTerminalIdentityEnvironment(
+        applyManagedTerminalIdentityEnvironment(
             to: &env,
             protectedKeys: &protectedStartupEnvironmentKeys
         )
         CmuxBundleTerminalEnvironment.applyCurrentBundle(
             to: &env,
-            protectedKeys: &protectedStartupEnvironmentKeys
+            protectedKeys: &protectedStartupEnvironmentKeys,
+            processEnvironment: processEnvironment,
+            bundle: bundle,
+            fileManager: fileManager
         )
         func setManagedEnvironmentValue(_ key: String, _ value: String) {
             env[key] = value
             protectedStartupEnvironmentKeys.insert(key)
         }
 
-        setManagedEnvironmentValue("CMUX_SURFACE_ID", id.uuidString)
-        setManagedEnvironmentValue("CMUX_WORKSPACE_ID", tabId.uuidString)
-        setManagedEnvironmentValue("CMUX_PANEL_ID", id.uuidString)
-        setManagedEnvironmentValue("CMUX_TAB_ID", tabId.uuidString)
+        setManagedEnvironmentValue("CMUX_SURFACE_ID", surfaceID.uuidString)
+        setManagedEnvironmentValue("CMUX_WORKSPACE_ID", workspaceID.uuidString)
+        setManagedEnvironmentValue("CMUX_PANEL_ID", surfaceID.uuidString)
+        setManagedEnvironmentValue("CMUX_TAB_ID", workspaceID.uuidString)
         let socketPath = SocketControlSettings.socketPath()
         setManagedEnvironmentValue("CMUX_SOCKET_PATH", socketPath)
         setManagedEnvironmentValue("CMUX_SOCKET", socketPath)
-        if let bundleId = Bundle.main.bundleIdentifier, !bundleId.isEmpty {
+        if let bundleId = bundle.bundleIdentifier, !bundleId.isEmpty {
             setManagedEnvironmentValue("CMUX_BUNDLE_ID", bundleId)
         }
 
-        let startPort = Self.sessionPortBase + portOrdinal * Self.sessionPortRangeSize
+        let startPort = sessionPortBase + portOrdinal * sessionPortRangeSize
         setManagedEnvironmentValue("CMUX_PORT", String(startPort))
-        setManagedEnvironmentValue("CMUX_PORT_END", String(startPort + Self.sessionPortRangeSize - 1))
-        setManagedEnvironmentValue("CMUX_PORT_RANGE", String(Self.sessionPortRangeSize))
+        setManagedEnvironmentValue("CMUX_PORT_END", String(startPort + sessionPortRangeSize - 1))
+        setManagedEnvironmentValue("CMUX_PORT_RANGE", String(sessionPortRangeSize))
 
         if !ClaudeCodeIntegrationSettings.hooksEnabled() {
             setManagedEnvironmentValue("CMUX_CLAUDE_HOOKS_DISABLED", "1")
@@ -4529,13 +4481,13 @@ final class TerminalSurface: Identifiable, ObservableObject {
 
         let shellIntegrationEnabled = UserDefaults.standard.object(forKey: "sidebarShellIntegration") as? Bool ?? true
         if shellIntegrationEnabled,
-           let integrationDir = Bundle.main.resourceURL?.appendingPathComponent("shell-integration").path {
+           let integrationDir = bundle.resourceURL?.appendingPathComponent("shell-integration").path {
             setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION", "1")
             setManagedEnvironmentValue("CMUX_SHELL_INTEGRATION_DIR", integrationDir)
 
             let shell = (env["SHELL"]?.isEmpty == false ? env["SHELL"] : nil)
                 ?? getenv("SHELL").map { String(cString: $0) }
-                ?? ProcessInfo.processInfo.environment["SHELL"]
+                ?? (processEnvironment["SHELL"]?.isEmpty == false ? processEnvironment["SHELL"] : nil)
                 ?? "/bin/zsh"
             let shellName = URL(fileURLWithPath: shell).lastPathComponent
             if shellName == "zsh" {
@@ -4544,13 +4496,13 @@ final class TerminalSurface: Identifiable, ObservableObject {
                 }
                 let candidateZdotdir = (env["ZDOTDIR"]?.isEmpty == false ? env["ZDOTDIR"] : nil)
                     ?? getenv("ZDOTDIR").map { String(cString: $0) }
-                    ?? (ProcessInfo.processInfo.environment["ZDOTDIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["ZDOTDIR"] : nil)
+                    ?? (processEnvironment["ZDOTDIR"]?.isEmpty == false ? processEnvironment["ZDOTDIR"] : nil)
 
                 if let candidateZdotdir, !candidateZdotdir.isEmpty {
                     var isGhosttyInjected = false
                     let ghosttyResources = (env["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? env["GHOSTTY_RESOURCES_DIR"] : nil)
                         ?? getenv("GHOSTTY_RESOURCES_DIR").map { String(cString: $0) }
-                        ?? (ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? ProcessInfo.processInfo.environment["GHOSTTY_RESOURCES_DIR"] : nil)
+                        ?? (processEnvironment["GHOSTTY_RESOURCES_DIR"]?.isEmpty == false ? processEnvironment["GHOSTTY_RESOURCES_DIR"] : nil)
                     if let ghosttyResources {
                         let ghosttyZdotdir = URL(fileURLWithPath: ghosttyResources)
                             .appendingPathComponent("shell-integration/zsh").path
@@ -4582,9 +4534,96 @@ final class TerminalSurface: Identifiable, ObservableObject {
             }
         }
 
-        return Self.mergedStartupEnvironment(
+        return mergedStartupEnvironment(
             base: env,
             protectedKeys: protectedStartupEnvironmentKeys,
+            additionalEnvironment: additionalEnvironment,
+            initialEnvironmentOverrides: initialEnvironmentOverrides
+        )
+    }
+
+    static func daemonShellCommand(
+        environment: [String: String],
+        workingDirectory: String?,
+        command: String?,
+        fallbackShell: String
+    ) -> String {
+        let body = daemonShellCommandBody(
+            environment: environment,
+            workingDirectory: workingDirectory,
+            command: command,
+            fallbackShell: fallbackShell
+        )
+        return "sh -c \(shellSingleQuoted(body))"
+    }
+
+    static func daemonShellCommandBody(
+        environment: [String: String],
+        workingDirectory: String?,
+        command: String?,
+        fallbackShell: String
+    ) -> String {
+        var commands: [String] = []
+        for key in environment.keys.sorted() {
+            guard let value = environment[key],
+                  !value.isEmpty,
+                  isShellEnvironmentName(key) else {
+                continue
+            }
+            commands.append("export \(key)=\(shellSingleQuoted(value))")
+        }
+
+        let trimmedWorkingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedWorkingDirectory, !trimmedWorkingDirectory.isEmpty {
+            commands.append("cd \(shellSingleQuoted(trimmedWorkingDirectory))")
+        }
+
+        let trimmedCommand = command?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedCommand, !trimmedCommand.isEmpty {
+            commands.append(trimmedCommand)
+        } else {
+            let trimmedShell = fallbackShell.trimmingCharacters(in: .whitespacesAndNewlines)
+            let shell = trimmedShell.isEmpty ? "/bin/zsh" : trimmedShell
+            commands.append("exec \(shellSingleQuoted(shell)) -l")
+        }
+
+        return commands.joined(separator: " && ")
+    }
+
+    private static func isShellEnvironmentName(_ key: String) -> Bool {
+        guard let first = key.unicodeScalars.first,
+              first == "_" || CharacterSet.letters.contains(first) else {
+            return false
+        }
+        return key.unicodeScalars.dropFirst().allSatisfy {
+            $0 == "_" || CharacterSet.alphanumerics.contains($0)
+        }
+    }
+
+    private static func shellSingleQuoted(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
+    }
+
+    private func resolvedWorkingDirectory(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
+        if let workingDirectory, !workingDirectory.isEmpty {
+            return workingDirectory
+        }
+        return baseConfig.workingDirectory
+    }
+
+    private func resolvedCommand(baseConfig: CmuxSurfaceConfigTemplate) -> String? {
+        if let initialCommand, !initialCommand.isEmpty {
+            return initialCommand
+        }
+        return baseConfig.command
+    }
+
+    private func startupEnvironment(baseConfig: CmuxSurfaceConfigTemplate) -> [String: String] {
+        Self.managedStartupEnvironment(
+            surfaceID: id,
+            workspaceID: tabId,
+            portOrdinal: portOrdinal,
+            baseEnvironment: baseConfig.environmentVariables,
             additionalEnvironment: additionalEnvironment,
             initialEnvironmentOverrides: initialEnvironmentOverrides
         )

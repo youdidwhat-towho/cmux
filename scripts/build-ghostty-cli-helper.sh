@@ -106,8 +106,9 @@ build_helper() {
   local target="${2:-}"
   local args=(
     zig build
+    cli-helper
     -Dapp-runtime=none
-    -Demit-macos-app=true
+    -Demit-macos-app=false
     -Demit-xcframework=false
     -Doptimize=ReleaseFast
     --prefix
@@ -172,9 +173,10 @@ fi
 
 chmod +x "$OUTPUT_PATH"
 
-# Ghostty's macOS helper binary is linked as if it lives in Contents/MacOS.
-# cmux stores it in Contents/Resources/bin, so rewrite the Frameworks rpath to
-# point back at Contents/Frameworks from that location.
-/usr/bin/install_name_tool \
-  -rpath "@executable_path/../Frameworks" "@executable_path/../../Frameworks" \
-  "$OUTPUT_PATH"
+if /usr/bin/otool -l "$OUTPUT_PATH" | grep -q "path @executable_path/../Frameworks"; then
+  # Older Ghostty helper builds linked as if the binary lived in Contents/MacOS.
+  # cmux stores it in Contents/Resources/bin, so point that rpath back at the app framework directory.
+  /usr/bin/install_name_tool \
+    -rpath "@executable_path/../Frameworks" "@executable_path/../../Frameworks" \
+    "$OUTPUT_PATH"
+fi

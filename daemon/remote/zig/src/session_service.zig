@@ -2798,5 +2798,4 @@ test "https remote push spawns curl, fails fast on unreachable, releases push_in
         std.Thread.sleep(10 * std.time.ns_per_ms);
     }
     try std.testing.expectEqual(@as(usize, 0), service.push_inflight.load(.seq_cst));
-    return error.SanityTempFailure; // SANITY-temp
 }

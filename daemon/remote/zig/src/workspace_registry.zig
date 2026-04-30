@@ -346,10 +346,8 @@ pub const Registry = struct {
 
     pub fn resizePane(self: *Registry, workspace_id: []const u8, pane_id: []const u8, ratio: f32) !void {
         const ws = self.workspaces.getPtr(workspace_id) orelse return error.WorkspaceNotFound;
-        _ = pane_id;
-        _ = ws;
-        _ = ratio;
-        // TODO: find the split containing this pane and update ratio
+        if (!adjustSplitRatioForChild(ws.root_pane, pane_id, ratio)) return error.PaneNotFound;
+        ws.last_activity_at = std.time.milliTimestamp();
         self.change_seq += 1;
     }
 
@@ -377,6 +375,24 @@ pub const Registry = struct {
             .split => |*s| {
                 if (findPaneNodeRecursive(s.first, pane_id)) |found| return found;
                 return findPaneNodeRecursive(s.second, pane_id);
+            },
+        }
+    }
+
+    fn adjustSplitRatioForChild(node: *PaneNode, pane_id: []const u8, ratio: f32) bool {
+        switch (node.*) {
+            .leaf => return false,
+            .split => |*s| {
+                if (isLeafWithId(s.first, pane_id)) {
+                    s.ratio = std.math.clamp(ratio, 0.05, 0.95);
+                    return true;
+                }
+                if (isLeafWithId(s.second, pane_id)) {
+                    s.ratio = std.math.clamp(1.0 - ratio, 0.05, 0.95);
+                    return true;
+                }
+                return adjustSplitRatioForChild(s.first, pane_id, ratio) or
+                    adjustSplitRatioForChild(s.second, pane_id, ratio);
             },
         }
     }
@@ -993,6 +1009,22 @@ test "split pane creates tree" {
     try std.testing.expect(ws.root_pane.* == .split);
     try std.testing.expect(ws.root_pane.split.first.* == .leaf);
     try std.testing.expect(ws.root_pane.split.second.* == .leaf);
+}
+
+test "resize pane updates containing split ratio" {
+    var reg = Registry.init(std.testing.allocator);
+    defer reg.deinit();
+
+    const ws_id = try reg.create("test", null);
+    const ws = reg.get(ws_id).?;
+    const first_pane_id = ws.root_pane.leaf.id;
+    const second_pane_id = try reg.splitPane(ws_id, first_pane_id, .horizontal, .terminal);
+
+    try reg.resizePane(ws_id, first_pane_id, 0.25);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), ws.root_pane.split.ratio, 0.0001);
+
+    try reg.resizePane(ws_id, second_pane_id, 0.25);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), ws.root_pane.split.ratio, 0.0001);
 }
 
 test "close pane collapses tree" {

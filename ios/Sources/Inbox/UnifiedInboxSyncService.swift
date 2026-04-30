@@ -17,8 +17,6 @@ final class UnifiedInboxSyncService: UnifiedInboxWorkspaceSyncing {
     private let subject: CurrentValueSubject<[UnifiedInboxItem], Never>
     private var cancellables = Set<AnyCancellable>()
     private var activeTeamID: String?
-    private var hasAcceptedLiveSnapshot = false
-    private var emptySnapshotFallbackTask: Task<Void, Never>?
 
     init(
         inboxCacheRepository: InboxCacheRepository?,
@@ -36,7 +34,21 @@ final class UnifiedInboxSyncService: UnifiedInboxWorkspaceSyncing {
     ) {
         self.init(
             inboxCacheRepository: inboxCacheRepository,
-            workspaceLiveSync: ClosureWorkspaceLiveSync(publisherFactory: publisherFactory)
+            workspaceLiveSync: ClosureWorkspaceLiveSync { teamID in
+                publisherFactory(teamID)
+                    .map { WorkspaceLiveSyncSnapshot.authoritative($0) }
+                    .eraseToAnyPublisher()
+            }
+        )
+    }
+
+    convenience init(
+        inboxCacheRepository: InboxCacheRepository?,
+        snapshotPublisherFactory: @MainActor @escaping (String) -> AnyPublisher<WorkspaceLiveSyncSnapshot, Never>
+    ) {
+        self.init(
+            inboxCacheRepository: inboxCacheRepository,
+            workspaceLiveSync: ClosureWorkspaceLiveSync(publisherFactory: snapshotPublisherFactory)
         )
     }
 
@@ -47,37 +59,25 @@ final class UnifiedInboxSyncService: UnifiedInboxWorkspaceSyncing {
     func connect(teamID: String) {
         guard activeTeamID != teamID else { return }
         activeTeamID = teamID
-        hasAcceptedLiveSnapshot = false
         cancellables.removeAll()
-        emptySnapshotFallbackTask?.cancel()
 
         workspaceLiveSync.publisher(teamID: teamID)
-            .map { rows in
-                rows.map { UnifiedInboxItem(workspaceRow: $0, teamID: teamID) }
+            .map { snapshot in
+                (
+                    items: snapshot.rows.map { UnifiedInboxItem(workspaceRow: $0, teamID: teamID) },
+                    isAuthoritative: snapshot.isAuthoritative
+                )
             }
-            .sink { [weak self] items in
-                self?.handleLiveWorkspaceItems(items)
+            .sink { [weak self] snapshot in
+                self?.handleLiveWorkspaceItems(snapshot.items, isAuthoritative: snapshot.isAuthoritative)
             }
             .store(in: &cancellables)
-
-        // If no live snapshot is accepted within 5 seconds, force-accept
-        // the next one (even if empty) to clear stale cached data. Kept as
-        // a task so a reconnect to a different team cancels the previous
-        // fallback instead of firing against the new team.
-        emptySnapshotFallbackTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
-            guard !Task.isCancelled, let self, !self.hasAcceptedLiveSnapshot else { return }
-            self.hasAcceptedLiveSnapshot = true
-            self.subject.send([])
-            try? self.inboxCacheRepository?.save([])
-        }
     }
 
-    private func handleLiveWorkspaceItems(_ items: [UnifiedInboxItem]) {
-        if shouldIgnoreInitialEmptySnapshot(items) {
+    private func handleLiveWorkspaceItems(_ items: [UnifiedInboxItem], isAuthoritative: Bool) {
+        if shouldIgnoreSnapshot(items, isAuthoritative: isAuthoritative) {
             return
         }
-        hasAcceptedLiveSnapshot = true
         subject.send(items)
         guard let inboxCacheRepository else { return }
 
@@ -90,8 +90,8 @@ final class UnifiedInboxSyncService: UnifiedInboxWorkspaceSyncing {
         }
     }
 
-    private func shouldIgnoreInitialEmptySnapshot(_ items: [UnifiedInboxItem]) -> Bool {
-        !hasAcceptedLiveSnapshot && items.isEmpty && !subject.value.isEmpty
+    private func shouldIgnoreSnapshot(_ items: [UnifiedInboxItem], isAuthoritative: Bool) -> Bool {
+        !isAuthoritative && items.isEmpty && !subject.value.isEmpty
     }
 
     nonisolated static func mergeItems(
@@ -116,15 +116,15 @@ final class UnifiedInboxSyncService: UnifiedInboxWorkspaceSyncing {
 
 @MainActor
 private final class ClosureWorkspaceLiveSync: WorkspaceLiveSyncing {
-    private let publisherFactory: @MainActor (String) -> AnyPublisher<[MobileInboxWorkspaceRow], Never>
+    private let publisherFactory: @MainActor (String) -> AnyPublisher<WorkspaceLiveSyncSnapshot, Never>
 
     init(
-        publisherFactory: @MainActor @escaping (String) -> AnyPublisher<[MobileInboxWorkspaceRow], Never>
+        publisherFactory: @MainActor @escaping (String) -> AnyPublisher<WorkspaceLiveSyncSnapshot, Never>
     ) {
         self.publisherFactory = publisherFactory
     }
 
-    func publisher(teamID: String) -> AnyPublisher<[MobileInboxWorkspaceRow], Never> {
+    func publisher(teamID: String) -> AnyPublisher<WorkspaceLiveSyncSnapshot, Never> {
         publisherFactory(teamID)
     }
 }

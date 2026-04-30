@@ -39,7 +39,7 @@ pub const OffsetWindow = struct {
 pub const TerminalSession = struct {
     alloc: std.mem.Allocator,
     terminal: *ghostty_vt.Terminal,
-    stream: ghostty_vt.ReadonlyStream,
+    stream: ghostty_vt.TerminalStream,
     raw_buffer: std.ArrayList(u8),
     base_offset: u64 = 0,
     next_offset: u64 = 0,
@@ -103,7 +103,7 @@ pub const TerminalSession = struct {
     pub fn feed(self: *TerminalSession, data: []const u8) !void {
         if (data.len == 0) return;
 
-        try self.stream.nextSlice(data);
+        self.stream.nextSlice(data);
         try self.raw_buffer.appendSlice(self.alloc, data);
         self.next_offset += data.len;
 
@@ -467,9 +467,9 @@ test "serializeTerminalState excludes synchronized output replay" {
     var stream = term.vtStream();
     defer stream.deinit();
 
-    try stream.nextSlice("\x1b[?2004h");
-    try stream.nextSlice("\x1b[?2026h");
-    try stream.nextSlice("hello");
+    stream.nextSlice("\x1b[?2004h");
+    stream.nextSlice("\x1b[?2026h");
+    stream.nextSlice("hello");
 
     try std.testing.expect(term.modes.get(.bracketed_paste));
     try std.testing.expect(term.modes.get(.synchronized_output));
@@ -487,7 +487,7 @@ test "serializeTerminalState excludes synchronized output replay" {
 
     var restored_stream = restored.vtStream();
     defer restored_stream.deinit();
-    try restored_stream.nextSlice(output);
+    restored_stream.nextSlice(output);
 
     try std.testing.expect(restored.modes.get(.bracketed_paste));
     try std.testing.expect(!restored.modes.get(.synchronized_output));
@@ -503,8 +503,8 @@ test "serializeTerminalState round trips visible content" {
     var stream = term.vtStream();
     defer stream.deinit();
 
-    try stream.nextSlice("\x1b[?2004h");
-    try stream.nextSlice("hello\r\nworld\r\n");
+    stream.nextSlice("\x1b[?2004h");
+    stream.nextSlice("hello\r\nworld\r\n");
 
     const output = serialize.serializeTerminalState(std.testing.allocator, &term) orelse return error.TestUnexpectedNull;
     defer std.testing.allocator.free(output);
@@ -517,7 +517,7 @@ test "serializeTerminalState round trips visible content" {
 
     var restored_stream = restored.vtStream();
     defer restored_stream.deinit();
-    try restored_stream.nextSlice(output);
+    restored_stream.nextSlice(output);
 
     try std.testing.expect(restored.modes.get(.bracketed_paste));
 
@@ -530,7 +530,9 @@ test "serializeTerminalState round trips visible content" {
 
 test "OSC 133;D;0 in single chunk records exit code" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -541,7 +543,9 @@ test "OSC 133;D;0 in single chunk records exit code" {
 
 test "OSC 133;D;42 split across chunks with ST terminator" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -553,7 +557,9 @@ test "OSC 133;D;42 split across chunks with ST terminator" {
 
 test "BEL in ground state increments bell_count" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -564,7 +570,9 @@ test "BEL in ground state increments bell_count" {
 
 test "OSC 99 stores notification title and body" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -577,7 +585,9 @@ test "OSC 99 stores notification title and body" {
 
 test "OSC overflow returns to ground without crashing" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -596,7 +606,9 @@ test "OSC overflow returns to ground without crashing" {
 
 test "OSC 0 title parses (regression for existing behavior)" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 
@@ -606,7 +618,9 @@ test "OSC 0 title parses (regression for existing behavior)" {
 
 test "OSC 7 cwd parses (regression for existing behavior)" {
     var session = try TerminalSession.init(std.testing.allocator, .{
-        .cols = 16, .rows = 4, .max_scrollback = 1024,
+        .cols = 16,
+        .rows = 4,
+        .max_scrollback = 1024,
     });
     defer session.deinit();
 

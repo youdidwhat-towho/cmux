@@ -2011,7 +2011,7 @@ final class LocalTerminalDaemonBridgeTests: XCTestCase {
             "Expected local daemon binary path in startup command, got: \(command)"
         )
         XCTAssertTrue(
-            command.contains("session new"),
+            command.contains("amux new"),
             "Expected daemon session creation in startup command, got: \(command)"
         )
         XCTAssertTrue(
@@ -2097,12 +2097,15 @@ final class LocalTerminalDaemonBridgeTests: XCTestCase {
             )
         )
 
-        XCTAssertEqual(
-            startedConfiguration,
-            LocalTerminalDaemonConfiguration(
-                socketPath: socketPath,
-                daemonBinaryPath: fakeDaemonBinary.path
-            )
+        XCTAssertEqual(startedConfiguration?.socketPath, socketPath)
+        XCTAssertEqual(startedConfiguration?.daemonBinaryPath, fakeDaemonBinary.path)
+        XCTAssertTrue(
+            (52101...52199).contains(try XCTUnwrap(startedConfiguration?.wsPort)),
+            "Expected local daemon autostart to expose a discoverable mobile WebSocket port"
+        )
+        XCTAssertFalse(
+            try XCTUnwrap(startedConfiguration?.wsSecret).isEmpty,
+            "Expected local daemon autostart to set a mobile WebSocket secret"
         )
         XCTAssertTrue(command.contains(fakeDaemonBinary.path), "Expected daemon binary path in startup command, got: \(command)")
         XCTAssertTrue(command.contains(socketPath), "Expected daemon socket path in startup command, got: \(command)")
