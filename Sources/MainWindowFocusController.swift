@@ -18,14 +18,6 @@ enum MainWindowKeyboardFocusIntent: Equatable {
     case rightSidebar(mode: RightSidebarMode)
 }
 
-enum MainWindowMainPanelFocusSource: Equatable {
-    case keyboardShortcut
-    case pointer
-    case terminalFirstResponder
-    case responderSync
-    case programmatic
-}
-
 enum MainWindowFocusToggleDestination: Equatable {
     case terminal
     case rightSidebar
@@ -85,7 +77,7 @@ final class MainWindowFocusController {
     let windowId: UUID
 
     private weak var window: NSWindow?
-    private weak var tabManager: TabManager?
+    weak var tabManager: TabManager?
     private weak var fileExplorerState: FileExplorerState?
     private weak var rightSidebarHost: RightSidebarKeyboardFocusView?
     private weak var fileExplorerHost: FileExplorerContainerView?
@@ -181,130 +173,6 @@ final class MainWindowFocusController {
         rightSidebarFocusState = .inactive
         intent = .mainPanel(workspaceId: workspaceId, panelId: panelId)
         publishFeedFocusSnapshot()
-    }
-
-    func allowsTerminalFocus(workspaceId: UUID, panelId: UUID) -> Bool {
-        if TerminalSurfaceRegistry.shared.isRightSidebarDockSurface(id: panelId) {
-            return true
-        }
-        switch intent {
-        case .rightSidebar:
-            return false
-        case .mainPanel, nil:
-            return true
-        }
-    }
-
-    func noteMainPanelFocusIntent(
-        workspaceId: UUID,
-        panelId: UUID,
-        source _: MainWindowMainPanelFocusSource
-    ) {
-        guard workspaceContainsPanel(workspaceId: workspaceId, panelId: panelId) else {
-            publishFeedFocusSnapshot()
-            return
-        }
-        noteMainPanelInteraction(workspaceId: workspaceId, panelId: panelId)
-    }
-
-    @discardableResult
-    func noteSelectedMainPanelFocusIntent(source: MainWindowMainPanelFocusSource) -> Bool {
-        guard let workspace = tabManager?.selectedWorkspace,
-              let panelId = workspace.focusedPanelId else {
-            publishFeedFocusSnapshot()
-            return false
-        }
-        noteMainPanelFocusIntent(workspaceId: workspace.id, panelId: panelId, source: source)
-        return true
-    }
-
-    @discardableResult
-    func requestMainPanelFocus(
-        workspaceId: UUID,
-        panelId: UUID,
-        source: MainWindowMainPanelFocusSource
-    ) -> Bool {
-        if TerminalSurfaceRegistry.shared.isRightSidebarDockSurface(id: panelId) {
-            return true
-        }
-
-        guard acceptsMainPanelFocus(workspaceId: workspaceId, panelId: panelId, source: source) else {
-#if DEBUG
-            cmuxDebugLog(
-                "focus.coordinator.rejectTerminalResponder " +
-                "source=\(source) workspace=\(workspaceId.uuidString.prefix(5)) " +
-                "panel=\(panelId.uuidString.prefix(5))"
-            )
-#endif
-            publishFeedFocusSnapshot()
-            return false
-        }
-
-        if shouldApplyModelFocus(for: source),
-           let workspace = tabManager?.selectedWorkspace,
-           workspace.id == workspaceId,
-           workspace.focusedPanelId != panelId {
-            workspace.focusPanel(panelId, trigger: .terminalFirstResponder)
-        }
-
-        noteMainPanelInteraction(workspaceId: workspaceId, panelId: panelId)
-        return true
-    }
-
-    private func acceptsMainPanelFocus(
-        workspaceId: UUID,
-        panelId: UUID,
-        source: MainWindowMainPanelFocusSource
-    ) -> Bool {
-        guard let workspace = tabManager?.selectedWorkspace,
-              workspace.id == workspaceId,
-              workspace.panels[panelId] != nil else {
-            return false
-        }
-
-        switch source {
-        case .keyboardShortcut, .pointer, .programmatic:
-            return true
-        case .terminalFirstResponder, .responderSync:
-            if rightSidebarFocusState.request != nil {
-                return false
-            }
-            if case let .mainPanel(intentWorkspaceId, intentPanelId) = intent,
-               intentWorkspaceId == workspaceId,
-               intentPanelId == panelId {
-                return true
-            }
-            return workspace.focusedPanelId == panelId
-        }
-    }
-
-    private func shouldApplyModelFocus(for source: MainWindowMainPanelFocusSource) -> Bool {
-        switch source {
-        case .terminalFirstResponder, .responderSync:
-            return true
-        case .keyboardShortcut, .pointer, .programmatic:
-            return false
-        }
-    }
-
-    private func workspaceContainsPanel(workspaceId: UUID, panelId: UUID) -> Bool {
-        guard let workspace = tabManager?.selectedWorkspace,
-              workspace.id == workspaceId else {
-            return false
-        }
-        return workspace.panels[panelId] != nil
-    }
-
-    func allowsBonsplitTabShortcutHints(workspaceId: UUID) -> Bool {
-        guard tabManager?.selectedTabId == workspaceId else { return false }
-        switch intent {
-        case .rightSidebar:
-            return false
-        case .mainPanel(let focusedWorkspaceId, _):
-            return focusedWorkspaceId == workspaceId
-        case nil:
-            return true
-        }
     }
 
     func ownsRightSidebarFocus(_ responder: NSResponder) -> Bool {
@@ -831,7 +699,11 @@ final class MainWindowFocusController {
         return false
     }
 
-    private func publishFeedFocusSnapshot(force: Bool = false) {
+    var hasPendingRightSidebarFocusRequest: Bool {
+        rightSidebarFocusState.request != nil
+    }
+
+    func publishFeedFocusSnapshot(force: Bool = false) {
         let snapshot = feedFocusSnapshot()
         guard force || snapshot != lastPublishedFeedFocusSnapshot else { return }
         lastPublishedFeedFocusSnapshot = snapshot

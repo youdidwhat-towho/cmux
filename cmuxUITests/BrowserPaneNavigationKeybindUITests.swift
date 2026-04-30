@@ -132,84 +132,6 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
         )
     }
 
-    func testSurfaceShortcutKeepsSelectedPaneWhenResponderIsStale() {
-        let app = XCUIApplication()
-        app.launchEnvironment["CMUX_SOCKET_PATH"] = socketPath
-        launchAndEnsureForeground(app)
-
-        XCTAssertTrue(waitForSocketPong(timeout: 12.0), "Expected control socket at \(socketPath)")
-
-        guard let initialSurfaceId = currentSurfaceId() else {
-            XCTFail("Expected initial surface")
-            return
-        }
-        guard let split = socketJSON(
-            method: "surface.split",
-            params: ["surface_id": initialSurfaceId, "direction": "right", "focus": true]
-        ),
-              let splitOK = split["ok"] as? Bool,
-              splitOK,
-              let splitResult = split["result"] as? [String: Any],
-              let rightSurfaceId = splitResult["surface_id"] as? String else {
-            XCTFail("Expected right split to be created. response=\(String(describing: socketJSON(method: "surface.current", params: [:])))")
-            return
-        }
-
-        guard let panePayload = socketJSON(method: "pane.list", params: [:]),
-              let paneOK = panePayload["ok"] as? Bool,
-              paneOK,
-              let paneResult = panePayload["result"] as? [String: Any],
-              let panes = paneResult["panes"] as? [[String: Any]],
-              let leftPane = panes.first(where: { pane in
-                  (pane["surface_ids"] as? [String])?.contains(initialSurfaceId) == true
-              }),
-              let leftPaneId = leftPane["id"] as? String else {
-            XCTFail("Expected left pane containing initial surface. response=\(String(describing: socketJSON(method: "pane.list", params: [:])))")
-            return
-        }
-
-        guard let create = socketJSON(
-            method: "surface.create",
-            params: ["pane_id": leftPaneId, "type": "terminal"]
-        ),
-              let createOK = create["ok"] as? Bool,
-              createOK,
-              let createResult = create["result"] as? [String: Any],
-              let newLeftSurfaceId = createResult["surface_id"] as? String else {
-            XCTFail("Expected second surface in left pane. response=\(String(describing: socketJSON(method: "pane.surfaces", params: ["pane_id": leftPaneId])))")
-            return
-        }
-
-        _ = socketJSON(method: "surface.focus", params: ["surface_id": rightSurfaceId])
-        _ = socketJSON(method: "pane.focus", params: ["pane_id": leftPaneId])
-
-        guard let leftSurfacesBefore = paneSurfaces(paneId: leftPaneId),
-              leftSurfacesBefore.contains(where: { ($0["id"] as? String) == newLeftSurfaceId }),
-              let selectedBefore = selectedSurfaceId(in: leftSurfacesBefore) else {
-            XCTFail("Expected left pane surfaces before shortcut. response=\(String(describing: socketJSON(method: "pane.surfaces", params: ["pane_id": leftPaneId])))")
-            return
-        }
-
-        let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore)
-        app.typeKey("]", modifierFlags: [.command, .shift])
-
-        XCTAssertTrue(
-            waitForCondition(timeout: 5.0) {
-                self.selectedSurfaceId(in: self.paneSurfaces(paneId: leftPaneId) ?? []) == expectedSurfaceId &&
-                    self.currentSurfaceId() == expectedSurfaceId
-            },
-            "Expected Cmd+Shift+] to select \(expectedSurfaceId) in the focused pane instead of returning to stale responder \(rightSurfaceId). current=\(currentSurfaceId() ?? "nil") pane=\(paneSurfaces(paneId: leftPaneId) ?? [])"
-        )
-
-        XCTAssertTrue(
-            waitForCondition(timeout: 1.0) {
-                self.selectedSurfaceId(in: self.paneSurfaces(paneId: leftPaneId) ?? []) == expectedSurfaceId &&
-                    self.currentSurfaceId() == expectedSurfaceId
-            },
-            "Expected selected surface to remain stable after deferred responder callbacks. current=\(currentSurfaceId() ?? "nil") pane=\(paneSurfaces(paneId: leftPaneId) ?? [])"
-        )
-    }
-
     func testEscapeLeavesOmnibarAndFocusesWebView() {
         let app = XCUIApplication()
         app.launchEnvironment["CMUX_SOCKET_PATH"] = socketPath
@@ -1382,38 +1304,6 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             "params": params,
         ]
         return ControlSocketClient(path: socketPath, responseTimeout: 2.0).sendJSON(request)
-    }
-
-    private func currentSurfaceId() -> String? {
-        guard let envelope = socketJSON(method: "surface.current", params: [:]),
-              let ok = envelope["ok"] as? Bool,
-              ok,
-              let result = envelope["result"] as? [String: Any] else {
-            return nil
-        }
-        return result["surface_id"] as? String
-    }
-
-    private func paneSurfaces(paneId: String) -> [[String: Any]]? {
-        guard let envelope = socketJSON(method: "pane.surfaces", params: ["pane_id": paneId]),
-              let ok = envelope["ok"] as? Bool,
-              ok,
-              let result = envelope["result"] as? [String: Any] else {
-            return nil
-        }
-        return result["surfaces"] as? [[String: Any]]
-    }
-
-    private func selectedSurfaceId(in surfaces: [[String: Any]]) -> String? {
-        surfaces.first { ($0["selected"] as? Bool) == true }?["id"] as? String
-    }
-
-    private func nextSurfaceId(after selectedSurfaceId: String, in surfaces: [[String: Any]]) -> String {
-        let ids = surfaces.compactMap { $0["id"] as? String }
-        guard let index = ids.firstIndex(of: selectedSurfaceId), !ids.isEmpty else {
-            return selectedSurfaceId
-        }
-        return ids[(index + 1) % ids.count]
     }
 
     private func commandPaletteResultRows(from snapshot: [String: Any]) -> [[String: Any]] {
