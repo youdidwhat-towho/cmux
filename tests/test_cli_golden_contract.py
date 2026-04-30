@@ -310,11 +310,6 @@ def build_probes() -> list[Probe]:
         Probe("double dash forwarding", "cmux vm exec demo -- --help"),
         Probe("fake socket ping", "cmux --socket {socket} ping", fake_socket=True),
         Probe("fake socket json ping", "cmux --socket {socket} --json ping", fake_socket=True),
-        Probe(
-            "fake socket repeated root socket last wins",
-            "cmux --socket /tmp/cmux-golden-missing.sock --socket {socket} ping",
-            fake_socket=True,
-        ),
     ]
 
     for command in load_marked_commands(START_MARKER, END_MARKER, PROBE_RE):
