@@ -676,6 +676,17 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
                 eventCharacter: " "
             )
         )
+
+        for rawShortcut in ["space", "cmd+space", "shift+space", "cmd+shift+space", "ctrl+space", "opt+space"] {
+            let parsedShortcut = try XCTUnwrap(StoredShortcut.parseConfig(rawShortcut))
+            XCTAssertEqual(parsedShortcut.key, "space")
+            XCTAssertEqual(parsedShortcut.firstStroke.resolvedKeyCode(), spaceKeyCode)
+            XCTAssertEqual(parsedShortcut.configIdentifier, rawShortcut)
+        }
+
+        XCTAssertEqual(StoredShortcut.parseConfig("cmd+shift+Space")?.configIdentifier, "cmd+shift+space")
+        XCTAssertEqual(StoredShortcut.parseConfig("cmd+shift+<space>")?.configIdentifier, "cmd+shift+space")
+        XCTAssertEqual(StoredShortcut.parseConfig("cmd+shift+ ")?.configIdentifier, "cmd+shift+space")
     }
 
     func testSettingsFileStoreParsesSpaceShortcutBinding() throws {

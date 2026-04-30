@@ -603,7 +603,7 @@
     "shortcutBinding": {
       "oneOf": [
         {
-          "type": "string",
+          "$ref": "#/$defs/shortcutStroke",
           "description": "Single-stroke shortcut, for example cmd+n."
         },
         {
@@ -611,11 +611,16 @@
           "minItems": 1,
           "maxItems": 2,
           "items": {
-            "type": "string"
+            "$ref": "#/$defs/shortcutStroke"
           },
           "description": "Chorded shortcut. Example: [\"ctrl+b\", \"c\"]."
         }
       ]
+    },
+    "shortcutStroke": {
+      "type": "string",
+      "pattern": "^(?:(?:cmd|command|⌘|shift|⇧|opt|option|alt|⌥|ctrl|control|ctl|⌃)\\+)*(?: |[A-Za-z0-9]|left|arrowleft|leftarrow|←|right|arrowright|rightarrow|→|up|arrowup|uparrow|↑|down|arrowdown|downarrow|↓|tab|return|enter|↩|space|Space|spacebar|Spacebar|<space>|<Space>|comma|period|dot|slash|backslash|semicolon|quote|apostrophe|backtick|grave|minus|hyphen|plus|equals|leftbracket|openbracket|rightbracket|closebracket|f(?:[1-9]|1[0-9]|20)|F(?:[1-9]|1[0-9]|20)|volumeup|mediavolumeup|media\\.volumeup|volumedown|mediavolumedown|media\\.volumedown|brightnessup|mediabrightnessup|media\\.brightnessup|brightnessdown|mediabrightnessdown|media\\.brightnessdown|mute|mediamute|media\\.mute|playpause|mediaplaypause|media\\.playpause|nexttrack|medianext|media\\.next|media\\.nexttrack|previoustrack|mediaprevious|media\\.previous|media\\.previoustrack)$",
+      "description": "One keyboard shortcut stroke using modifier+key syntax. Supported key names include space, Space, <space>, and <Space>."
     }
   }
 }
