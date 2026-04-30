@@ -80,10 +80,10 @@ targets:
           - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64-simulator/Headers"
         OTHER_LDFLAGS[sdk=iphoneos*]:
           - "$(inherited)"
-          - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64/libghostty-fat.a"
+          - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64/libghostty-internal-fat.a"
         OTHER_LDFLAGS[sdk=iphonesimulator*]:
           - "$(inherited)"
-          - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64-simulator/libghostty-fat.a"
+          - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64-simulator/libghostty-internal-fat.a"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: dev.cmux.app.dev

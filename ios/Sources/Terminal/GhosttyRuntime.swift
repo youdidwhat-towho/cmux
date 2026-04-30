@@ -4,6 +4,14 @@ import UIKit
 
 private let log = Logger(subsystem: "ai.manaflow.cmux.ios", category: "ghostty.runtime")
 
+private func cmuxIOSRuntimeReadClipboardCallback(
+    _ userdata: UnsafeMutableRawPointer?,
+    _ location: ghostty_clipboard_e,
+    _ state: UnsafeMutableRawPointer?
+) -> Bool {
+    GhosttyRuntime.handleReadClipboard(userdata, location: location, state: state)
+}
+
 @MainActor
 final class GhosttyRuntime {
     enum RuntimeError: LocalizedError {
@@ -81,34 +89,41 @@ final class GhosttyRuntime {
         log.debug("font-size config get=\(hasFont, privacy: .public) value=\(fontSize, privacy: .public)")
         #endif
 
-        var runtimeConfig = ghostty_runtime_config_s(
-            userdata: Unmanaged.passUnretained(self).toOpaque(),
-            supports_selection_clipboard: false,
-            wakeup_cb: { userdata in
-                GhosttyRuntime.handleWakeup(userdata)
-            },
-            action_cb: { app, target, action in
-                GhosttyRuntime.handleAction(app, target: target, action: action)
-            },
-            read_clipboard_cb: { userdata, location, state in
-                GhosttyRuntime.handleReadClipboard(userdata, location: location, state: state)
-            },
-            confirm_read_clipboard_cb: { _, _, _, _ in
-                // iOS embed doesn't currently support clipboard confirmation prompts.
-            },
-            write_clipboard_cb: { userdata, location, content, len, confirm in
-                GhosttyRuntime.handleWriteClipboard(
-                    userdata,
-                    location: location,
-                    content: content,
-                    len: len,
-                    confirm: confirm
-                )
-            },
-            close_surface_cb: { userdata, processAlive in
-                GhosttyRuntime.handleCloseSurface(userdata, processAlive: processAlive)
-            }
+        var runtimeConfig = ghostty_runtime_config_s()
+        runtimeConfig.userdata = Unmanaged.passUnretained(self).toOpaque()
+        runtimeConfig.supports_selection_clipboard = false
+        runtimeConfig.wakeup_cb = { userdata in
+            GhosttyRuntime.handleWakeup(userdata)
+        }
+        runtimeConfig.action_cb = { app, target, action in
+            GhosttyRuntime.handleAction(app, target: target, action: action)
+        }
+        // Some GhosttyKit builds import this callback as returning `Void` in Swift even
+        // though the C ABI returns `bool`. Store the C-compatible shim explicitly so the
+        // project compiles against both importer variants.
+        runtimeConfig.read_clipboard_cb = unsafeBitCast(
+            cmuxIOSRuntimeReadClipboardCallback as @convention(c) (
+                UnsafeMutableRawPointer?,
+                ghostty_clipboard_e,
+                UnsafeMutableRawPointer?
+            ) -> Bool,
+            to: ghostty_runtime_read_clipboard_cb.self
         )
+        runtimeConfig.confirm_read_clipboard_cb = { _, _, _, _ in
+            // iOS embed doesn't currently support clipboard confirmation prompts.
+        }
+        runtimeConfig.write_clipboard_cb = { userdata, location, content, len, confirm in
+            GhosttyRuntime.handleWriteClipboard(
+                userdata,
+                location: location,
+                content: content,
+                len: len,
+                confirm: confirm
+            )
+        }
+        runtimeConfig.close_surface_cb = { userdata, processAlive in
+            GhosttyRuntime.handleCloseSurface(userdata, processAlive: processAlive)
+        }
 
         guard let app = ghostty_app_new(&runtimeConfig, config) else {
             ghostty_config_free(config)
@@ -361,11 +376,11 @@ final class GhosttyRuntime {
         return false
     }
 
-    nonisolated private static func handleReadClipboard(
+    nonisolated fileprivate static func handleReadClipboard(
         _ userdata: UnsafeMutableRawPointer?,
         location: ghostty_clipboard_e,
         state: UnsafeMutableRawPointer?
-    ) {
+    ) -> Bool {
         Task { @MainActor in
             guard let surfaceView = surfaceView(from: userdata),
                   let surface = surfaceView.surface else { return }
@@ -375,6 +390,7 @@ final class GhosttyRuntime {
                 ghostty_surface_complete_clipboard_request(surface, ptr, state, false)
             }
         }
+        return true
     }
 
     nonisolated private static func handleWriteClipboard(
