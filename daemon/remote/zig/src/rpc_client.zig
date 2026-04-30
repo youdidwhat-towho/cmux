@@ -90,15 +90,15 @@ const SingleConnectionFixture = struct {
     fn start(socket_path: []const u8) !SingleConnectionFixture {
         try deleteIfPresent(socket_path);
 
-        const thread = try std.Thread.spawn(.{}, serve, .{socket_path});
-        errdefer thread.join();
+        var unix_addr = try std.net.Address.initUnix(socket_path);
+        const listener_fd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+        errdefer std.posix.close(listener_fd);
+        errdefer deleteIfPresent(socket_path) catch {};
+        try std.posix.bind(listener_fd, &unix_addr.any, unix_addr.getOsSockLen());
+        try std.posix.listen(listener_fd, 1);
 
-        const deadline = std.time.milliTimestamp() + 2_000;
-        while (std.time.milliTimestamp() < deadline) {
-            if (pathExists(socket_path)) break;
-            std.Thread.sleep(10 * std.time.ns_per_ms);
-        }
-        if (!pathExists(socket_path)) return error.SocketNotReady;
+        const thread = try std.Thread.spawn(.{}, serve, .{listener_fd});
+        errdefer thread.join();
 
         return .{
             .socket_path = socket_path,
@@ -111,19 +111,11 @@ const SingleConnectionFixture = struct {
         deleteIfPresent(self.socket_path) catch {};
     }
 
-    fn serve(socket_path: []const u8) !void {
-        var unix_addr = try std.net.Address.initUnix(socket_path);
-        const listener_fd = try std.posix.socket(std.posix.AF.UNIX, std.posix.SOCK.STREAM | std.posix.SOCK.CLOEXEC, 0);
+    fn serve(listener_fd: std.posix.fd_t) !void {
         defer std.posix.close(listener_fd);
-        defer deleteIfPresent(socket_path) catch {};
-
-        try std.posix.bind(listener_fd, &unix_addr.any, unix_addr.getOsSockLen());
-        try std.posix.listen(listener_fd, 1);
 
         const client_fd = try std.posix.accept(listener_fd, null, null, std.posix.SOCK.CLOEXEC);
         defer std.posix.close(client_fd);
-
-        std.posix.close(listener_fd);
 
         var file = std.fs.File{ .handle = client_fd };
 
@@ -134,11 +126,6 @@ const SingleConnectionFixture = struct {
         const line2 = try readLine(std.heap.page_allocator, &file, 1024);
         defer std.heap.page_allocator.free(line2);
         try file.writeAll("{\"ok\":true,\"result\":{\"token\":\"pong-2\"}}\n");
-    }
-
-    fn pathExists(path: []const u8) bool {
-        std.fs.accessAbsolute(path, .{}) catch return false;
-        return true;
     }
 
     fn deleteIfPresent(path: []const u8) !void {

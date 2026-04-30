@@ -34,7 +34,7 @@ private enum LiveAnchormuxFileLogger {
             if FileManager.default.fileExists(atPath: path) {
                 if let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: path)) {
                     defer { try? handle.close() }
-                    try? handle.seekToEnd()
+                    _ = try? handle.seekToEnd()
                     try? handle.write(contentsOf: data)
                 }
                 return
@@ -848,10 +848,8 @@ private final class LiveAnchormuxFixtureTransport: @unchecked Sendable, Terminal
     func disconnect() async {
         liveAnchormuxLog("transport.disconnect session=\(sessionID)")
         let transport = clearActiveTransport()
-        if let parkingTransport = transport as? TerminalSessionParking {
-            await parkingTransport.suspendPreservingSession()
-        } else {
-            await transport?.disconnect()
+        if let transport {
+            await transport.suspendPreservingSession()
         }
         updateResumeState(nil)
     }
@@ -859,10 +857,9 @@ private final class LiveAnchormuxFixtureTransport: @unchecked Sendable, Terminal
     func suspendPreservingSession() async {
         liveAnchormuxLog("transport.suspend session=\(sessionID)")
         let transport = clearActiveTransport()
-        if let parkingTransport = transport as? TerminalSessionParking {
-            await parkingTransport.suspendPreservingSession()
+        if let transport {
+            await transport.suspendPreservingSession()
         } else {
-            await transport?.disconnect()
             updateResumeState(nil)
         }
     }
@@ -891,8 +888,8 @@ private final class LiveAnchormuxFixtureTransport: @unchecked Sendable, Terminal
         case .viewSize(let cols, let rows):
             liveAnchormuxLog("transport.event view_size session=\(sessionID) cols=\(cols) rows=\(rows)")
         }
-        if let snapshotting = transport as? TerminalRemoteDaemonResumeStateSnapshotting {
-            updateResumeState(snapshotting.remoteDaemonResumeStateSnapshot())
+        if let transport {
+            updateResumeState(transport.remoteDaemonResumeStateSnapshot())
         }
 
         if case .disconnected = event {

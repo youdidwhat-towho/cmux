@@ -98,17 +98,7 @@ final class GhosttyRuntime {
         runtimeConfig.action_cb = { app, target, action in
             GhosttyRuntime.handleAction(app, target: target, action: action)
         }
-        // Some GhosttyKit builds import this callback as returning `Void` in Swift even
-        // though the C ABI returns `bool`. Store the C-compatible shim explicitly so the
-        // project compiles against both importer variants.
-        runtimeConfig.read_clipboard_cb = unsafeBitCast(
-            cmuxIOSRuntimeReadClipboardCallback as @convention(c) (
-                UnsafeMutableRawPointer?,
-                ghostty_clipboard_e,
-                UnsafeMutableRawPointer?
-            ) -> Bool,
-            to: ghostty_runtime_read_clipboard_cb.self
-        )
+        runtimeConfig.read_clipboard_cb = cmuxIOSRuntimeReadClipboardCallback
         runtimeConfig.confirm_read_clipboard_cb = { _, _, _, _ in
             // iOS embed doesn't currently support clipboard confirmation prompts.
         }

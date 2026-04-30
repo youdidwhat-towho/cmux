@@ -256,7 +256,6 @@ test "PendingReply wait/fulfill round-trips a value" {
 
     const t = try std.Thread.spawn(.{}, struct {
         fn run(r: *PendingReply(u32)) void {
-            std.Thread.sleep(std.time.ns_per_ms);
             r.fulfillOk(42);
         }
     }.run, .{&reply});
