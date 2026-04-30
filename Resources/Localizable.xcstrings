@@ -68075,13 +68075,13 @@
         "en": {
           "stringUnit": {
             "state": "translated",
-            "value": "Click a shortcut value to record. Press a second key for a chord, or click again to keep the first key."
+            "value": "Click a shortcut value to record. Use the X button to unbind."
           }
         },
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "ショートカット値をクリックして記録します。コードにするには続けて2つ目のキーを押し、1キーのままにするにはもう一度クリックします。"
+            "value": "ショートカット値をクリックして記録します。割り当て解除するには X ボタンを使います。"
           }
         },
         "zh-Hans": {
@@ -82705,6 +82705,23 @@
         }
       }
     },
+    "shortcut.unbound.displayValue": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "なし"
+          }
+        }
+      }
+    },
     "shortcut.recorder.pendingChord": {
       "extractionState": "manual",
       "localizations": {
@@ -82724,6 +82741,40 @@
           "stringUnit": {
             "state": "translated",
             "value": "%@ …"
+          }
+        }
+      }
+    },
+    "shortcut.recorder.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unbind"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "割り当て解除"
+          }
+        }
+      }
+    },
+    "shortcut.recorder.clear.help": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Unbind shortcut"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ショートカットの割り当てを解除"
           }
         }
       }

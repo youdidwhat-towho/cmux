@@ -367,6 +367,10 @@ enum KeyboardShortcutSettings {
         }
 
         func normalizedRecordedShortcutResult(_ shortcut: StoredShortcut) -> RecordedShortcutResolution {
+            if shortcut.isUnbound {
+                return .accepted(.unbound)
+            }
+
             if let conflictingAction = KeyboardShortcutSettings.conflictingAction(
                 for: shortcut,
                 excluding: self
@@ -380,6 +384,10 @@ enum KeyboardShortcutSettings {
         func resolvedRecordedShortcutIgnoringConflicts(
             _ shortcut: StoredShortcut
         ) -> RecordedShortcutResolution {
+            if shortcut.isUnbound {
+                return .accepted(.unbound)
+            }
+
             switch self {
             case .showHideAllWindows:
                 return KeyboardShortcutSettings.normalizedSystemWideHotkeyShortcutResult(shortcut)
@@ -451,6 +459,7 @@ enum KeyboardShortcutSettings {
 
         for action in Action.allCases where action != .showHideAllWindows {
             let shortcut = KeyboardShortcutSettings.shortcut(for: action)
+            guard !shortcut.isUnbound else { continue }
             if shortcut.hasChord {
                 reserved.append(StoredShortcut(first: shortcut.firstStroke))
                 continue
@@ -517,6 +526,8 @@ enum KeyboardShortcutSettings {
         _ configuredShortcut: StoredShortcut,
         configuredUsesNumberedDigitMatching: Bool
     ) -> Bool {
+        guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else { return false }
+
         switch (proposedShortcut.hasChord, configuredShortcut.hasChord) {
         case (false, false):
             return shortcutStrokeMatchersConflict(
@@ -1797,6 +1808,10 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     var chordControl: Bool
     var chordKeyCode: UInt16?
 
+    static var unbound: StoredShortcut {
+        StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
+    }
+
     init(
         key: String,
         command: Bool,
@@ -1875,6 +1890,10 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
+    var isUnbound: Bool {
+        key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var firstStroke: ShortcutStroke {
         ShortcutStroke(
             key: key,
@@ -1903,6 +1922,9 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var displayString: String {
+        if isUnbound {
+            return String(localized: "shortcut.unbound.displayValue", defaultValue: "None")
+        }
         if let secondStroke {
             return "\(firstStroke.displayString) \(secondStroke.displayString)"
         }
@@ -1910,6 +1932,9 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var numberedDisplayString: String {
+        if isUnbound {
+            return displayString
+        }
         if hasChord {
             return numberedDigitHintPrefix + "1…9"
         }
@@ -1936,11 +1961,12 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var hasPrimaryModifier: Bool {
+        guard !isUnbound else { return false }
         firstStroke.hasPrimaryModifier
     }
 
     var keyEquivalent: KeyEquivalent? {
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.keyEquivalent
     }
 
@@ -1949,7 +1975,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var menuItemKeyEquivalent: String? {
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.menuItemKeyEquivalent
     }
 
@@ -1962,7 +1988,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         event: NSEvent,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
-        guard !hasChord else { return false }
+        guard !isUnbound, !hasChord else { return false }
         return firstStroke.matches(event: event, layoutCharacterProvider: layoutCharacterProvider)
     }
 
@@ -1972,7 +1998,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         eventCharacter: String?,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
-        guard !hasChord else { return false }
+        guard !isUnbound, !hasChord else { return false }
         return firstStroke.matches(
             keyCode: keyCode,
             modifierFlags: modifierFlags,
@@ -1982,7 +2008,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.carbonHotKeyRegistration
     }
 }
@@ -2117,11 +2143,17 @@ extension ShortcutStroke {
 
 extension StoredShortcut {
     static func parseConfig(_ rawValue: String) -> StoredShortcut? {
+        if isUnboundConfigToken(rawValue) {
+            return .unbound
+        }
         parseConfig(strokes: [rawValue])
     }
 
     static func parseConfig(strokes: [String]) -> StoredShortcut? {
         guard !strokes.isEmpty, strokes.count <= 2 else { return nil }
+        if strokes.count == 1, let rawValue = strokes.first, isUnboundConfigToken(rawValue) {
+            return .unbound
+        }
         let parsedStrokes = strokes.compactMap(ShortcutStroke.parseConfig(_:))
         guard parsedStrokes.count == strokes.count, let firstStroke = parsedStrokes.first else {
             return nil
@@ -2132,10 +2164,18 @@ extension StoredShortcut {
     }
 
     var configIdentifier: String {
+        if isUnbound {
+            return "none"
+        }
         if let secondStroke {
             return "\(firstStroke.configString()) \(secondStroke.configString())"
         }
         return firstStroke.configString()
+    }
+
+    private static func isUnboundConfigToken(_ rawValue: String) -> Bool {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "none" || normalized == "unbound"
     }
 }
 
@@ -2322,6 +2362,20 @@ struct KeyboardShortcutRecorder: View {
                 )
                     .frame(width: 160)
                     .disabled(isDisabled)
+
+                Button {
+                    KeyboardShortcutRecorderActivity.stopAllRecording()
+                    shortcut = .unbound
+                    onRecorderFeedbackChanged(nil)
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .imageScale(.medium)
+                }
+                .buttonStyle(.borderless)
+                .disabled(isDisabled || shortcut.isUnbound)
+                .safeHelp(String(localized: "shortcut.recorder.clear.help", defaultValue: "Unbind shortcut"))
+                .accessibilityLabel(String(localized: "shortcut.recorder.clear", defaultValue: "Unbind"))
+                .accessibilityIdentifier("ShortcutRecorderClearButton")
             }
 
             if let validationMessage {

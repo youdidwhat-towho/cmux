@@ -705,6 +705,35 @@ final class KeyboardShortcutSettingsFileStoreTests: XCTestCase {
         XCTAssertEqual(store.activeSourcePath, settingsFileURL.path)
     }
 
+    func testSettingsFileStoreParsesEmptyShortcutBindingAsUnbound() throws {
+        let directoryURL = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+
+        let settingsFileURL = directoryURL.appendingPathComponent("settings.json", isDirectory: false)
+        try writeSettingsFile(
+            """
+            {
+              "shortcuts": {
+                "newTab": "",
+                "openBrowser": "none",
+                "splitRight": null
+              }
+            }
+            """,
+            to: settingsFileURL
+        )
+
+        let store = KeyboardShortcutSettingsFileStore(
+            primaryPath: settingsFileURL.path,
+            fallbackPath: nil,
+            startWatching: false
+        )
+
+        XCTAssertEqual(store.override(for: .newTab), StoredShortcut.unbound)
+        XCTAssertEqual(store.override(for: .openBrowser), StoredShortcut.unbound)
+        XCTAssertEqual(store.override(for: .splitRight), StoredShortcut.unbound)
+    }
+
     func testSettingsFileStoreParsesRightSidebarShortcutBindings() throws {
         let directoryURL = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directoryURL) }
@@ -1920,6 +1949,22 @@ final class StoredShortcutMatchingTests: XCTestCase {
         }
 
         XCTAssertTrue(shortcut.matches(event: event))
+    }
+
+    func testUnboundShortcutNeverMatchesKeypress() {
+        let shortcut = StoredShortcut.unbound
+
+        XCTAssertFalse(
+            shortcut.matches(
+                keyCode: 45,
+                modifierFlags: [.command],
+                eventCharacter: "n",
+                layoutCharacterProvider: { _, _ in nil }
+            )
+        )
+        XCTAssertNil(shortcut.keyEquivalent)
+        XCTAssertNil(shortcut.menuItemKeyEquivalent)
+        XCTAssertNil(shortcut.carbonHotKeyRegistration)
     }
 
     func testShortcutRecorderResolutionReportsConflictingAction() {

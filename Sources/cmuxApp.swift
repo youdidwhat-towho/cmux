@@ -730,7 +730,7 @@ struct cmuxApp: App {
             // Numbered workspace selection (9 = last workspace)
             ForEach(1...9, id: \.self) { number in
                 let selectWorkspaceByNumberShortcut = menuShortcut(for: .selectWorkspaceByNumber)
-                if selectWorkspaceByNumberShortcut.hasChord {
+                if selectWorkspaceByNumberShortcut.isUnbound || selectWorkspaceByNumberShortcut.hasChord {
                     Button(String(localized: "menu.view.workspace", defaultValue: "Workspace \(number)")) {
                         let manager = activeTabManager
                         if let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: number, workspaceCount: manager.tabs.count) {
@@ -7033,7 +7033,7 @@ struct SettingsView: View {
                     .id(shortcutResetToken)
                     .settingsSearchAnchor(SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "shortcuts"))
 
-                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record a new shortcut."))
+                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use the X button to unbind."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)

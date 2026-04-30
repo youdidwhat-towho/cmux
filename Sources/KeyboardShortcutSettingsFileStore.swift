@@ -834,7 +834,9 @@ final class CmuxSettingsFileStore {
         action: KeyboardShortcutSettings.Action
     ) -> StoredShortcut? {
         let shortcut: StoredShortcut?
-        if let stroke = jsonString(rawValue) {
+        if rawValue is NSNull {
+            shortcut = .unbound
+        } else if let stroke = jsonString(rawValue) {
             shortcut = StoredShortcut.parseConfig(stroke)
         } else if let strokes = jsonStringArray(rawValue) {
             shortcut = StoredShortcut.parseConfig(strokes: strokes)
