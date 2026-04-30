@@ -149,8 +149,9 @@ jobs:
         run: |
           set -euo pipefail
           DERIVED_DATA="$RUNNER_TEMP/cmux-ios-e2e"
-          RESULT_BUNDLE="$RUNNER_TEMP/cmux-ios-e2e.xcresult"
-          rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE"
+          RESULT_BUNDLE_DIR="$RUNNER_TEMP/cmux-ios-e2e-xcresults"
+          rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE_DIR"
+          mkdir -p "$RESULT_BUNDLE_DIR"
           if [ "${{ github.event_name }}" = "push" ]; then
             TEST_FILTERS=("TerminalHomeUITests" "TerminalHostEditorUITests" "TerminalInboxUITests" "TerminalInputUITests" "TerminalReconnectUITests" "AuthPersistenceUITests")
           else
@@ -158,6 +159,8 @@ jobs:
           fi
 
           for FILTER in "${TEST_FILTERS[@]}"; do
+            RESULT_FILTER="$(printf '%s' "$FILTER" | tr -c '[:alnum:]_.-' '_')"
+            RESULT_BUNDLE="$RESULT_BUNDLE_DIR/${RESULT_FILTER}.xcresult"
             echo "Running cmuxUITests/$FILTER"
             xcodebuild test \
               -project cmux.xcodeproj \
@@ -185,7 +188,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: cmux-ios-e2e-xcresult
-          path: ${{ runner.temp }}/cmux-ios-e2e.xcresult
+          path: ${{ runner.temp }}/cmux-ios-e2e-xcresults
           if-no-files-found: warn
 
       - name: Upload simulator recording
