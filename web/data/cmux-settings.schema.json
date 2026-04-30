@@ -526,6 +526,8 @@
               "reopenPreviousSession",
               "goToWorkspace",
               "commandPalette",
+              "commandPaletteNext",
+              "commandPalettePrevious",
               "sendFeedback",
               "showNotifications",
               "jumpToUnread",
@@ -604,7 +606,7 @@
       "oneOf": [
         {
           "type": "string",
-          "description": "Single-stroke shortcut, for example cmd+n."
+          "description": "Single-stroke shortcut, for example cmd+n. Use an empty string, none, unbound, or disabled to unbind."
         },
         {
           "type": "array",
@@ -614,6 +616,10 @@
             "type": "string"
           },
           "description": "Chorded shortcut. Example: [\"ctrl+b\", \"c\"]."
+        },
+        {
+          "type": "null",
+          "description": "Unbind this shortcut."
         }
       ]
     }

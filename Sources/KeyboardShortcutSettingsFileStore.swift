@@ -835,14 +835,25 @@ final class CmuxSettingsFileStore {
     ) -> StoredShortcut? {
         let shortcut: StoredShortcut?
         if let stroke = jsonString(rawValue) {
-            shortcut = StoredShortcut.parseConfig(stroke)
+            let trimmed = stroke.trimmingCharacters(in: .whitespacesAndNewlines)
+            let lowered = trimmed.lowercased()
+            if trimmed.isEmpty || lowered == "none" || lowered == "unbound" || lowered == "disabled" {
+                shortcut = .unbound
+            } else {
+                shortcut = StoredShortcut.parseConfig(stroke)
+            }
         } else if let strokes = jsonStringArray(rawValue) {
-            shortcut = StoredShortcut.parseConfig(strokes: strokes)
+            shortcut = strokes.isEmpty ? .unbound : StoredShortcut.parseConfig(strokes: strokes)
+        } else if rawValue is NSNull {
+            shortcut = .unbound
         } else {
             shortcut = nil
         }
 
         guard let shortcut else { return nil }
+        if shortcut.isUnbound {
+            return shortcut
+        }
         if let normalized = action.normalizedRecordedShortcut(shortcut) {
             return normalized
         }

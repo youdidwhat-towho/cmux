@@ -76,7 +76,8 @@ const settingsFileExample = `{
   // "shortcuts": {
   //   "bindings": {
   //     "toggleSidebar": "cmd+b",
-  //     "newTab": ["ctrl+b", "c"]
+  //     "newTab": ["ctrl+b", "c"],
+  //     "commandPalettePrevious": null
   //   }
   // },
 }`;

@@ -2,6 +2,10 @@
   "sourceLanguage": "en",
   "version": "1.0",
   "strings": {
+    "shortcut.commandPaletteNext.label": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Command Palette Next Result" } }, "ja": { "stringUnit": { "state": "translated", "value": "コマンドパレットの次の結果" } } } },
+    "shortcut.commandPalettePrevious.label": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Command Palette Previous Result" } }, "ja": { "stringUnit": { "state": "translated", "value": "コマンドパレットの前の結果" } } } },
+    "shortcut.recorder.clear": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Clear" } }, "ja": { "stringUnit": { "state": "translated", "value": "クリア" } } } },
+    "shortcut.unbound": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Unbound" } }, "ja": { "stringUnit": { "state": "translated", "value": "未割り当て" } } } },
     "detail.mode": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Mode" } }, "ja": { "stringUnit": { "state": "translated", "value": "モード" } } } },
     "detail.primaryAction": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Open Related File" } }, "ja": { "stringUnit": { "state": "translated", "value": "関連ファイルを開く" } } } },
     "detail.secondaryAction": { "localizations": { "en": { "stringUnit": { "state": "translated", "value": "Restore Defaults" } }, "ja": { "stringUnit": { "state": "translated", "value": "デフォルトに戻す" } } } },
