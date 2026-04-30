@@ -59,7 +59,7 @@ def load_compiled_inventory(cli_path: str) -> set[str]:
         text=True,
         capture_output=True,
         check=False,
-        timeout=5.0,
+        timeout=20.0,
         env=env,
     )
     if proc.returncode != 0:

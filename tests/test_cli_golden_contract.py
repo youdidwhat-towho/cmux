@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import json
 import os
 import re
 import shlex
@@ -197,6 +198,81 @@ def documented_command_forms() -> list[str]:
     return sorted(forms)
 
 
+def documented_top_level_commands(forms: Iterable[str]) -> set[str]:
+    return {form.split()[0] for form in forms if form.split()}
+
+
+def baseline_help_top_level_commands(cli_path: str) -> set[str]:
+    with tempfile.TemporaryDirectory(prefix="cmux-cli-help-") as temp_root:
+        env = isolated_env(temp_root)
+        proc = subprocess.run(  # noqa: S603
+            [cli_path, "--help"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10.0,
+            env=env,
+        )
+    if proc.returncode not in (0, 1):
+        raise RuntimeError(f"Baseline help failed with exit {proc.returncode}: {proc.stderr}")
+    return parse_help_top_level_commands(proc.stdout)
+
+
+def candidate_inventory_top_level_commands(cli_path: str) -> set[str]:
+    with tempfile.TemporaryDirectory(prefix="cmux-cli-inventory-") as temp_root:
+        env = isolated_env(temp_root)
+        proc = subprocess.run(  # noqa: S603
+            [cli_path, "__argument-parser-inventory", "--verify", "--json"],
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=15.0,
+            env=env,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"Candidate inventory failed with exit {proc.returncode}: {proc.stderr}")
+    payload = json.loads(proc.stdout)
+    top_level = payload.get("top_level")
+    if not isinstance(top_level, list):
+        raise RuntimeError("Candidate inventory missing top_level list")
+    return {str(command) for command in top_level}
+
+
+def parse_help_top_level_commands(help_text: str) -> set[str]:
+    commands: set[str] = set()
+    in_commands = False
+    for line in help_text.splitlines():
+        stripped = line.strip()
+        if stripped == "Commands:":
+            in_commands = True
+            continue
+        if not in_commands:
+            continue
+        if not stripped:
+            continue
+        if not line.startswith("          "):
+            break
+        commands.update(extract_top_level_commands_from_help_line(stripped))
+    return commands
+
+
+def extract_top_level_commands_from_help_line(line: str) -> set[str]:
+    commands: set[str] = set()
+    command_part = re.split(r"\s{2,}", line, maxsplit=1)[0]
+    for alternative in command_part.split(" | "):
+        token = alternative.strip().split(maxsplit=1)[0] if alternative.strip() else ""
+        if token:
+            commands.add(token)
+
+    alias_match = re.search(r"\(alias:\s*([^)]+)\)", line)
+    if alias_match:
+        for alias in re.split(r"[,|/]\s*", alias_match.group(1)):
+            alias = alias.strip()
+            if alias:
+                commands.add(alias)
+    return commands
+
+
 def split_markdown_table_row(row: str) -> list[str]:
     cells: list[str] = []
     current: list[str] = []
@@ -334,7 +410,7 @@ def dedupe_probes(probes: Iterable[Probe]) -> list[Probe]:
     return result
 
 
-def run_probe(cli_path: str, probe: Probe, temp_root: str) -> Result:
+def isolated_env(temp_root: str) -> dict[str, str]:
     env = os.environ.copy()
     for key in [
         "CMUX_SOCKET_PASSWORD",
@@ -356,6 +432,11 @@ def run_probe(cli_path: str, probe: Probe, temp_root: str) -> Result:
     missing_socket = os.path.join(temp_root, "missing.sock")
     env["CMUX_SOCKET_PATH"] = missing_socket
     env["CMUX_SOCKET"] = missing_socket
+    return env
+
+
+def run_probe(cli_path: str, probe: Probe, temp_root: str) -> Result:
+    env = isolated_env(temp_root)
 
     command = probe.command
     server: CaptureSocketServer | None = None
@@ -467,16 +548,43 @@ def compare_probe(baseline_cli: str, candidate_cli: str, probe: Probe) -> str | 
     return f"{probe.name}\ncommand: {probe.command}\n{diff}"
 
 
+def compare_baseline_top_level_commands(
+    baseline_cli: str,
+    candidate_cli: str,
+    documented_forms: Iterable[str],
+) -> list[str]:
+    baseline_top_level = baseline_help_top_level_commands(baseline_cli)
+    candidate_top_level = candidate_inventory_top_level_commands(candidate_cli)
+    documented_top_level = documented_top_level_commands(documented_forms)
+
+    failures: list[str] = []
+    missing_from_candidate = sorted(baseline_top_level - candidate_top_level)
+    if missing_from_candidate:
+        failures.append(
+            "baseline top-level commands missing from candidate inventory: "
+            + ", ".join(missing_from_candidate)
+        )
+
+    missing_from_docs = sorted(baseline_top_level - documented_top_level)
+    if missing_from_docs:
+        failures.append(
+            "baseline top-level commands missing from docs contract: "
+            + ", ".join(missing_from_docs)
+        )
+    return failures
+
+
 def main() -> int:
     try:
         baseline_cli = resolve_cli("CMUX_BASELINE_CLI")
         candidate_cli = resolve_cli("CMUX_CANDIDATE_CLI")
+        documented_forms = documented_command_forms()
         probes = build_probes()
     except (RuntimeError, OSError, ValueError) as exc:
         print(f"FAIL: {exc}")
         return 1
 
-    failures: list[str] = []
+    failures = compare_baseline_top_level_commands(baseline_cli, candidate_cli, documented_forms)
     for probe in probes:
         failure = compare_probe(baseline_cli, candidate_cli, probe)
         if failure is not None:

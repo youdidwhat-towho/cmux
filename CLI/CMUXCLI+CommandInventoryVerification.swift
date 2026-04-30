@@ -31,9 +31,15 @@ extension CMUXCLI {
             try verifyOptionalTailCommand(AuthSubcommandName.self, tail: tail)
         case .feed:
             try verifyOptionalTailCommand(FeedSubcommandName.self, tail: tail)
+        case .docs:
+            try verifyOptionalTailCommand(DocsSubcommandName.self, tail: tail)
+        case .settings:
+            try verifyOptionalTailCommand(SettingsSubcommandName.self, tail: tail)
+        case .hooks:
+            try verifyHooksTail(tail)
         case .themes:
             try verifyOptionalTailCommand(ThemeSubcommandName.self, tail: tail)
-        case .codex, .opencode, .cursor, .gemini, .copilot, .codebuddy, .factory, .qoder:
+        case .codex:
             try verifyOptionalTailCommand(AgentInstallerSubcommandName.self, tail: tail)
         case .vm, .cloud:
             try verifyOptionalTailCommand(VMSubcommandName.self, tail: tail)
@@ -45,8 +51,6 @@ extension CMUXCLI {
             try verifyOptionalTailCommand(TmuxShimCommandName.self, tail: tail, allowDashCommand: true)
         case .claudeHook:
             try verifyOptionalTailCommand(ClaudeHookSubcommandName.self, tail: tail)
-        case .codexHook, .opencodeHook, .cursorHook, .geminiHook, .copilotHook, .codebuddyHook, .factoryHook, .qoderHook:
-            try verifyOptionalTailCommand(GenericAgentHookSubcommandName.self, tail: tail)
         default:
             break
         }
@@ -103,6 +107,28 @@ extension CMUXCLI {
             try verifyOptionalTailCommand(BrowserInputSubcommandName.self, tail: nested)
         default:
             break
+        }
+    }
+
+    static func verifyHooksTail(_ tail: [String]) throws {
+        guard let first = tail.first else { return }
+        if first.hasPrefix("-") { return }
+
+        let target = try parseCommandName(HooksTargetName.self, raw: first)
+        let nested = Array(tail.dropFirst())
+
+        switch target {
+        case .setup, .uninstall, .feed:
+            return
+        case .claude:
+            try verifyOptionalTailCommand(ClaudeHookSubcommandName.self, tail: nested)
+        case .codex, .opencode, .cursor, .gemini, .copilot, .codebuddy, .factory, .qoder:
+            guard let action = nested.first else { return }
+            if action == "install" || action == "uninstall" {
+                _ = try parseCommandName(HooksAgentActionName.self, raw: action)
+                return
+            }
+            try verifyOptionalTailCommand(GenericAgentHookSubcommandName.self, tail: nested)
         }
     }
 }

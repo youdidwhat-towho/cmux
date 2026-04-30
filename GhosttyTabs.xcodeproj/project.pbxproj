@@ -159,6 +159,7 @@
 		B9000039A1B2C3D4E5F60719 /* CMUXCLI+BrowserCommandInventory.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000040A1B2C3D4E5F60719 /* CMUXCLI+BrowserCommandInventory.swift */; };
 		B9000043A1B2C3D4E5F60719 /* CMUXCLI+CommandInventoryVerification.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000044A1B2C3D4E5F60719 /* CMUXCLI+CommandInventoryVerification.swift */; };
 		B9000041A1B2C3D4E5F60719 /* CMUXCLI+Completion.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000042A1B2C3D4E5F60719 /* CMUXCLI+Completion.swift */; };
+		B9000045A1B2C3D4E5F60719 /* CMUXCLI+DocsSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000046A1B2C3D4E5F60719 /* CMUXCLI+DocsSettings.swift */; };
 		B900002EA1B2C3D4E5F60719 /* CMUXCLI+Themes.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900002CA1B2C3D4E5F60719 /* CMUXCLI+Themes.swift */; };
 		B900002FA1B2C3D4E5F60719 /* CMUXCLI+ThemeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B900002DA1B2C3D4E5F60719 /* CMUXCLI+ThemeSupport.swift */; };
 		B9000031A1B2C3D4E5F60719 /* CMUXCLI+RootArguments.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000030A1B2C3D4E5F60719 /* CMUXCLI+RootArguments.swift */; };

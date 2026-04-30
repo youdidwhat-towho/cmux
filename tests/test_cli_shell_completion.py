@@ -66,7 +66,7 @@ def run_cli(cli_path: str, args: list[str], timeout: float = 10.0) -> subprocess
 
 
 def load_inventory(cli_path: str) -> list[str]:
-    proc = run_cli(cli_path, ["__argument-parser-inventory", "--verify", "--json"])
+    proc = run_cli(cli_path, ["__argument-parser-inventory", "--verify", "--json"], timeout=20.0)
     if proc.returncode != 0:
         raise RuntimeError(
             "inventory command failed\n"

@@ -22,25 +22,19 @@ extension CMUXCLI {
         case help
         case version
         case welcome
+        case docs
+        case settings
         case shortcuts
         case restoreSession = "restore-session"
         case feedback
         case feed
+        case hooks
         case themes
         case claudeTeams = "claude-teams"
         case omo
         case omx
         case omc
         case codex
-        case opencode
-        case cursor
-        case gemini
-        case copilot
-        case codebuddy
-        case factory
-        case qoder
-        case setupHooks = "setup-hooks"
-        case uninstallHooks = "uninstall-hooks"
         case ping
         case capabilities
         case auth
@@ -64,6 +58,7 @@ extension CMUXCLI {
         case listPanes = "list-panes"
         case listPaneSurfaces = "list-pane-surfaces"
         case tree
+        case top
         case focusPane = "focus-pane"
         case newPane = "new-pane"
         case newSurface = "new-surface"
@@ -103,15 +98,6 @@ extension CMUXCLI {
         case listLog = "list-log"
         case sidebarState = "sidebar-state"
         case claudeHook = "claude-hook"
-        case feedHook = "feed-hook"
-        case codexHook = "codex-hook"
-        case opencodeHook = "opencode-hook"
-        case cursorHook = "cursor-hook"
-        case geminiHook = "gemini-hook"
-        case copilotHook = "copilot-hook"
-        case codebuddyHook = "codebuddy-hook"
-        case factoryHook = "factory-hook"
-        case qoderHook = "qoder-hook"
         case setAppFocus = "set-app-focus"
         case simulateAppActive = "simulate-app-active"
         case browser
@@ -188,6 +174,40 @@ extension CMUXCLI {
         case clear
         case tui
         case help
+    }
+
+    enum DocsSubcommandName: String, CLICommandName {
+        case settings
+        case shortcuts
+        case api
+        case browser
+        case agents
+    }
+
+    enum SettingsSubcommandName: String, CLICommandName {
+        case open
+        case path
+        case docs
+    }
+
+    enum HooksTargetName: String, CLICommandName {
+        case setup
+        case uninstall
+        case feed
+        case claude
+        case codex
+        case opencode
+        case cursor
+        case gemini
+        case copilot
+        case codebuddy
+        case factory
+        case qoder
+    }
+
+    enum HooksAgentActionName: String, CLICommandName {
+        case install
+        case uninstall
     }
 
     enum ThemeSubcommandName: String, CLICommandName {
@@ -324,11 +344,17 @@ extension CMUXCLI {
 
         forms.formUnion(prefixedForms("auth", AuthSubcommandName.rawValues))
         forms.formUnion(prefixedForms("feed", ["clear", "tui"]))
+        forms.formUnion(prefixedForms("docs", DocsSubcommandName.rawValues))
+        forms.formUnion(prefixedForms("settings", SettingsSubcommandName.rawValues))
+        forms.formUnion(prefixedForms("hooks", HooksTargetName.rawValues))
+        for agent in ["codex", "opencode", "cursor", "gemini", "copilot", "codebuddy", "factory", "qoder"] {
+            forms.formUnion(prefixedForms("hooks \(agent)", HooksAgentActionName.rawValues))
+            forms.formUnion(prefixedForms("hooks \(agent)", GenericAgentHookSubcommandName.rawValues))
+        }
+        forms.formUnion(prefixedForms("hooks claude", ClaudeHookSubcommandName.rawValues.filter { !$0.hasPrefix("-") && $0 != "help" }))
         forms.formUnion(prefixedForms("themes", ThemeSubcommandName.rawValues))
         forms.formUnion(["themes set --light", "themes set --dark"])
-        for agent in ["codex", "opencode", "cursor", "gemini", "copilot", "codebuddy", "factory", "qoder"] {
-            forms.formUnion(prefixedForms(agent, AgentInstallerSubcommandName.rawValues))
-        }
+        forms.formUnion(prefixedForms("codex", AgentInstallerSubcommandName.rawValues))
 
         forms.formUnion(prefixedForms("vm", VMSubcommandName.rawValues))
         forms.formUnion(prefixedForms("cloud", VMSubcommandName.rawValues))
@@ -356,9 +382,6 @@ extension CMUXCLI {
         forms.formUnion(prefixedForms("browser input", BrowserInputSubcommandName.rawValues))
         forms.formUnion(prefixedForms("markdown", MarkdownSubcommandName.rawValues))
         forms.formUnion(prefixedForms("claude-hook", ClaudeHookSubcommandName.rawValues.filter { !$0.hasPrefix("-") && $0 != "help" }))
-        for hook in ["codex-hook", "opencode-hook", "cursor-hook", "gemini-hook", "copilot-hook", "codebuddy-hook", "factory-hook", "qoder-hook"] {
-            forms.formUnion(prefixedForms(hook, GenericAgentHookSubcommandName.rawValues))
-        }
 
         return forms.sorted()
     }
@@ -373,6 +396,10 @@ extension CMUXCLI {
         try verifyCommandNames(AuthSubcommandName.self)
         try verifyCommandNames(VMSubcommandName.self)
         try verifyCommandNames(FeedSubcommandName.self)
+        try verifyCommandNames(DocsSubcommandName.self)
+        try verifyCommandNames(SettingsSubcommandName.self)
+        try verifyCommandNames(HooksTargetName.self)
+        try verifyCommandNames(HooksAgentActionName.self)
         try verifyCommandNames(ThemeSubcommandName.self)
         try verifyCommandNames(BrowserSubcommandName.self)
         try verifyCommandNames(BrowserGetSubcommandName.self)

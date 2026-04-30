@@ -57,6 +57,8 @@ Environment:
 
 | Command | Contract |
 | --- | --- |
+| `help` | Print top-level usage without a socket. |
+| `version` | Print version summary without a socket. |
 | `welcome` | Print the welcome screen. |
 | `docs` | Print canonical docs URLs, raw GitHub resources, and useful commands for a topic. |
 | `settings` | Open Settings, print settings file paths, or print settings docs. |
@@ -96,6 +98,7 @@ Environment:
 | `list-panes` | List panes in a workspace. |
 | `list-pane-surfaces` | List surfaces in a pane. |
 | `tree` | Print a window, workspace, pane, and surface tree. |
+| `top` | Print CPU and RAM usage by cmux window, workspace, pane, surface, status tag, and browser webview. |
 | `focus-pane` | Focus a pane. |
 | `new-pane` | Create a pane with terminal or browser content. |
 | `new-surface` | Create a surface inside a pane. |
@@ -154,6 +157,13 @@ Environment:
 
 ## Command Families
 
+Feed subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `feed tui` | Open the keyboard-first Feed TUI. |
+| `feed clear` | Clear persisted Feed workstream history. |
+
 Auth subcommands:
 
 | Command | Contract |
@@ -173,6 +183,7 @@ VM subcommands:
 | `vm ssh`, `vm ssh-info` | Print SSH connection info. |
 | `vm ssh-attach` | Internal attach helper. |
 | `vm exec` | Run a shell command inside a VM. |
+| `cloud ls\|list\|new\|create\|shell\|attach\|rm\|destroy\|delete\|ssh\|ssh-info\|ssh-attach\|exec` | `cloud` aliases the same VM subcommands. |
 
 Theme subcommands:
 
@@ -215,6 +226,7 @@ tmux compatibility commands:
 | `list-buffers` | List tmux-compat buffers. |
 | `respawn-pane` | Send a restart command to a surface. |
 | `display-message` | Print or display a message. |
+| `__tmux-compat new-session\|new\|new-window\|neww\|split-window\|splitw\|select-window\|selectw\|select-pane\|selectp\|kill-window\|killw\|kill-pane\|killp\|send-keys\|send\|capture-pane\|capturep\|display-message\|display\|displayp\|list-windows\|lsw\|list-panes\|lsp\|rename-window\|renamew\|resize-pane\|resizep\|wait-for\|last-pane\|show-buffer\|showb\|save-buffer\|saveb\|last-window\|next-window\|previous-window\|set-hook\|set-buffer\|list-buffers\|has-session\|has\|select-layout\|set-option\|set\|set-window-option\|setw\|source-file\|refresh-client\|attach-session\|detach-client\|-V\|-v` | Internal tmux compatibility dispatcher commands and aliases. |
 
 Browser subcommands:
 
@@ -255,6 +267,31 @@ Browser subcommands:
 | `browser screencast` | Start or stop screencast. |
 | `browser input`, `browser input_mouse`, `browser input_keyboard`, `browser input_touch` | Send low-level input. |
 | `browser identify` | Identify browser surface context. |
+| `browser disable\|enable\|status` | Manage browser creation and link interception through the browser namespace. |
+| `browser get url\|title\|text\|html\|value\|attr\|count\|box\|styles` | Read browser state. |
+| `browser is visible\|enabled\|checked` | Check element state. |
+| `browser find role\|text\|label\|placeholder\|alt\|title\|testid\|first\|last\|nth` | Find elements by locator strategy. |
+| `browser frame main` | Return to the main frame context. |
+| `browser dialog accept\|dismiss` | Resolve pending dialogs. |
+| `browser download wait` | Wait for a download. |
+| `browser cookies get\|set\|clear` | Manage cookies. |
+| `browser storage local\|session` | Select browser storage type. |
+| `browser storage local\|session get\|set\|clear` | Manage browser local or session storage. |
+| `browser tab new\|list\|switch\|close` | Manage browser tabs. |
+| `browser console list\|clear` | Read or clear console messages. |
+| `browser errors list\|clear` | Read or clear browser errors. |
+| `browser state save\|load` | Save or load browser state. |
+| `browser trace start\|stop` | Start or stop trace capture. |
+| `browser network route\|unroute\|requests` | Manage or inspect browser network routes. |
+| `browser screencast start\|stop` | Start or stop screencast capture. |
+| `browser input mouse\|keyboard\|touch` | Send low-level browser input. |
+| `browser focus_webview\|is_webview_focused\|scrollinto\|scrollintoview` | Compatibility aliases for browser focus and scroll commands. |
+
+Markdown subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `markdown open` | Open a markdown file in the formatted viewer panel. |
 
 Hook subcommands:
 
@@ -262,12 +299,37 @@ Hook subcommands:
 | --- | --- |
 | `hooks setup` | Install hooks for all supported agents whose binaries are on `PATH`. Supports `--agent <name>` and `--yes`. |
 | `hooks uninstall` | Remove hooks for all supported agents. Supports `--agent <name>` and `--yes`. |
-| `hooks <agent> install` | Install hooks for one supported agent. `opencode` also supports `--project` for the project-local Feed plugin. |
-| `hooks <agent> uninstall` | Remove hooks for one supported agent. |
-| `hooks claude <event>` | Handle Claude Code hook events. `claude-hook <event>` remains as the main-compatibility alias. |
-| `hooks codex <event>` | Handle Codex hook events. `codex install-hooks` remains as the main-compatibility installer alias. |
-| `hooks feed --source <agent>` | Convert agent hook events into Feed context. |
-| `hooks <agent> <event>` | Generic hook surface for `opencode`, `cursor`, `gemini`, `copilot`, `codebuddy`, `factory`, and `qoder`. |
+| `hooks feed` | Convert agent hook events into Feed context. |
+| `hooks feed --source <agent>` | Convert agent hook events into Feed context with an explicit source. |
+| `hooks codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder` | Show hook namespace usage for one supported agent. |
+| `hooks codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder install` | Install hooks for one supported agent. `opencode` also supports `--project` for the project-local Feed plugin. |
+| `hooks codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder uninstall` | Remove hooks for one supported agent. |
+| `hooks codex\|opencode\|cursor\|gemini\|copilot\|codebuddy\|factory\|qoder session-start\|prompt-submit\|stop\|agent-response\|shell-exec\|shell-done\|session-end` | Handle generic agent hook events. |
+| `hooks claude` | Show Claude hook namespace usage. |
+| `hooks claude session-start\|active\|stop\|idle\|prompt-submit\|notification\|notify\|session-end\|pre-tool-use` | Handle Claude Code hook events. `claude-hook <event>` remains as the main-compatibility alias. |
+| `codex install-hooks\|uninstall-hooks` | Compatibility alias for installing or uninstalling Codex hooks. |
+| `claude-hook session-start\|active\|stop\|idle\|prompt-submit\|notification\|notify\|session-end\|pre-tool-use` | Compatibility alias for Claude Code hook events from stdin JSON. |
+
+Docs topics:
+
+| Command | Contract |
+| --- | --- |
+| `docs` | List docs topics without a socket. |
+| `docs settings` | Print the configuration docs URL, raw schema URL, settings file paths, backup reminder, and reload command. |
+| `docs shortcuts` | Print shortcut docs and raw shortcut data resources. |
+| `docs api` | Print API docs and raw CLI contract resources. |
+| `docs browser` | Print browser automation docs and raw browser skill resources. |
+| `docs agents` | Print agent integration docs and raw integration resources. |
+
+Settings subcommands:
+
+| Command | Contract |
+| --- | --- |
+| `settings` | Open the Settings window, launching cmux if needed. |
+| `settings open [target]` | Open Settings to an optional target section. |
+| `settings path` | Print settings.json paths, docs URL, schema URL, backup reminder, and reload command without a socket. |
+| `settings docs` | Print the same output as `docs settings` without a socket. |
+| `settings <target>` | Open Settings to a target section. Supported aliases include `shortcuts`, `json`, `settings-json`, `browser`, and `automation`. |
 
 Docs topics:
 
@@ -345,6 +407,7 @@ the expected text without connecting to a cmux socket.
 - `cmux list-panes --help` -> `Usage: cmux list-panes`
 - `cmux list-pane-surfaces --help` -> `Usage: cmux list-pane-surfaces`
 - `cmux tree --help` -> `Usage: cmux tree`
+- `cmux top --help` -> `Usage: cmux top`
 - `cmux focus-pane --help` -> `Usage: cmux focus-pane`
 - `cmux new-pane --help` -> `Usage: cmux new-pane`
 - `cmux new-surface --help` -> `Usage: cmux new-surface`
