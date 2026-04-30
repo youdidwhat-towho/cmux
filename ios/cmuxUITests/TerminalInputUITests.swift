@@ -19,7 +19,7 @@ final class TerminalInputUITests: XCTestCase {
         XCTAssertTrue(serverButton.waitForExistence(timeout: 6), "Expected input fixture server pin")
         serverButton.tap()
 
-        let detail = app.otherElements["terminal.workspace.detail"]
+        let detail = terminalDetail(in: app)
         XCTAssertTrue(detail.waitForExistence(timeout: 4), "Expected terminal workspace detail")
         detail.tap()
         app.typeText(Fixture.typedPreview)
@@ -39,7 +39,7 @@ final class TerminalInputUITests: XCTestCase {
         XCTAssertTrue(serverButton.waitForExistence(timeout: 6), "Expected input fixture server pin")
         serverButton.tap()
 
-        let detail = app.otherElements["terminal.workspace.detail"]
+        let detail = terminalDetail(in: app)
         XCTAssertTrue(detail.waitForExistence(timeout: 4), "Expected terminal workspace detail")
         detail.tap()
 
@@ -58,5 +58,9 @@ final class TerminalInputUITests: XCTestCase {
         let backButton = navigationBar.buttons.matching(NSPredicate(format: "identifier != %@", "Reconnect")).firstMatch
         XCTAssertTrue(backButton.waitForExistence(timeout: 4), "Expected terminal back button")
         return backButton
+    }
+
+    private func terminalDetail(in app: XCUIApplication) -> XCUIElement {
+        app.otherElements.matching(identifier: "terminal.workspace.detail").firstMatch
     }
 }

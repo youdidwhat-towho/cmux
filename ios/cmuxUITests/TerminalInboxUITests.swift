@@ -32,8 +32,8 @@ final class TerminalInboxUITests: XCTestCase {
             "Expected the newer unread workspace to sort ahead of the older workspace"
         )
 
-        XCTAssertTrue(app.staticTexts["Connected"].exists)
-        XCTAssertTrue(app.staticTexts["Disconnected"].exists)
+        XCTAssertTrue(workspace(currentWorkspace, containsPreview: "Connected"))
+        XCTAssertTrue(workspace(olderWorkspace, containsPreview: "Disconnected"))
     }
 
     func testInboxFixtureSelectionUpdatesWorkspaceDetail() {
