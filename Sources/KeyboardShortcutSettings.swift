@@ -363,9 +363,6 @@ enum KeyboardShortcutSettings {
             proposedAction: Action,
             configuredShortcut: StoredShortcut
         ) -> Bool {
-            guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else {
-                return false
-            }
             guard conflictScope == proposedAction.conflictScope else {
                 return false
             }
@@ -378,8 +375,8 @@ enum KeyboardShortcutSettings {
         }
 
         func normalizedRecordedShortcutResult(_ shortcut: StoredShortcut) -> RecordedShortcutResolution {
-            guard !shortcut.isUnbound else {
-                return .accepted(shortcut)
+            if shortcut.isUnbound {
+                return .accepted(.unbound)
             }
 
             if let conflictingAction = KeyboardShortcutSettings.conflictingAction(
@@ -395,8 +392,8 @@ enum KeyboardShortcutSettings {
         func resolvedRecordedShortcutIgnoringConflicts(
             _ shortcut: StoredShortcut
         ) -> RecordedShortcutResolution {
-            guard !shortcut.isUnbound else {
-                return .accepted(shortcut)
+            if shortcut.isUnbound {
+                return .accepted(.unbound)
             }
 
             switch self {
@@ -470,6 +467,7 @@ enum KeyboardShortcutSettings {
 
         for action in Action.allCases where action != .showHideAllWindows {
             let shortcut = KeyboardShortcutSettings.shortcut(for: action)
+            guard !shortcut.isUnbound else { continue }
             if shortcut.hasChord {
                 reserved.append(StoredShortcut(first: shortcut.firstStroke))
                 continue
@@ -535,9 +533,7 @@ enum KeyboardShortcutSettings {
         _ configuredShortcut: StoredShortcut,
         configuredUsesNumberedDigitMatching: Bool
     ) -> Bool {
-        guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else {
-            return false
-        }
+        guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else { return false }
 
         switch (proposedShortcut.hasChord, configuredShortcut.hasChord) {
         case (false, false):
@@ -729,9 +725,7 @@ enum KeyboardShortcutSettings {
         postDidChangeNotification(action: action)
     }
 
-    static func clearShortcut(for action: Action) {
-        setShortcut(.unbound, for: action)
-    }
+    static func clearShortcut(for action: Action) { setShortcut(.unbound, for: action) }
 
     static func resetAll() {
         for action in Action.allCases {
@@ -1823,6 +1817,10 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     var chordControl: Bool
     var chordKeyCode: UInt16?
 
+    static var unbound: StoredShortcut {
+        StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
+    }
+
     init(
         key: String,
         command: Bool,
@@ -1868,8 +1866,6 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
-    static let unbound = StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
-
     private enum CodingKeys: String, CodingKey {
         case key
         case command
@@ -1903,6 +1899,10 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
+    var isUnbound: Bool {
+        key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var firstStroke: ShortcutStroke {
         ShortcutStroke(
             key: key,
@@ -1926,23 +1926,13 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
-    var isUnbound: Bool {
-        key.isEmpty &&
-            !command &&
-            !shift &&
-            !option &&
-            !control &&
-            keyCode == nil &&
-            secondStroke == nil
-    }
-
     var hasChord: Bool {
         secondStroke != nil
     }
 
     var displayString: String {
         if isUnbound {
-            return String(localized: "shortcut.unbound", defaultValue: "None")
+            return String(localized: "shortcut.unbound.displayValue", defaultValue: "None")
         }
         if let secondStroke {
             return "\(firstStroke.displayString) \(secondStroke.displayString)"
@@ -1980,11 +1970,12 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var hasPrimaryModifier: Bool {
-        firstStroke.hasPrimaryModifier
+        guard !isUnbound else { return false }
+        return firstStroke.hasPrimaryModifier
     }
 
     var keyEquivalent: KeyEquivalent? {
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.keyEquivalent
     }
 
@@ -1993,7 +1984,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var menuItemKeyEquivalent: String? {
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.menuItemKeyEquivalent
     }
 
@@ -2006,8 +1997,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         event: NSEvent,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
-        guard !isUnbound else { return false }
-        guard !hasChord else { return false }
+        guard !isUnbound, !hasChord else { return false }
         return firstStroke.matches(event: event, layoutCharacterProvider: layoutCharacterProvider)
     }
 
@@ -2017,8 +2007,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         eventCharacter: String?,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
-        guard !isUnbound else { return false }
-        guard !hasChord else { return false }
+        guard !isUnbound, !hasChord else { return false }
         return firstStroke.matches(
             keyCode: keyCode,
             modifierFlags: modifierFlags,
@@ -2028,8 +2017,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
-        guard !isUnbound else { return nil }
-        guard !hasChord else { return nil }
+        guard !isUnbound, !hasChord else { return nil }
         return firstStroke.carbonHotKeyRegistration
     }
 }
@@ -2164,8 +2152,7 @@ extension ShortcutStroke {
 
 extension StoredShortcut {
     static func parseConfig(_ rawValue: String) -> StoredShortcut? {
-        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty || ["none", "clear", "unbound"].contains(trimmed.lowercased()) {
+        if isUnboundConfigToken(rawValue) {
             return .unbound
         }
         return parseConfig(strokes: [rawValue])
@@ -2173,11 +2160,8 @@ extension StoredShortcut {
 
     static func parseConfig(strokes: [String]) -> StoredShortcut? {
         guard !strokes.isEmpty, strokes.count <= 2 else { return nil }
-        if strokes.count == 1, let first = strokes.first {
-            let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty || ["none", "clear", "unbound"].contains(trimmed.lowercased()) {
-                return .unbound
-            }
+        if strokes.count == 1, let rawValue = strokes.first, isUnboundConfigToken(rawValue) {
+            return .unbound
         }
         let parsedStrokes = strokes.compactMap(ShortcutStroke.parseConfig(_:))
         guard parsedStrokes.count == strokes.count, let firstStroke = parsedStrokes.first else {
@@ -2189,13 +2173,16 @@ extension StoredShortcut {
     }
 
     var configIdentifier: String {
-        if isUnbound {
-            return ""
-        }
+        if isUnbound { return "none" }
         if let secondStroke {
             return "\(firstStroke.configString()) \(secondStroke.configString())"
         }
         return firstStroke.configString()
+    }
+
+    private static func isUnboundConfigToken(_ rawValue: String) -> Bool {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty || normalized == "none" || normalized == "clear" || normalized == "unbound"
     }
 }
 
@@ -2334,419 +2321,5 @@ struct ShortcutRecorderValidationPresentation: Equatable {
         }
 
         return true
-    }
-}
-
-/// View for recording a keyboard shortcut
-struct KeyboardShortcutRecorder: View {
-    let label: String
-    var subtitle: String? = nil
-    @Binding var shortcut: StoredShortcut
-    var displayString: (StoredShortcut) -> String = { $0.displayString }
-    var transformRecordedShortcut: (StoredShortcut) -> KeyboardShortcutSettings.RecordedShortcutResolution = {
-        .accepted($0)
-    }
-    var validationMessage: String? = nil
-    var validationButtonTitle: String? = nil
-    var onValidationButtonPressed: (() -> Void)? = nil
-    var onClearButtonPressed: (() -> Void)? = nil
-    var undoButtonTitle: String? = nil
-    var onUndoButtonPressed: (() -> Void)? = nil
-    var hasPendingRejection: Bool = false
-    var isDisabled: Bool = false
-    var onRecordingChanged: (Bool) -> Void = { _ in }
-    var onRecorderFeedbackChanged: (ShortcutRecorderRejectedAttempt?) -> Void = { _ in }
-    @State private var isRecording = false
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: subtitle == nil ? .center : .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(label)
-                    if let subtitle {
-                        Text(subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                ShortcutRecorderButton(
-                    shortcut: $shortcut,
-                    isRecording: $isRecording,
-                    hasPendingRejection: hasPendingRejection,
-                    displayString: displayString,
-                    transformRecordedShortcut: transformRecordedShortcut,
-                    onRecordingChanged: onRecordingChanged,
-                    onRecorderFeedbackChanged: onRecorderFeedbackChanged
-                )
-                    .frame(width: 160)
-                    .disabled(isDisabled)
-
-                if let onClearButtonPressed {
-                    Button(String(localized: "shortcut.recorder.clear", defaultValue: "Clear")) {
-                        KeyboardShortcutRecorderActivity.stopAllRecording()
-                        onClearButtonPressed()
-                        onRecorderFeedbackChanged(nil)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .disabled(isDisabled || shortcut.isUnbound)
-                    .accessibilityIdentifier("ShortcutRecorderClearButton")
-                }
-            }
-
-            if let validationMessage {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-
-                    Text(validationMessage)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    if let validationButtonTitle, let onValidationButtonPressed {
-                        Button(validationButtonTitle, action: onValidationButtonPressed)
-                            .buttonStyle(.link)
-                            .font(.caption)
-                    }
-
-                    if let undoButtonTitle, let onUndoButtonPressed {
-                        Button(undoButtonTitle, action: onUndoButtonPressed)
-                            .buttonStyle(.link)
-                            .font(.caption)
-                    }
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background {
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.red.opacity(0.12))
-                }
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .stroke(Color.red.opacity(0.35), lineWidth: 1)
-                }
-                .accessibilityIdentifier("ShortcutRecorderValidationMessage")
-            }
-        }
-    }
-}
-
-private struct ShortcutRecorderButton: NSViewRepresentable {
-    @Binding var shortcut: StoredShortcut
-    @Binding var isRecording: Bool
-    var hasPendingRejection: Bool = false
-    let displayString: (StoredShortcut) -> String
-    let transformRecordedShortcut: (StoredShortcut) -> KeyboardShortcutSettings.RecordedShortcutResolution
-    let onRecordingChanged: (Bool) -> Void
-    let onRecorderFeedbackChanged: (ShortcutRecorderRejectedAttempt?) -> Void
-
-    func makeNSView(context: Context) -> ShortcutRecorderNSButton {
-        let button = ShortcutRecorderNSButton()
-        button.shortcut = shortcut
-        button.displayString = displayString
-        button.transformRecordedShortcut = transformRecordedShortcut
-        button.onShortcutRecorded = { newShortcut in
-            shortcut = newShortcut
-            isRecording = false
-            onRecorderFeedbackChanged(nil)
-        }
-        button.onRecordingChanged = { recording in
-            isRecording = recording
-            onRecordingChanged(recording)
-        }
-        button.onRecorderFeedbackChanged = onRecorderFeedbackChanged
-        return button
-    }
-
-    func updateNSView(_ nsView: ShortcutRecorderNSButton, context: Context) {
-        nsView.shortcut = shortcut
-        nsView.displayString = displayString
-        nsView.transformRecordedShortcut = transformRecordedShortcut
-        nsView.onRecordingChanged = { recording in
-            isRecording = recording
-            onRecordingChanged(recording)
-        }
-        nsView.onRecorderFeedbackChanged = onRecorderFeedbackChanged
-        if !hasPendingRejection {
-            nsView.clearPendingRejection()
-        }
-        nsView.updateTitle()
-    }
-}
-
-final class ShortcutRecorderNSButton: NSButton {
-    var shortcut: StoredShortcut = KeyboardShortcutSettings.showNotificationsDefault {
-        didSet {
-            if shortcut != oldValue {
-                hasPendingRejection = false
-            }
-        }
-    }
-    var displayString: (StoredShortcut) -> String = { $0.displayString }
-    var transformRecordedShortcut: (StoredShortcut) -> KeyboardShortcutSettings.RecordedShortcutResolution = {
-        .accepted($0)
-    }
-    var onShortcutRecorded: ((StoredShortcut) -> Void)?
-    var onRecordingChanged: ((Bool) -> Void)?
-    var onRecorderFeedbackChanged: ((ShortcutRecorderRejectedAttempt?) -> Void)?
-    private var isRecording = false
-    private var hasPendingRejection = false
-    private var eventMonitor: Any?
-    private var pendingChordStart: ShortcutStroke?
-    private var hasRegisteredRecordingActivity = false
-    private weak var previousFirstResponder: NSResponder?
-
-    override var acceptsFirstResponder: Bool {
-        true
-    }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard isRecording else {
-            return super.performKeyEquivalent(with: event)
-        }
-        return handleRecordingEvent(event) == nil
-    }
-
-    override func keyDown(with event: NSEvent) {
-        guard isRecording else {
-            super.keyDown(with: event)
-            return
-        }
-        _ = handleRecordingEvent(event)
-    }
-
-    override init(frame frameRect: NSRect) {
-        super.init(frame: frameRect)
-        setup()
-    }
-
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
-    }
-
-    private func setup() {
-        bezelStyle = .rounded
-        setButtonType(.momentaryPushIn)
-        target = self
-        action = #selector(buttonClicked)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(stopRecordingFromNotification),
-            name: KeyboardShortcutRecorderActivity.stopAllNotification,
-            object: nil
-        )
-        updateTitle()
-    }
-
-    func updateTitle() {
-        if isRecording {
-            if let pendingChordStart {
-                let format = String(localized: "shortcut.recorder.pendingChord", defaultValue: "%@ …")
-                title = String.localizedStringWithFormat(format, pendingChordStart.displayString)
-            } else {
-                title = String(localized: "shortcut.pressShortcut.prompt", defaultValue: "Press shortcut…")
-            }
-        } else if hasPendingRejection {
-            title = String(localized: "shortcut.pressShortcut.prompt", defaultValue: "Press shortcut…")
-        } else {
-            title = displayString(shortcut)
-        }
-    }
-
-    @objc private func buttonClicked() {
-        if isRecording {
-            if let pendingChordStart {
-                let storedShortcut = StoredShortcut(first: pendingChordStart)
-                switch transformRecordedShortcut(storedShortcut) {
-                case let .accepted(transformedShortcut):
-                    shortcut = transformedShortcut
-                    onShortcutRecorded?(transformedShortcut)
-                    onRecorderFeedbackChanged?(nil)
-                case let .rejected(reason):
-                    hasPendingRejection = true
-                    onRecorderFeedbackChanged?(
-                        ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: storedShortcut)
-                    )
-                    stopRecording()
-                    return
-                }
-            }
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-
-    private func startRecording() {
-        guard !isRecording else { return }
-        KeyboardShortcutRecorderActivity.stopAllRecording()
-        isRecording = true
-        hasPendingRejection = false
-        pendingChordStart = nil
-        previousFirstResponder = window?.firstResponder
-        window?.makeFirstResponder(self)
-        registerRecordingActivityIfNeeded()
-        onRecordingChanged?(true)
-        onRecorderFeedbackChanged?(nil)
-        updateTitle()
-
-        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .systemDefined]) { [weak self] event in
-            self?.handleRecordingEvent(event) ?? event
-        }
-
-        // Also stop recording if window loses focus
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(windowResigned),
-            name: NSWindow.didResignKeyNotification,
-            object: window
-        )
-    }
-
-    private func handleRecordingEvent(_ event: NSEvent) -> NSEvent? {
-        if ShortcutStroke.isEscapeCancelEvent(event) {
-            stopRecording()
-            return nil
-        }
-
-        if pendingChordStart == nil {
-            switch ShortcutStroke.recordingResult(from: event, requireModifier: true) {
-            case let .accepted(firstStroke):
-                let firstShortcut = StoredShortcut(first: firstStroke)
-                switch transformRecordedShortcut(firstShortcut) {
-                case let .accepted(transformedShortcut):
-                    shortcut = transformedShortcut
-                    onShortcutRecorded?(transformedShortcut)
-                    onRecorderFeedbackChanged?(nil)
-                    stopRecording()
-                    return nil
-                case let .rejected(reason):
-                    hasPendingRejection = true
-                    onRecorderFeedbackChanged?(
-                        ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: firstShortcut)
-                    )
-                    stopRecording()
-                    return nil
-                }
-            case let .rejected(reason):
-                hasPendingRejection = true
-                onRecorderFeedbackChanged?(
-                    ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: nil)
-                )
-                stopRecording()
-                return nil
-            case .unsupportedKey:
-                return nil
-            }
-        }
-
-        guard let pendingChordStart else {
-            return nil
-        }
-
-        if let secondStroke = ShortcutStroke.from(event: event, requireModifier: false) {
-            let newShortcut = StoredShortcut(first: pendingChordStart, second: secondStroke)
-            switch transformRecordedShortcut(newShortcut) {
-            case let .accepted(transformedShortcut):
-                shortcut = transformedShortcut
-                onShortcutRecorded?(transformedShortcut)
-                onRecorderFeedbackChanged?(nil)
-                stopRecording()
-                return nil
-            case let .rejected(reason):
-                hasPendingRejection = true
-                onRecorderFeedbackChanged?(
-                    ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: newShortcut)
-                )
-                stopRecording()
-                return nil
-            }
-        }
-
-        // Consume unsupported keys while recording to avoid triggering app shortcuts.
-        return nil
-    }
-
-    private func stopRecording() {
-        guard isRecording else { return }
-        isRecording = false
-        pendingChordStart = nil
-        unregisterRecordingActivityIfNeeded()
-        onRecordingChanged?(false)
-        updateTitle()
-
-        if let monitor = eventMonitor {
-            NSEvent.removeMonitor(monitor)
-            eventMonitor = nil
-        }
-
-        NotificationCenter.default.removeObserver(self, name: NSWindow.didResignKeyNotification, object: window)
-
-        if window?.firstResponder === self {
-            window?.makeFirstResponder(previousFirstResponder)
-        }
-        previousFirstResponder = nil
-    }
-
-    @objc private func windowResigned() {
-        stopRecording()
-    }
-
-    @objc private func stopRecordingFromNotification() {
-        stopRecording()
-    }
-
-    func clearPendingRejection() {
-        guard hasPendingRejection else { return }
-        hasPendingRejection = false
-        updateTitle()
-    }
-
-    private func registerRecordingActivityIfNeeded() {
-        guard !hasRegisteredRecordingActivity else { return }
-        hasRegisteredRecordingActivity = true
-        KeyboardShortcutRecorderActivity.beginRecording()
-    }
-
-    private func unregisterRecordingActivityIfNeeded() {
-        guard hasRegisteredRecordingActivity else { return }
-        hasRegisteredRecordingActivity = false
-        KeyboardShortcutRecorderActivity.endRecording()
-    }
-
-#if DEBUG
-    var debugIsRecording: Bool {
-        isRecording
-    }
-
-    var debugHasPendingRejection: Bool {
-        hasPendingRejection
-    }
-
-    func debugSetPendingChordStart(_ stroke: ShortcutStroke?) {
-        isRecording = true
-        pendingChordStart = stroke
-        updateTitle()
-    }
-
-    func debugHandleRecordingEvent(_ event: NSEvent) -> NSEvent? {
-        handleRecordingEvent(event)
-    }
-#endif
-
-    deinit {
-        stopRecording()
-        NotificationCenter.default.removeObserver(
-            self,
-            name: KeyboardShortcutRecorderActivity.stopAllNotification,
-            object: nil
-        )
     }
 }

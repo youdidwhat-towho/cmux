@@ -8,7 +8,7 @@
 13964	Sources/Workspace.swift
 13428	Sources/GhosttyTerminalView.swift
 10597	Sources/Panels/BrowserPanel.swift
-8457	Sources/cmuxApp.swift
+8389	Sources/cmuxApp.swift
 7492	Sources/TabManager.swift
 6811	Sources/Panels/BrowserPanelView.swift
 5491	cmuxTests/AppDelegateShortcutRoutingTests.swift
@@ -23,9 +23,9 @@
 3145	cmuxTests/BrowserPanelTests.swift
 2863	cmuxTests/WindowAndDragTests.swift
 2830	Sources/CmuxConfig.swift
-2752	Sources/KeyboardShortcutSettings.swift
 2609	Sources/SessionIndexView.swift
 2491	Sources/Panels/CmuxWebView.swift
+2325	Sources/KeyboardShortcutSettings.swift
 2317	cmuxTests/TabManagerUnitTests.swift
 2172	Sources/TerminalWindowPortal.swift
 2153	cmuxTests/SessionPersistenceTests.swift
@@ -36,7 +36,7 @@
 1879	Sources/FileExplorerView.swift
 1784	cmuxTests/ShortcutAndCommandPaletteTests.swift
 1692	cmuxTests/CmuxConfigTests.swift
-1681	Sources/KeyboardShortcutSettingsFileStore.swift
+1679	Sources/KeyboardShortcutSettingsFileStore.swift
 1517	cmuxUITests/BrowserPaneNavigationKeybindUITests.swift
 1454	Sources/TerminalNotificationStore.swift
 1365	Sources/Feed/FeedButtonStyleDebugWindowController.swift
