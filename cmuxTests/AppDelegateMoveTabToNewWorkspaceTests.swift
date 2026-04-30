@@ -26,7 +26,7 @@ final class AppDelegateMoveTabToNewWorkspaceTests: XCTestCase {
 
         let windowId = UUID()
         let window = makeMainWindow(id: windowId)
-        defer { window.close() }
+        defer { window.orderOut(nil) }
 
         let manager = TabManager()
         app.registerMainWindow(
@@ -70,7 +70,7 @@ final class AppDelegateMoveTabToNewWorkspaceTests: XCTestCase {
 
         let windowId = UUID()
         let window = makeMainWindow(id: windowId)
-        defer { window.close() }
+        defer { window.orderOut(nil) }
 
         let manager = TabManager()
         app.registerMainWindow(
