@@ -32,7 +32,7 @@ on:
       - task-move-ios-app-into-cmux-repo
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && format('{0}-{1}', inputs.ref || github.ref, inputs.test_filter) || github.ref }}
   cancel-in-progress: true
 
 jobs:
