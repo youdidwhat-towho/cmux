@@ -32,14 +32,10 @@ on:
       - task-move-ios-app-into-cmux-repo
 
 jobs:
-  e2e:
-    name: e2e (${{ matrix.test_filter }})
+  ghosttykit:
+    name: prepare GhosttyKit
     runs-on: ${{ inputs.runner || 'macos-26' }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests","TerminalHostEditorUITests","TerminalInboxUITests","TerminalInputUITests","TerminalReconnectUITests","AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
+    timeout-minutes: 30
     env:
       TEST_REF: ${{ inputs.ref || github.ref }}
     steps:
@@ -66,7 +62,6 @@ jobs:
           echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
           export DEVELOPER_DIR="$XCODE_DIR"
           xcodebuild -version
-          xcrun simctl list runtimes
 
       - name: Cache GhosttyKit.xcframework
         id: cache-ghosttykit
@@ -81,15 +76,6 @@ jobs:
         continue-on-error: true
         run: |
           ./scripts/download-prebuilt-ghosttykit.sh
-
-      - name: Install XcodeGen
-        run: |
-          set -euo pipefail
-          if command -v xcodegen >/dev/null 2>&1; then
-            xcodegen --version
-          else
-            brew install xcodegen
-          fi
 
       - name: Install zig for GhosttyKit fallback
         if: steps.cache-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
@@ -130,16 +116,84 @@ jobs:
         if: steps.cache-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
         run: |
           set -euo pipefail
-          CMUX_GHOSTTYKIT_NO_PREBUILT=1 ./scripts/ensure-ghosttykit.sh
+          CMUX_GHOSTTYKIT_NO_PREBUILT=1 ./scripts/setup.sh
+
+      - name: Materialize GhosttyKit.xcframework
+        run: |
+          set -euo pipefail
+          test -d GhosttyKit.xcframework
           if [ -L GhosttyKit.xcframework ]; then
             target="$(readlink GhosttyKit.xcframework)"
             rm GhosttyKit.xcframework
             cp -R "$target" GhosttyKit.xcframework
           fi
+          test -d GhosttyKit.xcframework
+          tar czf "$RUNNER_TEMP/GhosttyKit.xcframework.tar.gz" GhosttyKit.xcframework
+
+      - name: Upload GhosttyKit.xcframework
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ghosttykit-xcframework
+          path: ${{ runner.temp }}/GhosttyKit.xcframework.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e:
+    name: e2e (${{ matrix.test_filter }})
+    needs: ghosttykit
+    runs-on: ${{ inputs.runner || 'macos-26' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests","TerminalHostEditorUITests","TerminalInboxUITests","TerminalInputUITests","TerminalReconnectUITests","AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
+    env:
+      TEST_REF: ${{ inputs.ref || github.ref }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+            XCODE_DIR="/Applications/Xcode.app/Contents/Developer"
+          else
+            XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+            if [ -n "$XCODE_APP" ]; then
+              XCODE_DIR="$XCODE_APP/Contents/Developer"
+            else
+              echo "No Xcode.app found under /Applications" >&2
+              exit 1
+            fi
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_DIR"
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Download GhosttyKit.xcframework
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ghosttykit-xcframework
+          path: ${{ runner.temp }}/ghosttykit
 
       - name: Validate GhosttyKit.xcframework
         run: |
+          tar xzf "$RUNNER_TEMP/ghosttykit/GhosttyKit.xcframework.tar.gz" -C .
           test -d GhosttyKit.xcframework
+
+      - name: Install XcodeGen
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
 
       - name: Cache Swift packages
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
