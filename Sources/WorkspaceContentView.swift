@@ -248,7 +248,14 @@ struct WorkspaceContentView: View {
                         // indicator and where keyboard input/flash-focus actually lands.
                         guard isWorkspaceInputActive else { return }
                         guard workspace.panels[panel.id] != nil else { return }
-                        workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
+                        let focusWindow = (panel as? TerminalPanel)?.hostedView.window
+                            ?? NSApp.keyWindow
+                            ?? NSApp.mainWindow
+                        _ = AppDelegate.shared?.requestTerminalFirstResponderFocus(
+                            workspaceId: workspace.id,
+                            panelId: panel.id,
+                            in: focusWindow
+                        )
                     },
                     onRequestPanelFocus: {
                         guard isWorkspaceInputActive else { return }
