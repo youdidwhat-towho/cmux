@@ -2155,8 +2155,10 @@ final class WorkspacePlacementSettingsTests: XCTestCase {
         }
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
-        defaults.set(NewWorkspacePlacement.top.rawValue, forKey: WorkspacePlacementSettings.placementKey)
-        XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .top)
+        for placement in NewWorkspacePlacement.allCases {
+            defaults.set(placement.rawValue, forKey: WorkspacePlacementSettings.placementKey)
+            XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), placement)
+        }
 
         defaults.set("nope", forKey: WorkspacePlacementSettings.placementKey)
         XCTAssertEqual(WorkspacePlacementSettings.current(defaults: defaults), .afterCurrent)
