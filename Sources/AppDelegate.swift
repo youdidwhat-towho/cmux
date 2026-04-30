@@ -5511,6 +5511,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func noteFocusedMainPanelShortcutIntent(for event: NSEvent) {
+        if let context = preferredMainWindowContextForShortcutRouting(event: event) {
+            let targetWindow = context.window ?? windowForMainWindowId(context.windowId)
+            _ = noteFocusedMainPanelShortcutIntent(in: targetWindow)
+            return
+        }
         let targetWindow = mainWindowForShortcutEvent(event) ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
         _ = noteFocusedMainPanelShortcutIntent(in: targetWindow)
     }

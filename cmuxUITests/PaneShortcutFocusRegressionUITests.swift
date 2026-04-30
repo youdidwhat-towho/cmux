@@ -158,11 +158,15 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
             app.launch()
         }
 
-        if app.state == .runningForeground || app.state == .runningBackground {
+        if app.state != .runningForeground {
+            app.activate()
+        }
+
+        if waitForCondition(timeout: 3.0, predicate: { app.state == .runningForeground }) {
             return
         }
 
-        XCTFail("App failed to start. state=\(app.state.rawValue)")
+        XCTFail("App failed to reach foreground. state=\(app.state.rawValue)")
     }
 
     private func waitForCondition(timeout: TimeInterval, predicate: @escaping () -> Bool) -> Bool {
