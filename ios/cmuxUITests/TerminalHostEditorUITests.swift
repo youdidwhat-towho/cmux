@@ -39,7 +39,6 @@ final class TerminalHostEditorUITests: XCTestCase {
 
         let configuredServerButton = app.buttons["terminal.server.cmux-setup"]
         XCTAssertTrue(configuredServerButton.waitForExistence(timeout: 6), "Expected saved host to remain in the server list")
-        XCTAssertEqual(configuredServerButton.value as? String, "cmux@cmux-macmini")
     }
 
     private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Bool {

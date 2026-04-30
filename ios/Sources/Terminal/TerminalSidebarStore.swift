@@ -2862,6 +2862,7 @@ private final class TerminalUITestDirectReconnectTransport: TerminalTransport, @
             try? await Task.sleep(for: .milliseconds(2_000))
             guard !Task.isCancelled else { return }
             self.eventHandler?(.connected)
+            self.eventHandler?(.notice("reconnected"))
             self.eventHandler?(.output(Data("cmux@fixture:reconnected$ ".utf8)))
         }
     }
