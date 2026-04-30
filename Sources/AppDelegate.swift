@@ -11145,10 +11145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Surface navigation (legacy Ctrl+Tab support)
         if matchTabShortcut(event: event, shortcut: StoredShortcut(key: "\t", command: false, shift: false, option: false, control: true)) {
             tabManager?.selectNextSurface()
+            noteFocusedMainPanelShortcutIntent(for: event)
             return true
         }
         if matchTabShortcut(event: event, shortcut: StoredShortcut(key: "\t", command: false, shift: true, option: false, control: true)) {
             tabManager?.selectPreviousSurface()
+            noteFocusedMainPanelShortcutIntent(for: event)
             return true
         }
 

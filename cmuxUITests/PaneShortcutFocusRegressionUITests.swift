@@ -59,8 +59,16 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
             return
         }
 
-        _ = socketJSON(method: "surface.focus", params: ["surface_id": rightSurfaceId])
-        _ = socketJSON(method: "pane.focus", params: ["pane_id": leftPaneId])
+        guard let focusRight = socketJSON(method: "surface.focus", params: ["surface_id": rightSurfaceId]),
+              (focusRight["ok"] as? Bool) == true else {
+            XCTFail("Expected surface.focus to succeed for right surface")
+            return
+        }
+        guard let focusLeftPane = socketJSON(method: "pane.focus", params: ["pane_id": leftPaneId]),
+              (focusLeftPane["ok"] as? Bool) == true else {
+            XCTFail("Expected pane.focus to succeed for left pane")
+            return
+        }
 
         guard let leftSurfacesBefore = paneSurfaces(paneId: leftPaneId),
               leftSurfacesBefore.contains(where: { ($0["id"] as? String) == newLeftSurfaceId }),
@@ -69,7 +77,10 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
             return
         }
 
-        let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore)
+        guard let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore) else {
+            XCTFail("Expected selected surface \(selectedBefore) to exist in left pane surfaces \(leftSurfacesBefore)")
+            return
+        }
         app.typeKey("]", modifierFlags: [.command, .shift])
 
         XCTAssertTrue(
@@ -132,10 +143,10 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
         surfaces.first { ($0["selected"] as? Bool) == true }?["id"] as? String
     }
 
-    private func nextSurfaceId(after selectedSurfaceId: String, in surfaces: [[String: Any]]) -> String {
+    private func nextSurfaceId(after selectedSurfaceId: String, in surfaces: [[String: Any]]) -> String? {
         let ids = surfaces.compactMap { $0["id"] as? String }
         guard let index = ids.firstIndex(of: selectedSurfaceId), !ids.isEmpty else {
-            return selectedSurfaceId
+            return nil
         }
         return ids[(index + 1) % ids.count]
     }

@@ -13,6 +13,9 @@ extension MainWindowFocusController {
         if TerminalSurfaceRegistry.shared.isRightSidebarDockSurface(id: panelId) {
             return true
         }
+        if hasPendingRightSidebarFocusRequest {
+            return false
+        }
         switch intent {
         case .rightSidebar:
             return false
@@ -21,16 +24,18 @@ extension MainWindowFocusController {
         }
     }
 
+    @discardableResult
     func noteMainPanelFocusIntent(
         workspaceId: UUID,
         panelId: UUID,
-        source _: MainWindowMainPanelFocusSource
-    ) {
+        source _unused: MainWindowMainPanelFocusSource
+    ) -> Bool {
         guard workspaceContainsPanel(workspaceId: workspaceId, panelId: panelId) else {
             publishFeedFocusSnapshot()
-            return
+            return false
         }
         noteMainPanelInteraction(workspaceId: workspaceId, panelId: panelId)
+        return true
     }
 
     @discardableResult
@@ -40,8 +45,7 @@ extension MainWindowFocusController {
             publishFeedFocusSnapshot()
             return false
         }
-        noteMainPanelFocusIntent(workspaceId: workspace.id, panelId: panelId, source: source)
-        return true
+        return noteMainPanelFocusIntent(workspaceId: workspace.id, panelId: panelId, source: source)
     }
 
     @discardableResult
@@ -73,6 +77,13 @@ extension MainWindowFocusController {
             workspace.focusPanel(panelId, trigger: .terminalFirstResponder)
         }
 
+#if DEBUG
+        cmuxDebugLog(
+            "focus.coordinator.mainPanel " +
+                "source=\(source) workspace=\(workspaceId.uuidString.prefix(5)) " +
+                "panel=\(panelId.uuidString.prefix(5))"
+        )
+#endif
         noteMainPanelInteraction(workspaceId: workspaceId, panelId: panelId)
         return true
     }
