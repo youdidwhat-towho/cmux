@@ -278,7 +278,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests","TerminalHostEditorUITests","TerminalInboxUITests","TerminalInputUITests","TerminalReconnectUITests","AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
+        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests TerminalHostEditorUITests TerminalInboxUITests","TerminalInputUITests TerminalReconnectUITests AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
     env:
       TEST_REF: ${{ inputs.ref || github.ref }}
     steps:
@@ -358,12 +358,16 @@ jobs:
           XCTESTRUN="$(find "$DERIVED_DATA/Build/Products" -name '*.xctestrun' -print -quit)"
           test -n "$XCTESTRUN"
           echo "Running cmuxUITests/$TEST_FILTER"
+          only_testing_args=()
+          for test_case in $TEST_FILTER; do
+            only_testing_args+=("-only-testing:cmuxUITests/$test_case")
+          done
           xcodebuild test-without-building \
             -xctestrun "$XCTESTRUN" \
             -destination "id=${{ steps.simulator.outputs.id }}" \
             -resultBundlePath "$RESULT_BUNDLE" \
             -maximum-test-execution-time-allowance "$TEST_TIMEOUT" \
-            -only-testing:cmuxUITests/"$TEST_FILTER"
+            "${only_testing_args[@]}"
 
       - name: Prepare artifact names
         if: ${{ always() }}
