@@ -472,7 +472,9 @@ final class WindowBrowserHostView: NSView {
         let hostedInspectorHit = dividerHit == nil ? hostedInspectorDividerHit(at: point) : nil
         updateDividerCursor(at: point, dividerHit: dividerHit, hostedInspectorHit: hostedInspectorHit)
 
+        let eventType = NSApp.currentEvent?.type
         let titlebarPassThrough = shouldPassThroughToTitlebar(at: point)
+        let tabStripPassThrough = shouldPassThroughToPaneTabBar(at: point, eventType: eventType)
         let sidebarPassThrough = shouldPassThroughToSidebarResizer(
             at: point,
             dividerHit: dividerHit,
@@ -486,6 +488,19 @@ final class WindowBrowserHostView: NSView {
                 stage: "hitTest.titlebarPass",
                 point: point,
                 titlebarPassThrough: true,
+                sidebarPassThrough: sidebarPassThrough,
+                dividerHit: dividerHit,
+                hitView: nil
+            )
+#endif
+            return nil
+        }
+        if tabStripPassThrough {
+#if DEBUG
+            debugLogPointerRouting(
+                stage: "hitTest.tabStripPass",
+                point: point,
+                titlebarPassThrough: false,
                 sidebarPassThrough: sidebarPassThrough,
                 dividerHit: dividerHit,
                 hitView: nil
@@ -689,10 +704,19 @@ final class WindowBrowserHostView: NSView {
         // hits that land in native titlebar space or the custom titlebar strip
         // we reserve directly under it for window drag/double-click behaviors.
         let windowPoint = convert(point, to: nil)
-        let nativeTitlebarHeight = window.frame.height - window.contentLayoutRect.height
-        let customTitlebarBandHeight = max(28, min(72, nativeTitlebarHeight))
-        let interactionBandMinY = window.contentLayoutRect.maxY - customTitlebarBandHeight - 0.5
-        return windowPoint.y >= interactionBandMinY
+        return windowPoint.y >= BonsplitTabBarPassThrough.titlebarInteractionBandMinY(in: window)
+    }
+
+    private func shouldPassThroughToPaneTabBar(
+        at point: NSPoint,
+        eventType: NSEvent.EventType?
+    ) -> Bool {
+        guard let decision = BonsplitTabBarPassThrough.passThroughDecision(
+            at: point,
+            in: self,
+            eventType: eventType
+        ) else { return false }
+        return decision.result
     }
 
     private func shouldPassThroughToSidebarResizer(at point: NSPoint) -> Bool {
@@ -1460,6 +1484,9 @@ final class BrowserPaneDropTargetView: NSView {
 
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard bounds.contains(point), dropContext != nil else { return nil }
+        if shouldDeferToPaneTabBar(at: point) {
+            return nil
+        }
 
         let pasteboardTypes = NSPasteboard(name: .drag).types
         let eventType = NSApp.currentEvent?.type
@@ -1552,6 +1579,12 @@ final class BrowserPaneDropTargetView: NSView {
     }
 
     private func updateDragState(_ sender: any NSDraggingInfo, phase: String) -> NSDragOperation {
+        let location = convert(sender.draggingLocation, from: nil)
+        if shouldDeferToPaneTabBar(at: location) {
+            clearDragState(phase: "\(phase).tabBar")
+            return []
+        }
+
         guard let dropContext,
               let transfer = BrowserPaneDragTransfer.decode(from: sender.draggingPasteboard),
               transfer.isFromCurrentProcess else {
@@ -1559,7 +1592,6 @@ final class BrowserPaneDropTargetView: NSView {
             return []
         }
 
-        let location = convert(sender.draggingLocation, from: nil)
         let zone = BrowserPaneDropRouting.zone(
             for: location,
             in: bounds.size,
@@ -1574,6 +1606,13 @@ final class BrowserPaneDropTargetView: NSView {
         )
 #endif
         return .move
+    }
+
+    func shouldDeferToPaneTabBar(at point: NSPoint) -> Bool {
+        let windowPoint = convert(point, to: nil)
+        return BonsplitTabBarPassThrough
+            .shouldPassThroughToPaneTabBar(windowPoint: windowPoint, below: self)
+            .result
     }
 
     private func clearDragState(phase: String) {
@@ -2307,7 +2346,7 @@ final class WindowBrowserPortal: NSObject {
         geometryObservers.removeAll()
     }
 
-    private func scheduleExternalGeometrySynchronize() {
+    fileprivate func scheduleExternalGeometrySynchronize() {
         guard !hasExternalGeometrySyncScheduled else { return }
         hasExternalGeometrySyncScheduled = true
         DispatchQueue.main.async { [weak self] in
@@ -2394,12 +2433,11 @@ final class WindowBrowserPortal: NSObject {
     }
 
     private func installationTarget(for window: NSWindow) -> (container: NSView, reference: NSView)? {
-        guard let contentView = window.contentView else { return nil }
-
-        if contentView.className == "NSGlassEffectView",
-           let foreground = contentView.subviews.first(where: { $0 !== hostView }) {
-            return (contentView, foreground)
+        if let glassTarget = WindowGlassEffect.portalInstallationTarget(for: window) {
+            return glassTarget
         }
+
+        guard let contentView = window.contentView else { return nil }
 
         guard let themeFrame = contentView.superview else { return nil }
         return (themeFrame, contentView)
@@ -4053,6 +4091,16 @@ enum BrowserWindowPortalRegistry {
         guard let window = anchorView.window else { return }
         let portal = portal(for: window)
         portal.synchronizeWebViewForAnchor(anchorView)
+    }
+
+    static func scheduleExternalGeometrySynchronize(for window: NSWindow) {
+        portalsByWindowId[ObjectIdentifier(window)]?.scheduleExternalGeometrySynchronize()
+    }
+
+    static func scheduleExternalGeometrySynchronizeForAllWindows() {
+        for portal in portalsByWindowId.values {
+            portal.scheduleExternalGeometrySynchronize()
+        }
     }
 
     /// Update visibleInUI/zPriority on an existing portal entry without rebinding.

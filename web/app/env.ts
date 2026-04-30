@@ -8,6 +8,20 @@ import { z } from "zod";
 const trimEnv = (value: string | undefined): string | undefined =>
   typeof value === "string" ? value.trim() : value;
 
+const skipEnvValidation =
+  process.env.SKIP_ENV_VALIDATION === "1" ||
+  process.env.VERCEL_ENV === "preview";
+const allowPreviewStackPlaceholders = process.env.VERCEL_ENV === "preview";
+
+const stackEnv = (
+  value: string | undefined,
+  fallback: string
+): string | undefined => {
+  const trimmed = trimEnv(value);
+  if (trimmed) return trimmed;
+  return allowPreviewStackPlaceholders ? fallback : undefined;
+};
+
 export const env = createEnv({
   server: {
     RESEND_API_KEY: z.string().min(1),
@@ -37,11 +51,18 @@ export const env = createEnv({
     APNS_PRIVATE_KEY_BASE64: trimEnv(process.env.APNS_PRIVATE_KEY_BASE64),
     APNS_PRIVATE_KEY_PATH: trimEnv(process.env.APNS_PRIVATE_KEY_PATH),
     APNS_PRODUCTION: trimEnv(process.env.APNS_PRODUCTION),
-    NEXT_PUBLIC_STACK_PROJECT_ID: trimEnv(process.env.NEXT_PUBLIC_STACK_PROJECT_ID),
-    NEXT_PUBLIC_STACK_PUBLISHABLE_CLIENT_KEY: trimEnv(process.env.NEXT_PUBLIC_STACK_PUBLISHABLE_CLIENT_KEY),
-    STACK_SECRET_SERVER_KEY: trimEnv(process.env.STACK_SECRET_SERVER_KEY),
+    NEXT_PUBLIC_STACK_PROJECT_ID: stackEnv(
+      process.env.NEXT_PUBLIC_STACK_PROJECT_ID,
+      "00000000-0000-4000-8000-000000000000"
+    ),
+    NEXT_PUBLIC_STACK_PUBLISHABLE_CLIENT_KEY: stackEnv(
+      process.env.NEXT_PUBLIC_STACK_PUBLISHABLE_CLIENT_KEY,
+      "preview-publishable-client-key"
+    ),
+    STACK_SECRET_SERVER_KEY: stackEnv(
+      process.env.STACK_SECRET_SERVER_KEY,
+      "preview-secret-server-key"
+    ),
   },
-  skipValidation:
-    process.env.SKIP_ENV_VALIDATION === "1" ||
-    process.env.VERCEL_ENV === "preview",
+  skipValidation: skipEnvValidation,
 });
