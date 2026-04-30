@@ -859,6 +859,70 @@ final class GhosttyPasteboardHelperTests: XCTestCase {
     }
 }
 
+final class TerminalSurfaceTypingCLIRaceTests: XCTestCase {
+    private final class SimulatedSurface {
+        private let stateLock = NSLock()
+        private var renderedLine = ""
+
+        func renderTyping(_ text: String, didReadSnapshot: DispatchSemaphore) {
+            GhosttySurfaceOperationGate.sync {
+                let snapshot = loadRenderedLine()
+                didReadSnapshot.signal()
+                Thread.sleep(forTimeInterval: 0.05)
+                storeRenderedLine(snapshot + text)
+            }
+        }
+
+        func renderCLIRefresh(didReadTypingSnapshot: DispatchSemaphore) {
+            XCTAssertEqual(didReadTypingSnapshot.wait(timeout: .now() + 1.0), .success)
+
+            GhosttySurfaceOperationGate.sync {
+                let snapshot = loadRenderedLine()
+                Thread.sleep(forTimeInterval: 0.10)
+                storeRenderedLine(snapshot)
+            }
+        }
+
+        func line() -> String {
+            loadRenderedLine()
+        }
+
+        private func loadRenderedLine() -> String {
+            stateLock.lock()
+            defer { stateLock.unlock() }
+            return renderedLine
+        }
+
+        private func storeRenderedLine(_ value: String) {
+            stateLock.lock()
+            renderedLine = value
+            stateLock.unlock()
+        }
+    }
+
+    func testTypingLineSurvivesConcurrentCLISurfaceRefresh() {
+        let expected = "you need to reproduce it first and then write a failing test and then"
+        let surface = SimulatedSurface()
+        let typingReadSnapshot = DispatchSemaphore(value: 0)
+        let group = DispatchGroup()
+
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            surface.renderTyping(expected, didReadSnapshot: typingReadSnapshot)
+            group.leave()
+        }
+
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            surface.renderCLIRefresh(didReadTypingSnapshot: typingReadSnapshot)
+            group.leave()
+        }
+
+        XCTAssertEqual(group.wait(timeout: .now() + 2.0), .success)
+        XCTAssertEqual(surface.line(), expected)
+    }
+}
+
 @MainActor
 final class FeedbackComposerMessageEditorViewTests: XCTestCase {
     func testLongMessageCreatesScrollableDocumentContent() {
