@@ -37,11 +37,22 @@ extension CMUXCLI {
         @Argument(
             parsing: .allUnrecognized,
             help: "Command and command-specific arguments.",
-            completion: .custom(Self.completeCommandPath)
+            completion: .custom(Self.commandPathCompletion)
         )
         var command: [String] = []
 
         mutating func run() throws {}
+
+        private static let commandPathCompletion: @Sendable ([String], Int, String) -> [String] = {
+            arguments,
+            completingArgumentIndex,
+            completingPrefix in
+            completeCommandPath(
+                arguments: arguments,
+                completingArgumentIndex: completingArgumentIndex,
+                completingPrefix: completingPrefix
+            )
+        }
 
         private static func completeCommandPath(
             arguments: [String],

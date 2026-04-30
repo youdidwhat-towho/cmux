@@ -66,6 +66,8 @@ extension CMUXCLI {
         case moveSurface = "move-surface"
         case reorderSurface = "reorder-surface"
         case tabAction = "tab-action"
+        case moveTabToNewWorkspace = "move-tab-to-new-workspace"
+        case detachTab = "detach-tab"
         case renameTab = "rename-tab"
         case dragSurfaceToSplit = "drag-surface-to-split"
         case refreshSurfaces = "refresh-surfaces"

@@ -106,6 +106,8 @@ Environment:
 | `move-surface` | Move a surface to another pane, workspace, window, or index. |
 | `reorder-surface` | Reorder a surface within its pane. |
 | `tab-action` | Run horizontal tab context-menu actions. |
+| `move-tab-to-new-workspace` | Move a tab into a newly created workspace. |
+| `detach-tab` | Alias for `move-tab-to-new-workspace`. |
 | `rename-tab` | Rename a tab. Compatibility wrapper for `tab-action rename`. |
 | `drag-surface-to-split` | Move a surface into a split direction. |
 | `refresh-surfaces` | Ask the app to refresh terminal surfaces. |
@@ -399,6 +401,8 @@ the expected text without connecting to a cmux socket.
 - `cmux reorder-workspace --help` -> `Usage: cmux reorder-workspace`
 - `cmux workspace-action --help` -> `Usage: cmux workspace-action --action <name>`
 - `cmux tab-action --help` -> `Usage: cmux tab-action --action <name>`
+- `cmux move-tab-to-new-workspace --help` -> `Usage: cmux move-tab-to-new-workspace`
+- `cmux detach-tab --help` -> `Usage: cmux move-tab-to-new-workspace`
 - `cmux rename-tab --help` -> `Usage: cmux rename-tab`
 - `cmux new-workspace --help` -> `Usage: cmux new-workspace`
 - `cmux list-workspaces --help` -> `Usage: cmux list-workspaces`
