@@ -72114,6 +72114,23 @@
         }
       }
     },
+    "shortcut.recorder.clear": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Clear"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クリア"
+          }
+        }
+      }
+    },
     "shortcut.recorder.pendingChord": {
       "extractionState": "manual",
       "localizations": {
@@ -72269,6 +72286,23 @@
           "stringUnit": {
             "state": "translated",
             "value": "元に戻す"
+          }
+        }
+      }
+    },
+    "shortcut.unbound": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "None"
+          }
+        },
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "なし"
           }
         }
       }

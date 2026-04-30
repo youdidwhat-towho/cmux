@@ -8146,6 +8146,7 @@ private struct ShortcutRecorderSettingsControl: View {
     var subtitle: String? = nil
     var displayString: (StoredShortcut) -> String = { $0.displayString }
     var isDisabled: Bool = false
+    var allowsClearing: Bool = true
 
     @State private var rejectedAttempt: ShortcutRecorderRejectedAttempt?
 
@@ -8161,6 +8162,7 @@ private struct ShortcutRecorderSettingsControl: View {
             onValidationButtonPressed: validationPresentation?.canSwap == true
                 ? { swapConflictingShortcut() }
                 : nil,
+            onClearButtonPressed: allowsClearing ? { shortcut = .unbound } : nil,
             undoButtonTitle: validationPresentation?.undoButtonTitle,
             onUndoButtonPressed: rejectedAttempt != nil ? { rejectedAttempt = nil } : nil,
             hasPendingRejection: rejectedAttempt != nil,
@@ -8255,7 +8257,8 @@ private struct GlobalHotkeySection: View {
                 action: SystemWideHotkeySettings.action,
                 shortcut: $shortcut,
                 subtitle: KeyboardShortcutSettings.settingsFileManagedSubtitle(for: SystemWideHotkeySettings.action),
-                isDisabled: KeyboardShortcutSettings.isManagedBySettingsFile(SystemWideHotkeySettings.action)
+                isDisabled: KeyboardShortcutSettings.isManagedBySettingsFile(SystemWideHotkeySettings.action),
+                allowsClearing: false
             )
                 .padding(.horizontal, 14)
                 .padding(.vertical, 9)

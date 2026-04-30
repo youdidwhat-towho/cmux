@@ -351,6 +351,9 @@ enum KeyboardShortcutSettings {
             proposedAction: Action,
             configuredShortcut: StoredShortcut
         ) -> Bool {
+            guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else {
+                return false
+            }
             guard conflictScope == proposedAction.conflictScope else {
                 return false
             }
@@ -363,6 +366,10 @@ enum KeyboardShortcutSettings {
         }
 
         func normalizedRecordedShortcutResult(_ shortcut: StoredShortcut) -> RecordedShortcutResolution {
+            guard !shortcut.isUnbound else {
+                return .accepted(shortcut)
+            }
+
             if let conflictingAction = KeyboardShortcutSettings.conflictingAction(
                 for: shortcut,
                 excluding: self
@@ -376,6 +383,10 @@ enum KeyboardShortcutSettings {
         func resolvedRecordedShortcutIgnoringConflicts(
             _ shortcut: StoredShortcut
         ) -> RecordedShortcutResolution {
+            guard !shortcut.isUnbound else {
+                return .accepted(shortcut)
+            }
+
             switch self {
             case .showHideAllWindows:
                 return KeyboardShortcutSettings.normalizedSystemWideHotkeyShortcutResult(shortcut)
@@ -474,7 +485,6 @@ enum KeyboardShortcutSettings {
     }
 
     private static let hardcodedSystemWideHotkeyConflicts: [StoredShortcut] = [
-        StoredShortcut(key: "d", command: true, shift: false, option: false, control: false),
         StoredShortcut(key: "\t", command: false, shift: false, option: false, control: true),
         StoredShortcut(key: "\t", command: false, shift: true, option: false, control: true),
         StoredShortcut(key: "`", command: true, shift: false, option: false, control: false),
@@ -513,6 +523,10 @@ enum KeyboardShortcutSettings {
         _ configuredShortcut: StoredShortcut,
         configuredUsesNumberedDigitMatching: Bool
     ) -> Bool {
+        guard !proposedShortcut.isUnbound, !configuredShortcut.isUnbound else {
+            return false
+        }
+
         switch (proposedShortcut.hasChord, configuredShortcut.hasChord) {
         case (false, false):
             return shortcutStrokeMatchersConflict(
@@ -701,6 +715,10 @@ enum KeyboardShortcutSettings {
     static func resetShortcut(for action: Action) {
         UserDefaults.standard.removeObject(forKey: action.defaultsKey)
         postDidChangeNotification(action: action)
+    }
+
+    static func clearShortcut(for action: Action) {
+        setShortcut(.unbound, for: action)
     }
 
     static func resetAll() {
@@ -1838,6 +1856,8 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
+    static let unbound = StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
+
     private enum CodingKeys: String, CodingKey {
         case key
         case command
@@ -1894,11 +1914,24 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         )
     }
 
+    var isUnbound: Bool {
+        key.isEmpty &&
+            !command &&
+            !shift &&
+            !option &&
+            !control &&
+            keyCode == nil &&
+            secondStroke == nil
+    }
+
     var hasChord: Bool {
         secondStroke != nil
     }
 
     var displayString: String {
+        if isUnbound {
+            return String(localized: "shortcut.unbound", defaultValue: "None")
+        }
         if let secondStroke {
             return "\(firstStroke.displayString) \(secondStroke.displayString)"
         }
@@ -1906,6 +1939,9 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var numberedDisplayString: String {
+        if isUnbound {
+            return displayString
+        }
         if hasChord {
             return numberedDigitHintPrefix + "1…9"
         }
@@ -1958,6 +1994,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         event: NSEvent,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
+        guard !isUnbound else { return false }
         guard !hasChord else { return false }
         return firstStroke.matches(event: event, layoutCharacterProvider: layoutCharacterProvider)
     }
@@ -1968,6 +2005,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
         eventCharacter: String?,
         layoutCharacterProvider: (UInt16, NSEvent.ModifierFlags) -> String? = KeyboardLayout.character(forKeyCode:modifierFlags:)
     ) -> Bool {
+        guard !isUnbound else { return false }
         guard !hasChord else { return false }
         return firstStroke.matches(
             keyCode: keyCode,
@@ -1978,6 +2016,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
     }
 
     var carbonHotKeyRegistration: CarbonHotKeyRegistration? {
+        guard !isUnbound else { return nil }
         guard !hasChord else { return nil }
         return firstStroke.carbonHotKeyRegistration
     }
@@ -2113,11 +2152,21 @@ extension ShortcutStroke {
 
 extension StoredShortcut {
     static func parseConfig(_ rawValue: String) -> StoredShortcut? {
-        parseConfig(strokes: [rawValue])
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || ["none", "clear", "unbound"].contains(trimmed.lowercased()) {
+            return .unbound
+        }
+        return parseConfig(strokes: [rawValue])
     }
 
     static func parseConfig(strokes: [String]) -> StoredShortcut? {
         guard !strokes.isEmpty, strokes.count <= 2 else { return nil }
+        if strokes.count == 1, let first = strokes.first {
+            let trimmed = first.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty || ["none", "clear", "unbound"].contains(trimmed.lowercased()) {
+                return .unbound
+            }
+        }
         let parsedStrokes = strokes.compactMap(ShortcutStroke.parseConfig(_:))
         guard parsedStrokes.count == strokes.count, let firstStroke = parsedStrokes.first else {
             return nil
@@ -2128,6 +2177,9 @@ extension StoredShortcut {
     }
 
     var configIdentifier: String {
+        if isUnbound {
+            return ""
+        }
         if let secondStroke {
             return "\(firstStroke.configString()) \(secondStroke.configString())"
         }
@@ -2285,6 +2337,7 @@ struct KeyboardShortcutRecorder: View {
     var validationMessage: String? = nil
     var validationButtonTitle: String? = nil
     var onValidationButtonPressed: (() -> Void)? = nil
+    var onClearButtonPressed: (() -> Void)? = nil
     var undoButtonTitle: String? = nil
     var onUndoButtonPressed: (() -> Void)? = nil
     var hasPendingRejection: Bool = false
@@ -2318,6 +2371,18 @@ struct KeyboardShortcutRecorder: View {
                 )
                     .frame(width: 160)
                     .disabled(isDisabled)
+
+                if let onClearButtonPressed {
+                    Button(String(localized: "shortcut.recorder.clear", defaultValue: "Clear")) {
+                        KeyboardShortcutRecorderActivity.stopAllRecording()
+                        onClearButtonPressed()
+                        onRecorderFeedbackChanged(nil)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .disabled(isDisabled || shortcut.isUnbound)
+                    .accessibilityIdentifier("ShortcutRecorderClearButton")
+                }
             }
 
             if let validationMessage {
