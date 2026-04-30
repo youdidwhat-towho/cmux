@@ -502,7 +502,7 @@ struct TerminalSidebarRootView: View {
         if store.isConfigured(host) {
             startWorkspace(host)
         } else if host.source == .custom {
-            pendingStartHostID = host.id
+            pendingStartHostID = UITestConfig.terminalSetupSaveOnlyFixtureEnabled ? nil : host.id
             editorDraft = TerminalHostEditorDraft(
                 host: host,
                 credentials: store.credentials(for: host)

@@ -157,15 +157,11 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  e2e:
-    name: e2e (${{ matrix.test_filter }})
+  build-for-testing:
+    name: build iOS UI tests once
     needs: ghosttykit
     runs-on: ${{ inputs.runner || 'macos-26' }}
-    timeout-minutes: 45
-    strategy:
-      fail-fast: false
-      matrix:
-        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests","TerminalHostEditorUITests","TerminalInboxUITests","TerminalInputUITests","TerminalReconnectUITests","AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
+    timeout-minutes: 30
     env:
       TEST_REF: ${{ inputs.ref || github.ref }}
     steps:
@@ -247,6 +243,92 @@ jobs:
             exit 1
           fi
           echo "id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build UI tests for testing
+        working-directory: ios
+        run: |
+          set -euo pipefail
+          DERIVED_DATA="$RUNNER_TEMP/cmux-ios-e2e-build"
+          rm -rf "$DERIVED_DATA"
+          xcodebuild build-for-testing \
+            -project cmux.xcodeproj \
+            -scheme cmux \
+            -configuration Debug \
+            -destination "id=${{ steps.simulator.outputs.id }}" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
+            -disableAutomaticPackageResolution
+          XCTESTRUN="$(find "$DERIVED_DATA/Build/Products" -name '*.xctestrun' -print -quit)"
+          test -n "$XCTESTRUN"
+          tar czf "$RUNNER_TEMP/cmux-ios-e2e-build-products.tar.gz" -C "$DERIVED_DATA/Build" Products
+
+      - name: Upload UI test build products
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cmux-ios-e2e-build-products
+          path: ${{ runner.temp }}/cmux-ios-e2e-build-products.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  e2e:
+    name: e2e (${{ matrix.test_filter }})
+    needs: build-for-testing
+    runs-on: ${{ inputs.runner || 'macos-26' }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        test_filter: ${{ fromJSON(github.event_name == 'push' && '["TerminalHomeUITests","TerminalHostEditorUITests","TerminalInboxUITests","TerminalInputUITests","TerminalReconnectUITests","AuthPersistenceUITests"]' || format('[{0}]', toJSON(inputs.test_filter))) }}
+    env:
+      TEST_REF: ${{ inputs.ref || github.ref }}
+    steps:
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          if [ -d "/Applications/Xcode.app/Contents/Developer" ]; then
+            XCODE_DIR="/Applications/Xcode.app/Contents/Developer"
+          else
+            XCODE_APP="$(ls -d /Applications/Xcode*.app 2>/dev/null | head -n 1 || true)"
+            if [ -n "$XCODE_APP" ]; then
+              XCODE_DIR="$XCODE_APP/Contents/Developer"
+            else
+              echo "No Xcode.app found under /Applications" >&2
+              exit 1
+            fi
+          fi
+          echo "DEVELOPER_DIR=$XCODE_DIR" >> "$GITHUB_ENV"
+          export DEVELOPER_DIR="$XCODE_DIR"
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Download UI test build products
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cmux-ios-e2e-build-products
+          path: ${{ runner.temp }}
+
+      - name: Extract UI test build products
+        run: |
+          set -euo pipefail
+          DERIVED_DATA="$RUNNER_TEMP/cmux-ios-e2e-build"
+          rm -rf "$DERIVED_DATA"
+          mkdir -p "$DERIVED_DATA/Build"
+          tar xzf "$RUNNER_TEMP/cmux-ios-e2e-build-products.tar.gz" -C "$DERIVED_DATA/Build"
+          find "$DERIVED_DATA/Build/Products" -name '*.xctestrun' -print -quit | grep -q .
+
+      - name: Pick simulator
+        id: simulator
+        run: |
+          set -euo pipefail
+          SIMULATOR_ID="$(xcrun simctl list devices available | grep 'iPhone 17 Pro (' | head -1 | grep -oE '[A-F0-9-]{36}' || true)"
+          if [ -z "$SIMULATOR_ID" ]; then
+            SIMULATOR_ID="$(xcrun simctl list devices available | grep 'iPhone' | head -1 | grep -oE '[A-F0-9-]{36}' || true)"
+          fi
+          if [ -z "$SIMULATOR_ID" ]; then
+            echo "No available iPhone simulator found" >&2
+            exit 1
+          fi
+          echo "id=$SIMULATOR_ID" >> "$GITHUB_OUTPUT"
           xcrun simctl boot "$SIMULATOR_ID" || true
           xcrun simctl bootstatus "$SIMULATOR_ID" -b
           open -a Simulator --args -CurrentDeviceUDID "$SIMULATOR_ID"
@@ -262,28 +344,24 @@ jobs:
           sleep 2
 
       - name: Run iOS UI test
-        working-directory: ios
         env:
           TEST_FILTER: ${{ matrix.test_filter }}
           TEST_TIMEOUT: ${{ inputs.test_timeout || '120' }}
         run: |
           set -euo pipefail
-          DERIVED_DATA="$RUNNER_TEMP/cmux-ios-e2e"
+          DERIVED_DATA="$RUNNER_TEMP/cmux-ios-e2e-build"
           RESULT_BUNDLE_DIR="$RUNNER_TEMP/cmux-ios-e2e-xcresults"
-          rm -rf "$DERIVED_DATA" "$RESULT_BUNDLE_DIR"
+          rm -rf "$RESULT_BUNDLE_DIR"
           mkdir -p "$RESULT_BUNDLE_DIR"
           RESULT_FILTER="$(printf '%s' "$TEST_FILTER" | tr -c '[:alnum:]_.-' '_')"
           RESULT_BUNDLE="$RESULT_BUNDLE_DIR/${RESULT_FILTER}.xcresult"
+          XCTESTRUN="$(find "$DERIVED_DATA/Build/Products" -name '*.xctestrun' -print -quit)"
+          test -n "$XCTESTRUN"
           echo "Running cmuxUITests/$TEST_FILTER"
-          xcodebuild test \
-            -project cmux.xcodeproj \
-            -scheme cmux \
-            -configuration Debug \
+          xcodebuild test-without-building \
+            -xctestrun "$XCTESTRUN" \
             -destination "id=${{ steps.simulator.outputs.id }}" \
-            -derivedDataPath "$DERIVED_DATA" \
             -resultBundlePath "$RESULT_BUNDLE" \
-            -clonedSourcePackagesDirPath "$PWD/.ci-source-packages" \
-            -disableAutomaticPackageResolution \
             -maximum-test-execution-time-allowance "$TEST_TIMEOUT" \
             -only-testing:cmuxUITests/"$TEST_FILTER"
 

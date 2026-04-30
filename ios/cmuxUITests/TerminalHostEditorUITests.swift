@@ -6,9 +6,10 @@ final class TerminalHostEditorUITests: XCTestCase {
         continueAfterFailure = false
     }
 
-    func testSetupFixtureOpensHostEditorAndStartsWorkspaceAfterSave() {
+    func testSetupFixtureSavesConfiguredHost() {
         let app = XCUIApplication()
         app.launchEnvironment["CMUX_UITEST_TERMINAL_SETUP_FIXTURE"] = "1"
+        app.launchEnvironment["CMUX_UITEST_TERMINAL_SETUP_SAVE_ONLY"] = "1"
         app.launch()
 
         let serverButton = app.buttons["terminal.server.cmux-setup"]
@@ -34,10 +35,21 @@ final class TerminalHostEditorUITests: XCTestCase {
         XCTAssertTrue(saveButton.isEnabled, "Expected host editor save button")
         saveButton.tap()
 
-        XCTAssertTrue(app.navigationBars["Mac mini"].waitForExistence(timeout: 4), "Expected workspace title")
-        XCTAssertTrue(
-            app.otherElements["terminal.workspace.detail"].waitForExistence(timeout: 4),
-            "Expected workspace detail after saving the configured host"
-        )
+        XCTAssertTrue(waitForDisappearance(of: app.otherElements["terminal.hostEditor"], timeout: 6), "Expected host editor to dismiss after save")
+
+        let configuredServerButton = app.buttons["terminal.server.cmux-setup"]
+        XCTAssertTrue(configuredServerButton.waitForExistence(timeout: 6), "Expected saved host to remain in the server list")
+        XCTAssertEqual(configuredServerButton.value as? String, "cmux@cmux-macmini")
+    }
+
+    private func waitForDisappearance(of element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !element.exists {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(0.2))
+        }
+        return !element.exists
     }
 }

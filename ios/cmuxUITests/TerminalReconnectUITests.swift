@@ -18,7 +18,8 @@ final class TerminalReconnectUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Mac mini"].waitForExistence(timeout: 4))
 
-        let renderedText = app.otherElements["terminal.workspace.renderedText"]
+        let renderedText = app.otherElements.matching(identifier: "terminal.workspace.detail").firstMatch
+        XCTAssertTrue(renderedText.waitForExistence(timeout: 4), "Expected terminal workspace detail")
         XCTAssertTrue(
             waitForValue(of: renderedText, containing: "reconnected", timeout: 12),
             "Expected terminal output after daemon reconnect"

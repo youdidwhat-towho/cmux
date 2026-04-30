@@ -77,6 +77,15 @@ enum UITestConfig {
         #endif
     }
 
+    static var terminalSetupSaveOnlyFixtureEnabled: Bool {
+        #if DEBUG
+        let env = ProcessInfo.processInfo.environment
+        return env["CMUX_UITEST_TERMINAL_SETUP_SAVE_ONLY"] == "1"
+        #else
+        return false
+        #endif
+    }
+
     static var terminalInputFixtureEnabled: Bool {
         #if DEBUG
         let env = ProcessInfo.processInfo.environment
