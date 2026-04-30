@@ -602,17 +602,21 @@ if [[ -x "$CLI_PATH" ]]; then
   fi
 fi
 
-# Build cmuxd and ghostty helper binaries (needed for both launch and no-launch).
+# Build cmuxd and ensure helper binaries are present (needed for both launch and no-launch).
 CMUXD_SRC="$PWD/cmuxd/zig-out/bin/cmuxd"
-GHOSTTY_HELPER_SRC="$PWD/ghostty/zig-out/bin/ghostty"
 if [[ -d "$PWD/cmuxd" ]]; then
   (cd "$PWD/cmuxd" && zig build -Doptimize=ReleaseFast)
 fi
 if [[ -d "$PWD/ghostty" ]]; then
+  BIN_DIR="$APP_PATH/Contents/Resources/bin"
+  GHOSTTY_HELPER_DEST="$BIN_DIR/ghostty"
   if [[ "${CMUX_SKIP_ZIG_BUILD:-}" == "1" ]]; then
     echo "Skipping direct ghostty CLI helper zig build (CMUX_SKIP_ZIG_BUILD=1)"
+  elif [[ -x "$GHOSTTY_HELPER_DEST" ]]; then
+    echo "Using Ghostty CLI helper from Xcode app build"
   else
-    (cd "$PWD/ghostty" && zig build cli-helper -Dapp-runtime=none -Demit-macos-app=false -Demit-xcframework=false -Doptimize=ReleaseFast)
+    mkdir -p "$BIN_DIR"
+    "$PWD/scripts/build-ghostty-cli-helper.sh" --output "$GHOSTTY_HELPER_DEST"
   fi
 fi
 if [[ -x "$CMUXD_SRC" ]]; then
@@ -620,12 +624,6 @@ if [[ -x "$CMUXD_SRC" ]]; then
   mkdir -p "$BIN_DIR"
   cp "$CMUXD_SRC" "$BIN_DIR/cmuxd"
   chmod +x "$BIN_DIR/cmuxd"
-fi
-if [[ -x "$GHOSTTY_HELPER_SRC" ]]; then
-  BIN_DIR="$APP_PATH/Contents/Resources/bin"
-  mkdir -p "$BIN_DIR"
-  cp "$GHOSTTY_HELPER_SRC" "$BIN_DIR/ghostty"
-  chmod +x "$BIN_DIR/ghostty"
 fi
 if command -v xattr >/dev/null 2>&1; then
   xattr -cr "$APP_PATH" || true
@@ -705,15 +703,25 @@ if [[ "$LAUNCH" -eq 1 ]]; then
     CMUX_VM_API_BASE_URL="$CMUX_DEV_ORIGIN"
   )
 
+  LAUNCH_CMD=()
+  LAUNCH_RETRY_CMD=()
   if [[ -n "${TAG_SLUG:-}" && -n "${CMUX_SOCKET:-}" ]]; then
     # Ensure tag-specific socket paths win even if the caller has CMUX_* overrides.
-    "${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" CMUX_SOCKET_PATH="$CMUX_SOCKET" CMUXD_UNIX_PATH="$CMUXD_SOCKET" open -g "$APP_PATH"
+    LAUNCH_CMD=("${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" CMUX_SOCKET_PATH="$CMUX_SOCKET" CMUXD_UNIX_PATH="$CMUXD_SOCKET" open -g "$APP_PATH")
+    LAUNCH_RETRY_CMD=("${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" CMUX_SOCKET_PATH="$CMUX_SOCKET" CMUXD_UNIX_PATH="$CMUXD_SOCKET" open -n -g "$APP_PATH")
   elif [[ -n "${TAG_SLUG:-}" ]]; then
-    "${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" open -g "$APP_PATH"
+    LAUNCH_CMD=("${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" open -g "$APP_PATH")
+    LAUNCH_RETRY_CMD=("${OPEN_CLEAN_ENV[@]}" "${TAG_LAUNCH_ENV[@]}" open -n -g "$APP_PATH")
   else
     echo "/tmp/cmux-debug.sock" > /tmp/cmux-last-socket-path || true
     echo "/tmp/cmux-debug.log" > /tmp/cmux-last-debug-log-path || true
-    "${OPEN_CLEAN_ENV[@]}" open -g "$APP_PATH"
+    LAUNCH_CMD=("${OPEN_CLEAN_ENV[@]}" open -g "$APP_PATH")
+    LAUNCH_RETRY_CMD=("${OPEN_CLEAN_ENV[@]}" open -n -g "$APP_PATH")
+  fi
+
+  if ! "${LAUNCH_CMD[@]}"; then
+    echo "warning: open -g failed; retrying launch with open -n -g" >&2
+    "${LAUNCH_RETRY_CMD[@]}"
   fi
 
   # Safety: ensure only one instance is running.
