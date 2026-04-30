@@ -2583,7 +2583,8 @@ extension TerminalSidebarStore {
             preview: "Build failed",
             lastActivity: Date(timeIntervalSince1970: 1_774_000_200),
             unread: true,
-            phase: .connected
+            phase: .connected,
+            remoteWorkspaceID: currentWorkspaceID.uuidString
         )
         let olderWorkspace = TerminalWorkspace(
             id: olderWorkspaceID,
@@ -2593,7 +2594,8 @@ extension TerminalSidebarStore {
             preview: "cmux@orb:~$",
             lastActivity: Date(timeIntervalSince1970: 1_774_000_000),
             unread: false,
-            phase: .disconnected
+            phase: .disconnected,
+            remoteWorkspaceID: olderWorkspaceID.uuidString
         )
 
         let snapshot = TerminalStoreSnapshot(

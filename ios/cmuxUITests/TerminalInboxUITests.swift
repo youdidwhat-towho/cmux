@@ -2,6 +2,8 @@ import XCTest
 
 final class TerminalInboxUITests: XCTestCase {
     private enum Fixture {
+        static let currentWorkspaceID = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA"
+        static let olderWorkspaceID = "BBBBBBBB-BBBB-BBBB-BBBB-BBBBBBBBBBBB"
         static let currentPreview = "Build failed"
         static let olderPreview = "cmux@orb:~$"
         static let olderWorkspaceTitle = "Linux VM"
@@ -22,6 +24,8 @@ final class TerminalInboxUITests: XCTestCase {
         let olderWorkspace = workspacePreview(in: app, text: Fixture.olderPreview)
         XCTAssertTrue(currentWorkspace.waitForExistence(timeout: 6), "Expected newer inbox workspace")
         XCTAssertTrue(olderWorkspace.waitForExistence(timeout: 4), "Expected older inbox workspace")
+        XCTAssertTrue(workspace(currentWorkspace, containsPreview: Fixture.currentPreview))
+        XCTAssertTrue(workspace(olderWorkspace, containsPreview: Fixture.olderPreview))
         XCTAssertLessThan(
             currentWorkspace.frame.minY,
             olderWorkspace.frame.minY,
@@ -100,7 +104,24 @@ final class TerminalInboxUITests: XCTestCase {
     }
 
     private func workspacePreview(in app: XCUIApplication, text: String) -> XCUIElement {
-        app.staticTexts[text]
+        switch text {
+        case Fixture.currentPreview:
+            return workspaceRow(in: app, id: Fixture.currentWorkspaceID)
+        case Fixture.olderPreview:
+            return workspaceRow(in: app, id: Fixture.olderWorkspaceID)
+        default:
+            return app.buttons.matching(
+                NSPredicate(format: "value CONTAINS %@", text)
+            ).firstMatch
+        }
+    }
+
+    private func workspaceRow(in app: XCUIApplication, id: String) -> XCUIElement {
+        app.buttons["terminal.workspace.\(id)"]
+    }
+
+    private func workspace(_ element: XCUIElement, containsPreview preview: String) -> Bool {
+        (element.value as? String)?.contains(preview) ?? false
     }
 
     private func terminalBackButton(in app: XCUIApplication, title: String) -> XCUIElement {
