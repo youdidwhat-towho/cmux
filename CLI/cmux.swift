@@ -898,6 +898,35 @@ final class SocketClient {
         let relayToken: Data
     }
 
+    private struct SocketDeadline {
+        let end: TimeInterval
+
+        init(timeout: TimeInterval) {
+            end = ProcessInfo.processInfo.systemUptime + Self.sanitized(timeout)
+        }
+
+        static func earlier(_ lhs: SocketDeadline, _ rhs: SocketDeadline) -> SocketDeadline {
+            SocketDeadline(end: min(lhs.end, rhs.end))
+        }
+
+        var remaining: TimeInterval {
+            max(0, end - ProcessInfo.processInfo.systemUptime)
+        }
+
+        var hasTimeRemaining: Bool {
+            remaining > 0
+        }
+
+        private static func sanitized(_ timeout: TimeInterval) -> TimeInterval {
+            let timeout = timeout.isFinite ? timeout : SocketClient.defaultResponseTimeoutSeconds
+            return min(max(timeout, 0), SocketClient.maxSocketTimeoutSeconds)
+        }
+
+        private init(end: TimeInterval) {
+            self.end = end
+        }
+    }
+
     private let path: String
     private var socketFD: Int32 = -1
     private static let defaultResponseTimeoutSeconds: TimeInterval = 15.0
@@ -972,7 +1001,10 @@ final class SocketClient {
         )
     }
 
-    private static func pollTimeoutMilliseconds(for timeout: TimeInterval) -> Int32 {
+    private static func pollTimeoutMilliseconds(forRemaining timeout: TimeInterval) -> Int32 {
+        if timeout <= 0 {
+            return 0
+        }
         let sanitizedTimeout = timeout.isFinite ? timeout : defaultResponseTimeoutSeconds
         let maxPollTimeout = TimeInterval(Int32.max) / 1_000
         let clampedTimeout = min(max(sanitizedTimeout, 0.001), maxPollTimeout)
@@ -1013,10 +1045,14 @@ final class SocketClient {
         var data = Data()
         var sawNewline = false
         let initialResponseTimeout = responseTimeout ?? Self.responseTimeoutSeconds
+        let responseDeadline = SocketDeadline(timeout: initialResponseTimeout)
+        var multilineIdleDeadline: SocketDeadline?
 
         while true {
-            let readTimeout = sawNewline ? Self.multilineResponseIdleTimeoutSeconds : initialResponseTimeout
-            guard try waitForReadable(timeout: readTimeout, failureMessage: "Socket read error") else {
+            let readDeadline = multilineIdleDeadline.map {
+                SocketDeadline.earlier(responseDeadline, $0)
+            } ?? responseDeadline
+            guard try waitForReadable(until: readDeadline, failureMessage: "Socket read error") else {
                 if sawNewline {
                     break
                 }
@@ -1046,6 +1082,7 @@ final class SocketClient {
                 if Self.isCompleteSingleLineResponse(data) {
                     break
                 }
+                multilineIdleDeadline = SocketDeadline(timeout: Self.multilineResponseIdleTimeoutSeconds)
             }
         }
 
@@ -1330,9 +1367,10 @@ final class SocketClient {
 
     private func readLine(maxBytes: Int = 16 * 1024) throws -> String {
         var data = Data()
+        let deadline = SocketDeadline(timeout: Self.responseTimeoutSeconds)
 
         while data.count < maxBytes {
-            guard try waitForReadable(timeout: Self.responseTimeoutSeconds, failureMessage: "Relay socket read error") else {
+            guard try waitForReadable(until: deadline, failureMessage: "Relay socket read error") else {
                 throw CLIError(message: "Relay command timed out")
             }
 
@@ -1365,16 +1403,21 @@ final class SocketClient {
         return line.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func waitForReadable(timeout: TimeInterval, failureMessage: String) throws -> Bool {
+    private func waitForReadable(until deadline: SocketDeadline, failureMessage: String) throws -> Bool {
         var descriptor = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
 
-        while true {
-            let result = Darwin.poll(&descriptor, 1, Self.pollTimeoutMilliseconds(for: timeout))
+        while deadline.hasTimeRemaining {
+            descriptor.revents = 0
+            let result = Darwin.poll(&descriptor, 1, Self.pollTimeoutMilliseconds(forRemaining: deadline.remaining))
             if result > 0 {
-                if Int32(descriptor.revents) & POLLNVAL != 0 {
+                let revents = Int32(descriptor.revents)
+                if revents & (POLLERR | POLLNVAL) != 0 {
                     throw CLIError(message: failureMessage)
                 }
-                return true
+                if revents & (POLLIN | POLLHUP) != 0 {
+                    return true
+                }
+                throw CLIError(message: failureMessage)
             }
             if result == 0 {
                 return false
@@ -1384,6 +1427,7 @@ final class SocketClient {
             }
             throw CLIError(message: failureMessage)
         }
+        return false
     }
 
     static func waitForConnectableSocket(path: String, timeout: TimeInterval) throws -> SocketClient {
