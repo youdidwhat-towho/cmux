@@ -12085,7 +12085,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         action: KeyboardShortcutSettings.Action
     ) -> Int? {
         let shortcut = KeyboardShortcutSettings.shortcut(for: action)
-        guard !shortcut.isUnbound else { return nil }
         if let prefix = activeConfiguredShortcutChordPrefixForCurrentEvent {
             guard let secondStroke = shortcut.secondStroke,
                   shortcut.firstStroke == prefix else {
@@ -12093,7 +12092,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             return numberedShortcutDigit(event: event, stroke: secondStroke)
         }
-        guard !shortcut.hasChord else { return nil }
+        guard !shortcut.isUnbound, !shortcut.hasChord else { return nil }
         return numberedShortcutDigit(event: event, stroke: shortcut.firstStroke)
     }
 
