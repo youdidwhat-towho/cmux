@@ -1962,7 +1962,7 @@ struct StoredShortcut: Codable, Equatable, Hashable {
 
     var hasPrimaryModifier: Bool {
         guard !isUnbound else { return false }
-        firstStroke.hasPrimaryModifier
+        return firstStroke.hasPrimaryModifier
     }
 
     var keyEquivalent: KeyEquivalent? {
@@ -2146,7 +2146,7 @@ extension StoredShortcut {
         if isUnboundConfigToken(rawValue) {
             return .unbound
         }
-        parseConfig(strokes: [rawValue])
+        return parseConfig(strokes: [rawValue])
     }
 
     static func parseConfig(strokes: [String]) -> StoredShortcut? {
