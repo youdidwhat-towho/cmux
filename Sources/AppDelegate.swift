@@ -10964,6 +10964,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
+        for action in KeyboardShortcutSettings.Action.workspaceColorShortcutActions {
+            if matchConfiguredShortcut(event: event, action: action) {
+                return handleWorkspaceColorShortcut(event: event, action: action)
+            }
+        }
+
         if matchConfiguredShortcut(event: event, action: .renameWorkspace) {
             return requestRenameWorkspaceViaCommandPalette(
                 preferredWindow: commandPaletteTargetWindow ?? event.window ?? NSApp.keyWindow ?? NSApp.mainWindow
@@ -12080,6 +12086,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             preferredWindow: targetWindow,
             source: "shortcut.editWorkspaceDescription"
         )
+        return true
+    }
+
+    @discardableResult
+    private func handleWorkspaceColorShortcut(
+        event: NSEvent,
+        action: KeyboardShortcutSettings.Action
+    ) -> Bool {
+        let targetManager = preferredMainWindowContextForShortcutRouting(event: event)?.tabManager ?? tabManager
+        guard let targetManager,
+              let workspaceId = targetManager.selectedWorkspace?.id else {
+            return true
+        }
+
+        if action == .resetWorkspaceColor {
+            targetManager.applyWorkspaceColor(nil, toWorkspaceIds: [workspaceId])
+        } else if let paletteName = action.workspaceColorPaletteName {
+            targetManager.applyWorkspacePaletteColor(named: paletteName, toWorkspaceIds: [workspaceId])
+        }
+
         return true
     }
 

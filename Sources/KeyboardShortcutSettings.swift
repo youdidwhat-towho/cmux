@@ -62,6 +62,16 @@ enum KeyboardShortcutSettings {
         case nextSidebarTab
         case prevSidebarTab
         case selectWorkspaceByNumber
+        case resetWorkspaceColor
+        case setWorkspaceColorRed
+        case setWorkspaceColorCrimson
+        case setWorkspaceColorOrange
+        case setWorkspaceColorAmber
+        case setWorkspaceColorOlive
+        case setWorkspaceColorGreen
+        case setWorkspaceColorTeal
+        case setWorkspaceColorAqua
+        case setWorkspaceColorBlue
         case renameTab
         case renameWorkspace
         case editWorkspaceDescription
@@ -139,6 +149,16 @@ enum KeyboardShortcutSettings {
             case .nextSidebarTab: return String(localized: "shortcut.nextWorkspace.label", defaultValue: "Next Workspace")
             case .prevSidebarTab: return String(localized: "shortcut.previousWorkspace.label", defaultValue: "Previous Workspace")
             case .selectWorkspaceByNumber: return String(localized: "shortcut.selectWorkspaceByNumber.label", defaultValue: "Select Workspace 1…9")
+            case .resetWorkspaceColor: return String(localized: "shortcut.resetWorkspaceColor.label", defaultValue: "Reset Workspace Color")
+            case .setWorkspaceColorRed: return String(localized: "shortcut.setWorkspaceColorRed.label", defaultValue: "Workspace Color: Red")
+            case .setWorkspaceColorCrimson: return String(localized: "shortcut.setWorkspaceColorCrimson.label", defaultValue: "Workspace Color: Crimson")
+            case .setWorkspaceColorOrange: return String(localized: "shortcut.setWorkspaceColorOrange.label", defaultValue: "Workspace Color: Orange")
+            case .setWorkspaceColorAmber: return String(localized: "shortcut.setWorkspaceColorAmber.label", defaultValue: "Workspace Color: Amber")
+            case .setWorkspaceColorOlive: return String(localized: "shortcut.setWorkspaceColorOlive.label", defaultValue: "Workspace Color: Olive")
+            case .setWorkspaceColorGreen: return String(localized: "shortcut.setWorkspaceColorGreen.label", defaultValue: "Workspace Color: Green")
+            case .setWorkspaceColorTeal: return String(localized: "shortcut.setWorkspaceColorTeal.label", defaultValue: "Workspace Color: Teal")
+            case .setWorkspaceColorAqua: return String(localized: "shortcut.setWorkspaceColorAqua.label", defaultValue: "Workspace Color: Aqua")
+            case .setWorkspaceColorBlue: return String(localized: "shortcut.setWorkspaceColorBlue.label", defaultValue: "Workspace Color: Blue")
             case .renameTab: return String(localized: "shortcut.renameTab.label", defaultValue: "Rename Tab")
             case .renameWorkspace: return String(localized: "shortcut.renameWorkspace.label", defaultValue: "Rename Workspace")
             case .editWorkspaceDescription: return String(localized: "shortcut.editWorkspaceDescription.label", defaultValue: "Edit Workspace Description")
@@ -251,6 +271,26 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "]", command: true, shift: false, option: false, control: true)
             case .prevSidebarTab:
                 return StoredShortcut(key: "[", command: true, shift: false, option: false, control: true)
+            case .resetWorkspaceColor:
+                return StoredShortcut(key: "0", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorRed:
+                return StoredShortcut(key: "1", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorCrimson:
+                return StoredShortcut(key: "2", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorOrange:
+                return StoredShortcut(key: "3", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorAmber:
+                return StoredShortcut(key: "4", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorOlive:
+                return StoredShortcut(key: "5", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorGreen:
+                return StoredShortcut(key: "6", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorTeal:
+                return StoredShortcut(key: "7", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorAqua:
+                return StoredShortcut(key: "8", command: false, shift: false, option: true, control: true)
+            case .setWorkspaceColorBlue:
+                return StoredShortcut(key: "9", command: false, shift: false, option: true, control: true)
             case .renameTab:
                 return StoredShortcut(key: "r", command: true, shift: false, option: false, control: false)
             case .renameWorkspace:
@@ -348,6 +388,44 @@ enum KeyboardShortcutSettings {
                 return true
             default:
                 return false
+            }
+        }
+
+        static let workspaceColorShortcutActions: [Action] = [
+            .resetWorkspaceColor,
+            .setWorkspaceColorRed,
+            .setWorkspaceColorCrimson,
+            .setWorkspaceColorOrange,
+            .setWorkspaceColorAmber,
+            .setWorkspaceColorOlive,
+            .setWorkspaceColorGreen,
+            .setWorkspaceColorTeal,
+            .setWorkspaceColorAqua,
+            .setWorkspaceColorBlue,
+        ]
+
+        var workspaceColorPaletteName: String? {
+            switch self {
+            case .setWorkspaceColorRed:
+                return "Red"
+            case .setWorkspaceColorCrimson:
+                return "Crimson"
+            case .setWorkspaceColorOrange:
+                return "Orange"
+            case .setWorkspaceColorAmber:
+                return "Amber"
+            case .setWorkspaceColorOlive:
+                return "Olive"
+            case .setWorkspaceColorGreen:
+                return "Green"
+            case .setWorkspaceColorTeal:
+                return "Teal"
+            case .setWorkspaceColorAqua:
+                return "Aqua"
+            case .setWorkspaceColorBlue:
+                return "Blue"
+            default:
+                return nil
             }
         }
 

@@ -6738,6 +6738,26 @@ struct ContentView: View {
             return .renameWorkspace
         case "palette.editWorkspaceDescription":
             return .editWorkspaceDescription
+        case "palette.resetWorkspaceColor":
+            return .resetWorkspaceColor
+        case "palette.setWorkspaceColorRed":
+            return .setWorkspaceColorRed
+        case "palette.setWorkspaceColorCrimson":
+            return .setWorkspaceColorCrimson
+        case "palette.setWorkspaceColorOrange":
+            return .setWorkspaceColorOrange
+        case "palette.setWorkspaceColorAmber":
+            return .setWorkspaceColorAmber
+        case "palette.setWorkspaceColorOlive":
+            return .setWorkspaceColorOlive
+        case "palette.setWorkspaceColorGreen":
+            return .setWorkspaceColorGreen
+        case "palette.setWorkspaceColorTeal":
+            return .setWorkspaceColorTeal
+        case "palette.setWorkspaceColorAqua":
+            return .setWorkspaceColorAqua
+        case "palette.setWorkspaceColorBlue":
+            return .setWorkspaceColorBlue
         case "palette.nextWorkspace":
             return .nextSidebarTab
         case "palette.previousWorkspace":
