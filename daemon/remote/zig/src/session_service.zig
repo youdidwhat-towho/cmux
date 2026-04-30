@@ -51,13 +51,29 @@ pub const TerminalSubscription = struct {
     /// snapshot pointer to this sub. Incremented under `sub_mutex` while
     /// the sub was still live; decremented after the per-sub push
     /// completes. Unsubscribe marks the sub dead, drops it from
-    /// `terminal_subs`, releases `sub_mutex`, then spin-waits for this
-    /// to hit zero before freeing the allocation. This also keeps
-    /// `sub.queue` (which points into the owning Worker's stack frame
-    /// in the unix-socket transport) valid for the push duration,
-    /// because `Worker.run`'s defer chain calls `unsubscribeAllForStream`
-    /// which doesn't return past this wait until no push is in flight.
-    in_flight: std.atomic.Value(u32) = .init(0),
+    /// `terminal_subs`, releases `sub_mutex`, then waits on `in_flight_cv`
+    /// before freeing the allocation. This also keeps `sub.queue` (which
+    /// points into the owning Worker's stack frame in the unix-socket
+    /// transport) valid for the push duration, because `Worker.run`'s
+    /// defer chain calls `unsubscribeAllForStream` which doesn't return
+    /// past this wait until no push is in flight.
+    in_flight: u32 = 0,
+    in_flight_mutex: std.Thread.Mutex = .{},
+    in_flight_cv: std.Thread.Condition = .{},
+
+    fn retainForPush(self: *TerminalSubscription) void {
+        self.in_flight_mutex.lock();
+        defer self.in_flight_mutex.unlock();
+        self.in_flight += 1;
+    }
+
+    fn releasePush(self: *TerminalSubscription) void {
+        self.in_flight_mutex.lock();
+        defer self.in_flight_mutex.unlock();
+        std.debug.assert(self.in_flight > 0);
+        self.in_flight -= 1;
+        if (self.in_flight == 0) self.in_flight_cv.broadcast();
+    }
 };
 
 pub const SubscribeSnapshot = struct {
@@ -1357,7 +1373,7 @@ pub const Service = struct {
             if (sub.dead.load(.seq_cst)) continue;
             if (std.mem.eql(u8, sub.session_id, entry.session_id)) {
                 matching.append(self.alloc, sub) catch break;
-                _ = sub.in_flight.fetchAdd(1, .seq_cst);
+                sub.retainForPush();
             }
         }
         self.sub_mutex.unlock();
@@ -1378,7 +1394,7 @@ pub const Service = struct {
         }
 
         for (matching.items) |sub| {
-            defer _ = sub.in_flight.fetchSub(1, .seq_cst);
+            defer sub.releasePush();
             if (sub.dead.load(.seq_cst)) continue;
             self.pushOneSubscriber(entry, sub) catch {
                 sub.dead.store(true, .seq_cst);
@@ -1386,14 +1402,16 @@ pub const Service = struct {
         }
     }
 
-    /// Spin-wait for a retiring subscription's `in_flight` counter to
-    /// drop to zero. Called by `unsubscribeTerminal` and friends after
-    /// removing the sub from `terminal_subs` (so no new push can see
-    /// it) and before freeing the allocation. Free-standing (not a
-    /// method on Service) because it does not need the service itself.
+    /// Wait for a retiring subscription's `in_flight` counter to drop to
+    /// zero. Called by `unsubscribeTerminal` and friends after removing the
+    /// sub from `terminal_subs` (so no new push can see it) and before
+    /// freeing the allocation. Free-standing (not a method on Service)
+    /// because it does not need the service itself.
     fn waitUntilQuiescent(sub: *TerminalSubscription) void {
-        while (sub.in_flight.load(.seq_cst) > 0) {
-            std.atomic.spinLoopHint();
+        sub.in_flight_mutex.lock();
+        defer sub.in_flight_mutex.unlock();
+        while (sub.in_flight > 0) {
+            sub.in_flight_cv.wait(&sub.in_flight_mutex);
         }
     }
 
@@ -1424,7 +1442,7 @@ pub const Service = struct {
             if (sub.dead.load(.seq_cst)) continue;
             if (std.mem.eql(u8, sub.session_id, session_id)) {
                 matching.append(self.alloc, sub) catch break;
-                _ = sub.in_flight.fetchAdd(1, .seq_cst);
+                sub.retainForPush();
             }
         }
         self.sub_mutex.unlock();
@@ -1438,13 +1456,13 @@ pub const Service = struct {
             .rows = rows,
             .grid_generation = grid_generation,
         }) catch {
-            for (matching.items) |sub| _ = sub.in_flight.fetchSub(1, .seq_cst);
+            for (matching.items) |sub| sub.releasePush();
             return;
         };
         defer self.alloc.free(event);
 
         for (matching.items) |sub| {
-            defer _ = sub.in_flight.fetchSub(1, .seq_cst);
+            defer sub.releasePush();
             if (sub.dead.load(.seq_cst)) continue;
             self.sendControlFrame(sub, event) catch {
                 sub.dead.store(true, .seq_cst);
