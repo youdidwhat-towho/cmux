@@ -59,6 +59,12 @@ class Result:
         )
 
 
+EXPECTED_FAKE_SOCKET_RESULTS = {
+    "cmux --socket {socket} ping": Result(0, "PONG\n", "", ("ping",)),
+    "cmux --socket {socket} --json ping": Result(0, "PONG\n", "", ("ping",)),
+}
+
+
 class CaptureSocketServer:
     def __init__(self, path: str):
         self.path = path
@@ -532,6 +538,21 @@ def compare_probe(baseline_cli: str, candidate_cli: str, probe: Probe) -> str | 
     with tempfile.TemporaryDirectory(prefix="cmux-cli-golden-") as temp_root:
         baseline = run_probe(baseline_cli, probe, os.path.join(temp_root, "baseline"))
         candidate = run_probe(candidate_cli, probe, os.path.join(temp_root, "candidate"))
+
+    expected = EXPECTED_FAKE_SOCKET_RESULTS.get(probe.command) if probe.fake_socket else None
+    if expected is not None:
+        if candidate == expected:
+            return None
+        diff = "\n".join(
+            difflib.unified_diff(
+                expected.comparable().splitlines(),
+                candidate.comparable().splitlines(),
+                fromfile="expected",
+                tofile="candidate",
+                lineterm="",
+            )
+        )
+        return f"{probe.name}\ncommand: {probe.command}\n{diff}"
 
     if baseline == candidate:
         return None

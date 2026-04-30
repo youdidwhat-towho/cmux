@@ -929,6 +929,13 @@ final class SocketClient {
         )
     }
 
+    private static func pollTimeoutMilliseconds(for timeout: TimeInterval) -> Int32 {
+        let sanitizedTimeout = timeout.isFinite ? timeout : defaultResponseTimeoutSeconds
+        let maxPollTimeout = TimeInterval(Int32.max) / 1_000
+        let clampedTimeout = min(max(sanitizedTimeout, 0.001), maxPollTimeout)
+        return Int32((clampedTimeout * 1_000).rounded(.up))
+    }
+
     func connect() throws {
         if socketFD >= 0 { return }
         try connectOnce()
@@ -965,9 +972,13 @@ final class SocketClient {
         let initialResponseTimeout = responseTimeout ?? Self.responseTimeoutSeconds
 
         while true {
-            try configureReceiveTimeout(
-                sawNewline ? Self.multilineResponseIdleTimeoutSeconds : initialResponseTimeout
-            )
+            let readTimeout = sawNewline ? Self.multilineResponseIdleTimeoutSeconds : initialResponseTimeout
+            guard try waitForReadable(timeout: readTimeout, failureMessage: "Socket read error") else {
+                if sawNewline {
+                    break
+                }
+                throw CLIError(message: "Command timed out")
+            }
 
             var buffer = [UInt8](repeating: 0, count: 8192)
             let count = Darwin.read(socketFD, &buffer, buffer.count)
@@ -1130,7 +1141,6 @@ final class SocketClient {
         }
         do {
             try configureSocketWriteSafety(Self.responseTimeoutSeconds)
-            try configureReceiveTimeout(Self.responseTimeoutSeconds)
         } catch {
             close()
             throw error
@@ -1276,7 +1286,9 @@ final class SocketClient {
         var data = Data()
 
         while data.count < maxBytes {
-            try configureReceiveTimeout(Self.responseTimeoutSeconds)
+            guard try waitForReadable(timeout: Self.responseTimeoutSeconds, failureMessage: "Relay socket read error") else {
+                throw CLIError(message: "Relay command timed out")
+            }
 
             var byte: UInt8 = 0
             let count = Darwin.read(socketFD, &byte, 1)
@@ -1307,19 +1319,24 @@ final class SocketClient {
         return line.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func configureReceiveTimeout(_ timeout: TimeInterval) throws {
-        var interval = Self.socketTimeval(for: timeout)
-        let result = withUnsafePointer(to: &interval) { ptr in
-            setsockopt(
-                socketFD,
-                SOL_SOCKET,
-                SO_RCVTIMEO,
-                ptr,
-                socklen_t(MemoryLayout<timeval>.size)
-            )
-        }
-        guard result == 0 else {
-            throw CLIError(message: "Failed to configure socket receive timeout")
+    private func waitForReadable(timeout: TimeInterval, failureMessage: String) throws -> Bool {
+        var descriptor = pollfd(fd: socketFD, events: Int16(POLLIN), revents: 0)
+
+        while true {
+            let result = Darwin.poll(&descriptor, 1, Self.pollTimeoutMilliseconds(for: timeout))
+            if result > 0 {
+                if Int32(descriptor.revents) & POLLNVAL != 0 {
+                    throw CLIError(message: failureMessage)
+                }
+                return true
+            }
+            if result == 0 {
+                return false
+            }
+            if errno == EINTR {
+                continue
+            }
+            throw CLIError(message: failureMessage)
         }
     }
 
