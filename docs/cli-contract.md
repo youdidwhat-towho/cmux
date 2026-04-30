@@ -63,6 +63,7 @@ Environment:
 | `docs` | Print canonical docs URLs, raw GitHub resources, and useful commands for a topic. |
 | `settings` | Open Settings, print settings file paths, or print settings docs. |
 | `shortcuts` | Open Settings to Keyboard Shortcuts. |
+| `open <path-or-url>...` | Open files, directories, or URLs in cmux. |
 | `disable-browser` | Disable cmux browser creation and link interception until re-enabled. |
 | `enable-browser` | Re-enable cmux browser creation and link interception. |
 | `browser-status` | Print whether cmux browser creation and link interception are enabled. |
@@ -377,6 +378,7 @@ the expected text without connecting to a cmux socket.
 - `cmux settings docs` -> `Settings files:`
 - `cmux welcome --help` -> `Usage: cmux welcome`
 - `cmux shortcuts --help` -> `Usage: cmux shortcuts`
+- `cmux open --help` -> `Usage: cmux open <path-or-url>`
 - `cmux disable-browser --help` -> `Usage: cmux disable-browser [--json]`
 - `cmux enable-browser --help` -> `Usage: cmux enable-browser [--json]`
 - `cmux browser-status --help` -> `Usage: cmux browser-status [--json]`

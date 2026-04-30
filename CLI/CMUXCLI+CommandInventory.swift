@@ -25,6 +25,7 @@ extension CMUXCLI {
         case docs
         case settings
         case shortcuts
+        case open
         case restoreSession = "restore-session"
         case feedback
         case feed
