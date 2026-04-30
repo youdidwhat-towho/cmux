@@ -328,19 +328,40 @@ jobs:
 
           BASELINE_DIR="$(mktemp -d /tmp/cmux-cli-baseline.XXXXXX)"
           BASELINE_DERIVED_DATA="$(mktemp -d /tmp/cmux-cli-baseline-dd.XXXXXX)"
+          BASELINE_SOURCE_PACKAGES="$PWD/.ci-source-packages-baseline"
           cleanup() {
             git worktree remove --force "$BASELINE_DIR" >/dev/null 2>&1 || true
             rm -rf "$BASELINE_DERIVED_DATA"
+            rm -rf "$BASELINE_SOURCE_PACKAGES"
           }
           trap cleanup EXIT
 
           git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
           git worktree add --detach "$BASELINE_DIR" FETCH_HEAD
           git -C "$BASELINE_DIR" submodule update --init --recursive
+          mkdir -p "$BASELINE_SOURCE_PACKAGES"
+
+          for attempt in 1 2 3; do
+            if xcodebuild -project "$BASELINE_DIR/GhosttyTabs.xcodeproj" \
+              -scheme cmux-cli \
+              -configuration Debug \
+              -clonedSourcePackagesDirPath "$BASELINE_SOURCE_PACKAGES" \
+              -resolvePackageDependencies; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "Failed to resolve baseline Swift packages after 3 attempts" >&2
+              exit 1
+            fi
+            echo "Baseline package resolution failed on attempt $attempt, retrying..."
+            sleep $((attempt * 5))
+          done
 
           xcodebuild -project "$BASELINE_DIR/GhosttyTabs.xcodeproj" \
             -scheme cmux-cli \
             -configuration Debug \
+            -clonedSourcePackagesDirPath "$BASELINE_SOURCE_PACKAGES" \
+            -disableAutomaticPackageResolution \
             -destination "platform=macOS" \
             -derivedDataPath "$BASELINE_DERIVED_DATA" \
             build
