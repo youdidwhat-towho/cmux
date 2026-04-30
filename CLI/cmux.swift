@@ -901,30 +901,21 @@ final class SocketClient {
     private struct SocketDeadline {
         let end: TimeInterval
 
-        init(timeout: TimeInterval) {
-            end = ProcessInfo.processInfo.systemUptime + Self.sanitized(timeout)
-        }
+        init(timeout: TimeInterval) { end = ProcessInfo.processInfo.systemUptime + Self.sanitized(timeout) }
 
         static func earlier(_ lhs: SocketDeadline, _ rhs: SocketDeadline) -> SocketDeadline {
             SocketDeadline(end: min(lhs.end, rhs.end))
         }
 
-        var remaining: TimeInterval {
-            max(0, end - ProcessInfo.processInfo.systemUptime)
-        }
-
-        var hasTimeRemaining: Bool {
-            remaining > 0
-        }
+        var remaining: TimeInterval { max(0, end - ProcessInfo.processInfo.systemUptime) }
+        var hasTimeRemaining: Bool { remaining > 0 }
 
         private static func sanitized(_ timeout: TimeInterval) -> TimeInterval {
             let timeout = timeout.isFinite ? timeout : SocketClient.defaultResponseTimeoutSeconds
             return min(max(timeout, 0), SocketClient.maxSocketTimeoutSeconds)
         }
 
-        private init(end: TimeInterval) {
-            self.end = end
-        }
+        private init(end: TimeInterval) { self.end = end }
     }
 
     private let path: String
@@ -1002,9 +993,7 @@ final class SocketClient {
     }
 
     private static func pollTimeoutMilliseconds(forRemaining timeout: TimeInterval) -> Int32 {
-        if timeout <= 0 {
-            return 0
-        }
+        guard timeout > 0 else { return 0 }
         let sanitizedTimeout = timeout.isFinite ? timeout : defaultResponseTimeoutSeconds
         let maxPollTimeout = TimeInterval(Int32.max) / 1_000
         let clampedTimeout = min(max(sanitizedTimeout, 0.001), maxPollTimeout)
