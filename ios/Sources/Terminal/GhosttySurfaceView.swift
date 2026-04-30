@@ -999,7 +999,7 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         let count = normalized.utf8CString.count
         guard count > 1 else { return }
         normalized.withCString { pointer in
-            ghostty_surface_text(surface, pointer, UInt(count - 1))
+            ghostty_surface_text_input(surface, pointer, UInt(count - 1))
         }
     }
 
