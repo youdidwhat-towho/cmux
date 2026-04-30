@@ -63,12 +63,20 @@ jobs:
           export DEVELOPER_DIR="$XCODE_DIR"
           xcodebuild -version
 
+      - name: Compute GhosttyKit cache key
+        id: ghosttykit-cache
+        run: |
+          set -euo pipefail
+          ghostty_sha="$(git -C ghostty rev-parse HEAD)"
+          xcode_fingerprint="$(xcodebuild -version | shasum -a 256 | awk '{print $1}')"
+          echo "key=ghosttykit-${ghostty_sha}-${xcode_fingerprint}" >> "$GITHUB_OUTPUT"
+
       - name: Restore GhosttyKit.xcframework cache
         id: restore-ghosttykit
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: GhosttyKit.xcframework
-          key: ghosttykit-${{ hashFiles('.gitmodules', 'ghostty') }}
+          key: ${{ steps.ghosttykit-cache.outputs.key }}
 
       - name: Download pre-built GhosttyKit.xcframework
         id: download-ghosttykit
@@ -135,7 +143,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: GhosttyKit.xcframework
-          key: ghosttykit-${{ hashFiles('.gitmodules', 'ghostty') }}
+          key: ${{ steps.ghosttykit-cache.outputs.key }}
 
       - name: Upload GhosttyKit.xcframework
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

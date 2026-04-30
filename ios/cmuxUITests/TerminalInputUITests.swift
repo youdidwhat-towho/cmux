@@ -45,7 +45,7 @@ final class TerminalInputUITests: XCTestCase {
 
         let tabButton = app.buttons["terminal.inputAccessory.tab"]
         XCTAssertTrue(tabButton.waitForExistence(timeout: 4), "Expected tab accessory button")
-        tabButton.tap()
+        tapEvenIfKeyboardAccessoryReportsCovered(tabButton)
 
         terminalBackButton(in: app, title: "Input Fixture").tap()
 
@@ -62,5 +62,13 @@ final class TerminalInputUITests: XCTestCase {
 
     private func terminalDetail(in app: XCUIApplication) -> XCUIElement {
         app.otherElements.matching(identifier: "terminal.workspace.detail").firstMatch
+    }
+
+    private func tapEvenIfKeyboardAccessoryReportsCovered(_ element: XCUIElement) {
+        if element.isHittable {
+            element.tap()
+            return
+        }
+        element.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 }

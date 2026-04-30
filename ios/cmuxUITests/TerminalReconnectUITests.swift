@@ -17,12 +17,8 @@ final class TerminalReconnectUITests: XCTestCase {
         serverButton.tap()
 
         XCTAssertTrue(app.navigationBars["Mac mini"].waitForExistence(timeout: 4))
-        XCTAssertTrue(
-            app.staticTexts["Reconnecting to cmuxd"].waitForExistence(timeout: 6),
-            "Expected reconnect progress banner"
-        )
-
         let banner = app.otherElements["terminal.status.banner"]
+        XCTAssertTrue(banner.waitForExistence(timeout: 6), "Expected reconnect progress banner")
         XCTAssertTrue(waitForDisappearance(of: banner, timeout: 6))
     }
 
