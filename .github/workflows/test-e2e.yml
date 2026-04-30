@@ -63,22 +63,22 @@ jobs:
           export DEVELOPER_DIR="$XCODE_DIR"
           xcodebuild -version
 
-      - name: Cache GhosttyKit.xcframework
-        id: cache-ghosttykit
-        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      - name: Restore GhosttyKit.xcframework cache
+        id: restore-ghosttykit
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: GhosttyKit.xcframework
           key: ghosttykit-${{ hashFiles('.gitmodules', 'ghostty') }}
 
       - name: Download pre-built GhosttyKit.xcframework
         id: download-ghosttykit
-        if: steps.cache-ghosttykit.outputs.cache-hit != 'true'
+        if: steps.restore-ghosttykit.outputs.cache-hit != 'true'
         continue-on-error: true
         run: |
           ./scripts/download-prebuilt-ghosttykit.sh
 
       - name: Install zig for GhosttyKit fallback
-        if: steps.cache-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
+        if: steps.restore-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
         run: |
           set -euo pipefail
           ZIG_REQUIRED="0.15.2"
@@ -105,7 +105,7 @@ jobs:
           "/tmp/${zig_dir}/zig" version
 
       - name: Cache Zig packages for GhosttyKit fallback
-        if: steps.cache-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
+        if: steps.restore-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
         uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ~/.cache/zig
@@ -113,7 +113,7 @@ jobs:
           restore-keys: zig-packages-
 
       - name: Build GhosttyKit.xcframework fallback
-        if: steps.cache-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
+        if: steps.restore-ghosttykit.outputs.cache-hit != 'true' && steps.download-ghosttykit.outcome == 'failure'
         run: |
           set -euo pipefail
           CMUX_GHOSTTYKIT_NO_PREBUILT=1 ./scripts/setup.sh
@@ -129,6 +129,13 @@ jobs:
           fi
           test -d GhosttyKit.xcframework
           tar czf "$RUNNER_TEMP/GhosttyKit.xcframework.tar.gz" GhosttyKit.xcframework
+
+      - name: Save GhosttyKit.xcframework cache
+        if: steps.restore-ghosttykit.outputs.cache-hit != 'true'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: GhosttyKit.xcframework
+          key: ghosttykit-${{ hashFiles('.gitmodules', 'ghostty') }}
 
       - name: Upload GhosttyKit.xcframework
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
