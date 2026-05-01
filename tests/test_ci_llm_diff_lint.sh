@@ -31,11 +31,18 @@ CLEAN='{"rule_id":"rule","violated":false,"severity":"none","summary":"clean","f
 python3 scripts/llm_diff_lint.py \
   --rule "$RULE" \
   --diff-file "$DIFF" \
+  --output "$TMP_DIR/clean.json" \
   --mock-response "$CLEAN" > "$TMP_DIR/clean.out"
 
 if ! grep -Fq '"violated": false' "$TMP_DIR/clean.out"; then
   echo "expected clean mock response to pass" >&2
   cat "$TMP_DIR/clean.out" >&2
+  exit 1
+fi
+
+if ! grep -Fq '"summary": "clean"' "$TMP_DIR/clean.json"; then
+  echo "expected clean JSON output file" >&2
+  cat "$TMP_DIR/clean.json" >&2
   exit 1
 fi
 
@@ -89,5 +96,29 @@ fi
 if ! grep -Fq 'The diff was not truncated' "$TMP_DIR/too-large.out"; then
   echo "expected oversized diff output" >&2
   cat "$TMP_DIR/too-large.out" >&2
+  exit 1
+fi
+
+RESULTS_DIR="$TMP_DIR/results/llm-diff-lint-rule"
+mkdir -p "$RESULTS_DIR"
+cp "$TMP_DIR/clean.json" "$RESULTS_DIR/result.json"
+
+python3 scripts/llm_diff_lint_comment.py \
+  --results-dir "$TMP_DIR/results" \
+  --pr-number 123 \
+  --pr-url https://github.com/manaflow-ai/cmux/pull/123 \
+  --diff-url https://github.com/manaflow-ai/cmux/pull/123.diff \
+  --run-url https://github.com/manaflow-ai/cmux/actions/runs/456 \
+  --dry-run > "$TMP_DIR/comment.md"
+
+if ! grep -Fq '<!-- cmux-llm-diff-lint -->' "$TMP_DIR/comment.md"; then
+  echo "expected stable comment marker" >&2
+  cat "$TMP_DIR/comment.md" >&2
+  exit 1
+fi
+
+if ! grep -Fq '| `rule` | passed | clean |' "$TMP_DIR/comment.md"; then
+  echo "expected rule status table" >&2
+  cat "$TMP_DIR/comment.md" >&2
   exit 1
 fi

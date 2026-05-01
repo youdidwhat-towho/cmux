@@ -281,6 +281,36 @@ def write_step_summary(markdown: str) -> None:
             handle.write("\n")
 
 
+def write_result(path: pathlib.Path | None, result: dict[str, Any]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def emit_result(
+    *,
+    result: dict[str, Any],
+    args: argparse.Namespace,
+    rule_path: pathlib.Path,
+    diff_bytes: int,
+) -> None:
+    print(json.dumps(result, indent=2, sort_keys=True))
+    print_annotations(result)
+    write_step_summary(summary_markdown(result, rule_path, diff_bytes, args.model))
+    write_result(args.output, result)
+
+
+def skipped_result(rule_id: str, summary: str) -> dict[str, Any]:
+    return {
+        "rule_id": rule_id,
+        "violated": False,
+        "severity": "none",
+        "summary": summary,
+        "findings": [],
+    }
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--rule", required=True, type=pathlib.Path, help="Markdown rule file")
@@ -304,6 +334,7 @@ def main(argv: list[str]) -> int:
         type=int,
         help="Fail instead of truncating when the diff is larger than this. Use 0 for no limit.",
     )
+    parser.add_argument("--output", type=pathlib.Path, help="Write normalized JSON result to this path")
     parser.add_argument("--skip-if-missing-key", action="store_true")
     parser.add_argument("--mock-response", help="JSON response for tests and dry runs")
     args = parser.parse_args(argv)
@@ -317,12 +348,24 @@ def main(argv: list[str]) -> int:
     rule_text = read_text(rule_path)
     diff = load_diff(args)
     if not diff.strip():
-        notice(f"{rule_id}: empty diff, skipping")
+        result = skipped_result(rule_id, "Empty diff, skipped.")
+        emit_result(result=result, args=args, rule_path=rule_path, diff_bytes=0)
         return 0
 
     diff = redact_secrets(diff)
     diff_bytes = len(diff.encode("utf-8"))
     if args.max_diff_bytes and diff_bytes > args.max_diff_bytes:
+        result = {
+            "rule_id": rule_id,
+            "violated": True,
+            "severity": "failure",
+            "summary": (
+                f"Diff is {diff_bytes} bytes, above limit {args.max_diff_bytes}. "
+                "Increase LLM_DIFF_LINT_MAX_DIFF_BYTES or split the PR."
+            ),
+            "findings": [],
+        }
+        emit_result(result=result, args=args, rule_path=rule_path, diff_bytes=diff_bytes)
         print(
             f"{rule_id}: diff is {diff_bytes} bytes, above limit {args.max_diff_bytes}. "
             "Increase LLM_DIFF_LINT_MAX_DIFF_BYTES or split the PR. The diff was not truncated.",
@@ -336,7 +379,8 @@ def main(argv: list[str]) -> int:
         api_key = os.environ.get("DEEPSEEK_API_KEY")
         if not api_key:
             if args.skip_if_missing_key:
-                notice(f"{rule_id}: DEEPSEEK_API_KEY is not set, skipping LLM diff lint")
+                result = skipped_result(rule_id, "DEEPSEEK_API_KEY is not set, skipped.")
+                emit_result(result=result, args=args, rule_path=rule_path, diff_bytes=diff_bytes)
                 return 0
             print("DEEPSEEK_API_KEY is required", file=sys.stderr)
             return 2
@@ -367,9 +411,7 @@ def main(argv: list[str]) -> int:
             return 2
 
     result = normalize_result(rule_id, parsed)
-    print(json.dumps(result, indent=2, sort_keys=True))
-    print_annotations(result)
-    write_step_summary(summary_markdown(result, rule_path, diff_bytes, args.model))
+    emit_result(result=result, args=args, rule_path=rule_path, diff_bytes=diff_bytes)
 
     if result["severity"] == "failure":
         return 1
