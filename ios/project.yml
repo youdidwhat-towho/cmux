@@ -1,0 +1,51 @@
+name: cmux-ios
+options:
+  bundleIdPrefix: dev.cmux
+  deploymentTarget:
+    iOS: "26.0"
+  xcodeVersion: "16.0"
+
+configs:
+  Debug: debug
+  Release: release
+
+schemes:
+  cmux-ios:
+    build:
+      targets:
+        cmux-ios: all
+
+targets:
+  cmux-ios:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+      - Resources
+      - Assets.xcassets
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.cmux.ios
+        PRODUCT_NAME: cmux iOS
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        GENERATE_INFOPLIST_FILE: "YES"
+        SWIFT_EMIT_LOC_STRINGS: "YES"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        DEVELOPMENT_TEAM: 7WLXT3NR37
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon-Dev
+        CODE_SIGN_STYLE: Automatic
+    info:
+      path: Info.plist
+      properties:
+        UILaunchScreen:
+          UIColorName: ""
+          UIImageName: ""
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        ITSAppUsesNonExemptEncryption: false

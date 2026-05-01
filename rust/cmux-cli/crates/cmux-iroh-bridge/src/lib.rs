@@ -1,0 +1,780 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unwrap_used
+    )
+)]
+
+use std::path::PathBuf;
+
+use anyhow::{Context, Result, anyhow, bail};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use hmac::{Hmac, Mac};
+use iroh::{Endpoint, EndpointAddr, RelayMode, Watcher, endpoint::presets};
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+use tokio::io::{self, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::UnixStream;
+
+pub const CMUX_IROH_ALPN: &[u8] = b"/cmux/cmx/3";
+const MAX_AUTH_FRAME_BYTES: usize = 4096;
+type HmacSha256 = Hmac<Sha256>;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeTicket {
+    pub version: u32,
+    pub alpn: String,
+    pub endpoint: EndpointAddr,
+    pub auth: BridgeTicketAuth,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum BridgeTicketAuth {
+    Direct,
+    RivetStack {
+        pairing_id: String,
+        rivet_endpoint: String,
+        stack_project_id: String,
+        expires_at_unix: u64,
+    },
+}
+
+impl BridgeTicket {
+    pub const VERSION: u32 = 1;
+
+    pub fn new(endpoint: EndpointAddr, auth: BridgeTicketAuth) -> Self {
+        Self {
+            version: Self::VERSION,
+            alpn: String::from_utf8_lossy(CMUX_IROH_ALPN).into_owned(),
+            endpoint,
+            auth,
+        }
+    }
+
+    pub fn encode(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    pub fn decode(encoded: &str) -> Result<Self> {
+        let ticket: Self = serde_json::from_str(encoded).context("decode bridge ticket")?;
+        if ticket.version != Self::VERSION {
+            bail!("unsupported bridge ticket version {}", ticket.version);
+        }
+        if ticket.alpn.as_bytes() != CMUX_IROH_ALPN {
+            bail!("unsupported bridge ALPN {}", ticket.alpn);
+        }
+        ticket.auth.validate()?;
+        Ok(ticket)
+    }
+}
+
+impl BridgeTicketAuth {
+    fn validate(&self) -> Result<()> {
+        match self {
+            Self::Direct => Ok(()),
+            Self::RivetStack {
+                pairing_id,
+                rivet_endpoint,
+                stack_project_id,
+                expires_at_unix,
+            } => {
+                if pairing_id.trim().is_empty() {
+                    bail!("missing Rivet pairing id");
+                }
+                if rivet_endpoint.trim().is_empty() {
+                    bail!("missing Rivet endpoint");
+                }
+                if stack_project_id.trim().is_empty() {
+                    bail!("missing Stack project id");
+                }
+                if *expires_at_unix == 0 {
+                    bail!("missing pairing expiration");
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgeOptions {
+    pub cmx_socket_path: PathBuf,
+    pub relay_mode: BridgeRelayMode,
+    pub pairing: Option<BridgePairingOptions>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BridgePairingOptions {
+    pub pairing_id: String,
+    pub secret: String,
+    pub rivet_endpoint: String,
+    pub stack_project_id: String,
+    pub expires_at_unix: u64,
+}
+
+impl BridgePairingOptions {
+    fn ticket_auth(&self) -> BridgeTicketAuth {
+        BridgeTicketAuth::RivetStack {
+            pairing_id: self.pairing_id.clone(),
+            rivet_endpoint: self.rivet_endpoint.clone(),
+            stack_project_id: self.stack_project_id.clone(),
+            expires_at_unix: self.expires_at_unix,
+        }
+    }
+
+    fn validate(&self) -> Result<()> {
+        self.ticket_auth().validate()?;
+        if self.secret.trim().is_empty() {
+            bail!("missing pairing secret");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BridgeRelayMode {
+    Default,
+    Disabled,
+}
+
+impl BridgeRelayMode {
+    fn as_iroh(self) -> RelayMode {
+        match self {
+            Self::Default => RelayMode::Default,
+            Self::Disabled => RelayMode::Disabled,
+        }
+    }
+}
+
+pub async fn serve(options: BridgeOptions) -> Result<()> {
+    if let Some(pairing) = &options.pairing {
+        pairing.validate()?;
+    }
+
+    let endpoint = Endpoint::builder(presets::N0)
+        .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+        .relay_mode(options.relay_mode.as_iroh())
+        .bind()
+        .await
+        .context("bind iroh endpoint")?;
+    let addr = endpoint.watch_addr().get();
+    let ticket_auth = options
+        .pairing
+        .as_ref()
+        .map(BridgePairingOptions::ticket_auth)
+        .unwrap_or(BridgeTicketAuth::Direct);
+    println!("{}", BridgeTicket::new(addr, ticket_auth).encode()?);
+
+    while let Some(incoming) = endpoint.accept().await {
+        let socket_path = options.cmx_socket_path.clone();
+        let pairing = options.pairing.clone();
+        tokio::spawn(async move {
+            if let Err(error) = proxy_incoming(incoming, socket_path, pairing).await {
+                tracing::warn!(?error, "iroh cmux bridge connection failed");
+            }
+        });
+    }
+
+    endpoint.close().await;
+    Ok(())
+}
+
+async fn proxy_incoming(
+    incoming: iroh::endpoint::Incoming,
+    socket_path: PathBuf,
+    pairing: Option<BridgePairingOptions>,
+) -> Result<()> {
+    let connection = incoming
+        .accept()
+        .context("accept incoming iroh connection")?
+        .await?;
+    let (mut iroh_send, mut iroh_recv) = connection.accept_bi().await?;
+    if let Some(pairing) = pairing.as_ref() {
+        complete_pairing_auth(&mut iroh_send, &mut iroh_recv, pairing).await?;
+    }
+
+    let mut cmx = UnixStream::connect(&socket_path)
+        .await
+        .with_context(|| format!("connect cmx socket {}", socket_path.display()))?;
+    let (mut cmx_recv, mut cmx_send) = cmx.split();
+
+    let client_to_cmx = async {
+        io::copy(&mut iroh_recv, &mut cmx_send)
+            .await
+            .context("copy iroh client to cmx socket")
+    };
+    let cmx_to_client = async {
+        io::copy(&mut cmx_recv, &mut iroh_send)
+            .await
+            .context("copy cmx socket to iroh client")
+    };
+    tokio::try_join!(client_to_cmx, cmx_to_client)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairingStart {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub pairing_id: String,
+    pub client_nonce: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairingChallenge {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub pairing_id: String,
+    pub server_nonce: String,
+    pub alpn: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairingResponse {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub pairing_id: String,
+    pub proof: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PairingAccepted {
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+pub fn pairing_proof(
+    secret: &str,
+    pairing_id: &str,
+    client_nonce: &str,
+    server_nonce: &str,
+) -> Result<String> {
+    let mut mac =
+        HmacSha256::new_from_slice(secret.as_bytes()).map_err(|_| anyhow!("invalid HMAC key"))?;
+    mac.update(CMUX_IROH_ALPN);
+    mac.update(b"\n");
+    mac.update(pairing_id.as_bytes());
+    mac.update(b"\n");
+    mac.update(client_nonce.as_bytes());
+    mac.update(b"\n");
+    mac.update(server_nonce.as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes()))
+}
+
+async fn complete_pairing_auth<W, R>(
+    writer: &mut W,
+    reader: &mut R,
+    pairing: &BridgePairingOptions,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let start: PairingStart = read_json_line(reader).await?;
+    if start.kind != "pairing_start" {
+        bail!("unexpected pairing auth frame {}", start.kind);
+    }
+    if start.pairing_id != pairing.pairing_id {
+        bail!("pairing id mismatch");
+    }
+    if start.client_nonce.trim().is_empty() {
+        bail!("missing client nonce");
+    }
+
+    let server_nonce = generate_nonce()?;
+    let challenge = PairingChallenge {
+        kind: "pairing_challenge".into(),
+        pairing_id: pairing.pairing_id.clone(),
+        server_nonce: server_nonce.clone(),
+        alpn: String::from_utf8_lossy(CMUX_IROH_ALPN).into_owned(),
+    };
+    write_json_line(writer, &challenge).await?;
+
+    let response: PairingResponse = read_json_line(reader).await?;
+    if response.kind != "pairing_response" {
+        bail!("unexpected pairing auth frame {}", response.kind);
+    }
+    if response.pairing_id != pairing.pairing_id {
+        bail!("pairing id mismatch");
+    }
+    let expected = pairing_proof(
+        &pairing.secret,
+        &pairing.pairing_id,
+        &start.client_nonce,
+        &server_nonce,
+    )?;
+    if response.proof != expected {
+        bail!("pairing proof rejected");
+    }
+
+    write_json_line(
+        writer,
+        &PairingAccepted {
+            kind: "pairing_accepted".into(),
+        },
+    )
+    .await
+}
+
+fn generate_nonce() -> Result<String> {
+    let mut nonce = [0u8; 32];
+    getrandom::fill(&mut nonce).map_err(|error| anyhow!("generate pairing nonce: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(nonce))
+}
+
+async fn write_json_line<W, T>(writer: &mut W, value: &T) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    T: Serialize,
+{
+    let mut bytes = serde_json::to_vec(value).context("encode auth frame")?;
+    bytes.push(b'\n');
+    writer.write_all(&bytes).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+async fn read_json_line<R, T>(reader: &mut R) -> Result<T>
+where
+    R: AsyncRead + Unpin,
+    T: for<'de> Deserialize<'de>,
+{
+    let mut bytes = Vec::new();
+    loop {
+        let byte = reader.read_u8().await.context("read auth frame")?;
+        if byte == b'\n' {
+            break;
+        }
+        bytes.push(byte);
+        if bytes.len() > MAX_AUTH_FRAME_BYTES {
+            bail!("auth frame too large");
+        }
+    }
+    serde_json::from_slice(&bytes).context("decode auth frame")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cmux_cli_protocol::{
+        ClientMsg, PROTOCOL_VERSION, ServerMsg, Viewport, read_msg, write_msg,
+    };
+    use cmux_cli_server::{ServerOptions, run};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::UnixListener;
+    use tokio::time::{Duration, Instant, sleep};
+
+    #[test]
+    fn ticket_roundtrips_json() {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let ticket = BridgeTicket::new(
+            endpoint,
+            BridgeTicketAuth::RivetStack {
+                pairing_id: "pairing-1".into(),
+                rivet_endpoint: "https://rivet.example.test".into(),
+                stack_project_id: "stack-project".into(),
+                expires_at_unix: 1_800_000_000,
+            },
+        );
+        let encoded = ticket.encode().expect("encode");
+        let decoded = BridgeTicket::decode(&encoded).expect("decode");
+        assert_eq!(decoded, ticket);
+    }
+
+    #[test]
+    fn ticket_rejects_wrong_alpn() {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let mut ticket = BridgeTicket::new(endpoint, BridgeTicketAuth::Direct);
+        ticket.alpn = "wrong".into();
+        let encoded = ticket.encode().expect("encode");
+        let error = BridgeTicket::decode(&encoded).expect_err("wrong alpn should fail");
+        assert!(error.to_string().contains("unsupported bridge ALPN"));
+    }
+
+    #[test]
+    fn ticket_rejects_incomplete_rivet_auth() {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let ticket = BridgeTicket::new(
+            endpoint,
+            BridgeTicketAuth::RivetStack {
+                pairing_id: String::new(),
+                rivet_endpoint: "https://rivet.example.test".into(),
+                stack_project_id: "stack-project".into(),
+                expires_at_unix: 1_800_000_000,
+            },
+        );
+        let encoded = ticket.encode().expect("encode");
+        let error = BridgeTicket::decode(&encoded).expect_err("missing pairing id should fail");
+        assert!(error.to_string().contains("missing Rivet pairing id"));
+    }
+
+    #[test]
+    fn pairing_proof_depends_on_secret_and_nonce() {
+        let proof = pairing_proof("secret-a", "pairing-1", "client-a", "server-a").expect("proof");
+        assert_ne!(
+            proof,
+            pairing_proof("secret-b", "pairing-1", "client-a", "server-a").expect("proof")
+        );
+        assert_ne!(
+            proof,
+            pairing_proof("secret-a", "pairing-1", "client-b", "server-a").expect("proof")
+        );
+        assert_ne!(
+            proof,
+            pairing_proof("secret-a", "pairing-1", "client-a", "server-b").expect("proof")
+        );
+    }
+
+    #[tokio::test]
+    async fn iroh_stream_is_proxied_to_unix_socket() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("cmx.sock");
+        let listener = UnixListener::bind(&socket_path)?;
+        let unix_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut input = [0u8; 4];
+            socket.read_exact(&mut input).await?;
+            assert_eq!(&input, b"ping");
+            socket.write_all(b"pong").await?;
+            Result::<()>::Ok(())
+        });
+
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let server_addr = server.watch_addr().get();
+        let server_task = tokio::spawn({
+            let socket_path = socket_path.clone();
+            let server = server.clone();
+            async move {
+                let incoming = server.accept().await.context("accept iroh")?;
+                proxy_incoming(incoming, socket_path, None).await
+            }
+        });
+
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let connection = client.connect(server_addr, CMUX_IROH_ALPN).await?;
+        let (mut send, mut recv) = connection.open_bi().await?;
+        send.write_all(b"ping").await?;
+        let mut output = [0u8; 4];
+        recv.read_exact(&mut output).await?;
+        assert_eq!(&output, b"pong");
+
+        client.close().await;
+        server.close().await;
+        unix_server.await??;
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn iroh_stream_requires_pairing_proof_before_proxying() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("cmx.sock");
+        let listener = UnixListener::bind(&socket_path)?;
+        let unix_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut input = [0u8; 4];
+            socket.read_exact(&mut input).await?;
+            assert_eq!(&input, b"ping");
+            socket.write_all(b"pong").await?;
+            Result::<()>::Ok(())
+        });
+
+        let pairing = BridgePairingOptions {
+            pairing_id: "pairing-1".into(),
+            secret: "shared-secret-from-rivet".into(),
+            rivet_endpoint: "https://rivet.example.test".into(),
+            stack_project_id: "stack-project".into(),
+            expires_at_unix: 1_800_000_000,
+        };
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let server_addr = server.watch_addr().get();
+        let server_task = tokio::spawn({
+            let socket_path = socket_path.clone();
+            let server = server.clone();
+            let pairing = pairing.clone();
+            async move {
+                let incoming = server.accept().await.context("accept iroh")?;
+                proxy_incoming(incoming, socket_path, Some(pairing)).await
+            }
+        });
+
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let connection = client.connect(server_addr, CMUX_IROH_ALPN).await?;
+        let (mut send, mut recv) = connection.open_bi().await?;
+        let client_nonce = "client-nonce-a";
+        write_json_line(
+            &mut send,
+            &PairingStart {
+                kind: "pairing_start".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                client_nonce: client_nonce.into(),
+            },
+        )
+        .await?;
+        let challenge: PairingChallenge =
+            tokio::time::timeout(Duration::from_secs(5), read_json_line(&mut recv))
+                .await
+                .context("pairing challenge timed out")??;
+        assert_eq!(challenge.kind, "pairing_challenge");
+        assert_eq!(challenge.pairing_id, pairing.pairing_id);
+        write_json_line(
+            &mut send,
+            &PairingResponse {
+                kind: "pairing_response".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                proof: pairing_proof(
+                    &pairing.secret,
+                    &pairing.pairing_id,
+                    client_nonce,
+                    &challenge.server_nonce,
+                )?,
+            },
+        )
+        .await?;
+        let accepted: PairingAccepted =
+            tokio::time::timeout(Duration::from_secs(5), read_json_line(&mut recv))
+                .await
+                .context("pairing accepted timed out")??;
+        assert_eq!(accepted.kind, "pairing_accepted");
+
+        send.write_all(b"ping").await?;
+        let mut output = [0u8; 4];
+        tokio::time::timeout(Duration::from_secs(5), recv.read_exact(&mut output))
+            .await
+            .context("pong timed out")??;
+        assert_eq!(&output, b"pong");
+
+        client.close().await;
+        server.close().await;
+        tokio::time::timeout(Duration::from_secs(5), unix_server)
+            .await
+            .context("unix echo server timed out")???;
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cmx_tui_frames_sync_over_authenticated_iroh() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("cmx.sock");
+        let cmx_server = tokio::spawn({
+            let socket_path = socket_path.clone();
+            let cwd = dir.path().to_path_buf();
+            async move {
+                let _ = run(ServerOptions {
+                    socket_path,
+                    shell: "/bin/sh".into(),
+                    cwd: Some(cwd),
+                    initial_viewport: (80, 24),
+                    snapshot_path: None,
+                    settings_path: None,
+                    ws_bind: None,
+                    auth_token: None,
+                })
+                .await;
+            }
+        });
+        wait_for_socket(&socket_path).await?;
+
+        let pairing = BridgePairingOptions {
+            pairing_id: "pairing-1".into(),
+            secret: "shared-secret-from-rivet".into(),
+            rivet_endpoint: "https://rivet.example.test".into(),
+            stack_project_id: "stack-project".into(),
+            expires_at_unix: 1_800_000_000,
+        };
+        let iroh_server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let iroh_addr = iroh_server.watch_addr().get();
+        let bridge_task =
+            spawn_one_bridge_accept(iroh_server.clone(), socket_path.clone(), pairing.clone());
+
+        let client = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let connection = client.connect(iroh_addr.clone(), CMUX_IROH_ALPN).await?;
+        let (mut send, mut recv) = connection.open_bi().await?;
+        let client_nonce = "client-nonce-a";
+        write_json_line(
+            &mut send,
+            &PairingStart {
+                kind: "pairing_start".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                client_nonce: client_nonce.into(),
+            },
+        )
+        .await?;
+        let challenge: PairingChallenge = read_json_line(&mut recv).await?;
+        write_json_line(
+            &mut send,
+            &PairingResponse {
+                kind: "pairing_response".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                proof: pairing_proof(
+                    &pairing.secret,
+                    &pairing.pairing_id,
+                    client_nonce,
+                    &challenge.server_nonce,
+                )?,
+            },
+        )
+        .await?;
+        let accepted: PairingAccepted = read_json_line(&mut recv).await?;
+        assert_eq!(accepted.kind, "pairing_accepted");
+
+        write_msg(
+            &mut send,
+            &ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+                viewport: Viewport { cols: 80, rows: 24 },
+                token: None,
+            },
+        )
+        .await?;
+        match read_msg::<_, ServerMsg>(&mut recv).await? {
+            Some(ServerMsg::Welcome { .. }) => {}
+            other => bail!("expected Welcome, got {other:?}"),
+        }
+        wait_for_tui_frame(&mut recv, |_| true).await?;
+
+        write_msg(
+            &mut send,
+            &ClientMsg::Input {
+                data: b"printf ios-sync-ok\\n\n".to_vec(),
+            },
+        )
+        .await?;
+        wait_for_tui_frame(&mut recv, |frame| frame.contains("ios-sync-ok")).await?;
+
+        client.close().await;
+        bridge_task.abort();
+
+        let bridge_task =
+            spawn_one_bridge_accept(iroh_server.clone(), socket_path.clone(), pairing.clone());
+        let reconnecting_client = Endpoint::builder(presets::Minimal)
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let connection = reconnecting_client
+            .connect(iroh_addr, CMUX_IROH_ALPN)
+            .await?;
+        let (mut send, mut recv) = connection.open_bi().await?;
+        let client_nonce = "client-nonce-b";
+        write_json_line(
+            &mut send,
+            &PairingStart {
+                kind: "pairing_start".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                client_nonce: client_nonce.into(),
+            },
+        )
+        .await?;
+        let challenge: PairingChallenge = read_json_line(&mut recv).await?;
+        write_json_line(
+            &mut send,
+            &PairingResponse {
+                kind: "pairing_response".into(),
+                pairing_id: pairing.pairing_id.clone(),
+                proof: pairing_proof(
+                    &pairing.secret,
+                    &pairing.pairing_id,
+                    client_nonce,
+                    &challenge.server_nonce,
+                )?,
+            },
+        )
+        .await?;
+        let accepted: PairingAccepted = read_json_line(&mut recv).await?;
+        assert_eq!(accepted.kind, "pairing_accepted");
+        write_msg(
+            &mut send,
+            &ClientMsg::Hello {
+                version: PROTOCOL_VERSION,
+                viewport: Viewport { cols: 80, rows: 24 },
+                token: None,
+            },
+        )
+        .await?;
+        match read_msg::<_, ServerMsg>(&mut recv).await? {
+            Some(ServerMsg::Welcome { .. }) => {}
+            other => bail!("expected reconnect Welcome, got {other:?}"),
+        }
+        wait_for_tui_frame(&mut recv, |frame| frame.contains("ios-sync-ok")).await?;
+
+        reconnecting_client.close().await;
+        iroh_server.close().await;
+        bridge_task.abort();
+        cmx_server.abort();
+        Ok(())
+    }
+
+    fn spawn_one_bridge_accept(
+        iroh_server: Endpoint,
+        socket_path: std::path::PathBuf,
+        pairing: BridgePairingOptions,
+    ) -> tokio::task::JoinHandle<Result<()>> {
+        tokio::spawn(async move {
+            let incoming = iroh_server.accept().await.context("accept iroh")?;
+            proxy_incoming(incoming, socket_path, Some(pairing)).await
+        })
+    }
+
+    async fn wait_for_socket(socket_path: &std::path::Path) -> Result<()> {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if socket_path.exists() {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(20)).await;
+        }
+        bail!("timed out waiting for cmx socket {}", socket_path.display())
+    }
+
+    async fn wait_for_tui_frame<R>(recv: &mut R, predicate: impl Fn(&str) -> bool) -> Result<String>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut last_frame = String::new();
+        while Instant::now() < deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let message = tokio::time::timeout(remaining, read_msg::<_, ServerMsg>(recv)).await??;
+            match message {
+                Some(ServerMsg::PtyBytes { data, .. }) => {
+                    let frame = String::from_utf8_lossy(&data).into_owned();
+                    if predicate(&frame) {
+                        return Ok(frame);
+                    }
+                    last_frame = frame;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        bail!("timed out waiting for matching TUI frame; last frame: {last_frame:?}")
+    }
+}

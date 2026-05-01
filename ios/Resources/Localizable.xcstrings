@@ -1,0 +1,252 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "bridge.summary.empty" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste a bridge ticket to attach this device." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "このデバイスを接続するにはブリッジチケットを貼り付けてください。" } }
+      }
+    },
+    "bridge.summary.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Iroh bridge" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Iroh ブリッジ" } }
+      }
+    },
+    "button.connect" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connect" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "接続" } }
+      }
+    },
+    "button.disconnect" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Disconnect" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "切断" } }
+      }
+    },
+    "demo.row.bridge_command" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "$ cmux-iroh-bridge --socket $CMX_SOCKET_PATH" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "$ cmux-iroh-bridge --socket $CMX_SOCKET_PATH" } }
+      }
+    },
+    "demo.row.bridge_ticket" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "{\"version\":1,\"alpn\":\"/cmux/cmx/3\",...}" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "{\"version\":1,\"alpn\":\"/cmux/cmx/3\",...}" } }
+      }
+    },
+    "demo.row.cwd" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "lawrence in ~/fun/cmux-cli" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "lawrence in ~/fun/cmux-cli" } }
+      }
+    },
+    "demo.row.grid_flowing" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "terminal grid snapshots flowing over QUIC" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ターミナルグリッドのスナップショットを QUIC で受信中" } }
+      }
+    },
+    "demo.row.iroh_ready" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "iroh endpoint ready" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh エンドポイント準備完了" } }
+      }
+    },
+    "demo.row.list_workspaces" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "$ cmx list-workspaces" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "$ cmx list-workspaces" } }
+      }
+    },
+    "demo.row.panes_map" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "terminal panes map to cmx panels" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ターミナルペインは cmx パネルに対応" } }
+      }
+    },
+    "demo.row.snapshot_attached" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "native snapshot stream attached" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ネイティブスナップショットストリームに接続済み" } }
+      }
+    },
+    "demo.row.spaces_map" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "spaces map to cmx spaces" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "スペースは cmx スペースに対応" } }
+      }
+    },
+    "demo.row.state_native" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "first sync path renders the Rust TUI frame" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "最初の同期経路は Rust TUI フレームを描画" } }
+      }
+    },
+    "demo.row.workspace_output" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "0  main   spaces 2   terminals 3" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "0  main   spaces 2   terminals 3" } }
+      }
+    },
+    "demo.space.logs" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "logs" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ログ" } }
+      }
+    },
+    "demo.space.review" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "review" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "レビュー" } }
+      }
+    },
+    "demo.space.space1" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "space-1" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "space-1" } }
+      }
+    },
+    "demo.terminal.bridge" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "bridge" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジ" } }
+      }
+    },
+    "demo.terminal.cmx" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "cmx" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "cmx" } }
+      }
+    },
+    "demo.terminal.status" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "status" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ステータス" } }
+      }
+    },
+    "demo.workspace.agent_runs" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "agent runs" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "エージェント実行" } }
+      }
+    },
+    "demo.workspace.main" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "main" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "main" } }
+      }
+    },
+    "nav.workspaces" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Workspaces" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ワークスペース" } }
+      }
+    },
+    "status.connected" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connected" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "接続済み" } }
+      }
+    },
+    "status.needs_ticket" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ticket needed" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "チケットが必要です" } }
+      }
+    },
+    "status.ready" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ready" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "準備完了" } }
+      }
+    },
+    "ticket.error.alpn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge protocol %@." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のブリッジプロトコル %@ です。" } }
+      }
+    },
+    "ticket.error.empty" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste an iroh bridge ticket first." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "先に iroh ブリッジチケットを貼り付けてください。" } }
+      }
+    },
+    "ticket.error.utf8" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The ticket is not valid UTF-8." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "チケットは有効な UTF-8 ではありません。" } }
+      }
+    },
+    "ticket.error.version" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge ticket version %d." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のブリッジチケットバージョン %d です。" } }
+      }
+    },
+    "ticket.auth.direct" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "direct development ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "直接開発チケット" } }
+      }
+    },
+    "ticket.auth.rivet_stack" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Stack + Rivet pairing %@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Stack + Rivet ペアリング %@" } }
+      }
+    },
+    "ticket.auth.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "unknown auth %@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "不明な認証 %@" } }
+      }
+    },
+    "ticket.placeholder" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste iroh bridge ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh ブリッジチケットを貼り付け" } }
+      }
+    },
+    "ticket.route.custom" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "custom:%@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "custom:%@" } }
+      }
+    },
+    "ticket.route.ip" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "ip:%@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ip:%@" } }
+      }
+    },
+    "ticket.route.keyed_unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%@:%@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "%@:%@" } }
+      }
+    },
+    "ticket.route.relay" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "relay:%@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "relay:%@" } }
+      }
+    },
+    "ticket.route.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "unknown route" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "不明な経路" } }
+      }
+    },
+    "workspace.row.detail" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "%d spaces, %d terminals" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "%d スペース、%d ターミナル" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}
