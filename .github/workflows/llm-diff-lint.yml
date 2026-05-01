@@ -106,8 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           gh pr diff "${{ steps.pr.outputs.number }}" \
-            --repo "${{ github.repository }}" \
-            --patch > "$RUNNER_TEMP/pr.diff"
+            --repo "${{ github.repository }}" > "$RUNNER_TEMP/pr.diff"
           wc -c "$RUNNER_TEMP/pr.diff"
 
       - name: Run DeepSeek lint rule
