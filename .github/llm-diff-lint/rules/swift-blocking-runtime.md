@@ -13,6 +13,7 @@ Allowed cases:
 
 - Deterministic sleeps in tests or explicit test-only scaffolding.
 - UI animation delays where the delay is visual timing, not synchronization.
+- Intentional init-time or passive-callback safety deferrals that use delayed main-queue dispatch to avoid AppKit constraint-pass crashes, when the code documents why a real signal is unavailable.
 - Very small lock usage around non-async, low-level platform bridges when an actor cannot be used and the code documents the reason.
 - Existing blocking code that the PR does not introduce or worsen.
 

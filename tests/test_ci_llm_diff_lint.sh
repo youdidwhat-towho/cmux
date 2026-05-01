@@ -73,10 +73,25 @@ if ! grep -Fq '"severity": "failure"' "$TMP_DIR/failure.out"; then
   exit 1
 fi
 
+INVALID_NONE='{"rule_id":"rule","violated":true,"severity":"none","summary":"bad severity","findings":[]}'
+if python3 scripts/llm_diff_lint.py \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$INVALID_NONE" > "$TMP_DIR/invalid-none.out" 2>&1; then
+  echo "expected violated true with severity none to fail" >&2
+  exit 1
+fi
+
+if ! grep -Fq '"severity": "failure"' "$TMP_DIR/invalid-none.out"; then
+  echo "expected violated true severity none to normalize to failure" >&2
+  cat "$TMP_DIR/invalid-none.out" >&2
+  exit 1
+fi
+
 env -u DEEPSEEK_API_KEY python3 scripts/llm_diff_lint.py \
   --rule "$RULE" \
   --diff-file "$DIFF" \
-  --skip-if-missing-key > "$TMP_DIR/missing-key.out"
+  --skip-if-missing-key > "$TMP_DIR/missing-key.out" 2>&1
 
 if ! grep -Fq 'DEEPSEEK_API_KEY is not set' "$TMP_DIR/missing-key.out"; then
   echo "expected missing key skip notice" >&2

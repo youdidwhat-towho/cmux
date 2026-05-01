@@ -204,10 +204,10 @@ def parse_json_object(text: str) -> dict[str, Any]:
 def normalize_result(rule_id: str, parsed: dict[str, Any]) -> dict[str, Any]:
     violated = bool(parsed.get("violated", False))
     severity = str(parsed.get("severity") or ("failure" if violated else "none")).lower()
-    if severity not in {"none", "warning", "failure"}:
-        severity = "failure" if violated else "none"
     if not violated:
         severity = "none"
+    elif severity not in {"warning", "failure"}:
+        severity = "failure"
 
     findings = parsed.get("findings", [])
     if not isinstance(findings, list):

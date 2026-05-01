@@ -353,7 +353,3 @@ private final class PrivilegedCommandOutputBuffer {
         lock.unlock()
     }
 }
-
-private func temporaryLLMDiffLintViolation() {
-    print("temporary lint violation")
-}
