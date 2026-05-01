@@ -1675,3 +1675,183 @@ final class CommandPaletteOverlayPromotionPolicyTests: XCTestCase {
         )
     }
 }
+
+@MainActor
+final class MainWindowVisibilityControllerTests: XCTestCase {
+    func testFocusDeminiaturizesAndActivatesThroughSingleOwner() {
+        let window = makeWindow()
+        defer { window.orderOut(nil) }
+
+        var miniaturizedWindows: Set<ObjectIdentifier> = [ObjectIdentifier(window)]
+        var activeWindows: [NSWindow] = []
+        var deminiaturizedWindows: [NSWindow] = []
+        var madeKeyWindows: [NSWindow] = []
+        var unhideCount = 0
+        var appActivations: [Bool] = []
+
+        let controller = MainWindowVisibilityController(
+            dependencies: .init(
+                isActivationSuppressed: { false },
+                setActiveMainWindow: { activeWindows.append($0) },
+                isApplicationHidden: { true },
+                unhideApplication: { unhideCount += 1 },
+                activateApplicationIgnoringOtherApps: { appActivations.append($0) },
+                windowOperations: makeWindowOperations(
+                    isMiniaturized: { miniaturizedWindows.contains(ObjectIdentifier($0)) },
+                    deminiaturize: { window in
+                        miniaturizedWindows.remove(ObjectIdentifier(window))
+                        deminiaturizedWindows.append(window)
+                    },
+                    makeKeyAndOrderFront: { madeKeyWindows.append($0) }
+                )
+            )
+        )
+
+        XCTAssertTrue(
+            controller.focus(
+                window,
+                reason: .focusMainWindow,
+                activation: .appIgnoringOtherApps(true)
+            )
+        )
+        XCTAssertTrue(activeWindows.first === window)
+        XCTAssertTrue(deminiaturizedWindows.first === window)
+        XCTAssertTrue(madeKeyWindows.first === window)
+        XCTAssertEqual(unhideCount, 1)
+        XCTAssertEqual(appActivations, [true])
+    }
+
+    func testFocusSuppressionOnlyUpdatesActiveContext() {
+        let window = makeWindow()
+        defer { window.orderOut(nil) }
+
+        var activeWindows: [NSWindow] = []
+        var deminiaturizedCount = 0
+        var madeKeyCount = 0
+        var activationCount = 0
+
+        let controller = MainWindowVisibilityController(
+            dependencies: .init(
+                isActivationSuppressed: { true },
+                setActiveMainWindow: { activeWindows.append($0) },
+                activateRunningApplication: { _ in activationCount += 1 },
+                windowOperations: makeWindowOperations(
+                    isMiniaturized: { _ in true },
+                    deminiaturize: { _ in deminiaturizedCount += 1 },
+                    makeKeyAndOrderFront: { _ in madeKeyCount += 1 }
+                )
+            )
+        )
+
+        XCTAssertTrue(controller.focus(window, reason: .focusMainWindow))
+        XCTAssertTrue(activeWindows.first === window)
+        XCTAssertEqual(deminiaturizedCount, 0)
+        XCTAssertEqual(madeKeyCount, 0)
+        XCTAssertEqual(activationCount, 0)
+    }
+
+    func testHotkeyRestoreUsesCapturedVisibleAndMiniaturizedTargets() {
+        let visibleWindow = makeWindow()
+        let hiddenWindow = makeWindow()
+        let miniaturizedWindow = makeWindow()
+        defer {
+            visibleWindow.orderOut(nil)
+            hiddenWindow.orderOut(nil)
+            miniaturizedWindow.orderOut(nil)
+        }
+
+        let visibleIds: Set<ObjectIdentifier> = [ObjectIdentifier(visibleWindow)]
+        var miniaturizedIds: Set<ObjectIdentifier> = [ObjectIdentifier(miniaturizedWindow)]
+        var isAppActive = true
+        var isAppHidden = false
+        var hideCount = 0
+        var unhideCount = 0
+        var deminiaturizedWindows: [NSWindow] = []
+        var madeKeyWindows: [NSWindow] = []
+        var orderedRegardlessWindows: [NSWindow] = []
+        var activationCount = 0
+
+        let controller = MainWindowVisibilityController(
+            dependencies: .init(
+                isActivationSuppressed: { false },
+                setActiveMainWindow: { _ in },
+                isApplicationActive: { isAppActive },
+                isApplicationHidden: { isAppHidden },
+                hideApplication: {
+                    hideCount += 1
+                    isAppActive = false
+                    isAppHidden = true
+                },
+                unhideApplication: {
+                    unhideCount += 1
+                    isAppHidden = false
+                },
+                activateRunningApplication: { _ in activationCount += 1 },
+                windowOperations: makeWindowOperations(
+                    isVisible: { visibleIds.contains(ObjectIdentifier($0)) },
+                    isMiniaturized: { miniaturizedIds.contains(ObjectIdentifier($0)) },
+                    deminiaturize: { window in
+                        miniaturizedIds.remove(ObjectIdentifier(window))
+                        deminiaturizedWindows.append(window)
+                    },
+                    makeKeyAndOrderFront: { madeKeyWindows.append($0) },
+                    orderFrontRegardless: { orderedRegardlessWindows.append($0) }
+                )
+            )
+        )
+
+        controller.toggleApplicationVisibility(
+            windows: [visibleWindow, hiddenWindow, miniaturizedWindow],
+            reason: .globalHotkey
+        )
+        XCTAssertEqual(hideCount, 1)
+
+        controller.toggleApplicationVisibility(
+            windows: [visibleWindow, hiddenWindow, miniaturizedWindow],
+            reason: .globalHotkey
+        )
+
+        XCTAssertEqual(unhideCount, 1)
+        XCTAssertEqual(activationCount, 1)
+        XCTAssertTrue(deminiaturizedWindows.contains { $0 === miniaturizedWindow })
+        XCTAssertTrue(madeKeyWindows.contains { $0 === visibleWindow })
+        XCTAssertTrue(orderedRegardlessWindows.contains { $0 === miniaturizedWindow })
+        XCTAssertFalse(madeKeyWindows.contains { $0 === hiddenWindow })
+        XCTAssertFalse(orderedRegardlessWindows.contains { $0 === hiddenWindow })
+    }
+
+    private func makeWindow() -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 120, height: 80),
+            styleMask: [.titled, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.isReleasedWhenClosed = false
+        return window
+    }
+
+    private func makeWindowOperations(
+        isVisible: @escaping (NSWindow) -> Bool = { _ in true },
+        isMiniaturized: @escaping (NSWindow) -> Bool = { _ in false },
+        isKeyWindow: @escaping (NSWindow) -> Bool = { _ in false },
+        canBecomeMain: @escaping (NSWindow) -> Bool = { _ in true },
+        canBecomeKey: @escaping (NSWindow) -> Bool = { _ in true },
+        deminiaturize: @escaping (NSWindow) -> Void = { _ in },
+        makeKeyAndOrderFront: @escaping (NSWindow) -> Void = { _ in },
+        orderFront: @escaping (NSWindow) -> Void = { _ in },
+        orderFrontRegardless: @escaping (NSWindow) -> Void = { _ in }
+    ) -> MainWindowVisibilityController.WindowOperations {
+        MainWindowVisibilityController.WindowOperations(
+            isVisible: isVisible,
+            isMiniaturized: isMiniaturized,
+            isKeyWindow: isKeyWindow,
+            canBecomeMain: canBecomeMain,
+            canBecomeKey: canBecomeKey,
+            deminiaturize: deminiaturize,
+            makeKeyAndOrderFront: makeKeyAndOrderFront,
+            orderFront: orderFront,
+            orderFrontRegardless: orderFrontRegardless
+        )
+    }
+}

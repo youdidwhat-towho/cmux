@@ -7394,8 +7394,7 @@ class TerminalController {
 
             if shouldActivate {
                 if let targetWindow {
-                    targetWindow.makeKeyAndOrderFront(nil)
-                    NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+                    _ = AppDelegate.shared?.focusWindowForAppActivation(targetWindow, reason: .feedback)
                 } else {
                     NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
                 }
@@ -12279,26 +12278,7 @@ class TerminalController {
 
     private func activateApp() -> String {
         DispatchQueue.main.sync {
-            NSApp.activate(ignoringOtherApps: true)
-            NSApp.unhide(nil)
-            let hasMainTerminalWindow = NSApp.windows.contains { window in
-                guard let raw = window.identifier?.rawValue else { return false }
-                return raw == "cmux.main" || raw.hasPrefix("cmux.main.")
-            }
-
-            if !hasMainTerminalWindow {
-                AppDelegate.shared?.openNewMainWindow(nil)
-            }
-
-            if let window = NSApp.mainWindow
-                ?? NSApp.keyWindow
-                ?? NSApp.windows.first(where: { win in
-                    guard let raw = win.identifier?.rawValue else { return false }
-                    return raw == "cmux.main" || raw.hasPrefix("cmux.main.")
-                })
-                ?? NSApp.windows.first {
-                window.makeKeyAndOrderFront(nil)
-            }
+            _ = AppDelegate.shared?.activateMainWindowFromSocket()
         }
         return "OK"
     }

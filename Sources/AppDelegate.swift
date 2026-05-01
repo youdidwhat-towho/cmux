@@ -666,6 +666,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private lazy var titlebarAccessoryController = UpdateTitlebarAccessoryController(viewModel: updateViewModel)
     private let windowDecorationsController = WindowDecorationsController()
     private var menuBarExtraController: MenuBarExtraController?
+    private lazy var mainWindowVisibilityController = MainWindowVisibilityController(
+        dependencies: .init(
+            isActivationSuppressed: {
+                TerminalController.shouldSuppressSocketCommandActivation()
+                    && !TerminalController.socketCommandAllowsInAppFocusMutations()
+            },
+            setActiveMainWindow: { [weak self] window in
+                self?.setActiveMainWindow(window)
+            }
+        )
+    )
     private static let serviceErrorNoPath = NSString(string: String(localized: "error.clipboardFolderPath", defaultValue: "Could not load any folder path from the clipboard."))
     private static let didInstallWindowKeyEquivalentSwizzle: Void = {
         let targetClass: AnyClass = NSWindow.self
@@ -4529,13 +4540,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func focusMainWindow(windowId: UUID) -> Bool {
         guard let window = windowForMainWindowId(windowId) else { return false }
-        if TerminalController.shouldSuppressSocketCommandActivation(),
-           !TerminalController.socketCommandAllowsInAppFocusMutations() {
-            setActiveMainWindow(window)
-            return true
-        }
-        bringToFront(window)
-        return true
+        return mainWindowVisibilityController.focus(window, reason: .focusMainWindow)
     }
 
     func closeMainWindow(windowId: UUID) -> Bool {
@@ -5335,13 +5340,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
 #endif
         if let window {
-            if !window.isKeyWindow {
-                if !NSApp.isActive {
-                    NSRunningApplication.current.activate(options: [.activateAllWindows])
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
-            setActiveMainWindow(window)
+            mainWindowVisibilityController.focusForInWindowCommand(window, reason: .rightSidebarFocus)
         }
         let result = context.keyboardFocusCoordinator.focusRightSidebar(
             mode: requestedMode,
@@ -5381,13 +5380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
 #endif
         if let window {
-            if !window.isKeyWindow {
-                if !NSApp.isActive {
-                    NSRunningApplication.current.activate(options: [.activateAllWindows])
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
-            setActiveMainWindow(window)
+            mainWindowVisibilityController.focusForInWindowCommand(window, reason: .fileSearchFocus)
         }
         let result = context.keyboardFocusCoordinator.focusFileSearch()
 #if DEBUG
@@ -5423,13 +5416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
 #endif
         if let window {
-            if !window.isKeyWindow {
-                if !NSApp.isActive {
-                    NSRunningApplication.current.activate(options: [.activateAllWindows])
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
-            setActiveMainWindow(window)
+            mainWindowVisibilityController.focusForInWindowCommand(window, reason: .findShortcut)
         }
 
         let target = context.keyboardFocusCoordinator.findShortcutTarget(
@@ -5478,13 +5465,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         )
 #endif
         if let window {
-            if !window.isKeyWindow {
-                if !NSApp.isActive {
-                    NSRunningApplication.current.activate(options: [.activateAllWindows])
-                }
-                window.makeKeyAndOrderFront(nil)
-            }
-            setActiveMainWindow(window)
+            mainWindowVisibilityController.focusForInWindowCommand(window, reason: .rightSidebarToggle)
         }
         let result = context.keyboardFocusCoordinator.toggleRightSidebarOrTerminalFocus()
 #if DEBUG
@@ -5573,11 +5554,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for context in sortedMainWindowContextsForSessionSnapshot() {
             guard let window = resolvedWindow(for: context) else { continue }
             if shouldActivate {
-                if window.isMiniaturized {
-                    window.deminiaturize(nil)
-                }
-                window.makeKeyAndOrderFront(nil)
-                setActiveMainWindow(window)
+                mainWindowVisibilityController.focus(
+                    window,
+                    reason: .ensureInitialWindow,
+                    activation: .none,
+                    respectActivationSuppression: false
+                )
             }
             return context.windowId
         }
@@ -6429,9 +6411,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 setActiveMainWindow(window)
             }
         } else {
-            window.makeKeyAndOrderFront(nil)
-            setActiveMainWindow(window)
-            NSApp.activate(ignoringOtherApps: true)
+            mainWindowVisibilityController.focus(
+                window,
+                reason: .createMainWindow,
+                activation: .appIgnoringOtherApps(true),
+                respectActivationSuppression: false
+            )
         }
         if shouldTemporarilyDisallowFullScreenTiling {
             DispatchQueue.main.async { [weak window] in
@@ -6682,6 +6667,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         menuBarExtraController?.refreshForDebugControls()
     }
 
+    func captureMainWindowVisibilityRestoreTargetsForApplicationHide() {
+        mainWindowVisibilityController.captureHiddenWindowRestoreTargets(windows: NSApp.windows)
+    }
+
+    func toggleApplicationVisibilityFromGlobalHotkey() {
+        mainWindowVisibilityController.toggleApplicationVisibility(windows: NSApp.windows, reason: .globalHotkey)
+    }
+
+    @discardableResult
+    func activateMainWindowFromSocket() -> Bool {
+        let window = preferredMainWindowForVisibilityActivation() ?? {
+            let windowId = ensureInitialMainWindowIfNeeded(shouldActivate: false)
+            return windowForMainWindowId(windowId)
+        }()
+        guard let window else { return false }
+        return mainWindowVisibilityController.focus(
+            window,
+            reason: .socketActivate,
+            activation: .appIgnoringOtherApps(true),
+            respectActivationSuppression: false
+        )
+    }
+
+    @discardableResult
+    func focusWindowForAppActivation(
+        _ window: NSWindow,
+        reason: MainWindowVisibilityController.Reason
+    ) -> Bool {
+        mainWindowVisibilityController.focus(
+            window,
+            reason: reason,
+            activation: .runningApplication([.activateAllWindows, .activateIgnoringOtherApps]),
+            respectActivationSuppression: false
+        )
+    }
+
+    private func preferredMainWindowForVisibilityActivation() -> NSWindow? {
+        if let keyWindow = NSApp.keyWindow,
+           isMainTerminalWindow(keyWindow) {
+            return keyWindow
+        }
+        if let mainWindow = NSApp.mainWindow,
+           isMainTerminalWindow(mainWindow) {
+            return mainWindow
+        }
+        if let visibleContext = sortedMainWindowContextsForSessionSnapshot().first(where: { context in
+            guard let window = resolvedWindow(for: context) else { return false }
+            return window.isVisible && !window.isMiniaturized
+        }) {
+            return resolvedWindow(for: visibleContext)
+        }
+        return sortedMainWindowContextsForSessionSnapshot()
+            .compactMap { resolvedWindow(for: $0) }
+            .first
+    }
+
     func showMainWindowFromMenuBar() {
         let context: MainWindowContext? = {
             if let keyWindow = NSApp.keyWindow,
@@ -6717,8 +6758,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return
         }
 
-        NSApp.unhide(nil)
-        bringToFront(window)
+        mainWindowVisibilityController.focus(window, reason: .menuBar)
     }
 
     func showNotificationsPopoverFromMenuBar() {
@@ -12878,18 +12918,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return tabManager?.tabs.first(where: { $0.id == tabId })?.title
     }
 
-    private func bringToFront(_ window: NSWindow) {
-        if TerminalController.shouldSuppressSocketCommandActivation(),
-           !TerminalController.socketCommandAllowsInAppFocusMutations() {
-            return
-        }
-        setActiveMainWindow(window)
-        if window.isMiniaturized {
-            window.deminiaturize(nil)
-        }
-        window.makeKeyAndOrderFront(nil)
-        // Improve reliability across Spaces / when other helper panels are key.
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+    private func bringToFront(
+        _ window: NSWindow,
+        reason: MainWindowVisibilityController.Reason = .focusMainWindow
+    ) {
+        _ = mainWindowVisibilityController.focus(window, reason: reason)
     }
 
     private func markReadIfFocused(
