@@ -150,6 +150,7 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
               let splitOK = split["ok"] as? Bool,
               splitOK,
               let splitResult = split["result"] as? [String: Any],
+              let workspaceId = splitResult["workspace_id"] as? String,
               let rightSurfaceId = splitResult["surface_id"] as? String else {
             XCTFail("Expected right split to be created. response=\(String(describing: socketJSON(method: "surface.current", params: [:])))")
             return
@@ -180,8 +181,16 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             return
         }
 
-        _ = socketJSON(method: "surface.focus", params: ["surface_id": rightSurfaceId])
-        _ = socketJSON(method: "pane.focus", params: ["pane_id": leftPaneId])
+        guard let focusRight = socketJSON(method: "surface.focus", params: ["surface_id": rightSurfaceId]),
+              (focusRight["ok"] as? Bool) == true else {
+            XCTFail("Expected surface.focus to succeed for right surface")
+            return
+        }
+        guard let focusLeftPane = socketJSON(method: "pane.focus", params: ["pane_id": leftPaneId]),
+              (focusLeftPane["ok"] as? Bool) == true else {
+            XCTFail("Expected pane.focus to succeed for left pane")
+            return
+        }
 
         guard let leftSurfacesBefore = paneSurfaces(paneId: leftPaneId),
               leftSurfacesBefore.contains(where: { ($0["id"] as? String) == newLeftSurfaceId }),
@@ -190,7 +199,10 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             return
         }
 
-        let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore)
+        guard let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore) else {
+            XCTFail("Expected selected surface \(selectedBefore) to exist in left pane surfaces \(leftSurfacesBefore)")
+            return
+        }
         app.typeKey("]", modifierFlags: [.command, .shift])
 
         XCTAssertTrue(
@@ -199,6 +211,22 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
                     self.currentSurfaceId() == expectedSurfaceId
             },
             "Expected Cmd+Shift+] to select \(expectedSurfaceId) in the focused pane instead of returning to stale responder \(rightSurfaceId). current=\(currentSurfaceId() ?? "nil") pane=\(paneSurfaces(paneId: leftPaneId) ?? [])"
+        )
+
+        guard let staleFocus = socketJSON(
+            method: "debug.terminal.first_responder_focus",
+            params: ["workspace_id": workspaceId, "surface_id": rightSurfaceId]
+        ),
+              let staleFocusOK = staleFocus["ok"] as? Bool,
+              staleFocusOK,
+              let staleFocusResult = staleFocus["result"] as? [String: Any],
+              let staleFocusAccepted = staleFocusResult["accepted"] as? Bool else {
+            XCTFail("Expected stale terminal first-responder focus request to return a result. response=\(String(describing: socketJSON(method: "debug.terminals", params: [:])))")
+            return
+        }
+        XCTAssertFalse(
+            staleFocusAccepted,
+            "Expected stale terminal first-responder focus request to be rejected. response=\(staleFocus)"
         )
 
         XCTAssertTrue(

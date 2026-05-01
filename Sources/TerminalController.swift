@@ -2742,6 +2742,8 @@ class TerminalController {
             return v2Result(id: id, self.v2DebugSidebarVisible(params: params))
         case "debug.terminal.is_focused":
             return v2Result(id: id, self.v2DebugIsTerminalFocused(params: params))
+        case "debug.terminal.first_responder_focus":
+            return v2Result(id: id, self.v2DebugTerminalFirstResponderFocus(params: params))
         case "debug.terminal.read_text":
             return v2Result(id: id, self.v2DebugReadTerminalText(params: params))
         case "debug.terminal.render_stats":
@@ -2975,6 +2977,7 @@ class TerminalController {
             "debug.right_sidebar.focus",
             "debug.sidebar.visible",
             "debug.terminal.is_focused",
+            "debug.terminal.first_responder_focus",
             "debug.terminal.read_text",
             "debug.terminal.render_stats",
             "debug.layout",
@@ -12385,6 +12388,39 @@ class TerminalController {
             return .err(code: "internal_error", message: resp, data: nil)
         }
         return .ok(["focused": resp.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"])
+    }
+
+    private func v2DebugTerminalFirstResponderFocus(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        guard let surfaceId = v2UUID(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
+        }
+
+        var result: V2CallResult = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+            guard ws.panels[surfaceId] != nil else {
+                result = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
+                return
+            }
+
+            ws.focusPanel(surfaceId, trigger: .terminalFirstResponder)
+            result = .ok([
+                "accepted": true,
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "surface_id": surfaceId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
+                "current_surface_id": v2OrNull(ws.focusedPanelId?.uuidString),
+                "current_surface_ref": v2Ref(kind: .surface, uuid: ws.focusedPanelId)
+            ])
+        }
+        return result
     }
 
     private func v2DebugReadTerminalText(params: [String: Any]) -> V2CallResult {
