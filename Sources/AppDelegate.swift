@@ -609,10 +609,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     private final class MainWindowController: NSWindowController, NSWindowDelegate {
         var onClose: (() -> Void)?
+        var shouldClose: (() -> Bool)?
 
-        func windowWillClose(_ notification: Notification) {
-            onClose?()
-        }
+        func windowShouldClose(_ sender: NSWindow) -> Bool { shouldClose?() ?? true }
+        func windowWillClose(_ notification: Notification) { onClose?() }
     }
 
     struct ScriptableMainWindowState {
@@ -3274,10 +3274,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         !isTerminatingApp
     }
 
-    nonisolated static func shouldRemoveSnapshotWhenNoWindowsRemainOnWindowUnregister(
-        isTerminatingApp: Bool
+    nonisolated static func shouldRouteMainWindowCloseToQuit(
+        isTerminatingApp: Bool,
+        remainingMainWindowCount: Int
     ) -> Bool {
-        false
+        !isTerminatingApp && remainingMainWindowCount <= 1
     }
 
     nonisolated static func shouldSkipSessionSaveDuringRestore(
@@ -6871,6 +6872,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             guard let self, let controller else { return }
             self.mainWindowControllers.removeAll(where: { $0 === controller })
         }
+        controller.shouldClose = { [weak self] in self?.handleMainTerminalWindowShouldClose() ?? true }
         window.delegate = controller
         mainWindowControllers.append(controller)
 
@@ -13147,6 +13149,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #endif
     }
 
+    private func handleMainTerminalWindowShouldClose() -> Bool {
+        let routeToQuit = Self.shouldRouteMainWindowCloseToQuit(
+            isTerminatingApp: isTerminatingApp,
+            remainingMainWindowCount: mainWindowContexts.count)
+        if routeToQuit { _ = handleQuitShortcutWarning() }
+        return !routeToQuit
+    }
+
     private func unregisterMainWindow(_ window: NSWindow) {
         // Reset cascade point so the next new window appears near the closing
         // window's position, matching upstream Ghostty behavior.
@@ -13155,11 +13165,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         // Keep geometry available as a fallback for the next window placement.
         persistWindowGeometry(from: window)
-
-        // Mirror Cmd+Q's snapshot when the user closes the last window via the red X.
-        if !isTerminatingApp, mainWindowContexts.count == 1 {
-            _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
-        }
 
         guard let removed = unregisterMainWindowContext(for: window) else { return }
         commandPaletteVisibilityByWindowId.removeValue(forKey: removed.windowId)
@@ -13194,12 +13199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // in applicationShouldTerminate/applicationWillTerminate. Saving again here would
         // overwrite it as windows tear down one-by-one, dropping closed windows and replay.
         if Self.shouldPersistSnapshotOnWindowUnregister(isTerminatingApp: isTerminatingApp) {
-            _ = saveSessionSnapshot(
-                includeScrollback: false,
-                removeWhenEmpty: Self.shouldRemoveSnapshotWhenNoWindowsRemainOnWindowUnregister(
-                    isTerminatingApp: isTerminatingApp
-                )
-            )
+            _ = saveSessionSnapshot(includeScrollback: false, removeWhenEmpty: false)
         }
     }
 
