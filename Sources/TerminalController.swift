@@ -8240,11 +8240,10 @@ class TerminalController {
                     }
                     result = .ok(["authenticated": true, "email": authResult.email as Any])
                 } else if let refreshToken, !refreshToken.isEmpty {
-                    await MainActor.run {
-                        Task {
-                            await AuthManager.shared.seedTokensFromCLI(refreshToken: refreshToken, accessToken: params["access_token"] as? String)
-                        }
-                    }
+                    await AuthManager.shared.seedTokensFromCLI(
+                        refreshToken: refreshToken,
+                        accessToken: params["access_token"] as? String
+                    )
                     result = .ok(["seeded": true])
                 }
             } catch {

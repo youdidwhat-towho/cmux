@@ -14501,7 +14501,6 @@ extension Notification.Name {
     static let cmuxDaemonHealthChanged = Notification.Name("cmuxDaemonHealthChanged")
 }
 
-#if DEBUG
 final class MobileDaemonBridgeInline {
     static let shared = MobileDaemonBridgeInline()
     private var process: Process?
@@ -15047,4 +15046,3 @@ final class MobileDaemonBridgeInline {
         return nil
     }
 }
-#endif
