@@ -44,26 +44,44 @@ fn main() -> Result<()> {
     drop(pair.slave);
 
     let mut reader = pair.master.try_clone_reader().context("clone pty reader")?;
-    let _writer = pair.master.take_writer().context("take pty writer")?;
-    let (done_tx, done_rx) = mpsc::channel::<Result<()>>();
+    let mut writer = pair.master.take_writer().context("take pty writer")?;
+    let (event_tx, event_rx) = mpsc::channel::<RecorderEvent>();
+    let watch_needles = args
+        .send_after
+        .iter()
+        .map(|send_after| send_after.needle.clone())
+        .collect::<Vec<_>>();
 
     std::thread::spawn(move || {
         let mut stdout = std::io::stdout();
         let mut buf = [0; 8192];
+        let mut output = Vec::new();
+        let mut sent = vec![false; watch_needles.len()];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => {
-                    let _ = done_tx.send(Ok(()));
+                    let _ = event_tx.send(RecorderEvent::Done(Ok(())));
                     return;
                 }
                 Ok(n) => {
                     if let Err(err) = stdout.write_all(&buf[..n]).and_then(|()| stdout.flush()) {
-                        let _ = done_tx.send(Err(err).context("write cmx pty output"));
+                        let _ = event_tx.send(RecorderEvent::Done(
+                            Err(err).context("write cmx pty output"),
+                        ));
                         return;
+                    }
+                    output.extend_from_slice(&buf[..n]);
+                    let text = String::from_utf8_lossy(&output);
+                    for (index, needle) in watch_needles.iter().enumerate() {
+                        if !sent[index] && text.contains(needle) {
+                            sent[index] = true;
+                            let _ = event_tx.send(RecorderEvent::Needle(index));
+                        }
                     }
                 }
                 Err(err) => {
-                    let _ = done_tx.send(Err(err).context("read cmx pty output"));
+                    let _ =
+                        event_tx.send(RecorderEvent::Done(Err(err).context("read cmx pty output")));
                     return;
                 }
             }
@@ -71,8 +89,15 @@ fn main() -> Result<()> {
     });
 
     loop {
-        match done_rx.recv_timeout(Duration::from_secs(1)) {
-            Ok(result) => {
+        match event_rx.recv_timeout(Duration::from_secs(1)) {
+            Ok(RecorderEvent::Needle(index)) => {
+                let Some(send_after) = args.send_after.get(index) else {
+                    continue;
+                };
+                writeln!(writer, "{}", send_after.line).context("write cmx pty command")?;
+                writer.flush().context("flush cmx pty command")?;
+            }
+            Ok(RecorderEvent::Done(result)) => {
                 let _ = killer.kill();
                 return result;
             }
@@ -85,10 +110,21 @@ fn main() -> Result<()> {
     }
 }
 
+enum RecorderEvent {
+    Needle(usize),
+    Done(Result<()>),
+}
+
+struct SendAfter {
+    needle: String,
+    line: String,
+}
+
 struct Args {
     socket: PathBuf,
     cols: u16,
     rows: u16,
+    send_after: Vec<SendAfter>,
 }
 
 impl Args {
@@ -96,6 +132,7 @@ impl Args {
         let mut socket = None;
         let mut cols = 80;
         let mut rows = 24;
+        let mut send_after = Vec::new();
         let mut iter = args.into_iter();
         while let Some(arg) = iter.next() {
             match arg.as_str() {
@@ -112,8 +149,19 @@ impl Args {
                         .ok_or_else(|| anyhow!("--rows requires a value"))?
                         .parse::<u16>()?;
                 }
+                "--send-after" => {
+                    let needle = iter
+                        .next()
+                        .ok_or_else(|| anyhow!("--send-after requires a needle"))?;
+                    let line = iter
+                        .next()
+                        .ok_or_else(|| anyhow!("--send-after requires a command line"))?;
+                    send_after.push(SendAfter { needle, line });
+                }
                 "-h" | "--help" => {
-                    println!("usage: cmx-pty-recorder --socket PATH [--cols N] [--rows N]");
+                    println!(
+                        "usage: cmx-pty-recorder --socket PATH [--cols N] [--rows N] [--send-after NEEDLE LINE]"
+                    );
                     std::process::exit(0);
                 }
                 _ => bail!("unknown argument: {arg}"),
@@ -124,6 +172,7 @@ impl Args {
             socket: socket.ok_or_else(|| anyhow!("--socket is required"))?,
             cols,
             rows,
+            send_after,
         })
     }
 }

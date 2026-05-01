@@ -13,6 +13,8 @@ SOCKET="$WORK_DIR/comeup.sock"
 SERVER_LOG="$WORK_DIR/comeup-server.log"
 CMX_LOG="$WORK_DIR/cmx-pty-recorder.log"
 DERIVED_DATA="$WORK_DIR/DerivedData"
+CMX_SENTINEL="CMX_SENTINEL_TO_SIM"
+SIM_SENTINEL="SIM_SENTINEL_FROM_IOS"
 SERVER_PID=""
 CMX_PID=""
 
@@ -103,7 +105,11 @@ SERVER_PID=$!
 wait_for_socket "$SOCKET"
 wait_for_tcp "$PORT"
 
-"$ROOT/target/debug/cmx-pty-recorder" --socket "$SOCKET" --cols 120 --rows 40 \
+"$ROOT/target/debug/cmx-pty-recorder" \
+  --socket "$SOCKET" \
+  --cols 120 \
+  --rows 40 \
+  --send-after "SIZE terminal=1 66x18" "send $CMX_SENTINEL" \
   >"$CMX_LOG" 2>&1 &
 CMX_PID=$!
 
@@ -120,8 +126,9 @@ COMEUP_TEXT_PORT="$PORT" xcodebuildmcp simulator test \
   --output text
 
 wait_for_log "$CMX_LOG" "SIZE terminal=1 66x18"
+wait_for_log "$CMX_LOG" "$CMX_SENTINEL"
 wait_for_log "$CMX_LOG" "WORKSPACE id=2 title=Sim Build"
 wait_for_log "$CMX_LOG" "SIZE terminal=2 66x18"
-wait_for_log "$CMX_LOG" "SIM_SENTINEL_FROM_IOS"
+wait_for_log "$CMX_LOG" "$SIM_SENTINEL"
 
 printf 'comeup simulator terminal sync passed\n'

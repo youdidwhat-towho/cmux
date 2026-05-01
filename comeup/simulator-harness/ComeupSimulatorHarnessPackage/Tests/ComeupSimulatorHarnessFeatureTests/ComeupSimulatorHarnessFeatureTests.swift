@@ -16,6 +16,7 @@ func simulatorTextHarnessSyncsWithComeupDaemon() throws {
 
     try client.sendLine("VISIBLE 1 66 18")
     #expect(try client.readLine(containing: "SIZE terminal=1 66x18") == "SIZE terminal=1 66x18")
+    #expect(try client.readLine(containing: "CMX_SENTINEL_TO_SIM").contains("OUTPUT terminal=1"))
 
     try client.sendLine("WORKSPACE Sim Build")
     #expect(try client.readLine(containing: "WORKSPACE id=2 title=Sim Build") == "WORKSPACE id=2 title=Sim Build")
