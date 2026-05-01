@@ -43,6 +43,53 @@ def markdown_escape_cell(value: object) -> str:
     return str(value).replace("|", "\\|").replace("\n", "<br>")
 
 
+def provider_for(result: dict[str, Any]) -> str:
+    return str(result.get("provider") or "unknown")
+
+
+def model_for(result: dict[str, Any]) -> str:
+    return str(result.get("model") or "")
+
+
+def result_sort_key(result: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(result.get("rule_id") or ""),
+        provider_for(result),
+        model_for(result),
+    )
+
+
+def comparison_lines(results: list[dict[str, Any]]) -> list[str]:
+    by_rule: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        by_rule.setdefault(str(result.get("rule_id") or ""), []).append(result)
+
+    compared_rules = {rule: rule_results for rule, rule_results in by_rule.items() if len(rule_results) > 1}
+    if not compared_rules:
+        return []
+
+    disagreements: list[str] = []
+    for rule, rule_results in sorted(compared_rules.items()):
+        severities = {str(result.get("severity") or "none") for result in rule_results}
+        violated = {bool(result.get("violated")) for result in rule_results}
+        if len(severities) > 1 or len(violated) > 1:
+            parts = [
+                f"{provider_for(result)} `{model_for(result)}`: {status_for(result)}"
+                for result in sorted(rule_results, key=result_sort_key)
+            ]
+            disagreements.append(f"- `{rule}`: " + ", ".join(parts))
+
+    if disagreements:
+        return ["", "Provider comparison:", *disagreements]
+
+    provider_names = sorted({provider_for(result) for result in results})
+    return [
+        "",
+        "Provider comparison:",
+        f"- {' and '.join(provider_names)} agreed on all {len(compared_rules)} compared rule(s).",
+    ]
+
+
 def build_body(
     *,
     results: list[dict[str, Any]],
@@ -64,28 +111,32 @@ def build_body(
         "",
         f"Result: {failures} failed, {warnings} warning, {passed} passed.",
         "",
-        "| Rule | Status | Summary |",
-        "| --- | --- | --- |",
+        "| Rule | Provider | Model | Status | Summary |",
+        "| --- | --- | --- | --- | --- |",
     ]
 
     if results:
-        for result in sorted(results, key=lambda item: str(item.get("rule_id") or "")):
+        for result in sorted(results, key=result_sort_key):
             lines.append(
-                "| {rule} | {status} | {summary} |".format(
+                "| {rule} | {provider} | {model} | {status} | {summary} |".format(
                     rule=markdown_escape_cell(f"`{result.get('rule_id', '')}`"),
+                    provider=markdown_escape_cell(provider_for(result)),
+                    model=markdown_escape_cell(f"`{model_for(result)}`"),
                     status=markdown_escape_cell(status_for(result)),
                     summary=markdown_escape_cell(result.get("summary", "")),
                 )
             )
     else:
-        lines.append("| none | failed | No LLM diff lint result artifacts were found. |")
+        lines.append("| none | none | none | failed | No LLM diff lint result artifacts were found. |")
+
+    lines.extend(comparison_lines(results))
 
     finding_lines: list[str] = []
-    for result in sorted(results, key=lambda item: str(item.get("rule_id") or "")):
+    for result in sorted(results, key=result_sort_key):
         findings = result.get("findings")
         if not isinstance(findings, list) or not findings:
             continue
-        finding_lines.extend(["", f"#### `{result.get('rule_id', '')}`"])
+        finding_lines.extend(["", f"#### `{provider_for(result)}` / `{result.get('rule_id', '')}`"])
         for finding in findings:
             if not isinstance(finding, dict):
                 continue

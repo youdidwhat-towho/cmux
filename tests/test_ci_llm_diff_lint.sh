@@ -28,7 +28,7 @@ index 1111111..2222222 100644
 EOF
 
 CLEAN='{"rule_id":"rule","violated":false,"severity":"none","summary":"clean","findings":[]}'
-python3 scripts/llm_diff_lint.py \
+bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --output "$TMP_DIR/clean.json" \
@@ -47,7 +47,7 @@ if ! grep -Fq '"summary": "clean"' "$TMP_DIR/clean.json"; then
 fi
 
 WARNING='{"rule_id":"rule","violated":true,"severity":"warning","summary":"needs review","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"print(\"bad\")","why":"suspicious","confidence":"medium"}]}'
-python3 scripts/llm_diff_lint.py \
+bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --mock-response "$WARNING" > "$TMP_DIR/warning.out"
@@ -59,7 +59,7 @@ if ! grep -Fq '"severity": "warning"' "$TMP_DIR/warning.out"; then
 fi
 
 FAILURE='{"rule_id":"rule","violated":true,"severity":"failure","summary":"bad","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"print(\"bad\")","why":"print in runtime code","confidence":"high"}]}'
-if python3 scripts/llm_diff_lint.py \
+if bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --mock-response "$FAILURE" > "$TMP_DIR/failure.out" 2>&1; then
@@ -74,7 +74,7 @@ if ! grep -Fq '"severity": "failure"' "$TMP_DIR/failure.out"; then
 fi
 
 INVALID_NONE='{"rule_id":"rule","violated":true,"severity":"none","summary":"bad severity","findings":[]}'
-if python3 scripts/llm_diff_lint.py \
+if bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --mock-response "$INVALID_NONE" > "$TMP_DIR/invalid-none.out" 2>&1; then
@@ -88,7 +88,7 @@ if ! grep -Fq '"severity": "failure"' "$TMP_DIR/invalid-none.out"; then
   exit 1
 fi
 
-env -u DEEPSEEK_API_KEY python3 scripts/llm_diff_lint.py \
+env -u DEEPSEEK_API_KEY bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --skip-if-missing-key > "$TMP_DIR/missing-key.out" 2>&1
@@ -99,7 +99,7 @@ if ! grep -Fq 'DEEPSEEK_API_KEY is not set' "$TMP_DIR/missing-key.out"; then
   exit 1
 fi
 
-if python3 scripts/llm_diff_lint.py \
+if bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
   --max-diff-bytes 1 \
@@ -132,8 +132,31 @@ if ! grep -Fq '<!-- cmux-llm-diff-lint -->' "$TMP_DIR/comment.md"; then
   exit 1
 fi
 
-if ! grep -Fq '| `rule` | passed | clean |' "$TMP_DIR/comment.md"; then
+if ! grep -Fq '| `rule` | deepseek | `deepseek-v4-pro` | passed | clean |' "$TMP_DIR/comment.md"; then
   echo "expected rule status table" >&2
   cat "$TMP_DIR/comment.md" >&2
+  exit 1
+fi
+
+GEMINI_RESULT="$TMP_DIR/gemini.json"
+LLM_DIFF_LINT_PROVIDER=google-vertex LLM_DIFF_LINT_MODEL=gemini-3-flash-preview bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$CLEAN" > "$GEMINI_RESULT"
+
+mkdir -p "$TMP_DIR/results/llm-diff-lint-google-vertex-rule"
+cp "$GEMINI_RESULT" "$TMP_DIR/results/llm-diff-lint-google-vertex-rule/result.json"
+
+python3 scripts/llm_diff_lint_comment.py \
+  --results-dir "$TMP_DIR/results" \
+  --pr-number 123 \
+  --pr-url https://github.com/manaflow-ai/cmux/pull/123 \
+  --diff-url https://github.com/manaflow-ai/cmux/pull/123.diff \
+  --run-url https://github.com/manaflow-ai/cmux/actions/runs/456 \
+  --dry-run > "$TMP_DIR/compare-comment.md"
+
+if ! grep -Fq 'deepseek and google-vertex agreed on all 1 compared rule(s).' "$TMP_DIR/compare-comment.md"; then
+  echo "expected provider comparison summary" >&2
+  cat "$TMP_DIR/compare-comment.md" >&2
   exit 1
 fi

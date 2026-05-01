@@ -1,8 +1,8 @@
 # LLM Diff Lint
 
-This lint runs one DeepSeek request per rule. Each request receives the complete PR diff plus one focused rule and returns JSON with `violated`, `severity`, `summary`, and findings.
+This lint runs one AI SDK request per provider per rule. Each request receives the complete PR diff plus one focused rule and returns JSON with `violated`, `severity`, `summary`, and findings.
 
-The workflow uses `pull_request_target` and fetches the patch with `gh pr diff`. It does not check out or execute PR code, which keeps repository secrets out of untrusted PR scripts.
+The workflow uses `pull_request_target` and fetches the net PR diff with `gh pr diff`. It does not check out or execute PR code, which keeps repository secrets out of untrusted PR scripts.
 
 ## Secrets And Variables
 
@@ -12,13 +12,24 @@ Required secret:
 
 Optional repository variables:
 
-- `DEEPSEEK_MODEL`, defaults to `deepseek-v4-pro`
-- `DEEPSEEK_BASE_URL`, defaults to `https://api.deepseek.com`
-- `DEEPSEEK_MAX_TOKENS`, defaults to `4096`
-- `DEEPSEEK_THINKING`, defaults to `disabled`
+- `GCP_WORKLOAD_IDENTITY_PROVIDER`, defaults to the cmux GitHub Actions workload identity provider
+- `GCP_SERVICE_ACCOUNT`, defaults to `cmux-vertex-ai@manaflow-437420.iam.gserviceaccount.com`
+- `GOOGLE_VERTEX_PROJECT`, required for Gemini unless `GOOGLE_CLOUD_PROJECT` is set in the environment
+- `GOOGLE_VERTEX_LOCATION`, defaults to `global`
+- `LLM_DIFF_LINT_MAX_TOKENS`, defaults to `4096`
+- `LLM_DIFF_LINT_THINKING`, defaults to `disabled` for DeepSeek
 - `LLM_DIFF_LINT_MAX_DIFF_BYTES`, defaults to `5000000`
+- `DEEPSEEK_BASE_URL`, optional DeepSeek override
 
-If `DEEPSEEK_API_KEY` is missing, the workflow emits a notice and skips. This lets the workflow merge before the secret is configured.
+The default provider matrix compares `deepseek-v4-pro` with `gemini-3-flash-preview` through Vertex AI. GitHub Actions authenticates to Vertex with OIDC workload identity and the `cmux-vertex-ai` service account.
+
+Use `LLM diff lint status` as the required branch-protection check.
+
+For local Gemini runs, authenticate Application Default Credentials first:
+
+```bash
+gcloud auth application-default login
+```
 
 ## Rule Size
 
@@ -33,16 +44,16 @@ Avoid broad style guides. A good rule has:
 
 Do not include large code examples unless the syntax is ambiguous. Every extra rule token is paid once per PR per rule because each rule reads the full diff.
 
-## Agent Split
+## Provider And Rule Split
 
-The current split is 6 rules, 6 matrix jobs, with `max-parallel: 3`.
+The current split is 6 rules across 2 providers, for 12 matrix jobs, with `max-parallel: 4`.
 
-This keeps each LLM call independent and gives complete per-rule status in GitHub checks. `fail-fast: false` lets all rules finish even when one fails.
+This keeps each LLM call independent and gives complete per-provider, per-rule status in GitHub checks. `fail-fast: false` lets all rules finish even when one fails.
 
 Use this default for normal PR linting:
 
 - 4 to 8 rules total
-- 1 rule per LLM call
-- 2 to 4 concurrent jobs
+- 1 provider and 1 rule per LLM call
+- 2 to 4 concurrent jobs, adjusted for provider rate limits
 
 Add another rule only when it catches a distinct class of bug. If a rule starts mixing unrelated topics, split it. If two rules routinely flag the same lines, merge them.

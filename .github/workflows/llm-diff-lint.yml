@@ -13,8 +13,10 @@ on:
       - "GhosttyTabs.xcodeproj/**"
       - ".github/llm-diff-lint/**"
       - ".github/workflows/llm-diff-lint.yml"
-      - "scripts/llm_diff_lint.py"
+      - "scripts/llm_diff_lint.ts"
       - "scripts/llm_diff_lint_comment.py"
+      - "package.json"
+      - "bun.lock"
   pull_request_target:
     types:
       - opened
@@ -27,8 +29,10 @@ on:
       - "GhosttyTabs.xcodeproj/**"
       - ".github/llm-diff-lint/**"
       - ".github/workflows/llm-diff-lint.yml"
-      - "scripts/llm_diff_lint.py"
+      - "scripts/llm_diff_lint.ts"
       - "scripts/llm_diff_lint_comment.py"
+      - "package.json"
+      - "bun.lock"
   workflow_dispatch:
     inputs:
       pr_number:
@@ -39,6 +43,7 @@ on:
 permissions:
   actions: read
   contents: read
+  id-token: write
   issues: write
   pull-requests: write
 
@@ -47,8 +52,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deepseek-rule:
-    name: DeepSeek rule (${{ matrix.rule }})
+  llm-rule:
+    name: LLM rule (${{ matrix.provider.id }} / ${{ matrix.rule }})
     if: |
       github.event_name == 'workflow_dispatch' ||
       (
@@ -61,8 +66,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 4
       matrix:
+        provider:
+          - id: deepseek
+            model: deepseek-v4-pro
+          - id: google-vertex
+            model: gemini-3-flash-preview
         rule:
           - swift-concurrency-modernization
           - swift-blocking-runtime
@@ -109,30 +119,48 @@ jobs:
             --repo "${{ github.repository }}" > "$RUNNER_TEMP/pr.diff"
           wc -c "$RUNNER_TEMP/pr.diff"
 
-      - name: Run DeepSeek lint rule
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Authenticate to Google Cloud
+        if: matrix.provider.id == 'google-vertex'
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/502905966334/locations/global/workloadIdentityPools/github-actions/providers/github-actions' }}
+          service_account: ${{ vars.GCP_SERVICE_ACCOUNT || 'cmux-vertex-ai@manaflow-437420.iam.gserviceaccount.com' }}
+
+      - name: Run LLM lint rule
         id: lint
         continue-on-error: true
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL || 'https://api.deepseek.com' }}
-          DEEPSEEK_MAX_TOKENS: ${{ vars.DEEPSEEK_MAX_TOKENS || '4096' }}
-          DEEPSEEK_MODEL: ${{ vars.DEEPSEEK_MODEL || 'deepseek-v4-pro' }}
-          DEEPSEEK_THINKING: ${{ vars.DEEPSEEK_THINKING || 'disabled' }}
+          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
+          GOOGLE_VERTEX_PROJECT: ${{ vars.GOOGLE_VERTEX_PROJECT || 'manaflow-437420' }}
+          GOOGLE_VERTEX_LOCATION: ${{ vars.GOOGLE_VERTEX_LOCATION || 'global' }}
+          LLM_DIFF_LINT_PROVIDER: ${{ matrix.provider.id }}
+          LLM_DIFF_LINT_MODEL: ${{ matrix.provider.model }}
+          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
+          LLM_DIFF_LINT_THINKING: ${{ vars.LLM_DIFF_LINT_THINKING || vars.DEEPSEEK_THINKING || 'disabled' }}
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/llm_diff_lint.py \
+          bun scripts/llm_diff_lint.ts \
             --rule ".github/llm-diff-lint/rules/${{ matrix.rule }}.md" \
             --diff-file "$RUNNER_TEMP/pr.diff" \
             --source-label "pull request ${{ steps.pr.outputs.number }}" \
+            --provider "${{ matrix.provider.id }}" \
+            --model "${{ matrix.provider.model }}" \
             --output "$RUNNER_TEMP/result.json"
 
       - name: Upload lint result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: llm-diff-lint-${{ matrix.rule }}
+          name: llm-diff-lint-${{ matrix.provider.id }}-${{ matrix.rule }}
           path: ${{ runner.temp }}/result.json
           if-no-files-found: warn
 
@@ -140,9 +168,37 @@ jobs:
         if: steps.lint.outcome == 'failure'
         run: exit 1
 
+  status:
+    name: LLM diff lint status
+    needs: llm-rule
+    if: |
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event.pull_request.draft == false &&
+          (
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+            (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
+          )
+        )
+      )
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all provider rule checks to pass
+        env:
+          LLM_RULE_RESULT: ${{ needs.llm-rule.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$LLM_RULE_RESULT" != "success" ]; then
+            echo "LLM rule matrix result: $LLM_RULE_RESULT" >&2
+            exit 1
+          fi
+
   comment:
     name: Post LLM diff lint comment
-    needs: deepseek-rule
+    needs: llm-rule
     if: |
       always() &&
       (
