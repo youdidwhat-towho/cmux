@@ -471,7 +471,10 @@ final class SessionPersistenceTests: XCTestCase {
         XCTAssertFalse(
             AppDelegate.shouldPersistSnapshotOnWindowUnregister(isTerminatingApp: true)
         )
-        XCTAssertTrue(
+        // Regression for issue #3416: closing the last window via the red X
+        // must preserve the on-disk session snapshot so the next launch can
+        // restore workspaces, panes, and agents — matching the Cmd+Q path.
+        XCTAssertFalse(
             AppDelegate.shouldRemoveSnapshotWhenNoWindowsRemainOnWindowUnregister(isTerminatingApp: false)
         )
         XCTAssertFalse(
