@@ -21,7 +21,10 @@ final class ComeupSimulatorHarnessUITests: XCTestCase {
 
         XCTAssertTrue(app.cmuxElement("workspace.detail.workspace-ios-port").waitForExistence(timeout: 4))
         XCTAssertTrue(app.staticTexts["main / pane 1 / shell"].waitForExistence(timeout: 4))
-        XCTAssertTrue(app.staticTexts["CMX_SENTINEL_TO_SIM"].waitForExistence(timeout: 4))
+        let terminalSurface = app.cmuxElement("terminal.surface")
+        XCTAssertTrue(terminalSurface.waitForExistence(timeout: 4))
+        let renderedText = terminalSurface.value as? String ?? ""
+        XCTAssertTrue(renderedText.contains("CMX_SENTINEL_TO_SIM"))
     }
 }
 

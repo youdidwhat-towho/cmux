@@ -68,6 +68,8 @@ simulator_status="failed"
 iphone_status="unavailable"
 iphone_note=""
 
+"$REPO_ROOT/scripts/ensure-ghosttykit.sh"
+
 if xcodebuildmcp simulator build-and-run \
   --workspace-path "$WORKSPACE" \
   --scheme "$SCHEME" \

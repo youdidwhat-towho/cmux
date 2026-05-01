@@ -22,6 +22,7 @@ public struct ContentView: View {
                     selectedTerminalID: $selectedTerminalID,
                     compactNavigation: false
                 )
+                .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
             } detail: {
                 WorkspaceDetailView(
                     snapshot: snapshot,
@@ -51,13 +52,9 @@ private struct WorkspaceHomeView: View {
     var body: some View {
         List {
             Section {
-                AuthStatusRow(auth: snapshot.auth)
-                    .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
-            }
-
-            Section {
-                NodeDiscoveryStrip(nodes: snapshot.nodes)
-                    .listRowInsets(EdgeInsets(top: 8, leading: 0, bottom: 8, trailing: 0))
+                HomeStatusHeader(snapshot: snapshot)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
             }
 
             Section {
@@ -76,14 +73,20 @@ private struct WorkspaceHomeView: View {
                         } label: {
                             WorkspaceConversationRow(
                                 workspace: workspace,
-                                node: snapshot.node(id: workspace.nodeID)
+                                node: snapshot.node(id: workspace.nodeID),
+                                isSelected: false,
+                                showsDisclosureIndicator: false
                             )
                         }
+                        .buttonStyle(.plain)
                         .accessibilityIdentifier("workspace.row.\(workspace.id)")
+                        .listRowInsets(EdgeInsets())
                     } else {
                         WorkspaceConversationRow(
                             workspace: workspace,
-                            node: snapshot.node(id: workspace.nodeID)
+                            node: snapshot.node(id: workspace.nodeID),
+                            isSelected: selectedWorkspaceID == workspace.id,
+                            showsDisclosureIndicator: true
                         )
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -91,13 +94,39 @@ private struct WorkspaceHomeView: View {
                             selectedTerminalID = workspace.terminalTree.first?.terminal.id
                         }
                         .accessibilityIdentifier("workspace.row.\(workspace.id)")
+                        .listRowInsets(EdgeInsets())
                     }
                 }
             }
         }
-        .listStyle(.insetGrouped)
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(Color(.systemBackground))
         .navigationTitle(String(localized: "ios.home.title", defaultValue: "Workspaces"))
+        .toolbar {
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Button {} label: {
+                    Image(systemName: "square.and.pencil")
+                }
+                .accessibilityIdentifier("workspace.compose")
+            }
+        }
         .accessibilityIdentifier("cmux.mobile.home")
+    }
+}
+
+private struct HomeStatusHeader: View {
+    let snapshot: CmuxMobileHomeSnapshot
+
+    var body: some View {
+        VStack(spacing: 10) {
+            AuthStatusRow(auth: snapshot.auth)
+                .padding(.horizontal, 16)
+            NodeDiscoveryStrip(nodes: snapshot.nodes)
+        }
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .background(Color(.systemBackground))
     }
 }
 
@@ -214,45 +243,129 @@ private struct NodeDiscoveryStrip: View {
 private struct WorkspaceConversationRow: View {
     let workspace: CmuxMobileWorkspace
     let node: CmuxHiveNode?
+    let isSelected: Bool
+    let showsDisclosureIndicator: Bool
 
     var body: some View {
-        HStack(spacing: 12) {
-            ZStack {
-                Circle()
-                    .fill(Color.accentColor.opacity(0.16))
-                Text(initials)
-                    .font(.subheadline.weight(.bold))
-                    .foregroundStyle(Color.accentColor)
-            }
-            .frame(width: 42, height: 42)
+        VStack(spacing: 0) {
+            HStack(alignment: .top, spacing: 12) {
+                avatar
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 8) {
-                    Text(workspace.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                    Spacer()
-                    Text(node?.name ?? String(localized: "ios.node.unknown", defaultValue: "Unknown"))
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 8) {
+                        Text(workspace.title)
+                            .font(.headline)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                        Spacer(minLength: 6)
+                        Text(workspace.lastActivityLabel)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        if showsDisclosureIndicator {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.tertiary)
+                        }
+                    }
+
+                    HStack(spacing: 6) {
+                        statusDot
+                        Text(node?.name ?? String(localized: "ios.node.unknown", defaultValue: "Unknown"))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Text("/")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                        Text(
+                            String(
+                                localized: "ios.workspace.terminalCount",
+                                defaultValue: "\(workspace.terminalCount) terminals"
+                            )
+                        )
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                    }
+
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(workspace.lastMessage)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if workspace.unreadCount > 0 {
+                            Text("\(workspace.unreadCount)")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.white)
+                                .frame(minWidth: 22, minHeight: 22)
+                                .background(Color.accentColor, in: Circle())
+                                .accessibilityIdentifier("workspace.unread.\(workspace.id)")
+                        }
+                    }
                 }
-
-                Text(workspace.lastMessage)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
+            .padding(.leading, 16)
+            .padding(.trailing, 12)
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
-            if workspace.unreadCount > 0 {
-                Text("\(workspace.unreadCount)")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white)
-                    .frame(minWidth: 22, minHeight: 22)
-                    .background(Color.accentColor, in: Circle())
-            }
+            Divider()
+                .padding(.leading, 80)
         }
-        .padding(.vertical, 6)
+        .background(isSelected ? Color(.tertiarySystemFill) : Color(.systemBackground))
+    }
+
+    private var avatar: some View {
+        ZStack {
+            Circle()
+                .fill(avatarBackground)
+            Text(initials)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(avatarForeground)
+        }
+        .frame(width: 52, height: 52)
+    }
+
+    private var statusDot: some View {
+        Circle()
+            .fill(statusColor)
+            .frame(width: 7, height: 7)
+    }
+
+    private var statusColor: Color {
+        switch node?.status {
+        case .online:
+            .green
+        case .connecting:
+            .blue
+        case .offline, .none:
+            .gray
+        }
+    }
+
+    private var avatarBackground: Color {
+        switch workspace.id {
+        case "workspace-ios-port":
+            Color.blue.opacity(0.16)
+        case "workspace-auth":
+            Color.green.opacity(0.16)
+        default:
+            Color.accentColor.opacity(0.16)
+        }
+    }
+
+    private var avatarForeground: Color {
+        switch workspace.id {
+        case "workspace-ios-port":
+            .blue
+        case "workspace-auth":
+            .green
+        default:
+            .accentColor
+        }
     }
 
     private var initials: String {
@@ -341,29 +454,36 @@ private struct TerminalScreen: View {
     let terminal: CmuxMobileTerminal
 
     var body: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(terminal.title)
-                        .font(.caption.weight(.semibold))
+        VStack(spacing: 0) {
+            HStack {
+                Text(terminal.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                HStack(spacing: 8) {
+                    Text(String(localized: "ios.terminal.renderer.libghostty", defaultValue: "libghostty"))
+                        .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
-                    Spacer()
                     Text("\(terminal.size.cols)x\(terminal.size.rows)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
-                .padding(.bottom, 8)
-
-                ForEach(Array(terminal.rows.enumerated()), id: \.offset) { _, row in
-                    Text(row)
-                        .font(.system(size: 13, weight: .regular, design: .monospaced))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier("terminal.renderer.libghostty")
             }
-            .padding(14)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(Color(.systemBackground))
+
+            GhosttyTerminalRepresentable(terminal: terminal)
+                .background(Color.black)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(String(localized: "ios.terminal.surface", defaultValue: "Terminal"))
+                .accessibilityValue(terminal.rows.joined(separator: "\n"))
+                .accessibilityIdentifier("terminal.surface")
         }
-        .background(Color(.systemBackground))
+        .background(Color.black)
         .accessibilityIdentifier("terminal.screen.\(terminal.id)")
     }
 }

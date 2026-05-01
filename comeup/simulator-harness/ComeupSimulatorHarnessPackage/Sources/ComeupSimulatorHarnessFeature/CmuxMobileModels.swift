@@ -41,6 +41,7 @@ public struct CmuxMobileHomeSnapshot: Equatable, Sendable {
                 title: "iOS port",
                 nodeID: "node-macbook",
                 lastMessage: "cmx and iOS are sharing terminal 2",
+                lastActivityLabel: "now",
                 unreadCount: 2,
                 spaces: [
                     CmuxMobileSpace(
@@ -105,6 +106,7 @@ public struct CmuxMobileHomeSnapshot: Equatable, Sendable {
                 title: "Auth and hive",
                 nodeID: "node-macmini",
                 lastMessage: "Rivet discovery should attach signed-in nodes",
+                lastActivityLabel: "2m",
                 unreadCount: 0,
                 spaces: [
                     CmuxMobileSpace(
@@ -189,6 +191,7 @@ public struct CmuxMobileWorkspace: Identifiable, Equatable, Sendable {
     public var title: String
     public var nodeID: String
     public var lastMessage: String
+    public var lastActivityLabel: String
     public var unreadCount: Int
     public var spaces: [CmuxMobileSpace]
 
@@ -197,6 +200,7 @@ public struct CmuxMobileWorkspace: Identifiable, Equatable, Sendable {
         title: String,
         nodeID: String,
         lastMessage: String,
+        lastActivityLabel: String,
         unreadCount: Int,
         spaces: [CmuxMobileSpace]
     ) {
@@ -204,6 +208,7 @@ public struct CmuxMobileWorkspace: Identifiable, Equatable, Sendable {
         self.title = title
         self.nodeID = nodeID
         self.lastMessage = lastMessage
+        self.lastActivityLabel = lastActivityLabel
         self.unreadCount = unreadCount
         self.spaces = spaces
     }
@@ -223,6 +228,10 @@ public struct CmuxMobileWorkspace: Identifiable, Equatable, Sendable {
             return terminal
         }
         return terminalTree[0].terminal
+    }
+
+    public var terminalCount: Int {
+        terminalTree.count
     }
 }
 

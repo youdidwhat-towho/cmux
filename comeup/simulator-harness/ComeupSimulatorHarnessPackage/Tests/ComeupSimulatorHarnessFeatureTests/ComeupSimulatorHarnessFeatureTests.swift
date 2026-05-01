@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UIKit
 @testable import ComeupSimulatorHarnessFeature
 
 @Test
@@ -13,6 +14,29 @@ func mobileHomeFixtureContainsAuthDiscoveryAndTerminalTree() throws {
     #expect(workspace.title == "iOS port")
     #expect(workspace.terminalTree.map(\.terminal.id).contains("terminal-daemon"))
     #expect(workspace.terminal(id: "terminal-shell").size == CmuxTerminalSize(cols: 66, rows: 18))
+}
+
+@MainActor
+@Test
+func fullGhosttySurfaceRendersOutputAndProducesInput() throws {
+    let terminal = CmuxMobileHomeSnapshot.fixture
+        .workspace(id: "workspace-ios-port")
+        .terminal(id: "terminal-shell")
+    let delegate = GhosttySurfaceTestDelegate()
+    let surfaceView = GhosttyTerminalSurfaceView(
+        runtime: try GhosttyRuntime.shared(),
+        delegate: delegate
+    )
+    surfaceView.frame = CGRect(x: 0, y: 0, width: 390, height: 640)
+    surfaceView.layoutIfNeeded()
+
+    surfaceView.processOutput(Data((terminal.rows.joined(separator: "\r\n") + "\r\n").utf8))
+    let rendered = try #require(surfaceView.renderedTextForTesting())
+    #expect(rendered.contains("CMX_SENTINEL_TO_SIM"))
+    #expect(rendered.contains("SIM_SENTINEL_FROM_IOS"))
+
+    surfaceView.simulateTextInputForTesting("hello from ios\n")
+    #expect(delegate.inputs.contains(Data("hello from ios\r".utf8)))
 }
 
 @Test
@@ -42,6 +66,20 @@ func simulatorTextHarnessSyncsWithComeupDaemon() throws {
 
     try client.sendLine("PING 77")
     #expect(try client.readLine(containing: "PONG id=77") == "PONG id=77")
+}
+
+@MainActor
+private final class GhosttySurfaceTestDelegate: GhosttyTerminalSurfaceViewDelegate {
+    var inputs: [Data] = []
+    var sizes: [TerminalGridSize] = []
+
+    func ghosttyTerminalSurfaceView(_ surfaceView: GhosttyTerminalSurfaceView, didProduceInput data: Data) {
+        inputs.append(data)
+    }
+
+    func ghosttyTerminalSurfaceView(_ surfaceView: GhosttyTerminalSurfaceView, didResize size: TerminalGridSize) {
+        sizes.append(size)
+    }
 }
 
 private func parseFocusedTerminal(_ line: String) throws -> Int {

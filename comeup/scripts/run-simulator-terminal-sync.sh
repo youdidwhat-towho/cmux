@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$ROOT/.." && pwd)"
 cd "$ROOT"
 
 command -v xcodebuildmcp >/dev/null
@@ -93,6 +94,8 @@ wait_for_log() {
 }
 
 cargo build -p comeup-daemon -p cmx
+
+"$REPO_ROOT/scripts/ensure-ghosttykit.sh"
 
 "$ROOT/target/debug/comeup-harness-server" \
   --socket "$SOCKET" \
