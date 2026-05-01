@@ -6738,26 +6738,6 @@ struct ContentView: View {
             return .renameWorkspace
         case "palette.editWorkspaceDescription":
             return .editWorkspaceDescription
-        case "palette.resetWorkspaceColor":
-            return .resetWorkspaceColor
-        case "palette.setWorkspaceColorRed":
-            return .setWorkspaceColorRed
-        case "palette.setWorkspaceColorCrimson":
-            return .setWorkspaceColorCrimson
-        case "palette.setWorkspaceColorOrange":
-            return .setWorkspaceColorOrange
-        case "palette.setWorkspaceColorAmber":
-            return .setWorkspaceColorAmber
-        case "palette.setWorkspaceColorOlive":
-            return .setWorkspaceColorOlive
-        case "palette.setWorkspaceColorGreen":
-            return .setWorkspaceColorGreen
-        case "palette.setWorkspaceColorTeal":
-            return .setWorkspaceColorTeal
-        case "palette.setWorkspaceColorAqua":
-            return .setWorkspaceColorAqua
-        case "palette.setWorkspaceColorBlue":
-            return .setWorkspaceColorBlue
         case "palette.nextWorkspace":
             return .nextSidebarTab
         case "palette.previousWorkspace":
@@ -6960,7 +6940,10 @@ struct ContentView: View {
             case "Blue":
                 return String(localized: "shortcut.setWorkspaceColorBlue.label", defaultValue: "Workspace Color: Blue")
             default:
-                return String(localized: "shortcut.resetWorkspaceColor.label", defaultValue: "Reset Workspace Color")
+                return String(
+                    localized: "command.workspaceColor.named",
+                    defaultValue: "Workspace Color: \(paletteName)"
+                )
             }
         }
 
@@ -7285,23 +7268,13 @@ struct ContentView: View {
                 when: { $0.bool(CommandPaletteContextKeys.hasWorkspace) }
             )
         )
-        for entry in [
-            ("palette.setWorkspaceColorRed", "Red"),
-            ("palette.setWorkspaceColorCrimson", "Crimson"),
-            ("palette.setWorkspaceColorOrange", "Orange"),
-            ("palette.setWorkspaceColorAmber", "Amber"),
-            ("palette.setWorkspaceColorOlive", "Olive"),
-            ("palette.setWorkspaceColorGreen", "Green"),
-            ("palette.setWorkspaceColorTeal", "Teal"),
-            ("palette.setWorkspaceColorAqua", "Aqua"),
-            ("palette.setWorkspaceColorBlue", "Blue"),
-        ] {
+        for entry in WorkspaceTabColorSettings.palette() {
             contributions.append(
                 CommandPaletteCommandContribution(
-                    commandId: entry.0,
-                    title: constant(workspaceColorCommandTitle(entry.1)),
+                    commandId: commandPaletteWorkspaceColorCommandID(entry.name),
+                    title: constant(workspaceColorCommandTitle(entry.name)),
                     subtitle: workspaceSubtitle,
-                    keywords: ["workspace", "color", "palette", entry.1.lowercased()],
+                    keywords: ["workspace", "color", "palette", entry.name.lowercased()],
                     when: { $0.bool(CommandPaletteContextKeys.hasWorkspace) }
                 )
             )
@@ -7843,6 +7816,15 @@ struct ContentView: View {
         return "palette.cmuxConfig.issue.\(String(hash, radix: 16))"
     }
 
+    private func commandPaletteWorkspaceColorCommandID(_ colorName: String) -> String {
+        var hash: UInt64 = 1_469_598_103_934_665_603
+        for byte in colorName.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return "palette.workspaceColor.\(String(hash, radix: 16))"
+    }
+
     private func commandPaletteCmuxConfigIssueTitle(_ issue: CmuxConfigIssue) -> String {
         switch issue.kind {
         case .schemaError:
@@ -8075,23 +8057,13 @@ struct ContentView: View {
             }
             tabManager.applyWorkspaceColor(nil, toWorkspaceIds: [workspace.id])
         }
-        for entry in [
-            ("palette.setWorkspaceColorRed", "Red"),
-            ("palette.setWorkspaceColorCrimson", "Crimson"),
-            ("palette.setWorkspaceColorOrange", "Orange"),
-            ("palette.setWorkspaceColorAmber", "Amber"),
-            ("palette.setWorkspaceColorOlive", "Olive"),
-            ("palette.setWorkspaceColorGreen", "Green"),
-            ("palette.setWorkspaceColorTeal", "Teal"),
-            ("palette.setWorkspaceColorAqua", "Aqua"),
-            ("palette.setWorkspaceColorBlue", "Blue"),
-        ] {
-            registry.register(commandId: entry.0) {
+        for entry in WorkspaceTabColorSettings.palette() {
+            registry.register(commandId: commandPaletteWorkspaceColorCommandID(entry.name)) {
                 guard let workspace = tabManager.selectedWorkspace else {
                     NSSound.beep()
                     return
                 }
-                tabManager.applyWorkspacePaletteColor(named: entry.1, toWorkspaceIds: [workspace.id])
+                tabManager.applyWorkspacePaletteColor(named: entry.name, toWorkspaceIds: [workspace.id])
             }
         }
         registry.register(commandId: "palette.nextWorkspace") {
