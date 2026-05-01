@@ -416,14 +416,14 @@ fn deleteSocket(path: []const u8) !void {
 /// entire process group. This ensures child shells from forkpty are
 /// cleaned up when the daemon is killed, preventing PTY leaks.
 fn installCleanupSignalHandlers() void {
-    const act = std.c.Sigaction{
+    const act = std.posix.Sigaction{
         .handler = .{ .handler = cleanupAndExit },
-        .mask = @as(u32, 0),
+        .mask = std.posix.sigemptyset(),
         .flags = 0,
     };
-    _ = std.c.sigaction(std.posix.SIG.TERM, &act, null);
-    _ = std.c.sigaction(std.posix.SIG.INT, &act, null);
-    _ = std.c.sigaction(std.posix.SIG.HUP, &act, null);
+    std.posix.sigaction(std.posix.SIG.TERM, &act, null);
+    std.posix.sigaction(std.posix.SIG.INT, &act, null);
+    std.posix.sigaction(std.posix.SIG.HUP, &act, null);
 }
 
 fn cleanupAndExit(_: c_int) callconv(.c) noreturn {

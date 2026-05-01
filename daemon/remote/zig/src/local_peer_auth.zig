@@ -27,8 +27,14 @@ fn authorizeWithGetPeerEid(fd: std.posix.fd_t) !void {
 }
 
 fn authorizeWithPeerCred(fd: std.posix.fd_t) !void {
-    var cred: c.struct_ucred = undefined;
-    var len: c.socklen_t = @sizeOf(c.struct_ucred);
+    const LinuxUCred = extern struct {
+        pid: c.pid_t,
+        uid: c.uid_t,
+        gid: c.gid_t,
+    };
+
+    var cred: LinuxUCred = undefined;
+    var len: c.socklen_t = @sizeOf(LinuxUCred);
     if (c.getsockopt(fd, c.SOL_SOCKET, c.SO_PEERCRED, &cred, &len) != 0) return error.PeerAuthFailed;
     if (cred.uid != c.geteuid()) return error.UnauthorizedPeer;
 }
