@@ -471,6 +471,14 @@ struct cmuxApp: App {
                     Button("File Explorer Style Debug…") {
                         FileExplorerStyleDebugWindowController.shared.show()
                     }
+                    Button(
+                        String(
+                            localized: "debug.menu.pdfPreviewChromeDebug",
+                            defaultValue: "PDF Preview Chrome Debug…"
+                        )
+                    ) {
+                        PDFPreviewChromeDebugWindowController.shared.show()
+                    }
                     Button("Open All Debug Windows") {
                         openAllDebugWindows()
                     }
@@ -625,6 +633,12 @@ struct cmuxApp: App {
                         cmuxDebugLog("find.menu Cmd+F fired")
 #endif
                         _ = AppDelegate.shared?.performFindShortcutInActiveMainWindow(
+                            preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow
+                        )
+                    }
+
+                    splitCommandButton(title: String(localized: "menu.find.findInDirectory", defaultValue: "Find in Directory…"), shortcut: menuShortcut(for: .findInDirectory)) {
+                        _ = AppDelegate.shared?.focusFileSearchInActiveMainWindow(
                             preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow
                         )
                     }
@@ -807,7 +821,7 @@ struct cmuxApp: App {
             // Numbered workspace selection (9 = last workspace)
             ForEach(1...9, id: \.self) { number in
                 let selectWorkspaceByNumberShortcut = menuShortcut(for: .selectWorkspaceByNumber)
-                if selectWorkspaceByNumberShortcut.hasChord {
+                if selectWorkspaceByNumberShortcut.isUnbound || selectWorkspaceByNumberShortcut.hasChord {
                     Button(String(localized: "menu.view.workspace", defaultValue: "Workspace \(number)")) {
                         let manager = activeTabManager
                         if let targetIndex = WorkspaceShortcutMapper.workspaceIndex(forDigit: number, workspaceCount: manager.tabs.count) {
@@ -1163,6 +1177,7 @@ struct cmuxApp: App {
         BackgroundDebugWindowController.shared.show()
         StartupAppearanceDebugWindowController.shared.show()
         MenuBarExtraDebugWindowController.shared.show()
+        PDFPreviewChromeDebugWindowController.shared.show()
         FeedPreviewWindowController.shared.show()
         FeedTextEditorDebugWindowController.shared.show()
         FeedButtonStyleDebugWindowController.shared.show()
@@ -1806,6 +1821,14 @@ private struct DebugWindowControlsView: View {
                         }
                         Button(
                             String(
+                                localized: "debug.menu.pdfPreviewChromeDebug",
+                                defaultValue: "PDF Preview Chrome Debug…"
+                            )
+                        ) {
+                            PDFPreviewChromeDebugWindowController.shared.show()
+                        }
+                        Button(
+                            String(
                                 localized: "debug.menu.tabBarBackdropLab",
                                 defaultValue: "Tab Bar Backdrop Lab…"
                             )
@@ -1828,6 +1851,8 @@ private struct DebugWindowControlsView: View {
                             BackgroundDebugWindowController.shared.show()
                             StartupAppearanceDebugWindowController.shared.show()
                             MenuBarExtraDebugWindowController.shared.show()
+                            PDFPreviewChromeDebugWindowController.shared.show()
+                            TabBarBackdropLabWindowController.shared.show()
                             FeedTextEditorDebugWindowController.shared.show()
                         }
                     }
@@ -4164,7 +4189,7 @@ private struct BackgroundDebugView: View {
         }()
         guard let window else { return }
         let tintColor = (NSColor(hex: bgGlassTintHex) ?? .black).withAlphaComponent(bgGlassTintOpacity)
-        WindowGlassEffect.updateTint(to: window, color: tintColor)
+        WindowBackdropController.updateGlassTint(to: window, color: tintColor)
     }
 
     private var tintColorBinding: Binding<Color> {
@@ -6321,7 +6346,7 @@ struct SettingsView: View {
                             configurationReview: .json("app.commandPaletteSearchesAllSurfaces"),
                             String(localized: "settings.app.commandPaletteSearchAllSurfaces", defaultValue: "Command Palette Searches All Surfaces"),
                             subtitle: commandPaletteSearchAllSurfaces
-                                ? String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOn", defaultValue: "Cmd+P also matches terminal, browser, and markdown surfaces across workspaces.")
+                                ? String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOn", defaultValue: "Cmd+P also matches panel surfaces across workspaces.")
                                 : String(localized: "settings.app.commandPaletteSearchAllSurfaces.subtitleOff", defaultValue: "Cmd+P matches workspace rows only.")
                         ) {
                             Toggle("", isOn: $commandPaletteSearchAllSurfaces)
@@ -7111,6 +7136,27 @@ struct SettingsView: View {
 
                         SettingsCardDivider()
 
+                        SettingsCardRow(
+                            configurationReview: .settingsOnly,
+                            String(localized: "settings.shortcuts.resetDefaults", defaultValue: "Reset Default Shortcuts"),
+                            subtitle: String(localized: "settings.shortcuts.resetDefaults.subtitle", defaultValue: "Restore built-in shortcut values for shortcuts managed in app settings."),
+                            searchAnchorID: SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "reset-defaults")
+                        ) {
+                            Button {
+                                resetDefaultShortcuts()
+                            } label: {
+                                Label(
+                                    String(localized: "settings.shortcuts.resetDefaults.button", defaultValue: "Reset Defaults"),
+                                    systemImage: "arrow.counterclockwise"
+                                )
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityIdentifier("SettingsKeyboardShortcutsResetDefaultsButton")
+                        }
+
+                        SettingsCardDivider()
+
                         let actions = KeyboardShortcutSettings.Action.allCases.filter {
                             $0 != SystemWideHotkeySettings.action
                         }
@@ -7126,7 +7172,7 @@ struct SettingsView: View {
                     .id(shortcutResetToken)
                     .settingsSearchAnchor(SettingsSearchIndex.settingID(for: .keyboardShortcuts, idSuffix: "shortcuts"))
 
-                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record a new shortcut."))
+                    Text(String(localized: "settings.shortcuts.recordHint", defaultValue: "Click a shortcut value to record. Use X to unbind; it changes to restore after a clear."))
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .padding(.leading, 2)
@@ -7572,6 +7618,14 @@ struct SettingsView: View {
         reloadWorkspaceTabColorSettings()
         shortcutResetToken = UUID()
         DispatchQueue.main.async { isResettingSettings = false }
+    }
+
+    private func resetDefaultShortcuts() {
+        KeyboardShortcutRecorderActivity.stopAllRecording()
+        for action in KeyboardShortcutSettings.Action.allCases where action != SystemWideHotkeySettings.action {
+            KeyboardShortcutSettings.resetShortcut(for: action)
+        }
+        shortcutResetToken = UUID()
     }
 
     private func tabColorBinding(for name: String) -> Binding<Color> {
@@ -8212,100 +8266,6 @@ private struct AppIconPickerRow: View {
     }
 }
 
-private struct ShortcutSettingRow: View {
-    let action: KeyboardShortcutSettings.Action
-    @State private var shortcut: StoredShortcut
-
-    init(action: KeyboardShortcutSettings.Action) {
-        self.action = action
-        _shortcut = State(initialValue: KeyboardShortcutSettings.shortcut(for: action))
-    }
-
-    var body: some View {
-        ShortcutRecorderSettingsControl(
-            action: action,
-            shortcut: $shortcut,
-            subtitle: KeyboardShortcutSettings.settingsFileManagedSubtitle(for: action),
-            displayString: { action.displayedShortcutString(for: $0) },
-            isDisabled: KeyboardShortcutSettings.isManagedBySettingsFile(action)
-        )
-            .onChange(of: shortcut) { newValue in
-                KeyboardShortcutSettings.setShortcut(newValue, for: action)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: KeyboardShortcutSettings.didChangeNotification)) { _ in
-                let latest = KeyboardShortcutSettings.shortcut(for: action)
-                if latest != shortcut {
-                    shortcut = latest
-                }
-            }
-    }
-}
-
-private struct ShortcutRecorderSettingsControl: View {
-    let action: KeyboardShortcutSettings.Action
-    @Binding var shortcut: StoredShortcut
-    var subtitle: String? = nil
-    var displayString: (StoredShortcut) -> String = { $0.displayString }
-    var isDisabled: Bool = false
-
-    @State private var rejectedAttempt: ShortcutRecorderRejectedAttempt?
-
-    var body: some View {
-        KeyboardShortcutRecorder(
-            label: action.label,
-            subtitle: subtitle,
-            shortcut: $shortcut,
-            displayString: displayString,
-            transformRecordedShortcut: { action.normalizedRecordedShortcutResult($0) },
-            validationMessage: validationPresentation?.message,
-            validationButtonTitle: validationPresentation?.swapButtonTitle,
-            onValidationButtonPressed: validationPresentation?.canSwap == true
-                ? { swapConflictingShortcut() }
-                : nil,
-            undoButtonTitle: validationPresentation?.undoButtonTitle,
-            onUndoButtonPressed: rejectedAttempt != nil ? { rejectedAttempt = nil } : nil,
-            hasPendingRejection: rejectedAttempt != nil,
-            isDisabled: isDisabled,
-            onRecorderFeedbackChanged: { rejectedAttempt = $0 }
-        )
-        .onChange(of: shortcut) { _ in
-            rejectedAttempt = nil
-        }
-        .onReceive(NotificationCenter.default.publisher(for: KeyboardShortcutRecorderActivity.didChangeNotification)) { _ in
-            if KeyboardShortcutRecorderActivity.isAnyRecorderActive {
-                rejectedAttempt = nil
-            }
-        }
-    }
-
-    private var validationPresentation: ShortcutRecorderValidationPresentation? {
-        ShortcutRecorderValidationPresentation(
-            attempt: rejectedAttempt,
-            action: action,
-            currentShortcut: shortcut
-        )
-    }
-
-    private func swapConflictingShortcut() {
-        guard case let .conflictsWithAction(conflictingAction)? = rejectedAttempt?.reason,
-              let proposedShortcut = rejectedAttempt?.proposedShortcut else {
-            return
-        }
-
-        KeyboardShortcutRecorderActivity.stopAllRecording()
-
-        let previousShortcut = shortcut
-        KeyboardShortcutSettings.swapShortcutConflict(
-            proposedShortcut: proposedShortcut,
-            currentAction: action,
-            conflictingAction: conflictingAction,
-            previousShortcut: previousShortcut
-        )
-        shortcut = proposedShortcut
-        rejectedAttempt = nil
-    }
-}
-
 private struct GlobalHotkeySection: View {
     @AppStorage(SystemWideHotkeySettings.enabledKey) private var isEnabled = SystemWideHotkeySettings.defaultEnabled
     @State private var shortcut = KeyboardShortcutSettings.shortcut(for: SystemWideHotkeySettings.action)
@@ -8363,7 +8323,7 @@ private struct GlobalHotkeySection: View {
                 .accessibilityIdentifier("SettingsGlobalHotkeyRecorder")
                 .settingsSearchAnchor(SettingsSearchIndex.settingID(for: .globalHotkey, idSuffix: "shortcut"))
         }
-        .onChange(of: shortcut) { newValue in
+        .onChange(of: shortcut) { _, newValue in
             KeyboardShortcutSettings.setShortcut(newValue, for: SystemWideHotkeySettings.action)
         }
         .onReceive(NotificationCenter.default.publisher(for: KeyboardShortcutSettings.didChangeNotification)) { _ in

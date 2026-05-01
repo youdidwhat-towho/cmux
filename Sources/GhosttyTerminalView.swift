@@ -183,7 +183,7 @@ func cmuxResetCompositorBackgroundBlur(on window: NSWindow) {
     )
 }
 
-private func cmuxTransparentWindowBaseColor() -> NSColor {
+func cmuxTransparentWindowBaseColor() -> NSColor {
     // A tiny non-zero alpha matches Ghostty's window compositing behavior on macOS and
     // avoids visual artifacts that can happen with a fully clear window background.
     NSColor.white.withAlphaComponent(0.001)
@@ -1992,6 +1992,7 @@ class GhosttyApp {
                 prefix: "cmux-shell-integration-override",
                 logLabel: "shell integration override (fallback)"
             )
+            loadCmuxOwnedGhosttyKeybindOverrides(fallbackConfig)
             let fallbackRenderingModeChanged = setUsesHostLayerBackground(
                 true,
                 source: "initialize.fallbackConfig"
@@ -2161,9 +2162,25 @@ class GhosttyApp {
             prefix: "cmux-shell-integration-override",
             logLabel: "shell integration override"
         )
+        loadCmuxOwnedGhosttyKeybindOverrides(config)
 
         ghostty_config_finalize(config)
         return renderingModeChanged
+    }
+
+    private func loadCmuxOwnedGhosttyKeybindOverrides(_ config: ghostty_config_t) {
+        // cmux owns these split shortcuts through KeyboardShortcutSettings.
+        // Remove Ghostty's default fallbacks so remapped or cleared shortcuts
+        // can reach the focused terminal instead of creating a split.
+        loadInlineGhosttyConfig(
+            """
+            keybind = super+d=unbind
+            keybind = super+shift+d=unbind
+            """,
+            into: config,
+            prefix: "cmux-owned-split-keybind-overrides",
+            logLabel: "cmux-owned split keybind overrides"
+        )
     }
 
     /// When the user has not configured `font-codepoint-map` for CJK ranges
@@ -3928,28 +3945,13 @@ class GhosttyApp {
 
     private func applyBackgroundToKeyWindow() {
         guard let window = activeMainWindow() else { return }
-        if cmuxShouldUseClearWindowBackground(
-            for: defaultBackgroundOpacity,
-            usesGhosttyGlassStyle: defaultBackgroundBlur.isMacOSGlassStyle
-        ) {
-            window.backgroundColor = cmuxTransparentWindowBaseColor()
-            window.isOpaque = false
-            if defaultBackgroundBlur.isMacOSGlassStyle {
-                cmuxResetCompositorBackgroundBlur(on: window)
-            } else {
-                applyWindowBlurIfNeeded(window)
-            }
-            if backgroundLogEnabled {
-                logBackground("applied transparent window background opacity=\(String(format: "%.3f", defaultBackgroundOpacity)) blur=\(defaultBackgroundBlur)")
-            }
-        } else {
-            let color = defaultBackgroundColor.withAlphaComponent(defaultBackgroundOpacity)
-            window.backgroundColor = color
-            window.isOpaque = color.alphaComponent >= 1.0
-            cmuxResetCompositorBackgroundBlur(on: window)
-            if backgroundLogEnabled {
-                logBackground("applied default window background color=\(color) opacity=\(String(format: "%.3f", color.alphaComponent))")
-            }
+        let snapshot = WindowAppearanceSnapshot.currentFromUserDefaults(app: self)
+        let plan = snapshot.backdropPlan()
+        _ = WindowBackdropController.apply(plan: plan, to: window)
+        if backgroundLogEnabled {
+            logBackground(
+                "applied window backdrop phase=\(plan.hostingPhase.rawValue) opacity=\(String(format: "%.3f", defaultBackgroundOpacity)) blur=\(defaultBackgroundBlur)"
+            )
         }
     }
 
@@ -7055,26 +7057,13 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         }
         applySurfaceBackground()
         let color = effectiveBackgroundColor()
-        let usesGhosttyGlassStyle = GhosttyApp.shared.defaultBackgroundBlur.isMacOSGlassStyle
-        let shouldUseClearWindowBackground = cmuxShouldUseClearWindowBackground(
-            for: color.alphaComponent,
-            usesGhosttyGlassStyle: usesGhosttyGlassStyle
-        )
-        if shouldUseClearWindowBackground {
-            window.backgroundColor = cmuxTransparentWindowBaseColor()
-            window.isOpaque = false
-            if usesGhosttyGlassStyle {
-                cmuxResetCompositorBackgroundBlur(on: window)
-            } else {
-                GhosttyApp.shared.applyWindowBlurIfNeeded(window)
-            }
-        } else {
-            window.backgroundColor = color
-            window.isOpaque = color.alphaComponent >= 1.0
-            cmuxResetCompositorBackgroundBlur(on: window)
-        }
+        let snapshot = WindowAppearanceSnapshot
+            .currentFromUserDefaults(app: GhosttyApp.shared)
+            .replacingTerminalBackgroundColor(backgroundColor ?? GhosttyApp.shared.defaultBackgroundColor)
+        let plan = snapshot.backdropPlan()
+        _ = WindowBackdropController.apply(plan: plan, to: window)
         if GhosttyApp.shared.backgroundLogEnabled {
-            let signature = "\(shouldUseClearWindowBackground ? "transparent" : color.hexString()):\(String(format: "%.3f", color.alphaComponent)):\(GhosttyApp.shared.defaultBackgroundBlur)"
+            let signature = "\(plan.hostingPhase.rawValue):\(color.hexString()):\(String(format: "%.3f", color.alphaComponent)):\(GhosttyApp.shared.defaultBackgroundBlur)"
             if signature != lastLoggedWindowBackgroundSignature {
                 lastLoggedWindowBackgroundSignature = signature
                 let hasOverride = backgroundColor != nil
@@ -7082,7 +7071,7 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
                 let defaultHex = GhosttyApp.shared.defaultBackgroundColor.hexString()
                 let source = hasOverride ? "surfaceOverride" : "defaultBackground"
                 GhosttyApp.shared.logBackground(
-                    "window background applied tab=\(tabId?.uuidString ?? "unknown") surface=\(terminalSurface?.id.uuidString ?? "unknown") source=\(source) override=\(overrideHex) default=\(defaultHex) transparent=\(shouldUseClearWindowBackground) color=\(color.hexString()) opacity=\(String(format: "%.3f", color.alphaComponent)) blur=\(GhosttyApp.shared.defaultBackgroundBlur)"
+                    "window background applied tab=\(tabId?.uuidString ?? "unknown") surface=\(terminalSurface?.id.uuidString ?? "unknown") source=\(source) override=\(overrideHex) default=\(defaultHex) phase=\(plan.hostingPhase.rawValue) transparent=\(plan.usesTransparentWindow) color=\(color.hexString()) opacity=\(String(format: "%.3f", color.alphaComponent)) blur=\(GhosttyApp.shared.defaultBackgroundBlur)"
                 )
             }
         }
@@ -7771,6 +7760,17 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
     @IBAction func pasteAsPlainText(_ sender: Any?) {
         guard prepareSurfaceForPaste(reason: "pasteAsPlainText.missingSurface") else { return }
         _ = performBindingAction("paste_from_clipboard")
+    }
+
+    private func applyConfiguredMenuShortcut(_ shortcut: StoredShortcut, to item: NSMenuItem) {
+        guard let keyEquivalent = shortcut.menuItemKeyEquivalent else {
+            item.keyEquivalent = ""
+            item.keyEquivalentModifierMask = []
+            return
+        }
+
+        item.keyEquivalent = keyEquivalent
+        item.keyEquivalentModifierMask = shortcut.modifierFlags
     }
 
     /// Validates whether edit menu items (copy, paste, split) should be enabled.
@@ -9773,10 +9773,10 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let splitHorizontallyItem = menu.addItem(
             withTitle: String(localized: "terminalContextMenu.splitHorizontally", defaultValue: "Split Horizontally"),
             action: #selector(splitHorizontally(_:)),
-            keyEquivalent: "d"
+            keyEquivalent: ""
         )
         splitHorizontallyItem.target = self
-        splitHorizontallyItem.keyEquivalentModifierMask = [.command, .shift]
+        applyConfiguredMenuShortcut(KeyboardShortcutSettings.shortcut(for: .splitDown), to: splitHorizontallyItem)
         splitHorizontallyItem.image = NSImage(
             systemSymbolName: "rectangle.bottomhalf.inset.filled",
             accessibilityDescription: nil
@@ -9785,10 +9785,10 @@ class GhosttyNSView: NSView, NSUserInterfaceValidations {
         let splitVerticallyItem = menu.addItem(
             withTitle: String(localized: "terminalContextMenu.splitVertically", defaultValue: "Split Vertically"),
             action: #selector(splitVertically(_:)),
-            keyEquivalent: "d"
+            keyEquivalent: ""
         )
         splitVerticallyItem.target = self
-        splitVerticallyItem.keyEquivalentModifierMask = [.command]
+        applyConfiguredMenuShortcut(KeyboardShortcutSettings.shortcut(for: .splitRight), to: splitVerticallyItem)
         splitVerticallyItem.image = NSImage(
             systemSymbolName: "rectangle.righthalf.inset.filled",
             accessibilityDescription: nil
