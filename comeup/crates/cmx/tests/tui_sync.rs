@@ -13,6 +13,7 @@ use tokio::time::timeout;
 
 const TUI_SENTINEL: &str = "COMEUP_TUI_TO_IOS_OK_31C8";
 const IOS_SENTINEL: &str = "COMEUP_IOS_TO_TUI_OK_725B";
+const QUEUED_TUI_SENTINEL: &str = "COMEUP_TUI_QUEUED_FOCUS_OK_C9E1";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn real_cmx_tui_process_syncs_with_ios_shaped_client() {
@@ -60,7 +61,10 @@ async fn real_cmx_tui_process_syncs_with_ios_shaped_client() {
     );
 
     tui.write_line("new-workspace TUI Build");
-    assert_eq!(recv_workspace(&mut ios).await, (2, "TUI Build".to_string()));
+    assert_eq!(
+        recv_workspace(&mut ios, "TUI Build").await,
+        (2, "TUI Build".to_string())
+    );
     tui.read_until("WORKSPACE id=2 title=TUI Build");
     let terminal_id = recv_focus_terminal(&mut ios).await;
     tui.read_until(&format!("FOCUS terminal={terminal_id}"));
@@ -79,6 +83,21 @@ async fn real_cmx_tui_process_syncs_with_ios_shaped_client() {
 
     tui.write_line("ping 44");
     tui.read_until("PONG id=44");
+
+    tui.write_line("new-workspace Queued Focus");
+    tui.write_line(&format!("send {QUEUED_TUI_SENTINEL}"));
+    assert_eq!(
+        recv_workspace(&mut ios, "Queued Focus").await.1,
+        "Queued Focus"
+    );
+    let queued_terminal_id = recv_focus_terminal(&mut ios).await;
+    assert_terminal_output_from_terminal_contains(
+        &mut ios,
+        queued_terminal_id,
+        QUEUED_TUI_SENTINEL,
+    )
+    .await;
+
     ios.send(&ClientMsg::Ping {
         ping_id: 45,
         client_sent_monotonic_ns: 0,
@@ -128,13 +147,13 @@ async fn recv_terminal_size(client: &mut UnixClient, terminal_id: TerminalId) ->
     }
 }
 
-async fn recv_workspace(client: &mut UnixClient) -> (WorkspaceId, String) {
+async fn recv_workspace(client: &mut UnixClient, title: &str) -> (WorkspaceId, String) {
     match recv_until(client, |msg| {
         matches!(
             msg,
             ServerMsg::Delta {
                 delta: Delta::WorkspaceUpsert { workspace, .. },
-            } if workspace.title == "TUI Build"
+            } if workspace.title == title
         )
     })
     .await
@@ -168,6 +187,28 @@ async fn assert_terminal_output_contains(client: &mut UnixClient, expected: &str
     let mut collected = Vec::new();
     let _ = recv_until(client, |msg| {
         if let ServerMsg::TerminalOutput { data, .. } = msg {
+            collected.extend_from_slice(data);
+            String::from_utf8_lossy(&collected).contains(expected)
+        } else {
+            false
+        }
+    })
+    .await;
+}
+
+async fn assert_terminal_output_from_terminal_contains(
+    client: &mut UnixClient,
+    terminal_id: TerminalId,
+    expected: &str,
+) {
+    let mut collected = Vec::new();
+    let _ = recv_until(client, |msg| {
+        if let ServerMsg::TerminalOutput {
+            terminal_id: output_terminal_id,
+            data,
+        } = msg
+            && *output_terminal_id == terminal_id
+        {
             collected.extend_from_slice(data);
             String::from_utf8_lossy(&collected).contains(expected)
         } else {

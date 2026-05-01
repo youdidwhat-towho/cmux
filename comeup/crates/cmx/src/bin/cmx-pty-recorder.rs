@@ -176,3 +176,30 @@ impl Args {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn args_reject_zero_dimensions() {
+        assert!(
+            Args::parse([
+                "--socket".to_string(),
+                "/tmp/comeup.sock".to_string(),
+                "--cols".to_string(),
+                "0".to_string(),
+            ])
+            .is_err()
+        );
+        assert!(
+            Args::parse([
+                "--socket".to_string(),
+                "/tmp/comeup.sock".to_string(),
+                "--rows".to_string(),
+                "0".to_string(),
+            ])
+            .is_err()
+        );
+    }
+}

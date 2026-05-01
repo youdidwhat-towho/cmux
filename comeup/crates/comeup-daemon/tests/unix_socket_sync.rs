@@ -2,7 +2,9 @@ use std::path::Path;
 use std::time::Duration;
 
 use comeup_client::UnixClient;
-use comeup_daemon::{ServerOptions, serve_unix_socket};
+use comeup_daemon::{
+    ComeupServer, ServerOptions, serve_unix_socket, serve_unix_socket_with_server,
+};
 use comeup_protocol::{
     ClientMsg, Command, Delta, ServerMsg, Viewport, VisibleTerminal, WorkspaceId,
 };
@@ -106,6 +108,33 @@ async fn unix_socket_clients_sync_workspace_resize_and_terminal_output() {
     assert_terminal_output_contains(&mut ios, SENTINEL).await;
 
     server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unix_socket_refuses_to_delete_non_socket_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket_path = dir.path().join("not-a-socket");
+    std::fs::write(&socket_path, "keep").expect("write placeholder file");
+    let server = ComeupServer::start(ServerOptions {
+        shell: "/bin/cat".to_string(),
+        cwd: Some(dir.path().to_path_buf()),
+        initial_viewport: Viewport { cols: 80, rows: 24 },
+    })
+    .expect("start server");
+
+    let err = serve_unix_socket_with_server(&socket_path, server.clone())
+        .await
+        .expect_err("regular file path should be rejected");
+    assert!(
+        err.to_string().contains("refusing to remove non-socket"),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&socket_path).expect("read placeholder"),
+        "keep"
+    );
+
+    server.shutdown();
 }
 
 async fn wait_for_socket(socket: &Path) {
