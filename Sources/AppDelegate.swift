@@ -11321,6 +11321,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 standardZoomShortcutAction == standardAction
         }
 
+        let fileExplorerOwnsZoomFocus = tabManager?.fileExplorerOwnsZoomFocus == true
+        if fileExplorerOwnsZoomFocus,
+           matchesZoomShortcut(.fileExplorerZoomIn, standardAction: .zoomIn) {
+            _ = tabManager?.zoomInFocusedFileExplorer()
+            return true
+        }
+
+        if fileExplorerOwnsZoomFocus,
+           matchesZoomShortcut(.fileExplorerZoomOut, standardAction: .zoomOut) {
+            _ = tabManager?.zoomOutFocusedFileExplorer()
+            return true
+        }
+
+        if fileExplorerOwnsZoomFocus,
+           matchesZoomShortcut(.fileExplorerZoomReset, standardAction: .reset) {
+            _ = tabManager?.resetZoomFocusedFileExplorer()
+            return true
+        }
+
         if matchesZoomShortcut(.browserZoomIn, standardAction: .zoomIn) {
             if tabManager?.zoomInFocusedBrowser() == true {
                 return true

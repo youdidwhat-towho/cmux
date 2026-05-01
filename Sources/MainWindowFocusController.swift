@@ -508,6 +508,10 @@ final class MainWindowFocusController {
            let mode = rightSidebarModeOwning(responder) {
             return mode == .files || mode == .find
         }
+        if let responder,
+           terminalFocusRequest(for: responder) != nil || selectedFocusedPanelRequest(owning: responder) != nil {
+            return false
+        }
         if case .rightSidebar(let mode) = intent {
             return mode == .files || mode == .find
         }

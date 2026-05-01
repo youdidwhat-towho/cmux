@@ -4731,6 +4731,10 @@ class TabManager: ObservableObject {
         return fileExplorerState
     }
 
+    var fileExplorerOwnsZoomFocus: Bool {
+        focusedFileExplorerState != nil
+    }
+
     @discardableResult
     func zoomInFocusedBrowser() -> Bool {
         focusedBrowserPanel?.zoomIn() ?? false
@@ -4748,17 +4752,23 @@ class TabManager: ObservableObject {
 
     @discardableResult
     func zoomInFocusedFileExplorer() -> Bool {
-        focusedFileExplorerState?.zoomIn() ?? false
+        guard let fileExplorerState = focusedFileExplorerState else { return false }
+        _ = fileExplorerState.zoomIn()
+        return true
     }
 
     @discardableResult
     func zoomOutFocusedFileExplorer() -> Bool {
-        focusedFileExplorerState?.zoomOut() ?? false
+        guard let fileExplorerState = focusedFileExplorerState else { return false }
+        _ = fileExplorerState.zoomOut()
+        return true
     }
 
     @discardableResult
     func resetZoomFocusedFileExplorer() -> Bool {
-        focusedFileExplorerState?.resetZoom() ?? false
+        guard let fileExplorerState = focusedFileExplorerState else { return false }
+        _ = fileExplorerState.resetZoom()
+        return true
     }
 
     @discardableResult

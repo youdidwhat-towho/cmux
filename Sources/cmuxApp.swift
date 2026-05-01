@@ -678,20 +678,29 @@ struct cmuxApp: App {
             }
 
             splitCommandButton(title: String(localized: "menu.view.zoomIn", defaultValue: "Zoom In"), shortcut: menuShortcut(for: .browserZoomIn)) {
-                if !activeTabManager.zoomInFocusedBrowser() {
-                    _ = activeTabManager.zoomInFocusedFileExplorer()
+                let manager = activeTabManager
+                if manager.fileExplorerOwnsZoomFocus {
+                    _ = manager.zoomInFocusedFileExplorer()
+                } else {
+                    _ = manager.zoomInFocusedBrowser()
                 }
             }
 
             splitCommandButton(title: String(localized: "menu.view.zoomOut", defaultValue: "Zoom Out"), shortcut: menuShortcut(for: .browserZoomOut)) {
-                if !activeTabManager.zoomOutFocusedBrowser() {
-                    _ = activeTabManager.zoomOutFocusedFileExplorer()
+                let manager = activeTabManager
+                if manager.fileExplorerOwnsZoomFocus {
+                    _ = manager.zoomOutFocusedFileExplorer()
+                } else {
+                    _ = manager.zoomOutFocusedBrowser()
                 }
             }
 
             splitCommandButton(title: String(localized: "menu.view.actualSize", defaultValue: "Actual Size"), shortcut: menuShortcut(for: .browserZoomReset)) {
-                if !activeTabManager.resetZoomFocusedBrowser() {
-                    _ = activeTabManager.resetZoomFocusedFileExplorer()
+                let manager = activeTabManager
+                if manager.fileExplorerOwnsZoomFocus {
+                    _ = manager.resetZoomFocusedFileExplorer()
+                } else {
+                    _ = manager.resetZoomFocusedBrowser()
                 }
             }
 
