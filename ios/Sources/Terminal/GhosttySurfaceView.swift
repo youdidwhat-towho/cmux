@@ -51,6 +51,7 @@ protocol TerminalSurfaceHosting: AnyObject {
     /// every attached device converges on the same grid.
     func applyViewSize(cols: Int, rows: Int)
     #if DEBUG
+    var onOutputProcessedForTesting: (() -> Void)? { get set }
     func accessibilityRenderedTextForTesting() -> String?
     #endif
 }
@@ -60,6 +61,10 @@ extension TerminalSurfaceHosting {
     func updateRemotePlatform(_ platform: RemotePlatform) {}
     func applyViewSize(cols _: Int, rows _: Int) {}
     #if DEBUG
+    var onOutputProcessedForTesting: (() -> Void)? {
+        get { nil }
+        set {}
+    }
     func accessibilityRenderedTextForTesting() -> String? { nil }
     #endif
 }

@@ -82,6 +82,7 @@
 		B0D54FA54A22B339C183AFE8 /* TerminalTextInputPipelineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 28D639E6992408AFD926D7AD /* TerminalTextInputPipelineTests.swift */; };
 		B2DC2BC8C0D8DFC2241C18A5 /* InputStrategyLabUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C032FB689174A5691978BF3C /* InputStrategyLabUITests.swift */; };
 		BA850F565EACFE5F2A60D7C6 /* LiveTCPDaemonTransportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7EAB7649D9BEC661822B7B6 /* LiveTCPDaemonTransportTests.swift */; };
+		BC92D4F73FF0BA5DEB71910A /* TerminalUITestHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 789E4ECF3351AB482B0DD69A /* TerminalUITestHarness.swift */; };
 		C14963B8B1BEEC798E7E424B /* IOSMacWorkspaceSyncUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C33EE40660344FE0078509D8 /* IOSMacWorkspaceSyncUITests.swift */; };
 		C17D7E1277E505D749861710 /* LiveAnchormuxConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5272CEA127F60CF7B1B1D0A /* LiveAnchormuxConfigTests.swift */; };
 		C224C1EE2103A018655EA06D /* AppDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58CB0909BA2BC2AE35B3437D /* AppDatabase.swift */; };
@@ -181,6 +182,7 @@
 		6FD95554247ABF89FFAAF01C /* WorkspaceLiveSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceLiveSync.swift; sourceTree = "<group>"; };
 		72E20F7A729081D044495605 /* CMuxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMuxApp.swift; sourceTree = "<group>"; };
 		759117D3355ECE0F2863206E /* LiveAnchormuxSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAnchormuxSupport.swift; sourceTree = "<group>"; };
+		789E4ECF3351AB482B0DD69A /* TerminalUITestHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUITestHarness.swift; sourceTree = "<group>"; };
 		79D367AC3D322118AE559DBF /* AuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManager.swift; sourceTree = "<group>"; };
 		7B0B872D71F3DE5502B2379C /* TerminalCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCacheRepository.swift; sourceTree = "<group>"; };
 		7FE2E447F820F6D213911B13 /* TerminalWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWorkspace.swift; sourceTree = "<group>"; };
@@ -349,6 +351,7 @@
 				C173F2D34FADBC7C8F7BC8B7 /* TerminalInboxUITests.swift */,
 				BE13213115B51A10F0970460 /* TerminalInputUITests.swift */,
 				B04A72C0E65996D39B749EC4 /* TerminalReconnectUITests.swift */,
+				789E4ECF3351AB482B0DD69A /* TerminalUITestHarness.swift */,
 			);
 			path = cmuxUITests;
 			sourceTree = "<group>";
@@ -779,6 +782,7 @@
 				0F468796CD8AECF1D58004E3 /* TerminalInboxUITests.swift in Sources */,
 				DC0583471064815FF6FE71CE /* TerminalInputUITests.swift in Sources */,
 				CEADBC899865019DA2333129 /* TerminalReconnectUITests.swift in Sources */,
+				BC92D4F73FF0BA5DEB71910A /* TerminalUITestHarness.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

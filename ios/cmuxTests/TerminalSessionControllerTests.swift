@@ -65,6 +65,49 @@ final class TerminalSessionControllerTests: XCTestCase {
         XCTAssertNil(controller.errorMessage)
     }
 
+    func testAccessibilityTextRefreshesAfterAsyncSurfaceOutputProcessing() async {
+        let host = TerminalHost(
+            name: "Input Fixture",
+            hostname: "fixture",
+            username: "cmux",
+            symbolName: "keyboard",
+            palette: .sky,
+            transportPreference: .rawSSH
+        )
+        let workspace = TerminalWorkspace(
+            hostID: host.id,
+            title: "Input Fixture",
+            tmuxSessionName: "cmux-input"
+        )
+        let credentialsStore = InMemoryTerminalCredentialsStore(passwords: [host.id: "secret"])
+        let transport = OrderedEventsStubTerminalTransport(events: [
+            .output(Data("z".utf8)),
+        ])
+        let transportFactory = StubTerminalTransportFactory(transport: transport)
+        let surface = DeferredAccessibilityTerminalSurface(
+            renderedTextAfterProcessing: "cmux@fixture:~$ z"
+        )
+        let surfaceFactory = SingleTerminalSurfaceFactory(surface: surface)
+
+        let processedExpectation = expectation(description: "surface output processed")
+        surface.onProcessed = {
+            processedExpectation.fulfill()
+        }
+
+        let controller = TerminalSessionController(
+            workspace: workspace,
+            host: host,
+            credentialsStore: credentialsStore,
+            transportFactory: transportFactory,
+            surfaceFactory: surfaceFactory.makeSurface(delegate:)
+        )
+
+        controller.connectIfNeeded()
+        await fulfillment(of: [processedExpectation], timeout: 1.0)
+
+        XCTAssertEqual(controller.accessibilityTerminalText, "cmux@fixture:~$ z")
+    }
+
     func testSurfaceCloseRequestRebuildsSurfaceAndReconnects() async throws {
         let host = TerminalHost(
             name: "Mac Mini",
@@ -1374,6 +1417,46 @@ final class TrackingStubTerminalSurfaceFactory {
         let surface = StubTerminalSurface()
         lastSurface = surface
         return surface
+    }
+}
+
+@MainActor
+final class SingleTerminalSurfaceFactory {
+    private let surface: any TerminalSurfaceHosting
+
+    init(surface: any TerminalSurfaceHosting) {
+        self.surface = surface
+    }
+
+    func makeSurface(delegate: GhosttySurfaceViewDelegate) throws -> any TerminalSurfaceHosting {
+        surface
+    }
+}
+
+@MainActor
+final class DeferredAccessibilityTerminalSurface: TerminalSurfaceHosting {
+    let currentGridSize = TerminalGridSize(columns: 88, rows: 28, pixelWidth: 880, pixelHeight: 560)
+    var onOutputProcessedForTesting: (() -> Void)?
+    var onProcessed: (() -> Void)?
+
+    private var renderedText = "cmux@fixture:~$ "
+    private let renderedTextAfterProcessing: String
+
+    init(renderedTextAfterProcessing: String) {
+        self.renderedTextAfterProcessing = renderedTextAfterProcessing
+    }
+
+    func processOutput(_ data: Data) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            renderedText = renderedTextAfterProcessing
+            onOutputProcessedForTesting?()
+            onProcessed?()
+        }
+    }
+
+    func accessibilityRenderedTextForTesting() -> String? {
+        renderedText
     }
 }
 

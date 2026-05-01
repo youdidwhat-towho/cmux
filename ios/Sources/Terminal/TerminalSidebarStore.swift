@@ -2317,6 +2317,11 @@ final class TerminalSessionController {
             terminalSurface = surface
             surfaceView = surface as? GhosttySurfaceView
             surfaceNeedsInitialReplay = true
+            #if DEBUG
+            surface.onOutputProcessedForTesting = { [weak self] in
+                self?.refreshAccessibilityTerminalText()
+            }
+            #endif
             observeSurfaceClose(for: surface)
             // Marker: surface created successfully
             if let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first {
@@ -2352,6 +2357,9 @@ final class TerminalSessionController {
             NotificationCenter.default.removeObserver(surfaceBellObserver)
             self.surfaceBellObserver = nil
         }
+        #if DEBUG
+        terminalSurface?.onOutputProcessedForTesting = nil
+        #endif
         surfaceView?.disposeSurface()
         terminalSurface = nil
         surfaceView = nil
