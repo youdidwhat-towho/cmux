@@ -12400,18 +12400,31 @@ class TerminalController {
 
         var result: V2CallResult = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
         v2MainSync {
-            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+            guard let resolvedWorkspace = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
                 result = .err(code: "not_found", message: "Workspace not found", data: nil)
                 return
             }
+            let owner = AppDelegate.shared?.locateSurface(surfaceId: surfaceId)
+            let ws = owner.flatMap { located in located.tabManager.tabs.first { $0.id == located.workspaceId } } ?? resolvedWorkspace
             guard let panel = ws.panels[surfaceId] else {
                 result = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
                 return
             }
 
             let accepted = AppDelegate.shared?.requestTerminalFirstResponderFocus(workspaceId: ws.id, panel: panel) ?? false
+#if DEBUG
+            cmuxDebugLog(
+                "debug.terminal.firstResponderFocus " +
+                    "requestedWorkspace=\(resolvedWorkspace.id.uuidString.prefix(5)) " +
+                    "ownerWorkspace=\(ws.id.uuidString.prefix(5)) " +
+                    "surface=\(surfaceId.uuidString.prefix(5)) accepted=\(accepted ? 1 : 0) " +
+                    "ownerFound=\((owner != nil) ? 1 : 0)"
+            )
+#endif
             result = .ok([
                 "accepted": accepted,
+                "requested_workspace_id": resolvedWorkspace.id.uuidString,
+                "requested_workspace_ref": v2Ref(kind: .workspace, uuid: resolvedWorkspace.id),
                 "workspace_id": ws.id.uuidString,
                 "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
                 "surface_id": surfaceId.uuidString,

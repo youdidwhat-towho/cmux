@@ -9,9 +9,12 @@ enum MainWindowMainPanelFocusSource: Equatable {
 }
 
 extension MainWindowFocusController {
-    func allowsTerminalFocus(workspaceId _: UUID, panelId: UUID) -> Bool {
+    func allowsTerminalFocus(workspaceId: UUID, panelId: UUID) -> Bool {
         if TerminalSurfaceRegistry.shared.isRightSidebarDockSurface(id: panelId) {
             return true
+        }
+        guard workspaceContainsPanel(workspaceId: workspaceId, panelId: panelId) else {
+            return false
         }
         if hasPendingRightSidebarFocusRequest {
             return false
