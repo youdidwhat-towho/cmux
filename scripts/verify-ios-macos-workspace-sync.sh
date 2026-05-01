@@ -39,8 +39,16 @@ INPUT_TOKEN="IOS_TO_MAC_${SANITIZED_TAG}_$(date +%s)"
 
 cd "$ROOT"
 
-./scripts/reload.sh --tag "$TAG" >"$MAC_RELOAD_LOG" 2>&1
-LAUNCH_OUTPUT="$("./scripts/launch-tagged-automation.sh" "$TAG" --wait-socket 30 | tee "$MAC_LAUNCH_LOG")"
+if ! ./scripts/reload.sh --tag "$TAG" >"$MAC_RELOAD_LOG" 2>&1; then
+  echo "error: macOS tagged reload failed" >&2
+  cat "$MAC_RELOAD_LOG" >&2
+  exit 1
+fi
+if ! LAUNCH_OUTPUT="$("./scripts/launch-tagged-automation.sh" "$TAG" --wait-socket 30 2>&1 | tee "$MAC_LAUNCH_LOG")"; then
+  echo "error: tagged automation launch failed" >&2
+  cat "$MAC_LAUNCH_LOG" >&2
+  exit 1
+fi
 
 APP_SOCKET="$(printf '%s\n' "$LAUNCH_OUTPUT" | awk -F': ' '/^socket:/ {print $2; exit}')"
 DAEMON_SOCKET="$(printf '%s\n' "$LAUNCH_OUTPUT" | awk -F': ' '/^cmuxd_socket:/ {print $2; exit}')"

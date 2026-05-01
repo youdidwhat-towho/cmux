@@ -22,6 +22,8 @@ final class TerminalInputUITests: XCTestCase {
         let detail = terminalDetail(in: app)
         XCTAssertTrue(detail.waitForExistence(timeout: 4), "Expected terminal workspace detail")
         detail.tap()
+        dismissKeyboardOnboardingIfNeeded(in: app)
+        detail.tap()
         app.typeText(Fixture.typedPreview)
 
         XCTAssertTrue(
@@ -63,10 +65,7 @@ final class TerminalInputUITests: XCTestCase {
     }
 
     private func dismissKeyboardIfNeeded(in app: XCUIApplication) {
-        let continueButton = app.buttons["Continue"]
-        if continueButton.waitForExistence(timeout: 1), continueButton.isHittable {
-            continueButton.tap()
-        }
+        dismissKeyboardOnboardingIfNeeded(in: app)
 
         let hideAccessory = app.buttons["terminal.inputAccessory.hideKeyboard"]
         if hideAccessory.waitForExistence(timeout: 1), hideAccessory.isHittable {
@@ -92,6 +91,13 @@ final class TerminalInputUITests: XCTestCase {
         let returnKey = keyboard.buttons["Return"]
         if returnKey.exists {
             returnKey.tap()
+        }
+    }
+
+    private func dismissKeyboardOnboardingIfNeeded(in app: XCUIApplication) {
+        let continueButton = app.buttons["Continue"]
+        if continueButton.waitForExistence(timeout: 1), continueButton.isHittable {
+            continueButton.tap()
         }
     }
 }

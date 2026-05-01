@@ -33,6 +33,7 @@ final class DaemonConnection: @unchecked Sendable {
     private var fd: Int32 = -1
     private let stateLock = NSLock()
     private var connecting = false
+    private var reconnectTimer: DispatchSourceTimer?
     private var nextRpcID: Int = 0
     private let writeQueue = DispatchQueue(label: "cmux.daemon-connection.write", qos: .userInitiated)
     private var pending: [Int: (Result<[String: Any], Error>) -> Void] = [:]
@@ -1201,8 +1202,11 @@ final class DaemonConnection: @unchecked Sendable {
     private func connectAsync() {
         stateLock.lock()
         guard fd < 0, !connecting else { stateLock.unlock(); return }
+        let timer = reconnectTimer
+        reconnectTimer = nil
         connecting = true
         stateLock.unlock()
+        timer?.cancel()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             self?.connectBlocking()
@@ -1359,9 +1363,29 @@ final class DaemonConnection: @unchecked Sendable {
     }
 
     private func scheduleReconnect() {
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1) { [weak self] in
-            self?.connectAsync()
+        stateLock.lock()
+        guard fd < 0, !connecting else {
+            stateLock.unlock()
+            return
         }
+        reconnectTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+        reconnectTimer = timer
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self else { return }
+            self.stateLock.lock()
+            if let timer, self.reconnectTimer === timer {
+                self.reconnectTimer = nil
+            }
+            let shouldConnect = self.fd < 0 && !self.connecting
+            self.stateLock.unlock()
+            if shouldConnect {
+                self.connectAsync()
+            }
+        }
+        timer.schedule(deadline: .now() + 1)
+        timer.resume()
+        stateLock.unlock()
     }
 
     // MARK: - Reader thread
