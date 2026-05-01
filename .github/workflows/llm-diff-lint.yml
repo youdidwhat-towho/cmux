@@ -126,8 +126,7 @@ jobs:
             --rule ".github/llm-diff-lint/rules/${{ matrix.rule }}.md" \
             --diff-file "$RUNNER_TEMP/pr.diff" \
             --source-label "pull request ${{ steps.pr.outputs.number }}" \
-            --output "$RUNNER_TEMP/result.json" \
-            --skip-if-missing-key
+            --output "$RUNNER_TEMP/result.json"
 
       - name: Upload lint result
         if: always()
