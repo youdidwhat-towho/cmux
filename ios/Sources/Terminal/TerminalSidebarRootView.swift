@@ -1110,6 +1110,9 @@ struct TerminalWorkspaceScreen: View {
     private var terminalFullBleedEdges: Edge.Set {
         horizontalSizeClass == .regular ? [] : [.horizontal, .bottom]
     }
+    private var navigationTitleMaxWidth: CGFloat {
+        horizontalSizeClass == .regular ? 420 : 176
+    }
 
     var body: some View {
         ZStack {
@@ -1170,25 +1173,19 @@ struct TerminalWorkspaceScreen: View {
                             .accessibilityIdentifier("terminal.workspace.pane.\(workspace.id.uuidString).\(index)")
                         }
                     } label: {
-                        HStack(spacing: 4) {
-                            Text(workspace.title)
-                                .font(.headline)
-                            Text("\(panes.count)")
-                                .font(.caption2.weight(.semibold))
-                                .padding(.horizontal, 5)
-                                .padding(.vertical, 1)
-                                .background(Color.white.opacity(0.2))
-                                .clipShape(Capsule())
-                            Image(systemName: "chevron.down")
-                                .font(.caption2)
-                        }
-                        .foregroundStyle(.white)
+                        TerminalWorkspaceNavigationTitle(
+                            title: workspace.title,
+                            paneCount: panes.count,
+                            maxWidth: navigationTitleMaxWidth
+                        )
                     }
                     .accessibilityIdentifier("terminal.workspace.paneMenu.\(workspace.id.uuidString)")
                 } else {
-                    Text(workspace.title)
-                        .font(.headline)
-                        .foregroundStyle(.white)
+                    TerminalWorkspaceNavigationTitle(
+                        title: workspace.title,
+                        paneCount: nil,
+                        maxWidth: navigationTitleMaxWidth
+                    )
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -1222,6 +1219,40 @@ struct TerminalWorkspaceScreen: View {
     private func switchToPane(_ pane: TerminalPane) {
         guard let sessionID = pane.sessionID else { return }
         controller.switchSession(to: sessionID)
+    }
+}
+
+private struct TerminalWorkspaceNavigationTitle: View {
+    let title: String
+    let paneCount: Int?
+    let maxWidth: CGFloat
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .minimumScaleFactor(0.85)
+                .layoutPriority(0)
+
+            if let paneCount {
+                Text("\(paneCount)")
+                    .font(.caption2.weight(.semibold))
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Color.white.opacity(0.2))
+                    .clipShape(Capsule())
+                    .fixedSize()
+                Image(systemName: "chevron.down")
+                    .font(.caption2)
+                    .fixedSize()
+            }
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: maxWidth)
+        .clipped()
+        .contentShape(Rectangle())
     }
 }
 

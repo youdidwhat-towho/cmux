@@ -1360,10 +1360,20 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         let border: CAShapeLayer = {
             if let existing = letterboxBorderLayer { return existing }
             let b = CAShapeLayer()
+            b.name = "cmux.letterboxBorder"
             b.fillColor = UIColor.clear.cgColor
             b.lineWidth = 1.0
             b.zPosition = 1000 // above the Ghostty renderer layer
             b.isHidden = false
+            b.actions = [
+                "bounds": NSNull(),
+                "frame": NSNull(),
+                "hidden": NSNull(),
+                "opacity": NSNull(),
+                "path": NSNull(),
+                "position": NSNull(),
+                "strokeColor": NSNull(),
+            ]
             // Decorative only; let pointer / key events pass through.
             b.isGeometryFlipped = false
             layer.addSublayer(b)
@@ -1373,14 +1383,23 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         border.isHidden = false
         border.strokeColor = UIColor.separator.resolvedColor(with: traitCollection).cgColor
         border.contentsScale = layer.contentsScale
-        let inset: CGFloat = 1.5 // half-line out so the stroke hugs the edge
-        let outline = renderRect.insetBy(dx: -inset, dy: -inset)
+        if border.frame != layer.bounds {
+            border.frame = layer.bounds
+        }
+
+        let scale = max(border.contentsScale, 1)
+        let lineWidth = border.lineWidth
+        let alignedRect = CGRect(
+            x: floor(renderRect.minX * scale) / scale,
+            y: floor(renderRect.minY * scale) / scale,
+            width: ceil(renderRect.width * scale) / scale,
+            height: ceil(renderRect.height * scale) / scale
+        )
+        let pathInset = max(lineWidth / 2, 0.5 / scale)
+        let outline = alignedRect.insetBy(dx: pathInset, dy: pathInset)
         let path = UIBezierPath(rect: outline).cgPath
         if border.path != path {
             border.path = path
-        }
-        if border.frame != layer.bounds {
-            border.frame = layer.bounds
         }
     }
 
