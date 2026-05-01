@@ -914,6 +914,18 @@ class TerminalController {
         return nil
     }
 
+    private nonisolated static func shouldReportAcceptedClientConfigFailure(stage: String, errnoCode: Int32) -> Bool {
+        guard stage == "accept_client_configure_send_timeout" ||
+            stage == "accept_client_configure_no_sigpipe" else {
+            return true
+        }
+        return errnoCode != EINVAL &&
+            errnoCode != ENOTCONN &&
+            errnoCode != ECONNRESET &&
+            errnoCode != EPIPE &&
+            errnoCode != EBADF
+    }
+
     private nonisolated static func bindListenerSocket(_ socket: Int32, path: String) -> SocketBindAttemptResult {
         if let errnoCode = ensureSocketParentDirectoryExists(path: path) {
             return .failure(path: path, stage: "create_directory", errnoCode: errnoCode)
@@ -1633,15 +1645,17 @@ class TerminalController {
             }
 
             if let failure = Self.configureAcceptedClientSocket(clientSocket) {
-                sentryBreadcrumb(
-                    "socket.listener.client_config.failed",
-                    category: "socket",
-                    data: socketListenerEventData(
-                        stage: failure.stage,
-                        errnoCode: failure.errnoCode,
-                        extra: ["generation": generation]
+                if Self.shouldReportAcceptedClientConfigFailure(stage: failure.stage, errnoCode: failure.errnoCode) {
+                    sentryBreadcrumb(
+                        "socket.listener.client_config.failed",
+                        category: "socket",
+                        data: socketListenerEventData(
+                            stage: failure.stage,
+                            errnoCode: failure.errnoCode,
+                            extra: ["generation": generation]
+                        )
                     )
-                )
+                }
                 close(clientSocket)
                 continue
             }
@@ -12789,6 +12803,10 @@ class TerminalController {
             action = .focusUp
         case "focus_down", "focusdown":
             action = .focusDown
+        case "split_right", "splitright":
+            action = .splitRight
+        case "split_down", "splitdown":
+            action = .splitDown
         case "workspace_digits", "workspace_number", "select_workspace_by_number":
             action = .selectWorkspaceByNumber
         case "surface_digits", "surface_number", "select_surface_by_number":
@@ -12798,10 +12816,15 @@ class TerminalController {
         }
 
         guard let action else {
-            return "ERROR: Unknown shortcut name. Supported: focus_left, focus_right, focus_up, focus_down, workspace_digits, surface_digits"
+            return "ERROR: Unknown shortcut name. Supported: focus_left, focus_right, focus_up, focus_down, split_right, split_down, workspace_digits, surface_digits"
         }
 
-        if combo.lowercased() == "clear" || combo.lowercased() == "default" || combo.lowercased() == "reset" {
+        if combo.lowercased() == "clear" || combo.lowercased() == "unbound" || combo.lowercased() == "none" {
+            KeyboardShortcutSettings.clearShortcut(for: action)
+            return "OK"
+        }
+
+        if combo.lowercased() == "default" || combo.lowercased() == "reset" {
             KeyboardShortcutSettings.resetShortcut(for: action)
             return "OK"
         }
