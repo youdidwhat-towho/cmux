@@ -315,7 +315,7 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
                 return promise.futureResult
             }
             .flatMap {
-                self.writeStandardInputIfNeeded(context: contextBox.value)
+                self.writeStandardInputIfNeeded(contextBox: contextBox)
             }
             .whenFailure { [weak self] error in
                 self?.finish(with: error)
@@ -361,7 +361,10 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
         context.close(promise: nil)
     }
 
-    private func writeStandardInputIfNeeded(context: ChannelHandlerContext) -> EventLoopFuture<Void> {
+    private func writeStandardInputIfNeeded(
+        contextBox: TerminalBootstrapChannelHandlerContextBox
+    ) -> EventLoopFuture<Void> {
+        let context = contextBox.value
         guard let standardInput else {
             return context.eventLoop.makeSucceededFuture(())
         }
@@ -374,6 +377,7 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
             let end = min(offset + chunkSize, standardInput.count)
             let chunk = standardInput[offset..<end]
             writeFuture = writeFuture.flatMap {
+                let context = contextBox.value
                 var buffer = context.channel.allocator.buffer(capacity: chunk.count)
                 buffer.writeBytes(chunk)
                 return context.channel.writeAndFlush(
@@ -384,7 +388,7 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
         }
 
         return writeFuture.flatMap {
-            context.close(mode: .output)
+            contextBox.value.close(mode: .output)
         }
     }
 

@@ -63,7 +63,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
 
         let connectedExpectation = expectation(description: "connected")
         let outputExpectation = expectation(description: "output")
-        var events: [TerminalTransportEvent] = []
+        let events = TerminalTransportEventRecorder()
 
         transport.eventHandler = { (event: TerminalTransportEvent) in
             events.append(event)
@@ -83,12 +83,7 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         await transport.disconnect()
 
         XCTAssertFalse(
-            events.contains {
-                if case .trustedHostKey = $0 {
-                    return true
-                }
-                return false
-            }
+            events.containsTrustedHostKey()
         )
 
         let launchCommands = await sshSession.openedLaunchCommands()
@@ -649,6 +644,29 @@ private actor StubBootstrapSessionClient: TerminalRemoteDaemonSessionClient {
 
     func closedSessions() -> [String] {
         closedSessionValues
+    }
+}
+
+private final class TerminalTransportEventRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var events: [TerminalTransportEvent] = []
+
+    func append(_ event: TerminalTransportEvent) {
+        lock.lock()
+        events.append(event)
+        lock.unlock()
+    }
+
+    func containsTrustedHostKey() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+
+        return events.contains {
+            if case .trustedHostKey = $0 {
+                return true
+            }
+            return false
+        }
     }
 }
 
