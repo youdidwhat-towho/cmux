@@ -10,9 +10,10 @@
 )]
 
 use std::collections::HashMap;
+use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::Instant;
 
 use anyhow::{Context, Result, anyhow};
 use comeup_core::Model;
@@ -93,6 +94,15 @@ pub async fn serve_unix_socket_with_server(
 ) -> Result<()> {
     let socket_path = socket_path.as_ref();
     if socket_path.exists() {
+        let file_type = std::fs::symlink_metadata(socket_path)
+            .with_context(|| format!("inspect socket path {}", socket_path.display()))?
+            .file_type();
+        if !file_type.is_socket() {
+            return Err(anyhow!(
+                "refusing to remove non-socket path {}",
+                socket_path.display()
+            ));
+        }
         std::fs::remove_file(socket_path)
             .with_context(|| format!("remove stale socket {}", socket_path.display()))?;
     }
@@ -572,11 +582,24 @@ fn handle_client_msg(state: &mut DaemonState, client_id: ClientId, msg: ClientMs
         }
         ClientMsg::VisibleTerminals { terminals } => {
             let mut changed = Vec::new();
-            for visible in terminals {
+            state
+                .visible_terminals
+                .retain(|(visible_client_id, terminal_id), _| {
+                    if *visible_client_id == client_id {
+                        changed.push(*terminal_id);
+                        false
+                    } else {
+                        true
+                    }
+                });
+            for mut visible in terminals {
                 changed.push(visible.terminal_id);
-                state
-                    .visible_terminals
-                    .insert((client_id, visible.terminal_id), visible);
+                if visible.visible {
+                    visible.client_id = client_id;
+                    state
+                        .visible_terminals
+                        .insert((client_id, visible.terminal_id), visible);
+                }
             }
             changed.sort_unstable();
             changed.dedup();
@@ -625,15 +648,19 @@ fn apply_visible_resize_for_terminal(state: &mut DaemonState, terminal_id: Termi
 }
 
 fn remove_visible_client(state: &mut DaemonState, client_id: ClientId) {
-    let terminal_ids = state
-        .visible_terminals
-        .values()
-        .filter(|visible| visible.client_id == client_id)
-        .map(|visible| visible.terminal_id)
-        .collect::<Vec<_>>();
+    let mut terminal_ids = Vec::new();
     state
         .visible_terminals
-        .retain(|(visible_client_id, _), _| *visible_client_id != client_id);
+        .retain(|(visible_client_id, terminal_id), _| {
+            if *visible_client_id == client_id {
+                terminal_ids.push(*terminal_id);
+                false
+            } else {
+                true
+            }
+        });
+    terminal_ids.sort_unstable();
+    terminal_ids.dedup();
     for terminal_id in terminal_ids {
         apply_visible_resize_for_terminal(state, terminal_id);
     }
@@ -653,11 +680,15 @@ fn handle_command(state: &mut DaemonState, client_id: ClientId, id: u64, command
             }
             let terminal_id = state.model.focus().terminal_id;
             if !state.terminals.contains_key(&terminal_id) {
+                let terminal_size = state
+                    .model
+                    .terminal_size(terminal_id)
+                    .unwrap_or(state.opts.initial_viewport);
                 match PtyTerminal::spawn(
                     terminal_id,
                     state.opts.shell.clone(),
                     state.opts.cwd.clone(),
-                    state.opts.initial_viewport,
+                    terminal_size,
                     state.tx.clone(),
                 ) {
                     Ok(terminal) => {
@@ -709,9 +740,12 @@ fn broadcast(state: &mut DaemonState, msg: ServerMsg) {
 }
 
 fn monotonicish_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos() as u64)
+    static START: OnceLock<Instant> = OnceLock::new();
+    let elapsed = START.get_or_init(Instant::now).elapsed().as_nanos();
+    match u64::try_from(elapsed) {
+        Ok(value) => value,
+        Err(_) => u64::MAX,
+    }
 }
 
 struct PtyTerminal {

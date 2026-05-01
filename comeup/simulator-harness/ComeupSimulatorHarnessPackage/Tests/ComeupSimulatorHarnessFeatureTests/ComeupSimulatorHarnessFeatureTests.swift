@@ -51,7 +51,7 @@ func simulatorTextHarnessSyncsWithComeupDaemon() throws {
     try client.sendLine("HELLO 90 30")
     let welcome = try client.readLine(containing: "WELCOME client=")
     #expect(welcome.contains("terminal=1"))
-    #expect(welcome.contains("size=90x30") || welcome.contains("size=80x24"))
+    #expect(welcome.contains("size=90x30"))
 
     try client.sendLine("VISIBLE 1 66 18")
     #expect(try client.readLine(containing: "SIZE terminal=1 66x18") == "SIZE terminal=1 66x18")
@@ -157,10 +157,11 @@ private final class TextHarnessSocket {
         output.remove(from: .current, forMode: .default)
     }
 
-    func sendLine(_ line: String) throws {
+    func sendLine(_ line: String, timeout: TimeInterval = 5) throws {
         var bytes = Array(line.utf8)
         bytes.append(10)
         var offset = 0
+        let deadline = Date().addingTimeInterval(timeout)
         while offset < bytes.count {
             let written = bytes.withUnsafeBufferPointer { pointer in
                 output.write(pointer.baseAddress!.advanced(by: offset), maxLength: bytes.count - offset)
@@ -169,6 +170,9 @@ private final class TextHarnessSocket {
                 throw Error.writeFailed(output.streamError?.localizedDescription ?? "unknown error")
             }
             if written == 0 {
+                if Date() >= deadline {
+                    throw Error.timedOut("writing line")
+                }
                 runLoopTick()
             }
             offset += written

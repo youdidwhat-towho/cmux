@@ -167,6 +167,12 @@ impl Args {
                 _ => bail!("unknown argument: {arg}"),
             }
         }
+        if cols == 0 {
+            bail!("--cols must be greater than 0");
+        }
+        if rows == 0 {
+            bail!("--rows must be greater than 0");
+        }
 
         Ok(Self {
             socket: socket.ok_or_else(|| anyhow!("--socket is required"))?,

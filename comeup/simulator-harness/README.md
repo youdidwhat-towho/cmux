@@ -29,7 +29,7 @@ These rules files are **starting points** - feel free to:
 
 ## Project Architecture
 
-```
+```text
 ComeupSimulatorHarness/
 ├── ComeupSimulatorHarness.xcworkspace/              # Open this file in Xcode
 ├── ComeupSimulatorHarness.xcodeproj/                # App shell project

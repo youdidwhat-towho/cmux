@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 use comeup_daemon::{ComeupServer, ServerOptions};
@@ -202,8 +203,15 @@ async fn visible_terminal_update_replaces_client_snapshot() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn new_workspace_pty_starts_at_model_size() {
     let dir = tempfile::tempdir().expect("tempdir");
+    let shell = dir.path().join("size-shell.sh");
+    std::fs::write(&shell, "#!/bin/sh\nstty size\nexec cat\n").expect("write shell script");
+    let mut permissions = std::fs::metadata(&shell)
+        .expect("shell script metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&shell, permissions).expect("make shell script executable");
     let server = ComeupServer::start(ServerOptions {
-        shell: "/bin/sh -lc 'stty size; cat'".to_string(),
+        shell: shell.display().to_string(),
         cwd: Some(dir.path().to_path_buf()),
         initial_viewport: Viewport { cols: 80, rows: 24 },
     })

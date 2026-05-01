@@ -9,6 +9,7 @@
     )
 )]
 
+use std::collections::{BTreeSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -54,28 +55,56 @@ async fn main() -> Result<()> {
     let mut stdin = BufReader::new(tokio::io::stdin()).lines();
     let mut next_command_id = 1_u64;
     let mut next_input_seq = 1_u64;
+    let mut pending_focus_command_ids = BTreeSet::new();
+    let mut queued_focus_lines = VecDeque::<String>::new();
 
     loop {
+        if pending_focus_command_ids.is_empty()
+            && let Some(line) = queued_focus_lines.pop_front()
+        {
+            let should_quit = handle_command_line(
+                &mut client,
+                &line,
+                &mut focus,
+                &mut next_command_id,
+                &mut next_input_seq,
+            )
+            .await?
+            .apply(&mut pending_focus_command_ids);
+            if should_quit {
+                break;
+            }
+            continue;
+        }
+
         tokio::select! {
+            biased;
+            msg = client.recv() => {
+                let Some(msg) = msg? else {
+                    break;
+                };
+                if let Some(command_id) = handle_server_msg(msg, &mut focus) {
+                    pending_focus_command_ids.remove(&command_id);
+                }
+            }
             line = stdin.next_line() => {
                 let Some(line) = line? else {
                     break;
                 };
+                if !pending_focus_command_ids.is_empty() && command_needs_current_focus(&line) {
+                    queued_focus_lines.push_back(line);
+                    continue;
+                }
                 if handle_command_line(
                     &mut client,
                     &line,
                     &mut focus,
                     &mut next_command_id,
                     &mut next_input_seq,
-                ).await? {
+                ).await?
+                .apply(&mut pending_focus_command_ids) {
                     break;
                 }
-            }
-            msg = client.recv() => {
-                let Some(msg) = msg? else {
-                    break;
-                };
-                handle_server_msg(msg, &mut focus);
             }
         }
     }
@@ -89,11 +118,11 @@ async fn handle_command_line(
     focus: &mut Focus,
     next_command_id: &mut u64,
     next_input_seq: &mut u64,
-) -> Result<bool> {
+) -> Result<CommandLineOutcome> {
     let line = line.trim_end_matches(['\r', '\n']);
     if line == "quit" {
         client.send(&ClientMsg::Detach).await?;
-        return Ok(true);
+        return Ok(CommandLineOutcome::Quit);
     }
     if let Some(title) = line.strip_prefix("new-workspace ") {
         let id = *next_command_id;
@@ -106,7 +135,7 @@ async fn handle_command_line(
                 },
             })
             .await?;
-        return Ok(false);
+        return Ok(CommandLineOutcome::WaitForCommandAck(id));
     }
     if let Some(payload) = line.strip_prefix("send ") {
         let input_seq = *next_input_seq;
@@ -118,7 +147,7 @@ async fn handle_command_line(
                 data: format!("{payload}\n").into_bytes(),
             })
             .await?;
-        return Ok(false);
+        return Ok(CommandLineOutcome::Continue);
     }
     if let Some(rest) = line.strip_prefix("visible ") {
         let (cols, rows) = parse_size(rest)?;
@@ -133,7 +162,7 @@ async fn handle_command_line(
                 }],
             })
             .await?;
-        return Ok(false);
+        return Ok(CommandLineOutcome::Continue);
     }
     if let Some(id) = line.strip_prefix("ping ") {
         let ping_id = id.parse::<u64>()?;
@@ -143,12 +172,36 @@ async fn handle_command_line(
                 client_sent_monotonic_ns: 0,
             })
             .await?;
-        return Ok(false);
+        return Ok(CommandLineOutcome::Continue);
     }
     bail!("unknown cmx command: {line}");
 }
 
-fn handle_server_msg(msg: ServerMsg, focus: &mut Focus) {
+enum CommandLineOutcome {
+    Continue,
+    Quit,
+    WaitForCommandAck(u64),
+}
+
+impl CommandLineOutcome {
+    fn apply(self, pending_focus_command_ids: &mut BTreeSet<u64>) -> bool {
+        match self {
+            Self::Continue => false,
+            Self::Quit => true,
+            Self::WaitForCommandAck(id) => {
+                pending_focus_command_ids.insert(id);
+                false
+            }
+        }
+    }
+}
+
+fn command_needs_current_focus(line: &str) -> bool {
+    let line = line.trim_start();
+    line.starts_with("send ") || line.starts_with("visible ")
+}
+
+fn handle_server_msg(msg: ServerMsg, focus: &mut Focus) -> Option<u64> {
     match msg {
         ServerMsg::Welcome { .. } => {}
         ServerMsg::Delta { delta } => match delta {
@@ -182,6 +235,8 @@ fn handle_server_msg(msg: ServerMsg, focus: &mut Focus) {
         }
         ServerMsg::CommandAck { id, seq } => {
             println!("ACK id={id} seq={seq}");
+            flush_stdout();
+            return Some(id);
         }
         ServerMsg::Pong { ping_id, .. } => {
             println!("PONG id={ping_id}");
@@ -194,6 +249,7 @@ fn handle_server_msg(msg: ServerMsg, focus: &mut Focus) {
         }
     }
     flush_stdout();
+    None
 }
 
 fn parse_size(rest: &str) -> Result<(u16, u16)> {
@@ -206,6 +262,9 @@ fn parse_size(rest: &str) -> Result<(u16, u16)> {
         .next()
         .ok_or_else(|| anyhow!("missing rows"))?
         .parse::<u16>()?;
+    if cols == 0 || rows == 0 {
+        bail!("terminal dimensions must be greater than 0");
+    }
     Ok((cols, rows))
 }
 
@@ -246,6 +305,12 @@ impl Args {
                 }
                 _ => bail!("unknown argument: {arg}"),
             }
+        }
+        if cols == 0 {
+            bail!("--cols must be greater than 0");
+        }
+        if rows == 0 {
+            bail!("--rows must be greater than 0");
         }
 
         Ok(Self {
