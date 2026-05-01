@@ -5200,6 +5200,69 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(defaults.integer(forKey: FileExplorerZoomSettings.defaultsKey), fileExplorerState.zoomLevel)
     }
 
+    func testCmdPlusFromFileTreeZoomsFileExplorerInsteadOfSelectedBrowser() {
+        guard let appDelegate = AppDelegate.shared else {
+            XCTFail("Expected AppDelegate.shared")
+            return
+        }
+
+        let defaults = UserDefaults.standard
+        let previousZoomLevel = defaults.object(forKey: FileExplorerZoomSettings.defaultsKey)
+        defer {
+            if let previousZoomLevel {
+                defaults.set(previousZoomLevel, forKey: FileExplorerZoomSettings.defaultsKey)
+            } else {
+                defaults.removeObject(forKey: FileExplorerZoomSettings.defaultsKey)
+            }
+        }
+        defaults.removeObject(forKey: FileExplorerZoomSettings.defaultsKey)
+
+        let windowId = appDelegate.createMainWindow()
+        defer { closeWindow(withId: windowId) }
+
+        guard let window = window(withId: windowId),
+              let contentView = window.contentView,
+              let manager = appDelegate.tabManagerFor(windowId: windowId),
+              let workspace = manager.selectedWorkspace,
+              manager.openBrowser(inWorkspace: workspace.id) != nil,
+              let browserPanel = manager.focusedBrowserPanel,
+              let fileExplorerState = appDelegate.fileExplorerState else {
+            XCTFail("Expected test window with focused browser and file explorer state")
+            return
+        }
+
+        let initialBrowserZoom = browserPanel.currentPageZoomFactor()
+        fileExplorerState.resetZoom()
+
+        let sidebarResponder = FocusableTestView(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
+        contentView.addSubview(sidebarResponder)
+        defer { sidebarResponder.removeFromSuperview() }
+
+        XCTAssertTrue(window.makeFirstResponder(sidebarResponder), "Expected right sidebar responder to take focus")
+        fileExplorerState.mode = .files
+        fileExplorerState.setVisible(true)
+        appDelegate.noteRightSidebarKeyboardFocusIntent(mode: .files, in: window)
+
+        guard let event = makeKeyDownEvent(
+            key: "+",
+            modifiers: [.command, .shift],
+            keyCode: 24,
+            windowNumber: window.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd++ event")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+
+        XCTAssertEqual(fileExplorerState.zoomLevel, FileExplorerZoomSettings.defaultZoomLevel + 1)
+        XCTAssertEqual(browserPanel.currentPageZoomFactor(), initialBrowserZoom)
+    }
+
     func testFindShortcutFromTerminalOpensTerminalFind() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
