@@ -597,8 +597,7 @@ fn handle_client_msg(state: &mut DaemonState, client_id: ClientId, msg: ClientMs
             },
         ),
         ClientMsg::Detach => {
-            state.clients.remove(&client_id);
-            remove_visible_client(state, client_id);
+            remove_client(state, client_id);
         }
     }
 }
@@ -638,6 +637,11 @@ fn remove_visible_client(state: &mut DaemonState, client_id: ClientId) {
     for terminal_id in terminal_ids {
         apply_visible_resize_for_terminal(state, terminal_id);
     }
+}
+
+fn remove_client(state: &mut DaemonState, client_id: ClientId) {
+    state.clients.remove(&client_id);
+    remove_visible_client(state, client_id);
 }
 
 fn handle_command(state: &mut DaemonState, client_id: ClientId, id: u64, command: Command) {
@@ -684,10 +688,11 @@ fn handle_command(state: &mut DaemonState, client_id: ClientId, id: u64, command
 
 fn send_to_client(state: &mut DaemonState, client_id: ClientId, msg: ServerMsg) {
     let Some(tx) = state.clients.get(&client_id) else {
+        remove_visible_client(state, client_id);
         return;
     };
     if tx.send(msg).is_err() {
-        state.clients.remove(&client_id);
+        remove_client(state, client_id);
     }
 }
 
@@ -699,7 +704,7 @@ fn broadcast(state: &mut DaemonState, msg: ServerMsg) {
         }
     }
     for client_id in closed {
-        state.clients.remove(&client_id);
+        remove_client(state, client_id);
     }
 }
 
