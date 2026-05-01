@@ -281,6 +281,16 @@ fn parse_text_client_msg(client_id: ClientId, line: &str) -> Result<ClientMsg> {
             data: format!("{text}\n").into_bytes(),
         });
     }
+    if let Some(rest) = line.strip_prefix("SEND_HEX ") {
+        let Some((terminal_id, hex)) = rest.split_once(' ') else {
+            return Err(anyhow!("SEND_HEX requires terminal id and hex data"));
+        };
+        return Ok(ClientMsg::TerminalInput {
+            terminal_id: terminal_id.parse()?,
+            input_seq: 1,
+            data: decode_hex_bytes(hex)?,
+        });
+    }
     if let Some(ping_id) = line.strip_prefix("PING ") {
         return Ok(ClientMsg::Ping {
             ping_id: ping_id.parse()?,
@@ -288,6 +298,47 @@ fn parse_text_client_msg(client_id: ClientId, line: &str) -> Result<ClientMsg> {
         });
     }
     Err(anyhow!("unknown text harness command: {line}"))
+}
+
+fn decode_hex_bytes(hex: &str) -> Result<Vec<u8>> {
+    let bytes = hex.as_bytes();
+    if !bytes.len().is_multiple_of(2) {
+        return Err(anyhow!("hex data length must be even"));
+    }
+
+    let mut decoded = Vec::with_capacity(bytes.len() / 2);
+    for pair in bytes.chunks_exact(2) {
+        decoded.push((decode_hex_nibble(pair[0])? << 4) | decode_hex_nibble(pair[1])?);
+    }
+    Ok(decoded)
+}
+
+fn decode_hex_nibble(byte: u8) -> Result<u8> {
+    match byte {
+        b'0'..=b'9' => Ok(byte - b'0'),
+        b'a'..=b'f' => Ok(byte - b'a' + 10),
+        b'A'..=b'F' => Ok(byte - b'A' + 10),
+        _ => Err(anyhow!("invalid hex byte")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_harness_send_hex_preserves_terminal_bytes() {
+        let msg = parse_text_client_msg(7, "SEND_HEX 3 53494d5f53454e54494e454c0d").unwrap();
+        match msg {
+            ClientMsg::TerminalInput {
+                terminal_id, data, ..
+            } => {
+                assert_eq!(terminal_id, 3);
+                assert_eq!(data, b"SIM_SENTINEL\r");
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
 }
 
 fn parse_text_viewport(rest: &str) -> Result<Viewport> {

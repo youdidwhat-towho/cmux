@@ -683,3 +683,63 @@ public struct GhosttyTerminalRepresentable: UIViewRepresentable {
         }
     }
 }
+
+public struct LiveGhosttyTerminalRepresentable: UIViewRepresentable {
+    @ObservedObject var store: ComeupLiveTerminalStore
+    let initialSize: CmuxTerminalSize
+
+    public init(store: ComeupLiveTerminalStore, initialSize: CmuxTerminalSize) {
+        self.store = store
+        self.initialSize = initialSize
+    }
+
+    @MainActor
+    public func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    @MainActor
+    public func makeUIView(context: Context) -> UIView {
+        do {
+            let surfaceView = GhosttyTerminalSurfaceView(
+                runtime: try GhosttyRuntime.shared(),
+                delegate: store
+            )
+            surfaceView.applyViewSize(cols: initialSize.cols, rows: initialSize.rows)
+            return surfaceView
+        } catch {
+            let fallback = UILabel()
+            fallback.backgroundColor = .black
+            fallback.textColor = .white
+            fallback.numberOfLines = 0
+            fallback.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
+            fallback.text = String(
+                localized: "ios.terminal.ghostty.renderFailed",
+                defaultValue: "libghostty failed to start"
+            )
+            fallback.isAccessibilityElement = true
+            fallback.accessibilityIdentifier = "terminal.surface"
+            fallback.accessibilityValue = "libghostty failed: \(error.localizedDescription)"
+            return fallback
+        }
+    }
+
+    @MainActor
+    public func updateUIView(_ view: UIView, context: Context) {
+        guard let surfaceView = view as? GhosttyTerminalSurfaceView else { return }
+        if context.coordinator.lastAppliedSize != store.size {
+            context.coordinator.lastAppliedSize = store.size
+            surfaceView.applyViewSize(cols: store.size.cols, rows: store.size.rows)
+        }
+        for chunk in store.outputChunks where chunk.id > context.coordinator.lastAppliedOutputID {
+            surfaceView.processOutput(chunk.data)
+            context.coordinator.lastAppliedOutputID = chunk.id
+        }
+    }
+
+    @MainActor
+    public final class Coordinator {
+        var lastAppliedOutputID = 0
+        var lastAppliedSize: CmuxTerminalSize?
+    }
+}

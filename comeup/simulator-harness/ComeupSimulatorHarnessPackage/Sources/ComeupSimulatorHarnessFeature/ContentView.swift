@@ -4,13 +4,18 @@ public struct ContentView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var selectedWorkspaceID: String?
     @State private var selectedTerminalID: String?
+    @StateObject private var liveTerminalStore: ComeupLiveTerminalStore
 
     private let snapshot: CmuxMobileHomeSnapshot
 
-    public init(snapshot: CmuxMobileHomeSnapshot = .fixture) {
+    public init(
+        snapshot: CmuxMobileHomeSnapshot = .fixture,
+        liveTerminalStore: ComeupLiveTerminalStore = ComeupLiveTerminalStore()
+    ) {
         self.snapshot = snapshot
         _selectedWorkspaceID = State(initialValue: snapshot.workspaces.first?.id)
         _selectedTerminalID = State(initialValue: snapshot.workspaces.first?.terminalTree.first?.terminal.id)
+        _liveTerminalStore = StateObject(wrappedValue: liveTerminalStore)
     }
 
     public var body: some View {
@@ -20,6 +25,7 @@ public struct ContentView: View {
                     snapshot: snapshot,
                     selectedWorkspaceID: $selectedWorkspaceID,
                     selectedTerminalID: $selectedTerminalID,
+                    liveTerminalStore: liveTerminalStore,
                     compactNavigation: false
                 )
                 .navigationSplitViewColumnWidth(min: 320, ideal: 380, max: 460)
@@ -27,7 +33,8 @@ public struct ContentView: View {
                 WorkspaceDetailView(
                     snapshot: snapshot,
                     workspaceID: selectedWorkspaceID,
-                    selectedTerminalID: $selectedTerminalID
+                    selectedTerminalID: $selectedTerminalID,
+                    liveTerminalStore: liveTerminalStore
                 )
             }
         } else {
@@ -36,6 +43,7 @@ public struct ContentView: View {
                     snapshot: snapshot,
                     selectedWorkspaceID: $selectedWorkspaceID,
                     selectedTerminalID: $selectedTerminalID,
+                    liveTerminalStore: liveTerminalStore,
                     compactNavigation: true
                 )
             }
@@ -47,6 +55,7 @@ private struct WorkspaceHomeView: View {
     let snapshot: CmuxMobileHomeSnapshot
     @Binding var selectedWorkspaceID: String?
     @Binding var selectedTerminalID: String?
+    @ObservedObject var liveTerminalStore: ComeupLiveTerminalStore
     let compactNavigation: Bool
 
     var body: some View {
@@ -64,7 +73,8 @@ private struct WorkspaceHomeView: View {
                             WorkspaceDetailView(
                                 snapshot: snapshot,
                                 workspaceID: workspace.id,
-                                selectedTerminalID: $selectedTerminalID
+                                selectedTerminalID: $selectedTerminalID,
+                                liveTerminalStore: liveTerminalStore
                             )
                             .onAppear {
                                 selectedWorkspaceID = workspace.id
@@ -383,6 +393,7 @@ private struct WorkspaceDetailView: View {
     let snapshot: CmuxMobileHomeSnapshot
     let workspaceID: String?
     @Binding var selectedTerminalID: String?
+    @ObservedObject var liveTerminalStore: ComeupLiveTerminalStore
 
     private var workspace: CmuxMobileWorkspace? {
         snapshot.workspace(id: workspaceID)
@@ -400,7 +411,10 @@ private struct WorkspaceDetailView: View {
                     selectedTerminalID: $selectedTerminalID
                 )
                 if let selectedTerminal {
-                    TerminalScreen(terminal: selectedTerminal)
+                    TerminalScreen(
+                        terminal: selectedTerminal,
+                        liveTerminalStore: liveTerminalStore
+                    )
                 } else {
                     EmptyTerminalState()
                 }
@@ -506,6 +520,11 @@ private struct EmptyStateView: View {
 
 private struct TerminalScreen: View {
     let terminal: CmuxMobileTerminal
+    @ObservedObject var liveTerminalStore: ComeupLiveTerminalStore
+
+    private var displaySize: CmuxTerminalSize {
+        liveTerminalStore.isEnabled ? liveTerminalStore.size : terminal.size
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -518,7 +537,7 @@ private struct TerminalScreen: View {
                     Text(String(localized: "ios.terminal.renderer.libghostty", defaultValue: "libghostty"))
                         .font(.caption.monospaced())
                         .foregroundStyle(.secondary)
-                    Text("\(terminal.size.cols)x\(terminal.size.rows)")
+                    Text("\(displaySize.cols)x\(displaySize.rows)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -529,13 +548,29 @@ private struct TerminalScreen: View {
             .padding(.vertical, 8)
             .background(Color(.systemBackground))
 
-            GhosttyTerminalRepresentable(terminal: terminal)
+            if liveTerminalStore.isEnabled {
+                LiveGhosttyTerminalRepresentable(
+                    store: liveTerminalStore,
+                    initialSize: terminal.size
+                )
                 .background(Color.black)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(String(localized: "ios.terminal.surface", defaultValue: "Terminal"))
-                .accessibilityValue(terminal.rows.joined(separator: "\n"))
+                .accessibilityValue(liveTerminalStore.accessibilityText)
                 .accessibilityIdentifier("terminal.surface")
+                .onAppear {
+                    liveTerminalStore.connectIfNeeded()
+                }
+            } else {
+                GhosttyTerminalRepresentable(terminal: terminal)
+                    .background(Color.black)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(String(localized: "ios.terminal.surface", defaultValue: "Terminal"))
+                    .accessibilityValue(terminal.rows.joined(separator: "\n"))
+                    .accessibilityIdentifier("terminal.surface")
+            }
         }
         .background(Color.black)
         .accessibilityIdentifier("terminal.screen.\(terminal.id)")

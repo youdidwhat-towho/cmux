@@ -24,6 +24,7 @@ let package = Package(
                 .linkedFramework("CoreGraphics"),
                 .linkedFramework("CoreText"),
                 .linkedFramework("Metal"),
+                .linkedFramework("Network"),
                 .linkedFramework("QuartzCore"),
             ]
         ),

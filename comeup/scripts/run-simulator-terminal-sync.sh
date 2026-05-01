@@ -112,14 +112,18 @@ wait_for_tcp "$PORT"
   --socket "$SOCKET" \
   --cols 120 \
   --rows 40 \
-  --send-after "SIZE terminal=1 66x18" "send $CMX_SENTINEL" \
+  --send-after "$SIM_SENTINEL" "send $CMX_SENTINEL" \
   >"$CMX_LOG" 2>&1 &
 CMX_PID=$!
 
 wait_for_log "$CMX_LOG" "COMEUP_TUI_READY client=1 terminal=1 size=120x40"
 
 WORKSPACE="$ROOT/simulator-harness/ComeupSimulatorHarness.xcworkspace"
-COMEUP_TEXT_PORT="$PORT" TEST_RUNNER_COMEUP_TEXT_PORT="$PORT" xcodebuildmcp simulator test \
+COMEUP_TEXT_PORT="$PORT" \
+TEST_RUNNER_COMEUP_TEXT_PORT="$PORT" \
+COMEUP_SEND_ON_CONNECT="$SIM_SENTINEL" \
+TEST_RUNNER_COMEUP_SEND_ON_CONNECT="$SIM_SENTINEL" \
+xcodebuildmcp simulator test \
   --workspace-path "$WORKSPACE" \
   --scheme ComeupSimulatorHarness \
   --simulator-name "$SIMULATOR_NAME" \
@@ -129,9 +133,9 @@ COMEUP_TEXT_PORT="$PORT" TEST_RUNNER_COMEUP_TEXT_PORT="$PORT" xcodebuildmcp simu
   --output text
 
 wait_for_log "$CMX_LOG" "SIZE terminal=1 66x18"
-wait_for_log "$CMX_LOG" "$CMX_SENTINEL"
 wait_for_log "$CMX_LOG" "WORKSPACE id=2 title=Sim Build"
 wait_for_log "$CMX_LOG" "SIZE terminal=2 66x18"
 wait_for_log "$CMX_LOG" "$SIM_SENTINEL"
+wait_for_log "$CMX_LOG" "$CMX_SENTINEL"
 
 printf 'comeup simulator terminal sync passed\n'
