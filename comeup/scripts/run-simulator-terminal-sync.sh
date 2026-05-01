@@ -119,7 +119,7 @@ CMX_PID=$!
 wait_for_log "$CMX_LOG" "COMEUP_TUI_READY client=1 terminal=1 size=120x40"
 
 WORKSPACE="$ROOT/simulator-harness/ComeupSimulatorHarness.xcworkspace"
-COMEUP_TEXT_PORT="$PORT" xcodebuildmcp simulator test \
+COMEUP_TEXT_PORT="$PORT" TEST_RUNNER_COMEUP_TEXT_PORT="$PORT" xcodebuildmcp simulator test \
   --workspace-path "$WORKSPACE" \
   --scheme ComeupSimulatorHarness \
   --simulator-name "$SIMULATOR_NAME" \

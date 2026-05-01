@@ -10,18 +10,17 @@ func mobileHomeFixtureContainsAuthDiscoveryAndTerminalTree() throws {
     #expect(snapshot.nodes.contains { $0.status == .online && $0.route.hasPrefix("iroh://") })
     #expect(snapshot.nodes.contains { $0.route.hasPrefix("rivet://") })
 
-    let workspace = try #require(snapshot.workspaces.first)
+    let workspace = try #require(snapshot.workspace(id: "workspace-ios-port"))
     #expect(workspace.title == "iOS port")
     #expect(workspace.terminalTree.map(\.terminal.id).contains("terminal-daemon"))
-    #expect(workspace.terminal(id: "terminal-shell").size == CmuxTerminalSize(cols: 66, rows: 18))
+    #expect(workspace.terminal(id: "terminal-shell")?.size == CmuxTerminalSize(cols: 66, rows: 18))
 }
 
 @MainActor
 @Test
 func fullGhosttySurfaceRendersOutputAndProducesInput() throws {
-    let terminal = CmuxMobileHomeSnapshot.fixture
-        .workspace(id: "workspace-ios-port")
-        .terminal(id: "terminal-shell")
+    let workspace = try #require(CmuxMobileHomeSnapshot.fixture.workspace(id: "workspace-ios-port"))
+    let terminal = try #require(workspace.terminal(id: "terminal-shell"))
     let delegate = GhosttySurfaceTestDelegate()
     let surfaceView = GhosttyTerminalSurfaceView(
         runtime: try GhosttyRuntime.shared(),
@@ -41,7 +40,10 @@ func fullGhosttySurfaceRendersOutputAndProducesInput() throws {
 
 @Test
 func simulatorTextHarnessSyncsWithComeupDaemon() throws {
-    let portText = ProcessInfo.processInfo.environment["COMEUP_TEXT_PORT"] ?? "17891"
+    let environment = ProcessInfo.processInfo.environment
+    guard let portText = environment["COMEUP_TEXT_PORT"] ?? environment["TEST_RUNNER_COMEUP_TEXT_PORT"] else {
+        return
+    }
     let port = try #require(Int(portText))
     let client = try TextHarnessSocket(host: "127.0.0.1", port: port)
     defer { client.close() }

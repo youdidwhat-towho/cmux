@@ -384,25 +384,33 @@ private struct WorkspaceDetailView: View {
     let workspaceID: String?
     @Binding var selectedTerminalID: String?
 
-    private var workspace: CmuxMobileWorkspace {
+    private var workspace: CmuxMobileWorkspace? {
         snapshot.workspace(id: workspaceID)
     }
 
-    private var selectedTerminal: CmuxMobileTerminal {
-        workspace.terminal(id: selectedTerminalID)
+    private var selectedTerminal: CmuxMobileTerminal? {
+        workspace?.terminal(id: selectedTerminalID)
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            TerminalPicker(
-                workspace: workspace,
-                selectedTerminalID: $selectedTerminalID
-            )
-            TerminalScreen(terminal: selectedTerminal)
+        if let workspace {
+            VStack(spacing: 0) {
+                TerminalPicker(
+                    workspace: workspace,
+                    selectedTerminalID: $selectedTerminalID
+                )
+                if let selectedTerminal {
+                    TerminalScreen(terminal: selectedTerminal)
+                } else {
+                    EmptyTerminalState()
+                }
+            }
+            .navigationTitle(workspace.title)
+            .navigationBarTitleDisplayMode(.inline)
+            .accessibilityIdentifier("workspace.detail.\(workspace.id)")
+        } else {
+            EmptyWorkspaceState()
         }
-        .navigationTitle(workspace.title)
-        .navigationBarTitleDisplayMode(.inline)
-        .accessibilityIdentifier("workspace.detail.\(workspace.id)")
     }
 }
 
@@ -444,9 +452,55 @@ private struct TerminalPicker: View {
 
     private var selectedTreeLabel: String {
         guard let row = workspace.terminalTree.first(where: { $0.terminal.id == selectedTerminalID }) else {
-            return workspace.terminalTree[0].terminal.title
+            return workspace.terminalTree.first?.terminal.title
+                ?? String(localized: "ios.terminal.empty.title", defaultValue: "No terminals")
         }
         return "\(row.space.title) / \(row.pane.title) / \(row.terminal.title)"
+    }
+}
+
+private struct EmptyWorkspaceState: View {
+    var body: some View {
+        EmptyStateView(
+            title: String(localized: "ios.workspace.empty.title", defaultValue: "No workspace selected"),
+            description: String(localized: "ios.workspace.empty.description", defaultValue: "Create or select a workspace to show its terminals."),
+            systemImage: "bubble.left.and.bubble.right"
+        )
+        .accessibilityIdentifier("workspace.empty")
+    }
+}
+
+private struct EmptyTerminalState: View {
+    var body: some View {
+        EmptyStateView(
+            title: String(localized: "ios.terminal.empty.title", defaultValue: "No terminals"),
+            description: String(localized: "ios.terminal.empty.description", defaultValue: "This workspace has no active terminal yet."),
+            systemImage: "terminal"
+        )
+        .accessibilityIdentifier("terminal.empty")
+    }
+}
+
+private struct EmptyStateView: View {
+    let title: String
+    let description: String
+    let systemImage: String
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+            Text(title)
+                .font(.headline)
+            Text(description)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.systemBackground))
     }
 }
 

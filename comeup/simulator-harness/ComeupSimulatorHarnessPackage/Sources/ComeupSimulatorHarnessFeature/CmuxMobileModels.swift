@@ -136,11 +136,11 @@ public struct CmuxMobileHomeSnapshot: Equatable, Sendable {
         ]
     )
 
-    public func workspace(id: String?) -> CmuxMobileWorkspace {
+    public func workspace(id: String?) -> CmuxMobileWorkspace? {
         if let id, let workspace = workspaces.first(where: { $0.id == id }) {
             return workspace
         }
-        return workspaces[0]
+        return workspaces.first
     }
 
     public func node(id: String) -> CmuxHiveNode? {
@@ -223,11 +223,11 @@ public struct CmuxMobileWorkspace: Identifiable, Equatable, Sendable {
         }
     }
 
-    public func terminal(id: String?) -> CmuxMobileTerminal {
+    public func terminal(id: String?) -> CmuxMobileTerminal? {
         if let id, let terminal = terminalTree.map(\.terminal).first(where: { $0.id == id }) {
             return terminal
         }
-        return terminalTree[0].terminal
+        return terminalTree.first?.terminal
     }
 
     public var terminalCount: Int {
