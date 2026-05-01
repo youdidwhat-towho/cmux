@@ -7,6 +7,13 @@ public struct IrohPingResult: Equatable, Sendable {
     public let remoteID: String
 }
 
+public struct IrohTerminalResult: Equatable, Sendable {
+    public let rttMS: Int64
+    public let output: String
+    public let exitCode: Int?
+    public let remoteID: String
+}
+
 public enum IrohDemoError: LocalizedError, Sendable {
     case missingResponse
     case invalidResponse
@@ -67,6 +74,48 @@ public struct IrohDemoClient: Sendable {
             }
         }.value
     }
+
+    public func terminalCommand(ticket: String, command: String) async -> Result<IrohTerminalResult, IrohDemoError> {
+        await Task.detached(priority: .userInitiated) {
+            guard let pointer = iroh_demo_terminal_command(ticket, command) else {
+                return .failure(.missingResponse)
+            }
+            defer {
+                iroh_demo_free(pointer)
+            }
+
+            let response = String(cString: pointer)
+            guard let data = response.data(using: .utf8) else {
+                return .failure(.invalidResponse)
+            }
+
+            do {
+                let payload = try JSONDecoder().decode(IrohTerminalPayload.self, from: data)
+                if payload.ok {
+                    return .success(
+                        IrohTerminalResult(
+                            rttMS: payload.rttMS ?? 0,
+                            output: payload.output ?? "",
+                            exitCode: payload.exitCode,
+                            remoteID: payload.remoteID ?? ""
+                        )
+                    )
+                }
+
+                return .failure(
+                    .requestFailed(
+                        payload.error ?? String(
+                            localized: "iroh.demo.error.unknown",
+                            defaultValue: "Unknown iroh error",
+                            bundle: .module
+                        )
+                    )
+                )
+            } catch {
+                return .failure(.invalidResponse)
+            }
+        }.value
+    }
 }
 
 private struct IrohPingPayload: Decodable {
@@ -80,6 +129,24 @@ private struct IrohPingPayload: Decodable {
         case ok
         case rttMS = "rtt_ms"
         case reply
+        case remoteID = "remote_id"
+        case error
+    }
+}
+
+private struct IrohTerminalPayload: Decodable {
+    let ok: Bool
+    let rttMS: Int64?
+    let output: String?
+    let exitCode: Int?
+    let remoteID: String?
+    let error: String?
+
+    enum CodingKeys: String, CodingKey {
+        case ok
+        case rttMS = "rtt_ms"
+        case output
+        case exitCode = "exit_code"
         case remoteID = "remote_id"
         case error
     }

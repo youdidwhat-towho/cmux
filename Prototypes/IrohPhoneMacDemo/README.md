@@ -2,7 +2,7 @@
 
 This prototype connects an iPhone app to a Mac terminal app with iroh.
 
-The Mac runs a small Ratatui TUI that starts an iroh endpoint and prints an `EndpointTicket`. The iPhone app pastes that ticket and sends a request over a custom iroh ALPN. The Mac replies on the same QUIC stream and logs the request.
+The Mac runs a small Ratatui TUI that starts an iroh endpoint and prints an `EndpointTicket`. The iPhone app pastes that ticket and sends typed requests over a custom iroh ALPN. The Mac replies on the same QUIC stream, logs the request, and can run a command inside a Mac pseudoterminal.
 
 ## Build the iOS Rust wrapper
 
@@ -28,4 +28,4 @@ Press `c` to copy the ticket shown in the TUI. Press `q` to quit.
 
 Open `iOS/IrohPhoneDemo.xcworkspace`, or build with XcodeBuildMCP after the XCFramework exists. Paste the Mac ticket into the app and tap `Ping Mac`.
 
-The app returns the Mac response and round-trip time. The TUI logs the iPhone request.
+The app shows ping latency, PTY command latency, and the Mac pseudoterminal output. The TUI logs the iPhone request.

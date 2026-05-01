@@ -4,12 +4,17 @@ import UIKit
 public struct ContentView: View {
     @State private var ticket = ""
     @State private var message: String
+    @State private var terminalCommand: String
     @State private var status: PingStatus = .idle
+    @State private var terminalStatus: TerminalStatus = .idle
+    @State private var lastPingLatencyMS: Int64?
+    @State private var lastTerminalLatencyMS: Int64?
 
     private let client = IrohDemoClient()
 
     public init() {
         _message = State(initialValue: localized("iroh.demo.defaultMessage", "Hello from iPhone"))
+        _terminalCommand = State(initialValue: localized("iroh.demo.terminal.defaultCommand", "pwd && uname -a"))
     }
 
     public var body: some View {
@@ -56,12 +61,68 @@ public struct ContentView: View {
                 }
 
                 Section {
+                    latencyView
+                } header: {
+                    Text(localized("iroh.demo.latency.header", "Latency"))
+                }
+
+                Section {
+                    TextField(
+                        localized("iroh.demo.terminal.placeholder", "Command"),
+                        text: $terminalCommand,
+                        axis: .vertical
+                    )
+                    .lineLimit(2...4)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .font(.system(.body, design: .monospaced))
+                    .accessibilityLabel(localized("iroh.demo.terminal.accessibility", "PTY command"))
+
+                    Button {
+                        runTerminal()
+                    } label: {
+                        Label(localized("iroh.demo.terminal.run", "Run PTY"), systemImage: "terminal")
+                    }
+                    .disabled(
+                        ticket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || terminalCommand.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || terminalStatus.isSending
+                    )
+
+                    terminalStatusView
+                } header: {
+                    Text(localized("iroh.demo.terminal.header", "Mac PTY"))
+                }
+
+                Section {
                     statusView
                 } header: {
                     Text(localized("iroh.demo.status.header", "Status"))
                 }
             }
             .navigationTitle(localized("iroh.demo.title", "Iroh Link"))
+        }
+    }
+
+    @ViewBuilder
+    private var latencyView: some View {
+        if lastPingLatencyMS == nil, lastTerminalLatencyMS == nil {
+            Label(localized("iroh.demo.latency.empty", "No latency sample yet"), systemImage: "speedometer")
+                .foregroundStyle(.secondary)
+        } else {
+            if let lastPingLatencyMS {
+                LabeledContent(
+                    localized("iroh.demo.latency.ping", "Ping"),
+                    value: String(format: localized("iroh.demo.latency.value", "%lld ms"), lastPingLatencyMS)
+                )
+            }
+
+            if let lastTerminalLatencyMS {
+                LabeledContent(
+                    localized("iroh.demo.latency.terminal", "PTY"),
+                    value: String(format: localized("iroh.demo.latency.value", "%lld ms"), lastTerminalLatencyMS)
+                )
+            }
         }
     }
 
@@ -107,6 +168,47 @@ public struct ContentView: View {
         }
     }
 
+    @ViewBuilder
+    private var terminalStatusView: some View {
+        switch terminalStatus {
+        case .idle:
+            Label(localized("iroh.demo.terminal.idle", "Waiting to run a PTY command"), systemImage: "terminal")
+                .foregroundStyle(.secondary)
+        case .sending:
+            HStack {
+                ProgressView()
+                Text(localized("iroh.demo.terminal.sending", "Running in Mac PTY"))
+            }
+        case .success(let result):
+            VStack(alignment: .leading, spacing: 8) {
+                Label(
+                    String(
+                        format: localized("iroh.demo.terminal.success", "PTY returned in %lld ms"),
+                        result.rttMS
+                    ),
+                    systemImage: "checkmark.circle.fill"
+                )
+                .foregroundStyle(.green)
+
+                Text(
+                    String(
+                        format: localized("iroh.demo.terminal.exit", "Exit: %@"),
+                        result.exitCode.map(String.init) ?? localized("iroh.demo.terminal.exitUnknown", "unknown")
+                    )
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+                Text(result.output.isEmpty ? localized("iroh.demo.terminal.emptyOutput", "No output") : result.output)
+                    .font(.footnote.monospaced())
+                    .textSelection(.enabled)
+            }
+        case .failure(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+    }
+
     private func pasteTicket() {
         guard let pasted = UIPasteboard.general.string else {
             status = .failure(localized("iroh.demo.noPasteboardText", "The pasteboard does not contain text."))
@@ -129,8 +231,35 @@ public struct ContentView: View {
             switch result {
             case .success(let value):
                 status = .success(value)
+                lastPingLatencyMS = value.rttMS
             case .failure(let error):
                 status = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private func runTerminal() {
+        let trimmedTicket = ticket.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTicket.isEmpty else {
+            terminalStatus = .failure(localized("iroh.demo.missingTicket", "Paste a Mac ticket first."))
+            return
+        }
+
+        let command = terminalCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !command.isEmpty else {
+            terminalStatus = .failure(localized("iroh.demo.terminal.missingCommand", "Enter a command first."))
+            return
+        }
+
+        terminalStatus = .sending
+        Task {
+            let result = await client.terminalCommand(ticket: trimmedTicket, command: command)
+            switch result {
+            case .success(let value):
+                terminalStatus = .success(value)
+                lastTerminalLatencyMS = value.rttMS
+            case .failure(let error):
+                terminalStatus = .failure(error.localizedDescription)
             }
         }
     }
@@ -140,6 +269,20 @@ private enum PingStatus {
     case idle
     case sending
     case success(IrohPingResult)
+    case failure(String)
+
+    var isSending: Bool {
+        if case .sending = self {
+            return true
+        }
+        return false
+    }
+}
+
+private enum TerminalStatus {
+    case idle
+    case sending
+    case success(IrohTerminalResult)
     case failure(String)
 
     var isSending: Bool {

@@ -6,6 +6,7 @@ extern "C" {
 #endif
 
 char *iroh_demo_ping(const char *ticket, const char *message);
+char *iroh_demo_terminal_command(const char *ticket, const char *command);
 void iroh_demo_free(char *ptr);
 
 #ifdef __cplusplus

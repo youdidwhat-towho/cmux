@@ -12,5 +12,7 @@ final class IrohPhoneDemoUITests: XCTestCase {
 
         XCTAssertTrue(app.navigationBars["Iroh Link"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.buttons["Paste Ticket"].exists)
+        XCTAssertTrue(app.staticTexts["Latency"].exists)
+        XCTAssertTrue(app.buttons["Run PTY"].exists)
     }
 }

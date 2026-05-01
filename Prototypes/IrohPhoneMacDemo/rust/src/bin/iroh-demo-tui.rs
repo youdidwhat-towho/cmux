@@ -130,11 +130,28 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
 fn render_event(event: MacEvent) -> String {
     match event {
         MacEvent::Connected { remote_id } => format!("connected: {remote_id}"),
-        MacEvent::Request { remote_id, message } => {
-            format!("request from {remote_id}: {message}")
+        MacEvent::PingRequest { remote_id, message } => {
+            format!("ping from {remote_id}: {message}")
         }
-        MacEvent::Response { remote_id, bytes } => {
-            format!("response to {remote_id}: {bytes} bytes")
+        MacEvent::PingResponse {
+            remote_id,
+            bytes,
+            handling_ms,
+        } => {
+            format!("ping response to {remote_id}: {bytes} bytes in {handling_ms} ms")
+        }
+        MacEvent::TerminalRequest { remote_id, command } => {
+            format!("pty from {remote_id}: {command}")
+        }
+        MacEvent::TerminalResponse {
+            remote_id,
+            bytes,
+            exit_code,
+            handling_ms,
+        } => {
+            format!(
+                "pty response to {remote_id}: {bytes} bytes, exit {exit_code:?}, {handling_ms} ms"
+            )
         }
         MacEvent::Error { message } => format!("error: {message}"),
     }
