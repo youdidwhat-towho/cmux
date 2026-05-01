@@ -647,6 +647,10 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         bridge.attach(to: self)
         backgroundColor = .black
         isOpaque = true
+        #if DEBUG
+        accessibilityIdentifier = "terminal.surface"
+        isAccessibilityElement = true
+        #endif
         addSubview(snapshotFallbackView)
         addSubview(inputProxy)
         initializeSurface()

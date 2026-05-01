@@ -45,8 +45,8 @@ final class IOSMacWorkspaceSyncUITests: XCTestCase {
 
         let detail = app.otherElements["terminal.workspace.detail"]
         XCTAssertTrue(detail.waitForExistence(timeout: 20), "Expected terminal detail after opening synced workspace")
-        detail.tap()
-        app.typeText("printf '\(token)\\n'\n")
+        TerminalUITestHarness.focusTerminal(in: app, fallback: detail)
+        TerminalUITestHarness.typeText("printf '\(token)\\n'\n", in: app)
     }
 
     private func workspaceRows(in app: XCUIApplication) -> XCUIElementQuery {
