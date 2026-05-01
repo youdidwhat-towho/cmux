@@ -64,6 +64,15 @@ EXPECTED_FAKE_SOCKET_RESULTS = {
     "cmux --socket {socket} --json ping": Result(0, "PONG\n", "", ("ping",)),
 }
 
+INTENTIONAL_CANDIDATE_STDOUT_NORMALIZATIONS = {
+    "cmux feed": (
+        ("cmux feed clear [--yes|-y]", "cmux feed clear [--yes]"),
+    ),
+    "cmux feed help": (
+        ("cmux feed clear [--yes|-y]", "cmux feed clear [--yes]"),
+    ),
+}
+
 
 class CaptureSocketServer:
     def __init__(self, path: str):
@@ -557,6 +566,10 @@ def compare_probe(baseline_cli: str, candidate_cli: str, probe: Probe) -> str | 
     if baseline == candidate:
         return None
 
+    normalized_candidate = normalize_intentional_candidate_delta(probe, candidate)
+    if baseline == normalized_candidate:
+        return None
+
     diff = "\n".join(
         difflib.unified_diff(
             baseline.comparable().splitlines(),
@@ -567,6 +580,17 @@ def compare_probe(baseline_cli: str, candidate_cli: str, probe: Probe) -> str | 
         )
     )
     return f"{probe.name}\ncommand: {probe.command}\n{diff}"
+
+
+def normalize_intentional_candidate_delta(probe: Probe, result: Result) -> Result:
+    replacements = INTENTIONAL_CANDIDATE_STDOUT_NORMALIZATIONS.get(probe.command)
+    if replacements is None:
+        return result
+
+    stdout = result.stdout
+    for candidate_text, baseline_text in replacements:
+        stdout = stdout.replace(candidate_text, baseline_text)
+    return dataclasses.replace(result, stdout=stdout)
 
 
 def compare_baseline_top_level_commands(
