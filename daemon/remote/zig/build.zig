@@ -16,6 +16,18 @@ pub fn build(b: *std.Build) void {
 
     const build_options = b.addOptions();
     build_options.addOption([]const u8, "version", version);
+    const ghostty_vt_dep_options = .{
+        .target = target,
+        .optimize = optimize,
+        .@"emit-lib-vt" = true,
+        .@"emit-xcframework" = false,
+    };
+    const ghostty_vt_debug_dep_options = .{
+        .target = target,
+        .optimize = .Debug,
+        .@"emit-lib-vt" = true,
+        .@"emit-xcframework" = false,
+    };
 
     const mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -24,10 +36,7 @@ pub fn build(b: *std.Build) void {
     });
     mod.addOptions("build_options", build_options);
 
-    if (b.lazyDependency("ghostty", .{
-        .target = target,
-        .optimize = optimize,
-    })) |dep| {
+    if (b.lazyDependency("ghostty", ghostty_vt_dep_options)) |dep| {
         mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
     if (b.lazyDependency("tls", .{
@@ -61,10 +70,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     integration_src_mod.addOptions("build_options", build_options);
-    if (b.lazyDependency("ghostty", .{
-        .target = target,
-        .optimize = optimize,
-    })) |dep| {
+    if (b.lazyDependency("ghostty", ghostty_vt_dep_options)) |dep| {
         integration_src_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
     if (b.lazyDependency("tls", .{
@@ -109,10 +115,7 @@ pub fn build(b: *std.Build) void {
         .sanitize_thread = true,
     });
     tsan_mod.addOptions("build_options", build_options);
-    if (b.lazyDependency("ghostty", .{
-        .target = target,
-        .optimize = .Debug,
-    })) |dep| {
+    if (b.lazyDependency("ghostty", ghostty_vt_debug_dep_options)) |dep| {
         tsan_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
     if (b.lazyDependency("tls", .{
@@ -133,10 +136,7 @@ pub fn build(b: *std.Build) void {
         .sanitize_thread = true,
     });
     tsan_src_mod.addOptions("build_options", build_options);
-    if (b.lazyDependency("ghostty", .{
-        .target = target,
-        .optimize = .Debug,
-    })) |dep| {
+    if (b.lazyDependency("ghostty", ghostty_vt_debug_dep_options)) |dep| {
         tsan_src_mod.addImport("ghostty-vt", dep.module("ghostty-vt"));
     }
     if (b.lazyDependency("tls", .{
