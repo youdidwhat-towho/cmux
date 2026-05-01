@@ -12379,63 +12379,6 @@ class TerminalController {
         ])
     }
 
-    private func v2DebugIsTerminalFocused(params: [String: Any]) -> V2CallResult {
-        guard let surfaceId = v2String(params, "surface_id") else {
-            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
-        }
-        let resp = isTerminalFocused(surfaceId)
-        if resp.hasPrefix("ERROR") {
-            return .err(code: "internal_error", message: resp, data: nil)
-        }
-        return .ok(["focused": resp.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"])
-    }
-
-    private func v2DebugTerminalFirstResponderFocus(params: [String: Any]) -> V2CallResult {
-        guard let tabManager = v2ResolveTabManager(params: params) else {
-            return .err(code: "unavailable", message: "TabManager not available", data: nil)
-        }
-        guard let surfaceId = v2UUID(params, "surface_id") else {
-            return .err(code: "invalid_params", message: "Missing or invalid surface_id", data: nil)
-        }
-
-        var result: V2CallResult = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
-        v2MainSync {
-            guard let resolvedWorkspace = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
-                result = .err(code: "not_found", message: "Workspace not found", data: nil)
-                return
-            }
-            let owner = AppDelegate.shared?.locateSurface(surfaceId: surfaceId)
-            let ws = owner.flatMap { located in located.tabManager.tabs.first { $0.id == located.workspaceId } } ?? resolvedWorkspace
-            guard let panel = ws.panels[surfaceId] else {
-                result = .err(code: "not_found", message: "Surface not found", data: ["surface_id": surfaceId.uuidString])
-                return
-            }
-
-            let accepted = AppDelegate.shared?.requestTerminalFirstResponderFocus(workspaceId: ws.id, panel: panel) ?? false
-#if DEBUG
-            cmuxDebugLog(
-                "debug.terminal.firstResponderFocus " +
-                    "requestedWorkspace=\(resolvedWorkspace.id.uuidString.prefix(5)) " +
-                    "ownerWorkspace=\(ws.id.uuidString.prefix(5)) " +
-                    "surface=\(surfaceId.uuidString.prefix(5)) accepted=\(accepted ? 1 : 0) " +
-                    "ownerFound=\((owner != nil) ? 1 : 0)"
-            )
-#endif
-            result = .ok([
-                "accepted": accepted,
-                "requested_workspace_id": resolvedWorkspace.id.uuidString,
-                "requested_workspace_ref": v2Ref(kind: .workspace, uuid: resolvedWorkspace.id),
-                "workspace_id": ws.id.uuidString,
-                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
-                "surface_id": surfaceId.uuidString,
-                "surface_ref": v2Ref(kind: .surface, uuid: surfaceId),
-                "current_surface_id": v2OrNull(ws.focusedPanelId?.uuidString),
-                "current_surface_ref": v2Ref(kind: .surface, uuid: ws.focusedPanelId)
-            ])
-        }
-        return result
-    }
-
     private func v2DebugReadTerminalText(params: [String: Any]) -> V2CallResult {
         let surfaceArg = v2String(params, "surface_id") ?? ""
         let resp = readTerminalText(surfaceArg)
@@ -12460,6 +12403,17 @@ class TerminalController {
         return .ok(["stats": obj])
     }
 
+    private func v2DebugIsTerminalFocused(params: [String: Any]) -> V2CallResult {
+        guard let surfaceId = v2String(params, "surface_id") else {
+            return .err(code: "invalid_params", message: "Missing surface_id", data: nil)
+        }
+        let resp = isTerminalFocused(surfaceId)
+        if resp.hasPrefix("ERROR") {
+            return .err(code: "internal_error", message: resp, data: nil)
+        }
+        return .ok(["focused": resp.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"])
+    }
+
     private func v2DebugLayout() -> V2CallResult {
         let resp = layoutDebug()
         guard resp.hasPrefix("OK ") else {
@@ -12471,13 +12425,6 @@ class TerminalController {
             return .err(code: "internal_error", message: "layout_debug JSON decode failed", data: ["payload": String(jsonStr.prefix(200))])
         }
         return .ok(["layout": obj])
-    }
-
-    private func v2DebugPortalStats() -> V2CallResult {
-        let payload: [String: Any] = v2MainSync {
-            TerminalWindowPortalRegistry.debugPortalStats()
-        }
-        return .ok(payload)
     }
 
     private func v2DebugBonsplitUnderflowCount() -> V2CallResult {
