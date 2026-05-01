@@ -29,6 +29,7 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
               let splitOK = split["ok"] as? Bool,
               splitOK,
               let splitResult = split["result"] as? [String: Any],
+              let workspaceId = splitResult["workspace_id"] as? String,
               let rightSurfaceId = splitResult["surface_id"] as? String else {
             XCTFail("Expected right split to be created. response=\(String(describing: socketJSON(method: "surface.current", params: [:])))")
             return
@@ -89,6 +90,22 @@ final class PaneShortcutFocusRegressionUITests: XCTestCase {
                     self.currentSurfaceId() == expectedSurfaceId
             },
             "Expected Cmd+Shift+] to select \(expectedSurfaceId) in the focused pane instead of returning to stale responder \(rightSurfaceId). current=\(currentSurfaceId() ?? "nil") pane=\(paneSurfaces(paneId: leftPaneId) ?? [])"
+        )
+
+        guard let staleFocus = socketJSON(
+            method: "debug.terminal.first_responder_focus",
+            params: ["workspace_id": workspaceId, "surface_id": rightSurfaceId]
+        ),
+              let staleFocusOK = staleFocus["ok"] as? Bool,
+              staleFocusOK,
+              let staleFocusResult = staleFocus["result"] as? [String: Any],
+              let staleFocusAccepted = staleFocusResult["accepted"] as? Bool else {
+            XCTFail("Expected stale terminal first-responder focus request to return a result. response=\(String(describing: socketJSON(method: "debug.terminals", params: [:])))")
+            return
+        }
+        XCTAssertFalse(
+            staleFocusAccepted,
+            "Expected stale terminal first-responder focus request to be rejected. response=\(staleFocus)"
         )
 
         XCTAssertTrue(
