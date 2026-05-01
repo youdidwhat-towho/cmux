@@ -2,6 +2,7 @@ use std::{
     ffi::{CStr, CString},
     io,
     os::raw::c_char,
+    sync::{Mutex, OnceLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -17,6 +18,7 @@ use tokio::sync::mpsc;
 
 pub const ALPN: &[u8] = b"cmux/iroh-phone-mac-demo/0";
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+static CLIENT_CACHE: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
 pub enum MacEvent {
@@ -101,19 +103,24 @@ async fn handle_connection(
         },
     );
 
-    let (mut send, mut recv): (SendStream, RecvStream) = connection.accept_bi().await?;
-    let request_bytes = recv
-        .read_to_end(MAX_MESSAGE_BYTES)
-        .await
-        .map_err(AcceptError::from_err)?;
-    let response = handle_request(&remote_id, &request_bytes, &events)
-        .await
-        .map_err(accept_error)?;
-    let payload = serde_json::to_vec(&response).map_err(AcceptError::from_err)?;
-    send.write_all(&payload)
-        .await
-        .map_err(AcceptError::from_err)?;
-    send.finish().map_err(AcceptError::from_err)?;
+    loop {
+        let (mut send, mut recv): (SendStream, RecvStream) = match connection.accept_bi().await {
+            Ok(streams) => streams,
+            Err(_) => break,
+        };
+        let request_bytes = recv
+            .read_to_end(MAX_MESSAGE_BYTES)
+            .await
+            .map_err(AcceptError::from_err)?;
+        let response = handle_request(&remote_id, &request_bytes, &events)
+            .await
+            .map_err(accept_error)?;
+        let payload = serde_json::to_vec(&response).map_err(AcceptError::from_err)?;
+        send.write_all(&payload)
+            .await
+            .map_err(AcceptError::from_err)?;
+        send.finish().map_err(AcceptError::from_err)?;
+    }
 
     connection.closed().await;
     Ok(())
@@ -323,6 +330,19 @@ async fn send_wire_request(ticket: &str, request: &WireRequest) -> Result<WireSu
     let connection = endpoint
         .connect(ticket.endpoint_addr().clone(), ALPN)
         .await?;
+    let summary = send_wire_request_on_connection(&connection, request, start).await?;
+
+    connection.close(0u32.into(), b"done");
+    endpoint.close().await;
+
+    Ok(summary)
+}
+
+async fn send_wire_request_on_connection(
+    connection: &Connection,
+    request: &WireRequest,
+    start: Instant,
+) -> Result<WireSummary> {
     let (mut send, mut recv): (SendStream, RecvStream) = connection.open_bi().await?;
 
     let request = serde_json::to_vec(request)?;
@@ -332,9 +352,6 @@ async fn send_wire_request(ticket: &str, request: &WireRequest) -> Result<WireSu
     let response_bytes = recv.read_to_end(MAX_MESSAGE_BYTES).await?;
     let response: WireResponse =
         serde_json::from_slice(&response_bytes).context("mac returned invalid demo response")?;
-
-    connection.close(0u32.into(), b"done");
-    endpoint.close().await;
 
     Ok(WireSummary {
         rtt_ms: elapsed_ms(start),
@@ -366,6 +383,76 @@ struct FfiTerminalOk<'a> {
     exit_code: Option<i32>,
     remote_id: &'a str,
     received_at_unix_ms: u64,
+}
+
+struct CachedClient {
+    ticket: String,
+    runtime: tokio::runtime::Runtime,
+    endpoint: Endpoint,
+    connection: Connection,
+}
+
+impl CachedClient {
+    fn connect(ticket: String) -> Result<Self> {
+        let parsed_ticket = <EndpointTicket as Ticket>::deserialize(ticket.trim())
+            .map_err(|error| anyhow::anyhow!("failed to parse iroh ticket: {error}"))?;
+        let runtime = tokio::runtime::Runtime::new()?;
+        let (endpoint, connection) = runtime.block_on(async {
+            let endpoint = Endpoint::bind(presets::N0).await?;
+            let connection = endpoint
+                .connect(parsed_ticket.endpoint_addr().clone(), ALPN)
+                .await?;
+            Ok::<_, anyhow::Error>((endpoint, connection))
+        })?;
+
+        Ok(Self {
+            ticket,
+            runtime,
+            endpoint,
+            connection,
+        })
+    }
+
+    fn send(&self, request: &WireRequest, start: Instant) -> Result<WireSummary> {
+        self.runtime.block_on(send_wire_request_on_connection(
+            &self.connection,
+            request,
+            start,
+        ))
+    }
+}
+
+impl Drop for CachedClient {
+    fn drop(&mut self) {
+        self.connection.close(0u32.into(), b"done");
+        self.runtime.block_on(self.endpoint.close());
+    }
+}
+
+fn send_cached_wire_request(ticket: &str, request: &WireRequest) -> Result<WireSummary> {
+    let start = Instant::now();
+    let ticket = ticket.trim().to_string();
+    let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(None));
+    let mut guard = cache
+        .lock()
+        .map_err(|_| anyhow::anyhow!("iroh client cache is poisoned"))?;
+
+    let needs_connection = guard
+        .as_ref()
+        .map(|client| client.ticket != ticket)
+        .unwrap_or(true);
+    if needs_connection {
+        *guard = Some(CachedClient::connect(ticket.clone())?);
+    }
+
+    let result = guard
+        .as_ref()
+        .context("iroh client cache missing after connect")?
+        .send(request, start);
+    if result.is_err() {
+        *guard = None;
+    }
+    result
 }
 
 #[unsafe(no_mangle)]
@@ -433,15 +520,61 @@ pub extern "C" fn iroh_demo_free(ptr: *mut c_char) {
 fn ffi_ping(ticket: *const c_char, message: *const c_char) -> Result<PingSummary> {
     let ticket = c_string(ticket).context("missing ticket")?;
     let message = c_string(message).context("missing message")?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(ping_ticket(&ticket, &message))
+    let summary = send_cached_wire_request(
+        &ticket,
+        &WireRequest::Ping {
+            message: message.to_string(),
+        },
+    )?;
+
+    match summary.response {
+        WireResponse::Ping {
+            reply,
+            mac_received,
+            remote_id,
+            received_at_unix_ms,
+        } => Ok(PingSummary {
+            rtt_ms: summary.rtt_ms,
+            response: PingWireResponse {
+                reply,
+                mac_received,
+                remote_id,
+                received_at_unix_ms,
+            },
+        }),
+        WireResponse::Terminal { .. } => anyhow::bail!("mac returned terminal response to ping"),
+    }
 }
 
 fn ffi_terminal_command(ticket: *const c_char, command: *const c_char) -> Result<TerminalSummary> {
     let ticket = c_string(ticket).context("missing ticket")?;
     let command = c_string(command).context("missing command")?;
-    let runtime = tokio::runtime::Runtime::new()?;
-    runtime.block_on(terminal_command(&ticket, &command))
+    let summary = send_cached_wire_request(
+        &ticket,
+        &WireRequest::Terminal {
+            command: command.to_string(),
+        },
+    )?;
+
+    match summary.response {
+        WireResponse::Terminal {
+            output,
+            exit_code,
+            remote_id,
+            received_at_unix_ms,
+        } => Ok(TerminalSummary {
+            rtt_ms: summary.rtt_ms,
+            response: TerminalWireResponse {
+                output,
+                exit_code,
+                remote_id,
+                received_at_unix_ms,
+            },
+        }),
+        WireResponse::Ping { .. } => {
+            anyhow::bail!("mac returned ping response to terminal command")
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
