@@ -532,7 +532,7 @@ struct ServerScannerView: View {
 struct ScannerLogView: View {
     @State private var logText = ScannerLog.shared.allEntries()
     @State private var copied = false
-    @State private var copiedResetTask: Task<Void, Never>?
+    @State private var copiedResetTimer: Timer?
 
     var body: some View {
         NavigationStack {
@@ -550,11 +550,11 @@ struct ScannerLogView: View {
                     Button {
                         UIPasteboard.general.string = logText
                         copied = true
-                        copiedResetTask?.cancel()
-                        copiedResetTask = Task {
-                            try? await Task.sleep(for: .seconds(2))
-                            guard !Task.isCancelled else { return }
+                        copiedResetTimer?.invalidate()
+                        copiedResetTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { timer in
+                            guard copiedResetTimer === timer else { return }
                             copied = false
+                            copiedResetTimer = nil
                         }
                     } label: {
                         Label(
@@ -572,6 +572,10 @@ struct ScannerLogView: View {
             }
             .onAppear {
                 logText = ScannerLog.shared.allEntries()
+            }
+            .onDisappear {
+                copiedResetTimer?.invalidate()
+                copiedResetTimer = nil
             }
         }
     }

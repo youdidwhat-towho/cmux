@@ -392,6 +392,67 @@ final class TerminalRemoteDaemonBootstrapTransportTests: XCTestCase {
         let didDisconnectSSH = await sshSession.didDisconnect()
         XCTAssertTrue(didDisconnectSSH)
     }
+
+    func testBootstrapTimeoutDisconnectsSSHBeforeBlockingPreparationReturns() async throws {
+        let sshSession = StubBootstrapSSHSession(capturedHostKey: nil)
+        let preparer = BlockingBootstrapPreparer()
+        let transport = TerminalRemoteDaemonBootstrapTransport(
+            host: TerminalHost(
+                name: "Mac Mini",
+                hostname: "cmux-macmini",
+                username: "cmux",
+                symbolName: "desktopcomputer",
+                palette: .mint,
+                bootstrapCommand: "tmux new-session -A -s {{session}}",
+                transportPreference: .remoteDaemon
+            ),
+            credentials: TerminalSSHCredentials(password: "secret", privateKey: nil),
+            sessionName: "demo",
+            bootstrapTimeout: 0.05,
+            sshSessionFactory: { _, _ in sshSession },
+            bootstrapSessionFactory: { _ in preparer },
+            sessionClientFactory: { _ in
+                StubBootstrapSessionClient(
+                    hello: .init(
+                        name: "cmuxd-remote",
+                        version: "dev",
+                        instanceID: nil,
+                        capabilities: ["terminal.stream"]
+                    ),
+                    attachResult: nil,
+                    openResult: .init(
+                        sessionID: "sess-unused",
+                        attachmentID: "att-unused",
+                        attachments: [],
+                        effectiveCols: 80,
+                        effectiveRows: 24,
+                        lastKnownCols: 80,
+                        lastKnownRows: 24,
+                        offset: 0,
+                        gridGeneration: nil
+                    ),
+                    readResults: []
+                )
+            }
+        )
+
+        do {
+            try await transport.connect(initialSize: TerminalGridSize.fixture(columns: 80, rows: 24))
+            XCTFail("Expected bootstrap timeout")
+        } catch let error as TerminalRemoteDaemonBootstrapTransportError {
+            switch error {
+            case .bootstrapTimedOut:
+                break
+            default:
+                XCTFail("Unexpected bootstrap transport error: \(error)")
+            }
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        let didDisconnectSSH = await sshSession.didDisconnect()
+        XCTAssertTrue(didDisconnectSSH)
+    }
 }
 
 private struct StubBootstrapPreparer: TerminalRemoteDaemonBootstrapPreparing {
@@ -417,14 +478,16 @@ private actor StubBootstrapSSHSession: TerminalRemoteDaemonBootstrapSSHSession {
     let capturedHostKey: String?
 
     private var launchCommands: [String] = []
+    private var commandInputs: [(command: String, standardInput: Data?)] = []
     private var disconnected = false
 
     init(capturedHostKey: String?) {
         self.capturedHostKey = capturedHostKey
     }
 
-    func run(_ command: String) async throws -> String {
-        ""
+    func run(_ command: String, standardInput: Data?) async throws -> String {
+        commandInputs.append((command, standardInput))
+        return ""
     }
 
     func openDaemonTransport(launchCommand: String) async throws -> any TerminalRemoteDaemonTransport {

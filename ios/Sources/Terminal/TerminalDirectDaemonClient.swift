@@ -151,37 +151,12 @@ actor TerminalDirectDaemonClient: TerminalDirectDaemonConnecting {
         onTimeout: @escaping @Sendable () async -> Void,
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        let timeoutNanoseconds = Self.timeoutNanoseconds(from: seconds)
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                if timeoutNanoseconds > 0 {
-                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                }
-                await onTimeout()
-                throw timeoutError
-            }
-
-            defer {
-                group.cancelAll()
-            }
-
-            guard let result = try await group.next() else {
-                throw timeoutError
-            }
-            return result
-        }
-    }
-
-    private static func timeoutNanoseconds(from seconds: TimeInterval) -> UInt64 {
-        let clampedSeconds = max(seconds, 0)
-        let nanoseconds = clampedSeconds * 1_000_000_000
-        if nanoseconds >= Double(UInt64.max) {
-            return UInt64.max
-        }
-        return UInt64(nanoseconds.rounded())
+        try await TerminalAsyncTimeout.run(
+            seconds: seconds,
+            timeoutError: { timeoutError },
+            onTimeout: onTimeout,
+            operation: operation
+        )
     }
 
     private static func isTimeoutError(_ error: TerminalDirectDaemonClientError) -> Bool {

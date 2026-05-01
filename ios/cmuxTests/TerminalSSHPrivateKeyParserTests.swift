@@ -13,6 +13,17 @@ final class TerminalSSHPrivateKeyParserTests: XCTestCase {
         )
     }
 
+    func testParseOpenSSHPrivateKeyAllowsNonUTF8Comment() throws {
+        let key = try TerminalSSHPrivateKeyFixtures.ed25519PrivateKeyWithNonUTF8Comment()
+
+        let parsed = try TerminalSSHPrivateKeyParser.parse(key)
+
+        XCTAssertEqual(
+            parsed.openSSHPublicKey,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAINvyNmiONArbP9h80XMMVDzfpE8TdS9h6gxrUwDacRXs"
+        )
+    }
+
     func testParseUnencryptedOpenSSHECDSAPrivateKeys() throws {
         let p256 = try TerminalSSHPrivateKeyParser.parse(
             TerminalSSHPrivateKeyFixtures.opensshECDSAP256PrivateKey
@@ -166,4 +177,100 @@ enum TerminalSSHPrivateKeyFixtures {
     AQIDBA==
     -----END OPENSSH PRIVATE KEY-----
     """
+
+    static func ed25519PrivateKeyWithNonUTF8Comment() throws -> String {
+        var payload = try opensshPayload(from: opensshEd25519PrivateKey)
+        var offset = try skipOpenSSHEnvelope(in: payload)
+
+        _ = try readUInt32(in: payload, offset: &offset)
+        _ = try readUInt32(in: payload, offset: &offset)
+        try skipString(in: payload, offset: &offset)
+        try skipString(in: payload, offset: &offset)
+        try skipString(in: payload, offset: &offset)
+
+        let commentLength = try Int(readUInt32(in: payload, offset: &offset))
+        guard offset + commentLength <= payload.count else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+
+        for index in 0..<commentLength {
+            payload[offset + index] = index.isMultiple(of: 2) ? 0xFF : 0xFE
+        }
+
+        return pemString(from: payload)
+    }
+
+    private static func opensshPayload(from privateKey: String) throws -> Data {
+        let lines = privateKey
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        let body = lines.dropFirst().dropLast().joined()
+        guard let data = Data(base64Encoded: body) else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+        return data
+    }
+
+    private static func skipOpenSSHEnvelope(in payload: Data) throws -> Int {
+        let magic = Data("openssh-key-v1\u{0}".utf8)
+        guard payload.starts(with: magic) else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+
+        var offset = magic.count
+        try skipString(in: payload, offset: &offset)
+        try skipString(in: payload, offset: &offset)
+        try skipString(in: payload, offset: &offset)
+        let keyCount = try readUInt32(in: payload, offset: &offset)
+        guard keyCount == 1 else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+        try skipString(in: payload, offset: &offset)
+        return try readStringStart(in: payload, offset: &offset)
+    }
+
+    private static func skipString(in data: Data, offset: inout Int) throws {
+        let length = try Int(readUInt32(in: data, offset: &offset))
+        guard offset + length <= data.count else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+        offset += length
+    }
+
+    private static func readStringStart(in data: Data, offset: inout Int) throws -> Int {
+        let length = try Int(readUInt32(in: data, offset: &offset))
+        guard offset + length <= data.count else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+        return offset
+    }
+
+    private static func readUInt32(in data: Data, offset: inout Int) throws -> UInt32 {
+        guard offset + 4 <= data.count else {
+            throw FixtureMutationError.invalidOpenSSHPrivateKey
+        }
+        defer { offset += 4 }
+        return data[offset..<(offset + 4)].reduce(UInt32.zero) { partialResult, byte in
+            (partialResult << 8) | UInt32(byte)
+        }
+    }
+
+    private static func pemString(from payload: Data) -> String {
+        let base64 = payload.base64EncodedString()
+        let lines = stride(from: 0, to: base64.count, by: 70).map { start -> String in
+            let startIndex = base64.index(base64.startIndex, offsetBy: start)
+            let endIndex = base64.index(
+                startIndex,
+                offsetBy: min(70, base64.distance(from: startIndex, to: base64.endIndex))
+            )
+            return String(base64[startIndex..<endIndex])
+        }
+        return (["-----BEGIN OPENSSH PRIVATE KEY-----"] + lines + ["-----END OPENSSH PRIVATE KEY-----"])
+            .joined(separator: "\n")
+    }
+
+    private enum FixtureMutationError: Error {
+        case invalidOpenSSHPrivateKey
+    }
 }

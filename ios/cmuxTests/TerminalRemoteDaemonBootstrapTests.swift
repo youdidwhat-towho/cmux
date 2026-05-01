@@ -21,13 +21,15 @@ final class TerminalRemoteDaemonBootstrapTests: XCTestCase {
 
     func testInstallScriptEncodesBundledBinaryWithoutScp() throws {
         let script = try TerminalRemoteDaemonBootstrap.installScript(
-            remotePath: "~/.cmux/bin/cmuxd-remote/dev/linux-arm64/cmuxd-remote",
-            base64Payload: "QUJD"
+            remotePath: "~/.cmux/bin/cmuxd-remote/dev/linux-arm64/cmuxd-remote"
         )
 
         XCTAssertTrue(script.contains("base64"))
         XCTAssertTrue(script.contains("chmod 755"))
         XCTAssertTrue(script.contains("~/.cmux/bin/cmuxd-remote/dev/linux-arm64/cmuxd-remote"))
+        XCTAssertTrue(script.contains("set -eu"))
+        XCTAssertFalse(script.contains("pipefail"))
+        XCTAssertFalse(script.contains("QUJD"))
     }
 
     private func makeFixtureRoot() throws -> URL {

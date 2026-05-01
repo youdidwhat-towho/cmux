@@ -12,6 +12,7 @@
 		086C558F7FF80FB65C3853DE /* TerminalWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FE2E447F820F6D213911B13 /* TerminalWorkspace.swift */; };
 		0E472755A1D5749F2A99129A /* TerminalHost.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8C37934B17869E2D32165744 /* TerminalHost.swift */; };
 		0F468796CD8AECF1D58004E3 /* TerminalInboxUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C173F2D34FADBC7C8F7BC8B7 /* TerminalInboxUITests.swift */; };
+		106161A1C627D4AE5156894C /* TerminalAsyncTimeout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 79119E2FA2C1F2CB48CBDB55 /* TerminalAsyncTimeout.swift */; };
 		1213CAB1F473B2E96C721DD2 /* GhosttySurfaceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E328A139A850C17BC15CF66D /* GhosttySurfaceView.swift */; };
 		16C02A0973FA8B3803D42649 /* TerminalRemoteDaemonBootstrapTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A6987D4D8BBDFF129D00239 /* TerminalRemoteDaemonBootstrapTests.swift */; };
 		1AB68DA70F76F585B6332F68 /* KeyboardSyncUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C18818FD4536DFDC6D6FA1D5 /* KeyboardSyncUITests.swift */; };
@@ -183,6 +184,7 @@
 		72E20F7A729081D044495605 /* CMuxApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMuxApp.swift; sourceTree = "<group>"; };
 		759117D3355ECE0F2863206E /* LiveAnchormuxSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveAnchormuxSupport.swift; sourceTree = "<group>"; };
 		789E4ECF3351AB482B0DD69A /* TerminalUITestHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalUITestHarness.swift; sourceTree = "<group>"; };
+		79119E2FA2C1F2CB48CBDB55 /* TerminalAsyncTimeout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalAsyncTimeout.swift; sourceTree = "<group>"; };
 		79D367AC3D322118AE559DBF /* AuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManager.swift; sourceTree = "<group>"; };
 		7B0B872D71F3DE5502B2379C /* TerminalCacheRepository.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalCacheRepository.swift; sourceTree = "<group>"; };
 		7FE2E447F820F6D213911B13 /* TerminalWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TerminalWorkspace.swift; sourceTree = "<group>"; };
@@ -394,6 +396,7 @@
 				E328A139A850C17BC15CF66D /* GhosttySurfaceView.swift */,
 				759117D3355ECE0F2863206E /* LiveAnchormuxSupport.swift */,
 				D3FF5B325FC76EBB175EE6CA /* ServerScannerView.swift */,
+				79119E2FA2C1F2CB48CBDB55 /* TerminalAsyncTimeout.swift */,
 				A590DE3834883FA01EC27896 /* TerminalCredentialsStore.swift */,
 				0B65F7731CA990B817F7426D /* TerminalDaemonConnection.swift */,
 				27ACABFFE5F92DB38FB630B8 /* TerminalDaemonConnectionPool.swift */,
@@ -730,6 +733,7 @@
 				C9E3B69A93DD87E682311505 /* SignInView.swift in Sources */,
 				8D3227A416DC344EFBA9B571 /* StackAuthApp.swift in Sources */,
 				5FE9793039F5691D04C24116 /* StackAuthUser.swift in Sources */,
+				106161A1C627D4AE5156894C /* TerminalAsyncTimeout.swift in Sources */,
 				69995971655E7D3B5A3D329D /* TerminalBackendContracts.swift in Sources */,
 				8BC0E9F0AC5CAEC84129BEAC /* TerminalCacheRepository.swift in Sources */,
 				B0660B6EA9A3C07F3F83C401 /* TerminalCredentialsStore.swift in Sources */,

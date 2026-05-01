@@ -153,7 +153,7 @@ enum TerminalSSHPrivateKeyParser {
     private static func parseEd25519PrivateKey(from reader: inout Reader) throws -> TerminalParsedSSHPrivateKey {
         let publicKeyData = try reader.readData()
         let privateKeyData = try reader.readData()
-        _ = try reader.readString()
+        _ = try reader.readData()
 
         guard publicKeyData.count == 32, privateKeyData.count == 64 else {
             throw TerminalSSHPrivateKeyParserError.invalidKeyMaterial
@@ -187,7 +187,7 @@ enum TerminalSSHPrivateKeyParser {
 
         let publicKeyData = try reader.readData()
         let privateScalarData = try reader.readData()
-        _ = try reader.readString()
+        _ = try reader.readData()
 
         let normalizedPrivateScalar = try normalizedMPInt(privateScalarData, targetLength: curve.privateScalarLength)
 

@@ -696,7 +696,11 @@ actor TerminalRemoteDaemonClient {
         }
 
         let timeoutTask = Task { [weak self, rpcTimeoutSeconds] in
-            try? await Task.sleep(nanoseconds: UInt64(rpcTimeoutSeconds * 1_000_000_000))
+            do {
+                try await TerminalAsyncDelay.wait(seconds: rpcTimeoutSeconds)
+            } catch {
+                return
+            }
             await self?.timeoutPending(id: requestID)
         }
         defer { timeoutTask.cancel() }

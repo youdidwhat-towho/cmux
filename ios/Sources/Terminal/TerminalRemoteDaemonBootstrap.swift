@@ -55,7 +55,7 @@ enum TerminalRemoteDaemonBootstrap {
         )
     }
 
-    static func installScript(remotePath: String, base64Payload: String) throws -> String {
+    static func installScript(remotePath: String) throws -> String {
         let remoteDirectory = (remotePath as NSString).deletingLastPathComponent
         guard !remoteDirectory.isEmpty else {
             throw BootstrapError.invalidRemotePath(remotePath)
@@ -63,14 +63,20 @@ enum TerminalRemoteDaemonBootstrap {
 
         let quotedRemotePath = shellSingleQuoted(remotePath)
         let quotedRemoteDirectory = shellSingleQuoted(remoteDirectory)
-        let quotedPayload = shellSingleQuoted(base64Payload)
 
         return """
-        set -euo pipefail
+        set -eu
         decode_base64() {
           if command -v base64 >/dev/null 2>&1; then
-            base64 --decode 2>/dev/null || base64 -d 2>/dev/null || base64 -D 2>/dev/null
-            return
+            case "$(uname -s 2>/dev/null || true)" in
+              Darwin)
+                base64 -D
+                ;;
+              *)
+                base64 -d
+                ;;
+            esac
+            return $?
           fi
           echo "base64 command not found" >&2
           exit 1
@@ -97,7 +103,7 @@ enum TerminalRemoteDaemonBootstrap {
         tmp_path="${remote_path}.tmp"
 
         mkdir -p "$remote_dir"
-        printf '%s' \(quotedPayload) | decode_base64 > "$tmp_path"
+        decode_base64 > "$tmp_path"
         chmod 755 "$tmp_path"
         mv "$tmp_path" "$remote_path"
         """

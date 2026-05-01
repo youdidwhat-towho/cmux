@@ -164,7 +164,11 @@ actor TerminalDaemonConnection {
                 // dismisses even when the daemon can't be reached.
                 resumeSubscribeRoundWaiters()
                 let delay = min(30.0, 5.0 * pow(2.0, Double(min(consecutiveFailures - 1, 3))))
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                do {
+                    try await TerminalAsyncDelay.wait(seconds: delay)
+                } catch {
+                    break
+                }
                 continue
             }
             consecutiveFailures = 0

@@ -1774,8 +1774,8 @@ final class TerminalSessionController {
     )
     private var transportConnectTask: Task<Void, Never>?
     private var transportDisconnectTask: Task<Void, Never>?
-    private var reconnectTask: Task<Void, Never>?
-    private var statusMessageTask: Task<Void, Never>?
+    private var reconnectTimer: Timer?
+    private var statusMessageTimer: Timer?
     private var surfaceCloseObserver: NSObjectProtocol?
     private var surfaceBellObserver: NSObjectProtocol?
     private var shouldReconnect = true
@@ -1837,6 +1837,8 @@ final class TerminalSessionController {
             if let surfaceBellObserver {
                 NotificationCenter.default.removeObserver(surfaceBellObserver)
             }
+            reconnectTimer?.invalidate()
+            statusMessageTimer?.invalidate()
         }
     }
 
@@ -1999,8 +2001,7 @@ final class TerminalSessionController {
     /// reconnects with the new session ID.
     func switchSession(to sessionID: String) {
         sessionOverride = sessionID
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         updateRemoteDaemonResumeState(nil)
         clearPendingReconnectAfterTransportWork()
@@ -2028,8 +2029,7 @@ final class TerminalSessionController {
             terminalSurface?.focusInput()
             return
         }
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         syncRemoteDaemonResumeStateFromTransport()
         clearPendingReconnectAfterTransportWork()
@@ -2041,8 +2041,7 @@ final class TerminalSessionController {
     }
 
     private func reconnectForAuthoritativeSessionChange() {
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         sessionOverride = nil
         updateRemoteDaemonResumeState(nil)
@@ -2060,8 +2059,7 @@ final class TerminalSessionController {
             liveAnchormuxLog("controller.disconnect phase=\(phase)")
         }
         shouldReconnect = false
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         updateRemoteDaemonResumeState(nil)
         clearPendingReconnectAfterTransportWork()
@@ -2075,8 +2073,7 @@ final class TerminalSessionController {
         if isLiveAnchormuxSession {
             liveAnchormuxLog("controller.suspendPreservingState phase=\(phase)")
         }
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         syncRemoteDaemonResumeStateFromTransport()
         clearPendingReconnectAfterTransportWork()
@@ -2112,8 +2109,7 @@ final class TerminalSessionController {
         }
         switch event {
         case .connected:
-            reconnectTask?.cancel()
-            reconnectTask = nil
+            cancelReconnectTimer()
             consecutiveConnectFailures = 0
             setPhase(.connected, error: nil)
             syncRemoteDaemonResumeStateFromTransport()
@@ -2231,12 +2227,12 @@ final class TerminalSessionController {
     }
 
     private func reconnect(seconds: Double) {
-        reconnectTask?.cancel()
-        reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.connectIfNeeded(reconnecting: true)
+        cancelReconnectTimer()
+        reconnectTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] timer in
+            Task { @MainActor [weak self] in
+                guard let self, self.reconnectTimer === timer else { return }
+                self.reconnectTimer = nil
+                self.connectIfNeeded(reconnecting: true)
             }
         }
     }
@@ -2260,14 +2256,12 @@ final class TerminalSessionController {
     }
 
     private func setStatusMessage(_ message: String?) {
-        statusMessageTask?.cancel()
-        statusMessageTask = nil
+        cancelStatusMessageTimer()
         statusMessage = normalizedDisplayError(message)
     }
 
     private func clearStatusMessage() {
-        statusMessageTask?.cancel()
-        statusMessageTask = nil
+        cancelStatusMessageTimer()
         statusMessage = nil
     }
 
@@ -2284,15 +2278,24 @@ final class TerminalSessionController {
     }
 
     private func scheduleStatusMessageClear(after seconds: Double) {
-        statusMessageTask?.cancel()
-        statusMessageTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(seconds))
-            guard !Task.isCancelled else { return }
-            await MainActor.run {
-                self?.statusMessage = nil
-                self?.statusMessageTask = nil
+        cancelStatusMessageTimer()
+        statusMessageTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] timer in
+            Task { @MainActor [weak self] in
+                guard let self, self.statusMessageTimer === timer else { return }
+                self.statusMessage = nil
+                self.statusMessageTimer = nil
             }
         }
+    }
+
+    private func cancelReconnectTimer() {
+        reconnectTimer?.invalidate()
+        reconnectTimer = nil
+    }
+
+    private func cancelStatusMessageTimer() {
+        statusMessageTimer?.invalidate()
+        statusMessageTimer = nil
     }
 
     private func syncRemoteDaemonResumeStateFromTransport() {
@@ -2414,8 +2417,7 @@ final class TerminalSessionController {
         }
         guard terminalSurface != nil else { return }
 
-        reconnectTask?.cancel()
-        reconnectTask = nil
+        cancelReconnectTimer()
         clearStatusMessage()
         syncRemoteDaemonResumeStateFromTransport()
         clearTerminalSurface()

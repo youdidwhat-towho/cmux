@@ -1,7 +1,13 @@
 import Foundation
 
 protocol TerminalRemoteDaemonCommandRunner: Sendable {
-    func run(_ command: String) async throws -> String
+    func run(_ command: String, standardInput: Data?) async throws -> String
+}
+
+extension TerminalRemoteDaemonCommandRunner {
+    func run(_ command: String) async throws -> String {
+        try await run(command, standardInput: nil)
+    }
 }
 
 struct TerminalRemoteDaemonLaunchConfig: Equatable, Sendable {
@@ -42,12 +48,13 @@ struct TerminalRemoteDaemonBootstrapSession: Sendable {
             platform: platform,
             version: version
         )
-        let installScript = try TerminalRemoteDaemonBootstrap.installScript(
-            remotePath: remoteBinaryPath,
-            base64Payload: binaryData.base64EncodedString()
-        )
+        let installScript = try TerminalRemoteDaemonBootstrap.installScript(remotePath: remoteBinaryPath)
+        let encodedBinary = binaryData.base64EncodedData()
 
-        _ = try await commandRunner.run("sh -lc \(Self.shellSingleQuoted(installScript))")
+        _ = try await commandRunner.run(
+            "sh -lc \(Self.shellSingleQuoted(installScript))",
+            standardInput: encodedBinary
+        )
 
         return TerminalRemoteDaemonLaunchConfig(
             remoteBinaryPath: remoteBinaryPath,

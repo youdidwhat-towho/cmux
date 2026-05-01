@@ -68,7 +68,8 @@ final class TerminalRemoteDaemonBootstrapTransport: @unchecked Sendable, Termina
         do {
             let (daemonTransport, remotePlatform) = try await withTimeout(
                 seconds: bootstrapTimeout,
-                timeoutError: .bootstrapTimedOut
+                timeoutError: .bootstrapTimedOut,
+                onTimeout: { await sshSession.disconnect() }
             ) {
                 let bootstrapSession = self.bootstrapSessionFactory(sshSession)
                 let launchConfig = try await bootstrapSession.prepareDaemon()
@@ -100,38 +101,15 @@ final class TerminalRemoteDaemonBootstrapTransport: @unchecked Sendable, Termina
     private func withTimeout<T: Sendable>(
         seconds: TimeInterval,
         timeoutError: TerminalRemoteDaemonBootstrapTransportError,
+        onTimeout: @escaping @Sendable () async -> Void = {},
         operation: @escaping @Sendable () async throws -> T
     ) async throws -> T {
-        let timeoutNanoseconds = Self.timeoutNanoseconds(from: seconds)
-        return try await withThrowingTaskGroup(of: T.self) { group in
-            group.addTask {
-                try await operation()
-            }
-            group.addTask {
-                if timeoutNanoseconds > 0 {
-                    try await Task.sleep(nanoseconds: timeoutNanoseconds)
-                }
-                throw timeoutError
-            }
-
-            defer {
-                group.cancelAll()
-            }
-
-            guard let result = try await group.next() else {
-                throw timeoutError
-            }
-            return result
-        }
-    }
-
-    private static func timeoutNanoseconds(from seconds: TimeInterval) -> UInt64 {
-        let clampedSeconds = max(seconds, 0)
-        let nanoseconds = clampedSeconds * 1_000_000_000
-        if nanoseconds >= TimeInterval(UInt64.max) {
-            return UInt64.max
-        }
-        return UInt64(nanoseconds.rounded())
+        try await TerminalAsyncTimeout.run(
+            seconds: seconds,
+            timeoutError: { timeoutError },
+            onTimeout: onTimeout,
+            operation: operation
+        )
     }
 
     func send(_ data: Data) async throws {
@@ -245,11 +223,12 @@ final class TerminalLiveRemoteDaemonSSHSession: @unchecked Sendable, TerminalRem
         self.credentials = credentials
     }
 
-    func run(_ command: String) async throws -> String {
+    func run(_ command: String, standardInput: Data?) async throws -> String {
         let connection = try await ensureConnection()
         let handler = TerminalSSHExecCommandHandler(
             eventLoop: connection.rootChannel.eventLoop,
-            command: command
+            command: command,
+            standardInput: standardInput
         )
         _ = try await terminalOpenSSHSessionChannel(rootChannel: connection.rootChannel) { channel in
             channel.pipeline.addHandlers([handler, NIOCloseOnErrorHandler()])
@@ -310,15 +289,17 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
 
     private let completedPromise: EventLoopPromise<String>
     private let command: String
+    private let standardInput: Data?
     private var output = Data()
     private var stderr = Data()
     private var exitStatus = 0
     private var finished = false
 
-    init(eventLoop: EventLoop, command: String) {
+    init(eventLoop: EventLoop, command: String, standardInput: Data?) {
         self.completedPromise = eventLoop.makePromise(of: String.self)
         self.completed = completedPromise.futureResult
         self.command = command
+        self.standardInput = standardInput
     }
 
     func handlerAdded(context: ChannelHandlerContext) {
@@ -332,6 +313,9 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
                     promise: promise
                 )
                 return promise.futureResult
+            }
+            .flatMap {
+                self.writeStandardInputIfNeeded(context: contextBox.value)
             }
             .whenFailure { [weak self] error in
                 self?.finish(with: error)
@@ -375,6 +359,33 @@ private final class TerminalSSHExecCommandHandler: @unchecked Sendable, ChannelI
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         finish(with: error)
         context.close(promise: nil)
+    }
+
+    private func writeStandardInputIfNeeded(context: ChannelHandlerContext) -> EventLoopFuture<Void> {
+        guard let standardInput else {
+            return context.eventLoop.makeSucceededFuture(())
+        }
+
+        let chunkSize = 64 * 1024
+        var offset = 0
+        var writeFuture = context.eventLoop.makeSucceededFuture(())
+
+        while offset < standardInput.count {
+            let end = min(offset + chunkSize, standardInput.count)
+            let chunk = standardInput[offset..<end]
+            writeFuture = writeFuture.flatMap {
+                var buffer = context.channel.allocator.buffer(capacity: chunk.count)
+                buffer.writeBytes(chunk)
+                return context.channel.writeAndFlush(
+                    SSHChannelData(type: .channel, data: .byteBuffer(buffer))
+                )
+            }
+            offset = end
+        }
+
+        return writeFuture.flatMap {
+            context.close(mode: .output)
+        }
     }
 
     private func finish(with result: String) {

@@ -158,6 +158,28 @@ final class TerminalDirectDaemonClientTests: XCTestCase {
             XCTFail("unexpected error: \(error)")
         }
     }
+
+    func testConnectDoesNotCancelConnectionAfterSuccessfulHandshakeBeatsTimeout() async throws {
+        let connection = StubDirectDaemonConnection(
+            receiveChunks: [
+                Data(#"{"ok":true,"result":{"authenticated":true}}"#.utf8) + Data([0x0A])
+            ]
+        )
+        let client = TerminalDirectDaemonClient(
+            connectionFactory: { _, _, _ in connection },
+            connectionStartTimeout: 1,
+            handshakeTimeout: 1
+        )
+
+        _ = try await client.connect(
+            url: URL(string: "tls://cmux.dev:9443")!,
+            ticket: "ticket-123",
+            certificatePins: []
+        )
+
+        let cancelCallCount = await connection.recordedCancelCallCount()
+        XCTAssertEqual(cancelCallCount, 0)
+    }
 }
 
 private actor StubDirectDaemonConnection: TerminalDirectDaemonConnection {

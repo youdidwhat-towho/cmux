@@ -12,7 +12,7 @@ final class TerminalRemoteDaemonBootstrapSessionTests: XCTestCase {
         let runner = StubRemoteDaemonCommandRunner(
             responses: [
                 "uname -s\nuname -m": "Linux\nx86_64\n",
-                #"sh -lc 'set -euo pipefail"#: "",
+                #"sh -lc 'set -eu"#: "",
             ]
         )
         let session = TerminalRemoteDaemonBootstrapSession(
@@ -36,9 +36,12 @@ final class TerminalRemoteDaemonBootstrapSessionTests: XCTestCase {
         XCTAssertEqual(commands.first, "uname -s\nuname -m")
 
         let installCommand = try XCTUnwrap(commands.last)
-        XCTAssertTrue(installCommand.contains("QUJD"))
+        XCTAssertFalse(installCommand.contains("QUJD"))
         XCTAssertTrue(installCommand.contains("chmod 755"))
         XCTAssertTrue(installCommand.contains("~/.cmux/bin/cmuxd-remote/dev/linux-amd64/cmuxd-remote"))
+
+        let standardInputs = await runner.recordedStandardInputs()
+        XCTAssertEqual(standardInputs.last, Data("QUJD".utf8))
     }
 
     private func makeFixtureRoot(
@@ -65,13 +68,15 @@ final class TerminalRemoteDaemonBootstrapSessionTests: XCTestCase {
 private actor StubRemoteDaemonCommandRunner: TerminalRemoteDaemonCommandRunner {
     private let responses: [String: String]
     private var commands: [String] = []
+    private var standardInputs: [Data?] = []
 
     init(responses: [String: String]) {
         self.responses = responses
     }
 
-    func run(_ command: String) async throws -> String {
+    func run(_ command: String, standardInput: Data?) async throws -> String {
         commands.append(command)
+        standardInputs.append(standardInput)
 
         if let exact = responses[command] {
             return exact
@@ -86,6 +91,10 @@ private actor StubRemoteDaemonCommandRunner: TerminalRemoteDaemonCommandRunner {
 
     func recordedCommands() -> [String] {
         commands
+    }
+
+    func recordedStandardInputs() -> [Data?] {
+        standardInputs
     }
 }
 
