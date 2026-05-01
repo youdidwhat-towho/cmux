@@ -1,4 +1,8 @@
-use std::{io, time::Duration};
+use std::{
+    io::{self, Write},
+    process::{Command, Stdio},
+    time::Duration,
+};
 
 use anyhow::Result;
 use crossterm::{
@@ -31,18 +35,24 @@ async fn run(mut terminal: Terminal<CrosstermBackend<io::Stdout>>) -> Result<()>
 
     loop {
         while let Ok(event) = server.events.try_recv() {
-            logs.push(render_event(event));
-            if logs.len() > 12 {
-                logs.remove(0);
-            }
+            push_log(&mut logs, render_event(event));
         }
 
         terminal.draw(|frame| draw(frame, &ticket, &logs))?;
 
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && matches!(key.code, KeyCode::Char('q')) {
-                    break;
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Char('c') => match copy_to_clipboard(&ticket) {
+                            Ok(()) => push_log(&mut logs, "copied ticket to clipboard".to_string()),
+                            Err(error) => {
+                                push_log(&mut logs, format!("copy failed: {error}"));
+                            }
+                        },
+                        KeyCode::Char('q') => break,
+                        _ => {}
+                    }
                 }
             }
         }
@@ -71,7 +81,7 @@ fn draw(frame: &mut Frame<'_>, ticket: &str, logs: &[String]) {
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  q quits"),
+        Span::raw("  c copies ticket  q quits"),
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, chunks[0]);
@@ -89,9 +99,32 @@ fn draw(frame: &mut Frame<'_>, ticket: &str, logs: &[String]) {
     let log_panel = List::new(items).block(Block::default().borders(Borders::ALL).title("Events"));
     frame.render_widget(log_panel, chunks[2]);
 
-    let footer = Paragraph::new("Paste the ticket into the iPhone app, then tap Ping Mac.")
-        .block(Block::default().borders(Borders::ALL));
+    let footer = Paragraph::new(
+        "Press c to copy the ticket. Paste it into the iPhone app, then tap Ping Mac.",
+    )
+    .block(Block::default().borders(Borders::ALL));
     frame.render_widget(footer, chunks[3]);
+}
+
+fn push_log(logs: &mut Vec<String>, entry: String) {
+    logs.push(entry);
+    if logs.len() > 12 {
+        logs.remove(0);
+    }
+}
+
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let mut child = Command::new("pbcopy").stdin(Stdio::piped()).spawn()?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow::anyhow!("pbcopy stdin unavailable"))?;
+    stdin.write_all(text.as_bytes())?;
+    drop(stdin);
+
+    let status = child.wait()?;
+    anyhow::ensure!(status.success(), "pbcopy exited with {status}");
+    Ok(())
 }
 
 fn render_event(event: MacEvent) -> String {

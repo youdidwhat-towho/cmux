@@ -22,7 +22,7 @@ iOS/IrohPhoneDemoPackage/Binaries/IrohPhoneMacFFI.xcframework
 cargo run --manifest-path rust/Cargo.toml --bin iroh-demo-tui
 ```
 
-Copy the ticket shown in the TUI.
+Press `c` to copy the ticket shown in the TUI. Press `q` to quit.
 
 ## Run the iPhone app
 
