@@ -3,6 +3,19 @@ import Testing
 @testable import ComeupSimulatorHarnessFeature
 
 @Test
+func mobileHomeFixtureContainsAuthDiscoveryAndTerminalTree() throws {
+    let snapshot = CmuxMobileHomeSnapshot.fixture
+    #expect(snapshot.auth.state == .signedIn)
+    #expect(snapshot.nodes.contains { $0.status == .online && $0.route.hasPrefix("iroh://") })
+    #expect(snapshot.nodes.contains { $0.route.hasPrefix("rivet://") })
+
+    let workspace = try #require(snapshot.workspaces.first)
+    #expect(workspace.title == "iOS port")
+    #expect(workspace.terminalTree.map(\.terminal.id).contains("terminal-daemon"))
+    #expect(workspace.terminal(id: "terminal-shell").size == CmuxTerminalSize(cols: 66, rows: 18))
+}
+
+@Test
 func simulatorTextHarnessSyncsWithComeupDaemon() throws {
     let portText = ProcessInfo.processInfo.environment["COMEUP_TEXT_PORT"] ?? "17891"
     let port = try #require(Int(portText))

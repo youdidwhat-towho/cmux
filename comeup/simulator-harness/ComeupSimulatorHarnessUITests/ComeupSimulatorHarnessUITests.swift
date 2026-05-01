@@ -1,26 +1,32 @@
 import XCTest
 
 final class ComeupSimulatorHarnessUITests: XCTestCase {
-    override func setUpWithError() throws {
-        // Put setup code here. This method is called before the invocation of each test method in the class.
-
-        // In UI tests it is usually best to stop immediately when a failure occurs.
+    override func setUp() {
+        super.setUp()
         continueAfterFailure = false
-
-        // In UI tests it’s important to set the initial state - such as interface orientation - required for your tests before they run. The setUp method is a good place to do this.
-    }
-
-    override func tearDownWithError() throws {
-        // Put teardown code here. This method is called after the invocation of each test method in the class.
     }
 
     @MainActor
-    func testExample() throws {
-        // UI tests must launch the application that they test.
+    func testWorkspaceHomeOpensTerminalDetail() throws {
         let app = XCUIApplication()
         app.launch()
 
-        // Use XCTAssert and related functions to verify your tests produce the correct results.
-        XCTAssertTrue(true)
+        XCTAssertTrue(app.collectionViews["cmux.mobile.home"].waitForExistence(timeout: 6))
+        XCTAssertTrue(app.cmuxElement("auth.status.row").waitForExistence(timeout: 4))
+        XCTAssertTrue(app.cmuxElement("hive.node.node-macbook").waitForExistence(timeout: 4))
+
+        let workspace = app.cmuxElement("workspace.row.workspace-ios-port")
+        XCTAssertTrue(workspace.waitForExistence(timeout: 4))
+        workspace.tap()
+
+        XCTAssertTrue(app.cmuxElement("workspace.detail.workspace-ios-port").waitForExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["main / pane 1 / shell"].waitForExistence(timeout: 4))
+        XCTAssertTrue(app.staticTexts["CMX_SENTINEL_TO_SIM"].waitForExistence(timeout: 4))
+    }
+}
+
+private extension XCUIApplication {
+    func cmuxElement(_ identifier: String) -> XCUIElement {
+        descendants(matching: .any)[identifier]
     }
 }
