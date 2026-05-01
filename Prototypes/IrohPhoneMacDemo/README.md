@@ -28,4 +28,4 @@ Press `c` to copy the ticket shown in the TUI. Press `q` to quit.
 
 Open `iOS/IrohPhoneDemo.xcworkspace`, or build with XcodeBuildMCP after the XCFramework exists. Paste the Mac ticket into the app and tap `Ping Mac`.
 
-The app shows ping latency, PTY command latency, and the Mac pseudoterminal output. The first request for a ticket includes connection setup. Later requests reuse the same iroh connection and open a new stream per command. The TUI logs the iPhone request.
+The app shows ping latency, PTY command latency, and the Mac pseudoterminal output. The first request for a ticket includes connection setup. Later requests reuse the same iroh connection and open a new stream per command. If the cached connection stops responding after a network change, the next request times out, reconnects from the ticket, and retries once. The TUI logs the iPhone request.

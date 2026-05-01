@@ -3,7 +3,7 @@ use std::{
     io,
     os::raw::c_char,
     sync::{Mutex, OnceLock},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -18,6 +18,8 @@ use tokio::sync::mpsc;
 
 pub const ALPN: &[u8] = b"cmux/iroh-phone-mac-demo/0";
 const MAX_MESSAGE_BYTES: usize = 64 * 1024;
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(8);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(6);
 static CLIENT_CACHE: OnceLock<Mutex<Option<CachedClient>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -327,9 +329,21 @@ async fn send_wire_request(ticket: &str, request: &WireRequest) -> Result<WireSu
         .map_err(|error| anyhow::anyhow!("failed to parse iroh ticket: {error}"))?;
     let endpoint = Endpoint::bind(presets::N0).await?;
     let start = Instant::now();
-    let connection = endpoint
-        .connect(ticket.endpoint_addr().clone(), ALPN)
-        .await?;
+    let connection = match tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        endpoint.connect(ticket.endpoint_addr().clone(), ALPN),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            endpoint.close().await;
+            anyhow::bail!(
+                "iroh connect timed out after {} ms",
+                CONNECT_TIMEOUT.as_millis()
+            );
+        }
+    };
     let summary = send_wire_request_on_connection(&connection, request, start).await?;
 
     connection.close(0u32.into(), b"done");
@@ -343,15 +357,25 @@ async fn send_wire_request_on_connection(
     request: &WireRequest,
     start: Instant,
 ) -> Result<WireSummary> {
-    let (mut send, mut recv): (SendStream, RecvStream) = connection.open_bi().await?;
+    let response = tokio::time::timeout(REQUEST_TIMEOUT, async {
+        let (mut send, mut recv): (SendStream, RecvStream) = connection.open_bi().await?;
 
-    let request = serde_json::to_vec(request)?;
-    send.write_all(&request).await?;
-    send.finish()?;
+        let request = serde_json::to_vec(request)?;
+        send.write_all(&request).await?;
+        send.finish()?;
 
-    let response_bytes = recv.read_to_end(MAX_MESSAGE_BYTES).await?;
-    let response: WireResponse =
-        serde_json::from_slice(&response_bytes).context("mac returned invalid demo response")?;
+        let response_bytes = recv.read_to_end(MAX_MESSAGE_BYTES).await?;
+        let response: WireResponse = serde_json::from_slice(&response_bytes)
+            .context("mac returned invalid demo response")?;
+        Ok::<_, anyhow::Error>(response)
+    })
+    .await
+    .map_err(|_| {
+        anyhow::anyhow!(
+            "iroh request timed out after {} ms",
+            REQUEST_TIMEOUT.as_millis()
+        )
+    })??;
 
     Ok(WireSummary {
         rtt_ms: elapsed_ms(start),
@@ -399,9 +423,21 @@ impl CachedClient {
         let runtime = tokio::runtime::Runtime::new()?;
         let (endpoint, connection) = runtime.block_on(async {
             let endpoint = Endpoint::bind(presets::N0).await?;
-            let connection = endpoint
-                .connect(parsed_ticket.endpoint_addr().clone(), ALPN)
-                .await?;
+            let connection = match tokio::time::timeout(
+                CONNECT_TIMEOUT,
+                endpoint.connect(parsed_ticket.endpoint_addr().clone(), ALPN),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    endpoint.close().await;
+                    anyhow::bail!(
+                        "iroh connect timed out after {} ms",
+                        CONNECT_TIMEOUT.as_millis()
+                    );
+                }
+            };
             Ok::<_, anyhow::Error>((endpoint, connection))
         })?;
 
@@ -430,7 +466,6 @@ impl Drop for CachedClient {
 }
 
 fn send_cached_wire_request(ticket: &str, request: &WireRequest) -> Result<WireSummary> {
-    let start = Instant::now();
     let ticket = ticket.trim().to_string();
     let cache = CLIENT_CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache
@@ -445,14 +480,20 @@ fn send_cached_wire_request(ticket: &str, request: &WireRequest) -> Result<WireS
         *guard = Some(CachedClient::connect(ticket.clone())?);
     }
 
-    let result = guard
+    let first_result = guard
         .as_ref()
         .context("iroh client cache missing after connect")?
-        .send(request, start);
-    if result.is_err() {
-        *guard = None;
+        .send(request, Instant::now());
+    if first_result.is_ok() {
+        return first_result;
     }
-    result
+
+    *guard = None;
+    *guard = Some(CachedClient::connect(ticket)?);
+    guard
+        .as_ref()
+        .context("iroh client cache missing after reconnect")?
+        .send(request, Instant::now())
 }
 
 #[unsafe(no_mangle)]
