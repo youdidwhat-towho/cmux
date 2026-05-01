@@ -52,7 +52,6 @@ if [[ ! -d "$APP" ]]; then
   exit 1
 fi
 
-/usr/bin/osascript -e "tell application id \"${BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
 pkill -f "cmux DEV ${TAG}.app/Contents/MacOS/cmux DEV" >/dev/null 2>&1 || true
 rm -f "$APP_SOCKET" "$APP_LOG"
 

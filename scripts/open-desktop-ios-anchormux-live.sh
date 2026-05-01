@@ -80,7 +80,7 @@ wait_for_process_pattern_exit() {
 cd "$ROOT"
 ensure_local_ghosttykit_link
 
-/usr/bin/osascript -e 'tell application "Simulator" to quit' >/dev/null 2>&1 || true
+pkill -x Simulator >/dev/null 2>&1 || true
 for app_pattern in \
   "cmux DEV .*\\.app/Contents/MacOS/cmux DEV" \
   "cmuxd-remote serve --unix --socket .*/cmuxd-dev-.*\\.sock" \
