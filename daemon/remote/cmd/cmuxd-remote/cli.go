@@ -578,14 +578,6 @@ func isConnectionRefused(err error) bool {
 	return strings.Contains(err.Error(), "connection refused")
 }
 
-func setTCPNoDelay(conn net.Conn) {
-	tcpConn, ok := conn.(*net.TCPConn)
-	if !ok {
-		return
-	}
-	_ = tcpConn.SetNoDelay(true)
-}
-
 func authenticateRelayConn(conn net.Conn, auth *relayAuthState) error {
 	reader := bufio.NewReader(conn)
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
