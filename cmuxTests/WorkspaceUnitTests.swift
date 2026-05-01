@@ -518,7 +518,7 @@ final class WorkspaceRenameShortcutDefaultsTests: XCTestCase {
                 proposedShortcut: conflictingShortcut
             )
         )
-        XCTAssertFalse(button.debugIsRecording)
+        XCTAssertTrue(button.debugIsRecording)
 #else
         XCTFail("Shortcut recorder debug hooks are only available in DEBUG")
 #endif
@@ -622,7 +622,7 @@ final class WorkspaceRenameShortcutDefaultsTests: XCTestCase {
 #endif
     }
 
-    func testShortcutRecorderLocalMonitorSwallowsRejectedBareKeyWhileRecording() {
+    func testShortcutRecorderKeepsCaptureActiveAfterRejectedBareKeys() {
 #if DEBUG
         KeyboardShortcutSettings.resetAll()
         defer { KeyboardShortcutSettings.resetAll() }
@@ -632,7 +632,7 @@ final class WorkspaceRenameShortcutDefaultsTests: XCTestCase {
         button.onRecorderFeedbackChanged = { rejectedAttempt = $0 }
         button.performClick(nil)
 
-        guard let event = NSEvent.keyEvent(
+        guard let firstEvent = NSEvent.keyEvent(
             with: .keyDown,
             location: .zero,
             modifierFlags: [],
@@ -647,12 +647,50 @@ final class WorkspaceRenameShortcutDefaultsTests: XCTestCase {
             XCTFail("Failed to construct bare A event")
             return
         }
+        guard let secondEvent = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            characters: "t",
+            charactersIgnoringModifiers: "t",
+            isARepeat: false,
+            keyCode: 17
+        ) else {
+            XCTFail("Failed to construct bare T event")
+            return
+        }
+        guard let escapeEvent = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: 0,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        ) else {
+            XCTFail("Failed to construct Escape event")
+            return
+        }
 
         XCTAssertNil(
-            button.debugHandleMonitoredRecordingEvent(event),
+            button.debugHandleMonitoredRecordingEvent(firstEvent),
             "The recorder's local monitor must swallow consumed key events so Settings search and sidebar type-selection cannot see them."
         )
         XCTAssertEqual(rejectedAttempt?.reason, .bareKeyNotAllowed)
+        XCTAssertTrue(button.debugIsRecording)
+        XCTAssertNil(
+            button.debugHandleMonitoredRecordingEvent(secondEvent),
+            "The recorder must keep swallowing later invalid keys while the validation message is visible."
+        )
+        XCTAssertEqual(rejectedAttempt?.reason, .bareKeyNotAllowed)
+        XCTAssertTrue(button.debugIsRecording)
+        XCTAssertNil(button.debugHandleMonitoredRecordingEvent(escapeEvent))
         XCTAssertFalse(button.debugIsRecording)
 #else
         XCTFail("Shortcut recorder debug hooks are only available in DEBUG")

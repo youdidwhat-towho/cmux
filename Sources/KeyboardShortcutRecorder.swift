@@ -320,7 +320,6 @@ final class ShortcutRecorderNSButton: NSButton {
                     onRecorderFeedbackChanged?(
                         ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: firstShortcut)
                     )
-                    stopRecording()
                     return nil
                 }
             case let .rejected(reason):
@@ -328,7 +327,6 @@ final class ShortcutRecorderNSButton: NSButton {
                 onRecorderFeedbackChanged?(
                     ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: nil)
                 )
-                stopRecording()
                 return nil
             case .unsupportedKey:
                 return nil
@@ -353,7 +351,6 @@ final class ShortcutRecorderNSButton: NSButton {
                 onRecorderFeedbackChanged?(
                     ShortcutRecorderRejectedAttempt(reason: reason, proposedShortcut: newShortcut)
                 )
-                stopRecording()
                 return nil
             }
         }
