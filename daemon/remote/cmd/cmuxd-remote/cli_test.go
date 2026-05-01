@@ -435,6 +435,10 @@ func TestCLIPingV1OverAuthenticatedTCPWithRelayFile(t *testing.T) {
 }
 
 func TestDialSocketDetection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("CMUX_RELAY_ID", "")
+	t.Setenv("CMUX_RELAY_TOKEN", "")
+
 	// Unix socket paths should attempt Unix dial
 	for _, path := range []string{"/tmp/cmux-nonexistent-test-99999.sock", "/var/run/cmux-nonexistent.sock"} {
 		conn, err := dialSocket(path, nil)
