@@ -57,7 +57,7 @@ extension CMUXCLI {
             guard let implementation = try parsed.implementation() else { return }
             try runFeedTUI(implementation: implementation, socketPath: socketPath, socketPassword: socketPassword)
         case "help", "--help", "-h":
-            print("Usage: cmux feed tui [--opentui|--legacy]\n       cmux feed clear [--yes]")
+            print("Usage: cmux feed tui [--opentui|--legacy]\n       cmux feed clear [--yes|-y]")
         default:
             throw CLIError(message: "Unknown feed subcommand: \(subcommand)")
         }
