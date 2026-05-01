@@ -882,16 +882,24 @@
 				D7AB0000000000000000000E /* CMUXCLI+MoveTabToNewWorkspace.swift */,
 				B9000030A1B2C3D4E5F60719 /* CMUXCLI+RootArguments.swift */,
 				B9000036A1B2C3D4E5F60719 /* CMUXCLI+Feed.swift */,
-				B9000038A1B2C3D4E5F60719 /* CMUXCLI+CommandInventory.swift */,
-				B9000040A1B2C3D4E5F60719 /* CMUXCLI+BrowserCommandInventory.swift */,
-				B9000044A1B2C3D4E5F60719 /* CMUXCLI+CommandInventoryVerification.swift */,
-				B9000042A1B2C3D4E5F60719 /* CMUXCLI+Completion.swift */,
+				B9000060A1B2C3D4E5F60719 /* CommandInventory */,
 				B9000046A1B2C3D4E5F60719 /* CMUXCLI+DocsSettings.swift */,
 				B900002DA1B2C3D4E5F60719 /* CMUXCLI+ThemeSupport.swift */,
 				B900002CA1B2C3D4E5F60719 /* CMUXCLI+Themes.swift */,
 				B9000048A1B2C3D4E5F60719 /* CMUXCLI+TopRendering.swift */,
 			);
 			path = CLI;
+			sourceTree = "<group>";
+		};
+		B9000060A1B2C3D4E5F60719 /* CommandInventory */ = {
+			isa = PBXGroup;
+			children = (
+				B9000038A1B2C3D4E5F60719 /* CMUXCLI+CommandInventory.swift */,
+				B9000040A1B2C3D4E5F60719 /* CMUXCLI+BrowserCommandInventory.swift */,
+				B9000044A1B2C3D4E5F60719 /* CMUXCLI+CommandInventoryVerification.swift */,
+				B9000042A1B2C3D4E5F60719 /* CMUXCLI+Completion.swift */,
+			);
+			path = CommandInventory;
 			sourceTree = "<group>";
 		};
 		F1000003A1B2C3D4E5F60718 /* cmuxTests */ = {
