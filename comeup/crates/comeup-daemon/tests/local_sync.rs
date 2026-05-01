@@ -99,6 +99,59 @@ async fn two_local_clients_receive_workspace_delta_and_terminal_output() {
     server.shutdown();
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn silent_disconnect_releases_visible_terminal_size() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let server = ComeupServer::start(ServerOptions {
+        shell: "/bin/cat".to_string(),
+        cwd: Some(dir.path().to_path_buf()),
+        initial_viewport: Viewport { cols: 80, rows: 24 },
+    })
+    .expect("start server");
+
+    let mut first = server
+        .connect(Viewport {
+            cols: 100,
+            rows: 30,
+        })
+        .await
+        .expect("connect first");
+    let mut second = server
+        .connect(Viewport { cols: 70, rows: 20 })
+        .await
+        .expect("connect second");
+
+    let initial_terminal_id = match recv(&mut first).await {
+        ServerMsg::Welcome { snapshot, .. } => snapshot.focus.terminal_id,
+        other => panic!("expected first welcome, got {other:?}"),
+    };
+    assert!(matches!(recv(&mut second).await, ServerMsg::Welcome { .. }));
+    assert_eq!(
+        recv_terminal_size_delta(&mut first, initial_terminal_id).await,
+        Viewport { cols: 70, rows: 20 }
+    );
+
+    drop(second);
+    first
+        .send(ClientMsg::Command {
+            id: 1,
+            command: Command::CreateWorkspace {
+                title: "After Disconnect".to_string(),
+            },
+        })
+        .expect("send create workspace");
+
+    assert_eq!(
+        recv_terminal_size_delta(&mut first, initial_terminal_id).await,
+        Viewport {
+            cols: 100,
+            rows: 30
+        }
+    );
+
+    server.shutdown();
+}
+
 async fn recv(client: &mut comeup_daemon::LocalClient) -> ServerMsg {
     timeout(Duration::from_secs(5), client.recv())
         .await
