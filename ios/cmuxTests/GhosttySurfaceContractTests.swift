@@ -173,6 +173,32 @@ final class GhosttySurfaceContractTests: XCTestCase {
         XCTAssertEqual(renderedSize.rows, targetRows)
     }
 
+    func testGhosttySurfaceShowsVisibleBoundsAroundConstrainedGrid() async throws {
+        let snapshot = try await MainActor.run {
+            let (surfaceView, delegate) = try makeSurfaceView()
+            surfaceView.frame = CGRect(x: 0, y: 0, width: 820, height: 900)
+            surfaceView.layoutIfNeeded()
+            let natural = try XCTUnwrap(delegate.lastSize)
+
+            surfaceView.applyViewSize(
+                cols: max(1, natural.columns - 12),
+                rows: max(1, natural.rows - 8)
+            )
+            surfaceView.layoutIfNeeded()
+
+            return surfaceView.debugGeometrySnapshotForTesting()
+        }
+
+        XCTAssertTrue(snapshot.isLetterboxBorderVisible)
+        let borderPathBounds = try XCTUnwrap(snapshot.letterboxBorderPathBounds)
+        XCTAssertGreaterThanOrEqual(borderPathBounds.minX, 0)
+        XCTAssertGreaterThanOrEqual(borderPathBounds.minY, 0)
+        XCTAssertLessThanOrEqual(borderPathBounds.maxX, snapshot.boundsSize.width)
+        XCTAssertLessThanOrEqual(borderPathBounds.maxY, snapshot.boundsSize.height)
+        XCTAssertEqual(borderPathBounds.width, snapshot.renderRect.width, accuracy: 2)
+        XCTAssertEqual(borderPathBounds.height, snapshot.renderRect.height, accuracy: 2)
+    }
+
     func testGhosttySurfaceEmitsOutboundBytesForTypedText() async throws {
         let (surfaceView, delegate) = try await MainActor.run {
             try makeSurfaceView()

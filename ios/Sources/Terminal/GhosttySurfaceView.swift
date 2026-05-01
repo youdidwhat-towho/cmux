@@ -559,6 +559,8 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
         let screenScale: CGFloat
         let reportedSize: TerminalGridSize?
         let renderedSize: TerminalGridSize?
+        let isLetterboxBorderVisible: Bool
+        let letterboxBorderPathBounds: CGRect?
     }
 
     func debugGeometrySnapshotForTesting() -> DebugGeometrySnapshot {
@@ -577,7 +579,9 @@ final class GhosttySurfaceView: UIView, TerminalSurfaceHosting {
             renderRect: lastRenderRect,
             screenScale: preferredScreenScale,
             reportedSize: lastReportedSize,
-            renderedSize: renderedSize
+            renderedSize: renderedSize,
+            isLetterboxBorderVisible: letterboxBorderLayer?.isHidden == false,
+            letterboxBorderPathBounds: letterboxBorderLayer?.path?.boundingBoxOfPath
         )
     }
 
