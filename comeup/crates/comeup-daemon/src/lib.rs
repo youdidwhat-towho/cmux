@@ -1,0 +1,470 @@
+#![cfg_attr(
+    not(test),
+    deny(
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::unwrap_used
+    )
+)]
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result, anyhow};
+use comeup_core::Model;
+use comeup_protocol::{
+    ClientId, ClientMsg, Command, PROTOCOL_VERSION, ServerMsg, TerminalId, Viewport,
+    VisibleTerminal,
+};
+use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
+use tokio::sync::{mpsc, oneshot};
+use tokio::task;
+
+#[derive(Debug, Clone)]
+pub struct ServerOptions {
+    pub shell: String,
+    pub cwd: Option<PathBuf>,
+    pub initial_viewport: Viewport,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComeupServer {
+    tx: mpsc::UnboundedSender<DaemonMsg>,
+}
+
+impl ComeupServer {
+    pub fn start(opts: ServerOptions) -> Result<Self> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut terminals = HashMap::new();
+        let terminal = PtyTerminal::spawn(
+            1,
+            opts.shell.clone(),
+            opts.cwd.clone(),
+            opts.initial_viewport,
+            tx.clone(),
+        )?;
+        terminals.insert(1, terminal);
+
+        let state = DaemonState {
+            model: Model::new(opts.initial_viewport),
+            clients: HashMap::new(),
+            terminals,
+            visible_terminals: HashMap::new(),
+            next_client_id: 1,
+            opts,
+            tx: tx.clone(),
+        };
+        tokio::spawn(run_loop(rx, state));
+        Ok(Self { tx })
+    }
+
+    pub async fn connect(&self, viewport: Viewport) -> Result<LocalClient> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.tx
+            .send(DaemonMsg::Attach {
+                viewport,
+                reply: reply_tx,
+            })
+            .map_err(|_| anyhow!("comeup server is not running"))?;
+        reply_rx
+            .await
+            .context("comeup server dropped attach reply")?
+    }
+
+    pub fn shutdown(&self) {
+        let _ = self.tx.send(DaemonMsg::Shutdown);
+    }
+}
+
+#[derive(Debug)]
+pub struct LocalClient {
+    client_id: ClientId,
+    tx: mpsc::UnboundedSender<DaemonMsg>,
+    rx: mpsc::UnboundedReceiver<ServerMsg>,
+}
+
+impl LocalClient {
+    #[must_use]
+    pub fn client_id(&self) -> ClientId {
+        self.client_id
+    }
+
+    pub fn send(&self, msg: ClientMsg) -> Result<()> {
+        self.tx
+            .send(DaemonMsg::Client {
+                client_id: self.client_id,
+                msg,
+            })
+            .map_err(|_| anyhow!("comeup server is not running"))
+    }
+
+    pub async fn recv(&mut self) -> Option<ServerMsg> {
+        self.rx.recv().await
+    }
+}
+
+struct DaemonState {
+    model: Model,
+    clients: HashMap<ClientId, mpsc::UnboundedSender<ServerMsg>>,
+    terminals: HashMap<TerminalId, PtyTerminal>,
+    visible_terminals: HashMap<(ClientId, TerminalId), VisibleTerminal>,
+    next_client_id: ClientId,
+    opts: ServerOptions,
+    tx: mpsc::UnboundedSender<DaemonMsg>,
+}
+
+enum DaemonMsg {
+    Attach {
+        viewport: Viewport,
+        reply: oneshot::Sender<Result<LocalClient>>,
+    },
+    Client {
+        client_id: ClientId,
+        msg: ClientMsg,
+    },
+    TerminalOutput {
+        terminal_id: TerminalId,
+        data: Vec<u8>,
+    },
+    Shutdown,
+}
+
+async fn run_loop(mut rx: mpsc::UnboundedReceiver<DaemonMsg>, mut state: DaemonState) {
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            DaemonMsg::Attach { viewport, reply } => {
+                let client = attach_client(&mut state, viewport);
+                let _ = reply.send(client);
+            }
+            DaemonMsg::Client { client_id, msg } => {
+                handle_client_msg(&mut state, client_id, msg);
+            }
+            DaemonMsg::TerminalOutput { terminal_id, data } => {
+                broadcast(&mut state, ServerMsg::TerminalOutput { terminal_id, data });
+            }
+            DaemonMsg::Shutdown => break,
+        }
+    }
+    for terminal in state.terminals.values() {
+        terminal.kill();
+    }
+}
+
+fn attach_client(state: &mut DaemonState, viewport: Viewport) -> Result<LocalClient> {
+    let client_id = state.next_client_id;
+    state.next_client_id = state.next_client_id.saturating_add(1);
+    let (client_tx, client_rx) = mpsc::unbounded_channel();
+    let terminal_id = state.model.focus().terminal_id;
+    state.visible_terminals.insert(
+        (client_id, terminal_id),
+        VisibleTerminal {
+            client_id,
+            terminal_id,
+            cols: viewport.cols,
+            rows: viewport.rows,
+            visible: true,
+        },
+    );
+    apply_visible_resize_for_terminal(state, terminal_id);
+
+    let welcome = ServerMsg::Welcome {
+        client_id,
+        snapshot: state.model.snapshot(),
+    };
+    client_tx
+        .send(welcome)
+        .map_err(|_| anyhow!("failed to send welcome to local client"))?;
+    state.clients.insert(client_id, client_tx);
+
+    Ok(LocalClient {
+        client_id,
+        tx: state.tx.clone(),
+        rx: client_rx,
+    })
+}
+
+fn handle_client_msg(state: &mut DaemonState, client_id: ClientId, msg: ClientMsg) {
+    match msg {
+        ClientMsg::Hello { version, .. } => {
+            if version != PROTOCOL_VERSION {
+                send_to_client(
+                    state,
+                    client_id,
+                    ServerMsg::Error {
+                        message: format!("unsupported protocol version {version}"),
+                    },
+                );
+            }
+        }
+        ClientMsg::Command { id, command } => handle_command(state, client_id, id, command),
+        ClientMsg::TerminalInput {
+            terminal_id, data, ..
+        } => {
+            let Some(terminal) = state.terminals.get(&terminal_id) else {
+                send_to_client(
+                    state,
+                    client_id,
+                    ServerMsg::Error {
+                        message: format!("unknown terminal {terminal_id}"),
+                    },
+                );
+                return;
+            };
+            if let Err(err) = terminal.write(data) {
+                send_to_client(
+                    state,
+                    client_id,
+                    ServerMsg::Error {
+                        message: err.to_string(),
+                    },
+                );
+            }
+        }
+        ClientMsg::VisibleTerminals { terminals } => {
+            let mut changed = Vec::new();
+            for visible in terminals {
+                changed.push(visible.terminal_id);
+                state
+                    .visible_terminals
+                    .insert((client_id, visible.terminal_id), visible);
+            }
+            changed.sort_unstable();
+            changed.dedup();
+            for terminal_id in changed {
+                apply_visible_resize_for_terminal(state, terminal_id);
+            }
+        }
+        ClientMsg::Ping {
+            ping_id,
+            client_sent_monotonic_ns,
+        } => send_to_client(
+            state,
+            client_id,
+            ServerMsg::Pong {
+                ping_id,
+                client_sent_monotonic_ns,
+                node_sent_monotonic_ns: monotonicish_ns(),
+            },
+        ),
+        ClientMsg::Detach => {
+            state.clients.remove(&client_id);
+            remove_visible_client(state, client_id);
+        }
+    }
+}
+
+fn apply_visible_resize_for_terminal(state: &mut DaemonState, terminal_id: TerminalId) {
+    let fallback = state
+        .model
+        .terminal_size(terminal_id)
+        .unwrap_or(Viewport { cols: 80, rows: 24 });
+    let visible = state
+        .visible_terminals
+        .values()
+        .copied()
+        .collect::<Vec<_>>();
+    let size = comeup_core::effective_terminal_size(terminal_id, &visible, fallback);
+    if size == fallback {
+        return;
+    }
+    if let Some(delta) = state.model.resize_terminal(terminal_id, size) {
+        if let Some(terminal) = state.terminals.get(&terminal_id) {
+            terminal.resize(size).ok();
+        }
+        broadcast(state, ServerMsg::Delta { delta });
+    }
+}
+
+fn remove_visible_client(state: &mut DaemonState, client_id: ClientId) {
+    let terminal_ids = state
+        .visible_terminals
+        .values()
+        .filter(|visible| visible.client_id == client_id)
+        .map(|visible| visible.terminal_id)
+        .collect::<Vec<_>>();
+    state
+        .visible_terminals
+        .retain(|(visible_client_id, _), _| *visible_client_id != client_id);
+    for terminal_id in terminal_ids {
+        apply_visible_resize_for_terminal(state, terminal_id);
+    }
+}
+
+fn handle_command(state: &mut DaemonState, client_id: ClientId, id: u64, command: Command) {
+    match command {
+        Command::CreateWorkspace { title } => {
+            let deltas = state.model.create_workspace(title);
+            for delta in deltas {
+                broadcast(state, ServerMsg::Delta { delta });
+            }
+            let terminal_id = state.model.focus().terminal_id;
+            if !state.terminals.contains_key(&terminal_id) {
+                match PtyTerminal::spawn(
+                    terminal_id,
+                    state.opts.shell.clone(),
+                    state.opts.cwd.clone(),
+                    state.opts.initial_viewport,
+                    state.tx.clone(),
+                ) {
+                    Ok(terminal) => {
+                        state.terminals.insert(terminal_id, terminal);
+                    }
+                    Err(err) => {
+                        send_to_client(
+                            state,
+                            client_id,
+                            ServerMsg::Error {
+                                message: err.to_string(),
+                            },
+                        );
+                    }
+                }
+            }
+            send_to_client(
+                state,
+                client_id,
+                ServerMsg::CommandAck {
+                    id,
+                    seq: state.model.seq(),
+                },
+            );
+        }
+    }
+}
+
+fn send_to_client(state: &mut DaemonState, client_id: ClientId, msg: ServerMsg) {
+    let Some(tx) = state.clients.get(&client_id) else {
+        return;
+    };
+    if tx.send(msg).is_err() {
+        state.clients.remove(&client_id);
+    }
+}
+
+fn broadcast(state: &mut DaemonState, msg: ServerMsg) {
+    let mut closed = Vec::new();
+    for (client_id, tx) in &state.clients {
+        if tx.send(msg.clone()).is_err() {
+            closed.push(*client_id);
+        }
+    }
+    for client_id in closed {
+        state.clients.remove(&client_id);
+    }
+}
+
+fn monotonicish_ns() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos() as u64)
+}
+
+struct PtyTerminal {
+    tx: mpsc::UnboundedSender<TerminalOp>,
+    killer: Arc<StdMutex<Box<dyn ChildKiller + Send + Sync>>>,
+}
+
+impl PtyTerminal {
+    fn spawn(
+        id: TerminalId,
+        shell: String,
+        cwd: Option<PathBuf>,
+        size: Viewport,
+        daemon_tx: mpsc::UnboundedSender<DaemonMsg>,
+    ) -> Result<Self> {
+        let pty_system = native_pty_system();
+        let pair = pty_system
+            .openpty(PtySize {
+                cols: size.cols.max(1),
+                rows: size.rows.max(1),
+                pixel_width: 0,
+                pixel_height: 0,
+            })
+            .context("open pty")?;
+        let mut cmd = CommandBuilder::new(shell);
+        if let Some(cwd) = cwd {
+            cmd.cwd(cwd);
+        }
+        cmd.env("TERM", "xterm-256color");
+        let child = pair.slave.spawn_command(cmd).context("spawn pty command")?;
+        let killer = Arc::new(StdMutex::new(child.clone_killer()));
+        drop(pair.slave);
+
+        let reader = pair.master.try_clone_reader().context("clone pty reader")?;
+        let master = pair.master;
+        let (tx, mut rx) = mpsc::unbounded_channel::<TerminalOp>();
+
+        let output_tx = daemon_tx.clone();
+        task::spawn_blocking(move || {
+            use std::io::Read;
+            let mut reader = reader;
+            let mut buf = [0; 8192];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let _ = output_tx.send(DaemonMsg::TerminalOutput {
+                            terminal_id: id,
+                            data: buf[..n].to_vec(),
+                        });
+                    }
+                }
+            }
+        });
+
+        task::spawn_blocking(move || {
+            use std::io::Write;
+            let mut writer = match master.take_writer() {
+                Ok(writer) => writer,
+                Err(_) => return,
+            };
+            while let Some(op) = rx.blocking_recv() {
+                match op {
+                    TerminalOp::Write(data) => {
+                        if writer.write_all(&data).is_err() {
+                            break;
+                        }
+                        let _ = writer.flush();
+                    }
+                    TerminalOp::Resize(size) => {
+                        let _ = master.resize(PtySize {
+                            cols: size.cols.max(1),
+                            rows: size.rows.max(1),
+                            pixel_width: 0,
+                            pixel_height: 0,
+                        });
+                    }
+                }
+            }
+        });
+
+        Ok(Self { tx, killer })
+    }
+
+    fn write(&self, data: Vec<u8>) -> Result<()> {
+        self.tx
+            .send(TerminalOp::Write(data))
+            .map_err(|_| anyhow!("terminal writer is closed"))
+    }
+
+    fn resize(&self, size: Viewport) -> Result<()> {
+        self.tx
+            .send(TerminalOp::Resize(size))
+            .map_err(|_| anyhow!("terminal writer is closed"))
+    }
+
+    fn kill(&self) {
+        if let Ok(mut killer) = self.killer.lock() {
+            let _ = killer.kill();
+        }
+    }
+}
+
+enum TerminalOp {
+    Write(Vec<u8>),
+    Resize(Viewport),
+}
