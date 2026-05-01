@@ -146,7 +146,7 @@ def main() -> int:
         failures: list[str] = []
         middle_prefixed = raw_completion_candidates(
             cli_path,
-            ["cmux", "browser", "tab", "new", "s"],
+            ["cmux", "browser", "s", "tab", "new"],
             2,
             1,
         )

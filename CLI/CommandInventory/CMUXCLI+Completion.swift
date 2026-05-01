@@ -87,14 +87,19 @@ extension CMUXCLI {
         completingArgumentIndex: Int,
         completingPrefix: String
     ) -> [String] {
+        let effectiveCompletingPrefix = commandPathCompletingPrefix(
+            arguments: arguments,
+            completingArgumentIndex: completingArgumentIndex,
+            fallbackPrefix: completingPrefix
+        )
         let relevantArguments = completionArguments(
             arguments: arguments,
             completingArgumentIndex: completingArgumentIndex,
-            completingPrefix: completingPrefix
+            completingPrefix: effectiveCompletingPrefix
         )
         let completedTokens = completedCommandTokens(
             arguments: relevantArguments,
-            completingPrefix: completingPrefix
+            completingPrefix: effectiveCompletingPrefix
         )
         let candidateIndex = completedTokens.count
         let candidates = argumentParserInventoryTokenPaths.compactMap { path -> String? in
@@ -105,13 +110,25 @@ extension CMUXCLI {
                 return nil
             }
             let candidate = path[candidateIndex]
-            guard completingPrefix.isEmpty || candidate.hasPrefix(completingPrefix) else {
+            guard effectiveCompletingPrefix.isEmpty || candidate.hasPrefix(effectiveCompletingPrefix) else {
                 return nil
             }
             return candidate
         }
 
         return Array(Set(candidates)).sorted()
+    }
+
+    private static func commandPathCompletingPrefix(
+        arguments: [String],
+        completingArgumentIndex: Int,
+        fallbackPrefix: String
+    ) -> String {
+        guard completingArgumentIndex >= 0,
+              completingArgumentIndex < arguments.count else {
+            return fallbackPrefix
+        }
+        return String(arguments[completingArgumentIndex].prefix(fallbackPrefix.count))
     }
 
     private static func completionArguments(
@@ -154,7 +171,6 @@ extension CMUXCLI {
     }
 
     private static func stripRootOptions(from tokens: [String]) -> [String] {
-        var output: [String] = []
         var index = 0
         while index < tokens.count {
             let token = tokens[index]
@@ -170,10 +186,9 @@ extension CMUXCLI {
                 index += 1
                 continue
             }
-            output.append(token)
-            index += 1
+            break
         }
-        return output
+        return Array(tokens.dropFirst(index))
     }
 
     private static let rootFlagTokens: Set<String> = [

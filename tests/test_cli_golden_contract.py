@@ -506,15 +506,15 @@ def run_probe(cli_path: str, probe: Probe, temp_root: str) -> Result:
 def normalize(value: str | bytes, temp_root: str, cli_path: str) -> str:
     if isinstance(value, bytes):
         value = value.decode("utf-8", errors="replace")
-    replacements = {
-        temp_root: "<TMP>",
-        os.path.realpath(temp_root): "<TMP>",
-        cli_path: "<CLI>",
-        os.path.realpath(cli_path): "<CLI>",
-        "/private/tmp": "/tmp",
-    }
+    replacements = [
+        (temp_root, "<TMP>"),
+        (os.path.realpath(temp_root), "<TMP>"),
+        (cli_path, "<CLI>"),
+        (os.path.realpath(cli_path), "<CLI>"),
+        ("/private/tmp", "/tmp"),
+    ]
     normalized = value.replace("\r\n", "\n")
-    for old, new in replacements.items():
+    for old, new in sorted(replacements, key=lambda item: len(item[0]), reverse=True):
         normalized = normalized.replace(old, new)
     normalized = normalize_build_metadata(normalized)
     return normalized

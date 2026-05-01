@@ -334,27 +334,6 @@ Settings subcommands:
 | `settings docs` | Print the same output as `docs settings` without a socket. |
 | `settings <target>` | Open Settings to a target section. Supported aliases include `shortcuts`, `json`, `settings-json`, `browser`, and `automation`. |
 
-Docs topics:
-
-| Command | Contract |
-| --- | --- |
-| `docs` | List docs topics without a socket. |
-| `docs settings` | Print the configuration docs URL, raw schema URL, settings file paths, backup reminder, and reload command. |
-| `docs shortcuts` | Print shortcut docs and raw shortcut data resources. |
-| `docs api` | Print API docs and raw CLI contract resources. |
-| `docs browser` | Print browser automation docs and raw browser skill resources. |
-| `docs agents` | Print agent integration docs and raw integration resources. |
-
-Settings subcommands:
-
-| Command | Contract |
-| --- | --- |
-| `settings` | Open the Settings window, launching cmux if needed. |
-| `settings open [target]` | Open Settings to an optional target section. |
-| `settings path` | Print settings.json paths, docs URL, schema URL, backup reminder, and reload command without a socket. |
-| `settings docs` | Print the same output as `docs settings` without a socket. |
-| `settings <target>` | Open Settings to a target section. Supported aliases include `shortcuts`, `json`, `settings-json`, `browser`, and `automation`. |
-
 ## No-Socket Help Probes
 
 The following probes are executable contract checks. They must exit 0 and print
