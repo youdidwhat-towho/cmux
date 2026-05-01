@@ -17,12 +17,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use comeup_core::Model;
 use comeup_protocol::{
-    ClientId, ClientMsg, Command, PROTOCOL_VERSION, ServerMsg, TerminalId, Viewport,
+    ClientId, ClientMsg, Command, Delta, PROTOCOL_VERSION, ServerMsg, TerminalId, Viewport,
     VisibleTerminal, read_msg, write_msg,
 };
 use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
-use tokio::io::BufReader;
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 
@@ -83,6 +83,14 @@ impl ComeupServer {
 }
 
 pub async fn serve_unix_socket(socket_path: impl AsRef<Path>, opts: ServerOptions) -> Result<()> {
+    let server = ComeupServer::start(opts)?;
+    serve_unix_socket_with_server(socket_path, server).await
+}
+
+pub async fn serve_unix_socket_with_server(
+    socket_path: impl AsRef<Path>,
+    server: ComeupServer,
+) -> Result<()> {
     let socket_path = socket_path.as_ref();
     if socket_path.exists() {
         std::fs::remove_file(socket_path)
@@ -95,7 +103,6 @@ pub async fn serve_unix_socket(socket_path: impl AsRef<Path>, opts: ServerOption
 
     let listener = UnixListener::bind(socket_path)
         .with_context(|| format!("bind unix socket {}", socket_path.display()))?;
-    let server = ComeupServer::start(opts)?;
 
     loop {
         let (stream, _) = listener.accept().await.context("accept unix client")?;
@@ -169,6 +176,203 @@ async fn handle_unix_client(server: ComeupServer, stream: UnixStream) -> Result<
     });
     writer.abort();
     Ok(())
+}
+
+pub async fn serve_tcp_text_harness(
+    bind_addr: impl tokio::net::ToSocketAddrs,
+    server: ComeupServer,
+) -> Result<()> {
+    let listener = TcpListener::bind(bind_addr)
+        .await
+        .context("bind tcp text harness")?;
+    loop {
+        let (stream, _) = listener.accept().await.context("accept tcp text client")?;
+        stream.set_nodelay(true).ok();
+        let server = server.clone();
+        tokio::spawn(async move {
+            let _ = handle_tcp_text_client(server, stream).await;
+        });
+    }
+}
+
+async fn handle_tcp_text_client(server: ComeupServer, stream: TcpStream) -> Result<()> {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half).lines();
+    let Some(hello) = reader.next_line().await.context("read text hello")? else {
+        return Ok(());
+    };
+    let Some(rest) = hello.strip_prefix("HELLO ") else {
+        write_half
+            .write_all(b"ERROR first line must be HELLO\n")
+            .await
+            .ok();
+        return Ok(());
+    };
+    let viewport = parse_text_viewport(rest)?;
+    let LocalClient {
+        client_id,
+        tx,
+        mut rx,
+    } = server.connect(viewport).await?;
+    let welcome = rx
+        .recv()
+        .await
+        .ok_or_else(|| anyhow!("server closed before text welcome"))?;
+    write_text_server_msg(&mut write_half, &welcome).await?;
+
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if write_text_server_msg(&mut write_half, &msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    while let Some(line) = reader.next_line().await.context("read text client line")? {
+        let msg = parse_text_client_msg(client_id, &line)?;
+        let should_quit = matches!(msg, ClientMsg::Detach);
+        if tx.send(DaemonMsg::Client { client_id, msg }).is_err() || should_quit {
+            break;
+        }
+    }
+
+    let _ = tx.send(DaemonMsg::Client {
+        client_id,
+        msg: ClientMsg::Detach,
+    });
+    writer.abort();
+    Ok(())
+}
+
+fn parse_text_client_msg(client_id: ClientId, line: &str) -> Result<ClientMsg> {
+    if line == "QUIT" {
+        return Ok(ClientMsg::Detach);
+    }
+    if let Some(rest) = line.strip_prefix("VISIBLE ") {
+        let mut parts = rest.split_whitespace();
+        let terminal_id = parse_next::<TerminalId>(&mut parts, "terminal id")?;
+        let cols = parse_next::<u16>(&mut parts, "cols")?;
+        let rows = parse_next::<u16>(&mut parts, "rows")?;
+        return Ok(ClientMsg::VisibleTerminals {
+            terminals: vec![VisibleTerminal {
+                client_id,
+                terminal_id,
+                cols,
+                rows,
+                visible: true,
+            }],
+        });
+    }
+    if let Some(title) = line.strip_prefix("WORKSPACE ") {
+        return Ok(ClientMsg::Command {
+            id: 1,
+            command: Command::CreateWorkspace {
+                title: title.to_string(),
+            },
+        });
+    }
+    if let Some(rest) = line.strip_prefix("SEND ") {
+        let Some((terminal_id, text)) = rest.split_once(' ') else {
+            return Err(anyhow!("SEND requires terminal id and text"));
+        };
+        return Ok(ClientMsg::TerminalInput {
+            terminal_id: terminal_id.parse()?,
+            input_seq: 1,
+            data: format!("{text}\n").into_bytes(),
+        });
+    }
+    if let Some(ping_id) = line.strip_prefix("PING ") {
+        return Ok(ClientMsg::Ping {
+            ping_id: ping_id.parse()?,
+            client_sent_monotonic_ns: 0,
+        });
+    }
+    Err(anyhow!("unknown text harness command: {line}"))
+}
+
+fn parse_text_viewport(rest: &str) -> Result<Viewport> {
+    let mut parts = rest.split_whitespace();
+    Ok(Viewport {
+        cols: parse_next::<u16>(&mut parts, "cols")?,
+        rows: parse_next::<u16>(&mut parts, "rows")?,
+    })
+}
+
+fn parse_next<T: std::str::FromStr>(
+    parts: &mut std::str::SplitWhitespace<'_>,
+    label: &str,
+) -> Result<T>
+where
+    T::Err: std::error::Error + Send + Sync + 'static,
+{
+    parts
+        .next()
+        .ok_or_else(|| anyhow!("missing {label}"))?
+        .parse::<T>()
+        .with_context(|| format!("parse {label}"))
+}
+
+async fn write_text_server_msg(
+    writer: &mut tokio::net::tcp::OwnedWriteHalf,
+    msg: &ServerMsg,
+) -> Result<()> {
+    let Some(line) = text_server_line(msg) else {
+        return Ok(());
+    };
+    writer.write_all(line.as_bytes()).await?;
+    writer.write_all(b"\n").await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+fn text_server_line(msg: &ServerMsg) -> Option<String> {
+    match msg {
+        ServerMsg::Welcome {
+            client_id,
+            snapshot,
+        } => {
+            let terminal_id = snapshot.focus.terminal_id;
+            let size = snapshot
+                .terminals
+                .iter()
+                .find(|terminal| terminal.id == terminal_id)
+                .map_or(Viewport { cols: 80, rows: 24 }, |terminal| terminal.size);
+            Some(format!(
+                "WELCOME client={client_id} terminal={terminal_id} size={}x{}",
+                size.cols, size.rows
+            ))
+        }
+        ServerMsg::Delta { delta } => match delta {
+            Delta::WorkspaceUpsert { workspace, .. } => Some(format!(
+                "WORKSPACE id={} title={}",
+                workspace.id, workspace.title
+            )),
+            Delta::SpaceUpsert { space, .. } => {
+                Some(format!("SPACE id={} title={}", space.id, space.title))
+            }
+            Delta::PaneUpsert { pane, .. } => Some(format!(
+                "PANE id={} active={}",
+                pane.id, pane.active_terminal_id
+            )),
+            Delta::TerminalUpsert { terminal, .. } => Some(format!(
+                "SIZE terminal={} {}x{}",
+                terminal.id, terminal.size.cols, terminal.size.rows
+            )),
+            Delta::FocusChanged { focus, .. } => {
+                Some(format!("FOCUS terminal={}", focus.terminal_id))
+            }
+        },
+        ServerMsg::TerminalOutput { terminal_id, data } => {
+            let text = String::from_utf8_lossy(data)
+                .replace('\r', "\\r")
+                .replace('\n', "\\n");
+            Some(format!("OUTPUT terminal={terminal_id} {text}"))
+        }
+        ServerMsg::CommandAck { id, seq } => Some(format!("ACK id={id} seq={seq}")),
+        ServerMsg::Pong { ping_id, .. } => Some(format!("PONG id={ping_id}")),
+        ServerMsg::Bye => Some("BYE".to_string()),
+        ServerMsg::Error { message } => Some(format!("ERROR {message}")),
+    }
 }
 
 #[derive(Debug)]
