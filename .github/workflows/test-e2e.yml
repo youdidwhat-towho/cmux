@@ -343,7 +343,47 @@ jobs:
           echo "CMUX_IOS_VIDEO_PATH=$VIDEO_PATH" >> "$GITHUB_ENV"
           sleep 2
 
+      - name: Checkout sync harness
+        if: ${{ contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          submodules: recursive
+
+      - name: Download GhosttyKit for sync harness
+        if: ${{ contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ghosttykit-xcframework
+          path: ${{ runner.temp }}/ghosttykit
+
+      - name: Validate GhosttyKit for sync harness
+        if: ${{ contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
+        run: |
+          set -euo pipefail
+          tar xzf "$RUNNER_TEMP/ghosttykit/GhosttyKit.xcframework.tar.gz" -C .
+          test -d GhosttyKit.xcframework
+
+      - name: Install XcodeGen for sync harness
+        if: ${{ contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
+        run: |
+          set -euo pipefail
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
+
+      - name: Run iOS macOS sync harness
+        if: ${{ contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
+        env:
+          CMUX_IOS_MAC_SYNC_SIMULATOR_ID: ${{ steps.simulator.outputs.id }}
+        run: |
+          set -euo pipefail
+          ./scripts/verify-ios-macos-workspace-sync.sh "e2esync-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
       - name: Run iOS UI test
+        if: ${{ !contains(matrix.test_filter, 'IOSMacWorkspaceSyncUITests') }}
         env:
           TEST_FILTER: ${{ matrix.test_filter }}
           TEST_TIMEOUT: ${{ inputs.test_timeout || '120' }}
