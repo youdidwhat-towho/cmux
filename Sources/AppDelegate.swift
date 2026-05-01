@@ -3277,12 +3277,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     nonisolated static func shouldRemoveSnapshotWhenNoWindowsRemainOnWindowUnregister(
         isTerminatingApp: Bool
     ) -> Bool {
-        // Issue #3416: Closing the last window via the red traffic-light X must
-        // not wipe the on-disk session snapshot. The Cmd+Q termination path
-        // already writes a fresh snapshot from applicationWillTerminate, and
-        // the red-X path now writes a full snapshot before tearing down the
-        // window context (see unregisterMainWindow). Either way, never delete
-        // the snapshot just because no windows happen to be registered.
         false
     }
 
@@ -13162,18 +13156,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // Keep geometry available as a fallback for the next window placement.
         persistWindowGeometry(from: window)
 
-        // Issue #3416: when the user closes the last window via the red X (the
-        // app keeps running in the dock), capture a full snapshot WITH
-        // scrollback BEFORE the closing window's context is removed so the
-        // next launch can restore workspaces, panes, and agents identically
-        // to Cmd+Q. Skip during termination because applicationWillTerminate
-        // already handles that path synchronously.
-        let isClosingLastWindow = mainWindowContexts.count == 1
-        if !isTerminatingApp, isClosingLastWindow {
-            _ = saveSessionSnapshot(
-                includeScrollback: true,
-                removeWhenEmpty: false
-            )
+        // Mirror Cmd+Q's snapshot when the user closes the last window via the red X.
+        if !isTerminatingApp, mainWindowContexts.count == 1 {
+            _ = saveSessionSnapshot(includeScrollback: true, removeWhenEmpty: false)
         }
 
         guard let removed = unregisterMainWindowContext(for: window) else { return }
