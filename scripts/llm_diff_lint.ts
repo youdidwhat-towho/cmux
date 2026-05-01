@@ -50,6 +50,9 @@ type Args = {
   mockResponse?: string;
   thinking: "enabled" | "disabled" | "omit";
 };
+type RawArgs = Omit<Args, "thinking"> & {
+  thinking: string;
+};
 
 const modelResultSchema = z.object({
   rule_id: z.string().optional(),
@@ -82,8 +85,15 @@ const secretPatterns: Array<[RegExp, string]> = [
   ],
 ];
 
+function normalizeThinking(value: string): Args["thinking"] {
+  if (value === "enabled" || value === "disabled" || value === "omit") {
+    return value;
+  }
+  throw new Error(`invalid thinking mode: ${value}`);
+}
+
 function parseArgs(argv: string[]): Args {
-  const args: Args = {
+  const args: RawArgs = {
     base: "origin/main",
     head: "HEAD",
     sourceLabel: "pull request",
@@ -93,7 +103,7 @@ function parseArgs(argv: string[]): Args {
     timeout: Number(process.env.LLM_DIFF_LINT_TIMEOUT || process.env.DEEPSEEK_TIMEOUT || 240),
     maxDiffBytes: Number(process.env.LLM_DIFF_LINT_MAX_DIFF_BYTES || DEFAULT_MAX_DIFF_BYTES),
     skipIfMissingKey: false,
-    thinking: (process.env.LLM_DIFF_LINT_THINKING || process.env.DEEPSEEK_THINKING || "disabled") as Args["thinking"],
+    thinking: process.env.LLM_DIFF_LINT_THINKING || process.env.DEEPSEEK_THINKING || "disabled",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -148,10 +158,7 @@ function parseArgs(argv: string[]): Args {
         break;
       case "--thinking": {
         const thinking = next();
-        if (!["enabled", "disabled", "omit"].includes(thinking)) {
-          throw new Error(`invalid thinking mode: ${thinking}`);
-        }
-        args.thinking = thinking as Args["thinking"];
+        args.thinking = normalizeThinking(thinking);
         break;
       }
       default:
@@ -173,7 +180,7 @@ function parseArgs(argv: string[]): Args {
   if (!Number.isFinite(args.maxDiffBytes) || args.maxDiffBytes < 0) {
     throw new Error(`invalid max diff byte value: ${args.maxDiffBytes}`);
   }
-  return args;
+  return { ...args, thinking: normalizeThinking(args.thinking) };
 }
 
 function githubEscape(value: unknown, propertyValue = false): string {
@@ -304,7 +311,7 @@ function missingKeyResult(args: Args, ruleId: string, envName: string): LintResu
     model: args.model,
     violated: false,
     severity: "none",
-    summary: `${envName} is not set, skipped.`,
+    summary: redactSecrets(`${envName} is not set, skipped.`),
     findings: [],
   };
 }
@@ -316,7 +323,7 @@ function skippedResult(args: Args, ruleId: string, summary: string): LintResult 
     model: args.model,
     violated: false,
     severity: "none",
-    summary,
+    summary: redactSecrets(summary),
     findings: [],
   };
 }
@@ -328,7 +335,7 @@ function failureResult(args: Args, ruleId: string, summary: string): LintResult 
     model: args.model,
     violated: true,
     severity: "failure",
-    summary,
+    summary: redactSecrets(summary),
     findings: [],
   };
 }
@@ -343,14 +350,16 @@ function normalizeResult(args: Args, ruleId: string, parsed: z.infer<typeof mode
   }
 
   const findings: Finding[] = [];
-  for (const finding of (parsed.findings || []).slice(0, 5)) {
-    findings.push({
-      file: redactSecrets(String(finding.file || "")),
-      line: Number.isInteger(finding.line) ? finding.line ?? null : null,
-      excerpt: redactSecrets(String(finding.excerpt || "")),
-      why: redactSecrets(String(finding.why || "")),
-      confidence: redactSecrets(String(finding.confidence || "medium").toLowerCase()),
-    });
+  if (violated) {
+    for (const finding of (parsed.findings || []).slice(0, 5)) {
+      findings.push({
+        file: redactSecrets(String(finding.file || "")),
+        line: Number.isInteger(finding.line) ? finding.line ?? null : null,
+        excerpt: redactSecrets(String(finding.excerpt || "")),
+        why: redactSecrets(String(finding.why || "")),
+        confidence: redactSecrets(String(finding.confidence || "medium").toLowerCase()),
+      });
+    }
   }
 
   return {
@@ -514,8 +523,19 @@ async function main(argv: string[]): Promise<number> {
 
   const rulePath = path.resolve(args.rule);
   const ruleId = path.basename(rulePath).replace(/\.[^.]+$/, "");
-  const ruleText = readText(rulePath);
-  let diff = loadDiff(args);
+  let ruleText: string;
+  let diff: string;
+  try {
+    ruleText = readText(rulePath);
+    diff = loadDiff(args);
+  } catch (error) {
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = redactSecrets(rawMessage);
+    const result = failureResult(args, ruleId, `input load failed: ${message}`);
+    emitResult(result, args, rulePath, 0);
+    console.error(`${ruleId}: ${result.summary}`);
+    return 2;
+  }
   if (!diff.trim()) {
     emitResult(skippedResult(args, ruleId, "Empty diff, skipped."), args, rulePath, 0);
     return 0;
@@ -542,7 +562,8 @@ async function main(argv: string[]): Promise<number> {
       result = await runModel(args, ruleId, ruleText, diff);
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const rawMessage = error instanceof Error ? error.message : String(error);
+    const message = redactSecrets(rawMessage);
     result = failureResult(args, ruleId, `${args.provider} request failed: ${message}`);
     emitResult(result, args, rulePath, diffBytes);
     console.error(`${ruleId}: ${result.summary}`);

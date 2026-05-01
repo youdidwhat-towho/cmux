@@ -46,6 +46,24 @@ if ! grep -Fq '"summary": "clean"' "$TMP_DIR/clean.json"; then
   exit 1
 fi
 
+CLEAN_WITH_FINDING='{"rule_id":"rule","violated":false,"severity":"failure","summary":"clean","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"print(\"bad\")","why":"stale finding","confidence":"high"}]}'
+bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$CLEAN_WITH_FINDING" > "$TMP_DIR/clean-with-finding.out"
+
+if ! grep -Fq '"severity": "none"' "$TMP_DIR/clean-with-finding.out"; then
+  echo "expected violated false to normalize to severity none" >&2
+  cat "$TMP_DIR/clean-with-finding.out" >&2
+  exit 1
+fi
+
+if grep -Fq 'stale finding' "$TMP_DIR/clean-with-finding.out"; then
+  echo "expected findings to be dropped when violated is false" >&2
+  cat "$TMP_DIR/clean-with-finding.out" >&2
+  exit 1
+fi
+
 WARNING='{"rule_id":"rule","violated":true,"severity":"warning","summary":"needs review","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"print(\"bad\")","why":"suspicious","confidence":"medium"}]}'
 bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
@@ -88,6 +106,35 @@ if ! grep -Fq '"severity": "failure"' "$TMP_DIR/invalid-none.out"; then
   exit 1
 fi
 
+if LLM_DIFF_LINT_THINKING=typo bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$CLEAN" > "$TMP_DIR/invalid-thinking.out" 2>&1; then
+  echo "expected invalid env thinking value to fail" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'invalid thinking mode: typo' "$TMP_DIR/invalid-thinking.out"; then
+  echo "expected invalid thinking diagnostic" >&2
+  cat "$TMP_DIR/invalid-thinking.out" >&2
+  exit 1
+fi
+
+if bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$TMP_DIR/missing.diff" \
+  --output "$TMP_DIR/load-fail.json" \
+  --mock-response "$CLEAN" > "$TMP_DIR/load-fail.out" 2>&1; then
+  echo "expected missing diff input to fail" >&2
+  exit 1
+fi
+
+if ! grep -Fq '"summary": "input load failed:' "$TMP_DIR/load-fail.json"; then
+  echo "expected structured load failure JSON artifact" >&2
+  cat "$TMP_DIR/load-fail.json" >&2
+  exit 1
+fi
+
 MALICIOUS_RESPONSE='{"rule_id":"rule","violated":true,"severity":"failure","summary":"leak sk-1234567890abcdefghijklmnop and AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"token = ya29.a0ARrdaM-example","why":"secret ghp_1234567890abcdefghijklmnop leaked","confidence":"high"}]}'
 if bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
@@ -97,7 +144,7 @@ if bun scripts/llm_diff_lint.ts \
   exit 1
 fi
 
-if grep -Eq 'sk-1234567890abcdefghijklmnop|AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|ya29\\.a0ARrdaM-example|ghp_1234567890abcdefghijklmnop' "$TMP_DIR/malicious-response.out"; then
+if grep -Eq 'sk-1234567890abcdefghijklmnop|AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|ya29\.a0ARrdaM-example|ghp_1234567890abcdefghijklmnop' "$TMP_DIR/malicious-response.out"; then
   echo "expected model output secrets to be redacted" >&2
   cat "$TMP_DIR/malicious-response.out" >&2
   exit 1
