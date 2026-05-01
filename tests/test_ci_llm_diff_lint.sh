@@ -150,7 +150,7 @@ if grep -Eq 'sk-1234567890abcdefghijklmnop|AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
   exit 1
 fi
 
-if ! grep -Eq 'sk-REDACTED|AIza-REDACTED|ya29\\.REDACTED|gh_REDACTED' "$TMP_DIR/malicious-response.out"; then
+if ! grep -Eq 'sk-REDACTED|AIza-REDACTED|ya29\.REDACTED|gh_REDACTED' "$TMP_DIR/malicious-response.out"; then
   echo "expected redaction markers in malicious output" >&2
   cat "$TMP_DIR/malicious-response.out" >&2
   exit 1
