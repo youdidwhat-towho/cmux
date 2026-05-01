@@ -1,22 +1,6 @@
 name: LLM Diff Lint
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
-    paths:
-      - "**/*.swift"
-      - "Package.swift"
-      - "GhosttyTabs.xcodeproj/**"
-      - ".github/llm-diff-lint/**"
-      - ".github/workflows/llm-diff-lint.yml"
-      - "scripts/llm_diff_lint.ts"
-      - "scripts/llm_diff_lint_comment.py"
-      - "package.json"
-      - "bun.lock"
   pull_request_target:
     types:
       - opened
@@ -33,46 +17,25 @@ on:
       - "scripts/llm_diff_lint_comment.py"
       - "package.json"
       - "bun.lock"
-  workflow_dispatch:
-    inputs:
-      pr_number:
-        description: Pull request number to lint
-        required: true
-        type: string
 
-permissions:
-  actions: read
-  contents: read
-  id-token: write
-  issues: write
-  pull-requests: write
+permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
-  llm-rule:
-    name: LLM rule (${{ matrix.provider.id }} / ${{ matrix.rule }})
-    if: |
-      github.event_name == 'workflow_dispatch' ||
-      (
-        github.event.pull_request.draft == false &&
-        (
-          (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-          (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
-        )
-      )
+  deepseek-rule:
+    name: LLM rule (deepseek / ${{ matrix.rule }})
+    if: github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     strategy:
       fail-fast: false
       max-parallel: 4
       matrix:
-        provider:
-          - id: deepseek
-            model: deepseek-v4-pro
-          - id: google-vertex
-            model: gemini-3-flash-preview
         rule:
           - swift-concurrency-modernization
           - swift-blocking-runtime
@@ -84,21 +47,108 @@ jobs:
       - name: Checkout trusted workflow code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.ref || github.event.repository.default_branch }}
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Resolve pull request
         id: pr
         env:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            number="$PR_NUMBER_INPUT"
-          else
-            number="$EVENT_PR_NUMBER"
-          fi
+          number="$EVENT_PR_NUMBER"
+          case "$number" in
+            ''|*[!0-9]*)
+              echo "invalid pull request number: $number" >&2
+              exit 2
+              ;;
+          esac
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "url=${{ github.server_url }}/${{ github.repository }}/pull/$number" >> "$GITHUB_OUTPUT"
+          echo "diff_url=${{ github.server_url }}/${{ github.repository }}/pull/$number.diff" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch complete pull request diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh pr diff "${{ steps.pr.outputs.number }}" \
+            --repo "${{ github.repository }}" > "$RUNNER_TEMP/pr.diff"
+          wc -c "$RUNNER_TEMP/pr.diff"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+
+      - name: Install JavaScript dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run LLM lint rule
+        id: lint
+        continue-on-error: true
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
+          LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
+          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
+          LLM_DIFF_LINT_PROVIDER: deepseek
+          LLM_DIFF_LINT_THINKING: ${{ vars.LLM_DIFF_LINT_THINKING || vars.DEEPSEEK_THINKING || 'disabled' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bun scripts/llm_diff_lint.ts \
+            --rule ".github/llm-diff-lint/rules/${{ matrix.rule }}.md" \
+            --diff-file "$RUNNER_TEMP/pr.diff" \
+            --source-label "pull request ${{ steps.pr.outputs.number }}" \
+            --provider "deepseek" \
+            --model "deepseek-v4-pro" \
+            --output "$RUNNER_TEMP/result.json"
+
+      - name: Upload lint result
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: llm-diff-lint-deepseek-${{ matrix.rule }}
+          path: ${{ runner.temp }}/result.json
+          if-no-files-found: warn
+
+      - name: Fail on rule violation
+        if: steps.lint.outcome == 'failure'
+        run: exit 1
+
+  google-vertex-rule:
+    name: LLM rule (google-vertex / ${{ matrix.rule }})
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      pull-requests: read
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        rule:
+          - swift-concurrency-modernization
+          - swift-blocking-runtime
+          - swift-logging
+          - swiftui-state-layout
+          - swift-actor-isolation
+          - swift-concurrent-annotation
+    steps:
+      - name: Checkout trusted workflow code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Resolve pull request
+        id: pr
+        env:
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          number="$EVENT_PR_NUMBER"
           case "$number" in
             ''|*[!0-9]*)
               echo "invalid pull request number: $number" >&2
@@ -126,7 +176,6 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Authenticate to Google Cloud
-        if: matrix.provider.id == 'google-vertex'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
         with:
           workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER || 'projects/502905966334/locations/global/workloadIdentityPools/github-actions/providers/github-actions' }}
@@ -136,15 +185,11 @@ jobs:
         id: lint
         continue-on-error: true
         env:
-          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
-          GOOGLE_VERTEX_PROJECT: ${{ vars.GOOGLE_VERTEX_PROJECT || 'manaflow-437420' }}
           GOOGLE_VERTEX_LOCATION: ${{ vars.GOOGLE_VERTEX_LOCATION || 'global' }}
-          LLM_DIFF_LINT_PROVIDER: ${{ matrix.provider.id }}
-          LLM_DIFF_LINT_MODEL: ${{ matrix.provider.model }}
-          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
-          LLM_DIFF_LINT_THINKING: ${{ vars.LLM_DIFF_LINT_THINKING || vars.DEEPSEEK_THINKING || 'disabled' }}
+          GOOGLE_VERTEX_PROJECT: ${{ vars.GOOGLE_VERTEX_PROJECT || 'manaflow-437420' }}
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
+          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
+          LLM_DIFF_LINT_PROVIDER: google-vertex
         shell: bash
         run: |
           set -euo pipefail
@@ -152,15 +197,15 @@ jobs:
             --rule ".github/llm-diff-lint/rules/${{ matrix.rule }}.md" \
             --diff-file "$RUNNER_TEMP/pr.diff" \
             --source-label "pull request ${{ steps.pr.outputs.number }}" \
-            --provider "${{ matrix.provider.id }}" \
-            --model "${{ matrix.provider.model }}" \
+            --provider "google-vertex" \
+            --model "gemini-3-flash-preview" \
             --output "$RUNNER_TEMP/result.json"
 
       - name: Upload lint result
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: llm-diff-lint-${{ matrix.provider.id }}-${{ matrix.rule }}
+          name: llm-diff-lint-google-vertex-${{ matrix.rule }}
           path: ${{ runner.temp }}/result.json
           if-no-files-found: warn
 
@@ -170,67 +215,54 @@ jobs:
 
   status:
     name: LLM diff lint status
-    needs: llm-rule
+    needs:
+      - deepseek-rule
+      - google-vertex-rule
     if: |
       always() &&
-      (
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event.pull_request.draft == false &&
-          (
-            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-            (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
-          )
-        )
-      )
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     steps:
       - name: Require all provider rule checks to pass
         env:
-          LLM_RULE_RESULT: ${{ needs.llm-rule.result }}
+          DEEPSEEK_RULE_RESULT: ${{ needs.deepseek-rule.result }}
+          GOOGLE_VERTEX_RULE_RESULT: ${{ needs.google-vertex-rule.result }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$LLM_RULE_RESULT" != "success" ]; then
-            echo "LLM rule matrix result: $LLM_RULE_RESULT" >&2
+          if [ "$DEEPSEEK_RULE_RESULT" != "success" ] || [ "$GOOGLE_VERTEX_RULE_RESULT" != "success" ]; then
+            echo "DeepSeek rule matrix result: $DEEPSEEK_RULE_RESULT" >&2
+            echo "Google Vertex rule matrix result: $GOOGLE_VERTEX_RULE_RESULT" >&2
             exit 1
           fi
 
   comment:
     name: Post LLM diff lint comment
-    needs: llm-rule
+    needs:
+      - deepseek-rule
+      - google-vertex-rule
     if: |
       always() &&
-      (
-        github.event_name == 'workflow_dispatch' ||
-        (
-          github.event.pull_request.draft == false &&
-          (
-            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
-            (github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.full_name != github.repository)
-          )
-        )
-      )
+      github.event.pull_request.draft == false
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      issues: write
     steps:
       - name: Checkout trusted workflow code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.ref || github.event.repository.default_branch }}
+          ref: ${{ github.event.repository.default_branch }}
 
       - name: Resolve pull request
         id: pr
         env:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_NUMBER_INPUT: ${{ inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
-            number="$PR_NUMBER_INPUT"
-          else
-            number="$EVENT_PR_NUMBER"
-          fi
+          number="$EVENT_PR_NUMBER"
           case "$number" in
             ''|*[!0-9]*)
               echo "invalid pull request number: $number" >&2

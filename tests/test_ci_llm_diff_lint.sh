@@ -88,6 +88,27 @@ if ! grep -Fq '"severity": "failure"' "$TMP_DIR/invalid-none.out"; then
   exit 1
 fi
 
+MALICIOUS_RESPONSE='{"rule_id":"rule","violated":true,"severity":"failure","summary":"leak sk-1234567890abcdefghijklmnop and AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"token = ya29.a0ARrdaM-example","why":"secret ghp_1234567890abcdefghijklmnop leaked","confidence":"high"}]}'
+if bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$MALICIOUS_RESPONSE" > "$TMP_DIR/malicious-response.out" 2>&1; then
+  echo "expected malicious failure response to fail" >&2
+  exit 1
+fi
+
+if grep -Eq 'sk-1234567890abcdefghijklmnop|AIzaAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA|ya29\\.a0ARrdaM-example|ghp_1234567890abcdefghijklmnop' "$TMP_DIR/malicious-response.out"; then
+  echo "expected model output secrets to be redacted" >&2
+  cat "$TMP_DIR/malicious-response.out" >&2
+  exit 1
+fi
+
+if ! grep -Eq 'sk-REDACTED|AIza-REDACTED|ya29\\.REDACTED|gh_REDACTED' "$TMP_DIR/malicious-response.out"; then
+  echo "expected redaction markers in malicious output" >&2
+  cat "$TMP_DIR/malicious-response.out" >&2
+  exit 1
+fi
+
 env -u DEEPSEEK_API_KEY bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
   --diff-file "$DIFF" \
@@ -158,5 +179,33 @@ python3 scripts/llm_diff_lint_comment.py \
 if ! grep -Fq 'deepseek and google-vertex agreed on all 1 compared rule(s).' "$TMP_DIR/compare-comment.md"; then
   echo "expected provider comparison summary" >&2
   cat "$TMP_DIR/compare-comment.md" >&2
+  exit 1
+fi
+
+WORKFLOW=".github/workflows/llm-diff-lint.yml"
+
+if grep -Eq '^  pull_request:' "$WORKFLOW"; then
+  echo "pull_request must not run LLM diff lint with repository secrets" >&2
+  exit 1
+fi
+
+if grep -Fq 'workflow_dispatch:' "$WORKFLOW"; then
+  echo "workflow_dispatch must not expose repository secrets from branch workflow code" >&2
+  exit 1
+fi
+
+if awk '/^permissions:/{flag=1;next}/^concurrency:/{flag=0}flag' "$WORKFLOW" | grep -Fq 'id-token:'; then
+  echo "top-level id-token permission must stay disabled" >&2
+  exit 1
+fi
+
+id_token_count="$(grep -Fc 'id-token: write' "$WORKFLOW")"
+if [ "$id_token_count" -ne 1 ]; then
+  echo "expected id-token: write only on the Google Vertex job, got $id_token_count" >&2
+  exit 1
+fi
+
+if grep -Fq 'head.repo.full_name' "$WORKFLOW"; then
+  echo "workflow must not checkout PR-controlled code" >&2
   exit 1
 fi

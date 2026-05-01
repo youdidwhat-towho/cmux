@@ -4,6 +4,15 @@ This lint runs one AI SDK request per provider per rule. Each request receives t
 
 The workflow uses `pull_request_target` and fetches the net PR diff with `gh pr diff`. It does not check out or execute PR code, which keeps repository secrets out of untrusted PR scripts.
 
+Security boundaries:
+
+- no `pull_request` trigger, so fork or branch PR code never runs with repository secrets
+- no `workflow_dispatch`, so branch-modified workflow code cannot be manually run with repository secrets
+- checkout always uses the repository default branch
+- `id-token: write` is scoped only to the Google Vertex job
+- model input and model output are redacted before artifacts, annotations, and PR comments
+- the GCP Workload Identity provider is restricted to `.github/workflows/llm-diff-lint.yml` on `main`
+
 ## Secrets And Variables
 
 Required secret:
@@ -21,7 +30,7 @@ Optional repository variables:
 - `LLM_DIFF_LINT_MAX_DIFF_BYTES`, defaults to `5000000`
 - `DEEPSEEK_BASE_URL`, optional DeepSeek override
 
-The default provider matrix compares `deepseek-v4-pro` with `gemini-3-flash-preview` through Vertex AI. GitHub Actions authenticates to Vertex with OIDC workload identity and the `cmux-vertex-ai` service account.
+The default provider matrix compares `deepseek-v4-pro` with `gemini-3-flash-preview` through Vertex AI. GitHub Actions authenticates to Vertex with OIDC workload identity and the `cmux-vertex-ai` service account. This avoids storing a long-lived GCP service account key.
 
 Use `LLM diff lint status` as the required branch-protection check.
 
