@@ -1,0 +1,120 @@
+{
+  "sourceLanguage" : "en",
+  "strings" : {
+    "iroh.demo.defaultMessage" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hello from iPhone" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iPhone からこんにちは" } }
+      }
+    },
+    "iroh.demo.error.invalidResponse" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The Rust bridge returned invalid JSON." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rust ブリッジが無効な JSON を返しました。" } }
+      }
+    },
+    "iroh.demo.error.missingResponse" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The Rust bridge returned no response." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rust ブリッジから応答がありませんでした。" } }
+      }
+    },
+    "iroh.demo.error.unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unknown iroh error" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "不明な iroh エラー" } }
+      }
+    },
+    "iroh.demo.idle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Waiting for a ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "チケットを待機中" } }
+      }
+    },
+    "iroh.demo.message.header" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Request" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "リクエスト" } }
+      }
+    },
+    "iroh.demo.message.placeholder" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Message" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "メッセージ" } }
+      }
+    },
+    "iroh.demo.missingTicket" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste a Mac ticket first." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "先に Mac のチケットを貼り付けてください。" } }
+      }
+    },
+    "iroh.demo.noPasteboardText" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pasteboard does not contain text." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペーストボードにテキストがありません。" } }
+      }
+    },
+    "iroh.demo.pasteTicket" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste Ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "チケットを貼り付け" } }
+      }
+    },
+    "iroh.demo.pingMac" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ping Mac" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Mac に Ping" } }
+      }
+    },
+    "iroh.demo.remote" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Remote: %@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "リモート: %@" } }
+      }
+    },
+    "iroh.demo.sending" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connecting over iroh" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh で接続中" } }
+      }
+    },
+    "iroh.demo.status.header" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Status" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ステータス" } }
+      }
+    },
+    "iroh.demo.success" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Connected in %lld ms" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "%lld ms で接続" } }
+      }
+    },
+    "iroh.demo.ticket.accessibility" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Iroh ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Iroh チケット" } }
+      }
+    },
+    "iroh.demo.ticket.footer" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Copy the ticket from the Mac TUI and paste it here." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Mac TUI からチケットをコピーしてここに貼り付けます。" } }
+      }
+    },
+    "iroh.demo.ticket.header" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Mac Ticket" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Mac チケット" } }
+      }
+    },
+    "iroh.demo.title" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Iroh Link" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Iroh リンク" } }
+      }
+    }
+  },
+  "version" : "1.0"
+}
