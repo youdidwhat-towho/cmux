@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -82,25 +83,36 @@ func TestSessionAttachZshLoginShellStaysAlive(t *testing.T) {
 	}
 	defer ptmx.Close()
 
+	var bufMu sync.Mutex
 	var buf bytes.Buffer
 	done := make(chan error, 1)
 	go func() {
-		_, copyErr := buf.ReadFrom(ptmx)
+		local := bytes.Buffer{}
+		_, copyErr := local.ReadFrom(ptmx)
+		bufMu.Lock()
+		_, _ = buf.Write(local.Bytes())
+		bufMu.Unlock()
 		done <- copyErr
 	}()
 
+	attachOutput := func() string {
+		bufMu.Lock()
+		defer bufMu.Unlock()
+		return buf.String()
+	}
+
 	select {
 	case err := <-done:
-		t.Fatalf("attach exited unexpectedly: %v\n%s", err, buf.String())
+		t.Fatalf("attach exited unexpectedly: %v\n%s", err, attachOutput())
 	case <-time.After(2 * time.Second):
 	}
 
 	writePTY(t, ptmx, "\x1c")
 	if err := attach.Wait(); err != nil {
-		t.Fatalf("detach attach session: %v\n%s", err, buf.String())
+		t.Fatalf("detach attach session: %v\n%s", err, attachOutput())
 	}
-	if strings.Contains(buf.String(), "UnexpectedEndOfInput") {
-		t.Fatalf("attach output contains daemon crash marker: %q", buf.String())
+	if strings.Contains(attachOutput(), "UnexpectedEndOfInput") {
+		t.Fatalf("attach output contains daemon crash marker: %q", attachOutput())
 	}
 }
 
@@ -462,26 +474,46 @@ func writePTY(t *testing.T, ptmx *os.File, text string) {
 func readUntilContains(t *testing.T, ptmx *os.File, want string, timeout time.Duration) string {
 	t.Helper()
 
-	deadline := time.Now().Add(timeout)
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	reads := make(chan readResult, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			n, err := ptmx.Read(buf)
+			if n > 0 {
+				chunk := append([]byte(nil), buf[:n]...)
+				reads <- readResult{data: chunk}
+			}
+			if err != nil {
+				reads <- readResult{err: err}
+				return
+			}
+		}
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
 	var out strings.Builder
-	buf := make([]byte, 4096)
-	for time.Now().Before(deadline) {
-		_ = ptmx.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
-		n, err := ptmx.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
+	for {
+		select {
+		case read := <-reads:
+			if len(read.data) > 0 {
+				out.Write(read.data)
+			}
 			if strings.Contains(out.String(), want) {
 				return out.String()
 			}
-		}
-		if err != nil {
-			if n == 0 {
-				continue
+			if read.err != nil {
+				return out.String()
 			}
+		case <-timer.C:
+			return out.String()
 		}
 	}
-
-	return out.String()
 }
 
 func waitForSessionSize(t *testing.T, bin, socketPath, sessionID string, cols, rows int, timeout time.Duration) {

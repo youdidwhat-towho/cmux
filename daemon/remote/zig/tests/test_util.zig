@@ -213,7 +213,11 @@ pub const Worker = struct {
 
         if (std.mem.eql(u8, req.method, "terminal.subscribe")) {
             const resp = try self.handleTerminalSubscribe(queue, stream, write_mutex, &req);
-            return enqueueResponse(queue, self.alloc, resp);
+            try enqueueResponse(queue, self.alloc, resp);
+            if (terminalSubscribeSessionId(&req)) |session_id| {
+                _ = self.service.activateTerminalSubscription(stream, session_id);
+            }
+            return;
         }
         if (std.mem.eql(u8, req.method, "terminal.unsubscribe")) {
             const resp = try self.handleTerminalUnsubscribe(stream, &req);
@@ -238,6 +242,14 @@ pub const Worker = struct {
             alloc.free(line);
             return err;
         };
+    }
+
+    fn terminalSubscribeSessionId(req: *const json_rpc.Request) ?[]const u8 {
+        const params_value = req.parsed.value.object.get("params") orelse return null;
+        if (params_value != .object) return null;
+        const session_id_v = params_value.object.get("session_id") orelse return null;
+        if (session_id_v != .string) return null;
+        return session_id_v.string;
     }
 
     fn handleTerminalSubscribe(

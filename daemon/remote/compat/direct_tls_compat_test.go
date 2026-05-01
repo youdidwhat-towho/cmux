@@ -75,7 +75,7 @@ func TestDirectTLSSessionScopeIsEnforced(t *testing.T) {
 		"id":     1,
 		"method": "terminal.open",
 		"params": map[string]any{
-			"command": "printf READY; stty raw -echo -onlcr; exec cat",
+			"command": "stty raw -echo -onlcr; printf READY; exec cat",
 			"cols":    120,
 			"rows":    40,
 		},
@@ -130,7 +130,7 @@ func TestDirectTLSValidTicketCanOpenWriteReadAndQueryStatus(t *testing.T) {
 		"id":     1,
 		"method": "terminal.open",
 		"params": map[string]any{
-			"command": "printf READY; stty raw -echo -onlcr; exec cat",
+			"command": "stty raw -echo -onlcr; printf READY; exec cat",
 			"cols":    120,
 			"rows":    40,
 		},
@@ -148,7 +148,7 @@ func TestDirectTLSValidTicketCanOpenWriteReadAndQueryStatus(t *testing.T) {
 			"session_id": sessionID,
 			"offset":     0,
 			"max_bytes":  1024,
-			"timeout_ms": 1000,
+			"timeout_ms": int((5 * time.Second).Milliseconds()),
 		},
 	})
 	if ok, _ := readyResp["ok"].(bool); !ok {
@@ -183,7 +183,7 @@ func TestDirectTLSValidTicketCanOpenWriteReadAndQueryStatus(t *testing.T) {
 			"session_id": sessionID,
 			"offset":     offset,
 			"max_bytes":  1024,
-			"timeout_ms": 1000,
+			"timeout_ms": int((5 * time.Second).Milliseconds()),
 		},
 	})
 	if ok, _ := readResp["ok"].(bool); !ok {

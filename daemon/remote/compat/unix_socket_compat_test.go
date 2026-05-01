@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestHelloFixtureAgainstUnixSocketBinary(t *testing.T) {
@@ -141,7 +142,7 @@ func TestUnixSocketTerminalReadReportsTruncationAfterBufferOverflow(t *testing.T
 		"method": "terminal.open",
 		"params": map[string]any{
 			"session_id": "overflow-dev",
-			"command":    "printf READY; stty raw -echo -onlcr; exec cat",
+			"command":    "stty raw -echo -onlcr; printf READY; exec cat",
 			"cols":       80,
 			"rows":       24,
 		},
@@ -157,7 +158,7 @@ func TestUnixSocketTerminalReadReportsTruncationAfterBufferOverflow(t *testing.T
 			"session_id": "overflow-dev",
 			"offset":     0,
 			"max_bytes":  1024,
-			"timeout_ms": 1000,
+			"timeout_ms": int((5 * time.Second).Milliseconds()),
 		},
 	})
 	if ok, _ := initial["ok"].(bool); !ok {

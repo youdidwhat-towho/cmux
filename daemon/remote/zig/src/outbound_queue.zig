@@ -6,8 +6,8 @@ const std = @import("std");
 ///   - terminal: high-volume PTY push frames
 ///   - control:  RPC responses and workspace.changed pushes
 ///
-/// Fairness rule: under sustained terminal output, at least one queued
-/// control frame is delivered every `fairness_interval_ms` (default 100ms).
+/// Control frames are always delivered before terminal frames. This prevents
+/// high-volume PTY output from starving RPC responses and state updates.
 ///
 /// Backpressure: if an enqueue would push the combined queue above
 /// `max_bytes` (default 4 MiB), the queue marks itself dead and shuts down
@@ -29,8 +29,6 @@ pub const OutboundQueue = struct {
     control_q: std.ArrayListUnmanaged([]u8) = .empty,
     total_bytes: usize = 0,
     max_bytes: usize = 4 * 1024 * 1024,
-    fairness_interval_ms: i64 = 100,
-    last_control_ms: i64 = 0,
 
     closed: bool = false,
     dead: std.atomic.Value(bool) = .init(false),
@@ -40,7 +38,6 @@ pub const OutboundQueue = struct {
         return .{
             .alloc = alloc,
             .fd = fd,
-            .last_control_ms = std.time.milliTimestamp(),
         };
     }
 
@@ -125,16 +122,13 @@ pub const OutboundQueue = struct {
                 return;
             }
 
-            const now = std.time.milliTimestamp();
             const have_control = self.control_q.items.len > 0;
             const have_terminal = self.terminal_q.items.len > 0;
-            const pick_control = have_control and (!have_terminal or
-                (now - self.last_control_ms) >= self.fairness_interval_ms);
+            const pick_control = have_control;
 
             var item: []u8 = undefined;
             if (pick_control) {
                 item = self.control_q.orderedRemove(0);
-                self.last_control_ms = now;
             } else if (have_terminal) {
                 item = self.terminal_q.orderedRemove(0);
             } else {
@@ -170,7 +164,7 @@ pub const OutboundQueue = struct {
 
 // --- Tests ---
 
-test "fairness: control delivered while terminal floods" {
+test "priority: control delivered while terminal queue is full" {
     var fds: [2]std.c.fd_t = undefined;
     if (std.c.socketpair(std.c.AF.UNIX, std.c.SOCK.STREAM, 0, &fds) != 0) {
         return error.SocketPairFailed;
@@ -178,8 +172,6 @@ test "fairness: control delivered while terminal floods" {
     defer std.posix.close(fds[1]);
 
     var q = OutboundQueue.init(std.testing.allocator, fds[0]);
-    q.fairness_interval_ms = 50;
-    try q.start();
     defer {
         q.shutdown();
         std.posix.close(fds[0]);
@@ -194,9 +186,8 @@ test "fairness: control delivered while terminal floods" {
             const c = try std.fmt.allocPrint(std.testing.allocator, "C{d}\n", .{i});
             q.enqueueControl(c) catch std.testing.allocator.free(c);
         }
-        // tiny pacing so writer thread can interleave
-        if (i % 20 == 0) std.Thread.sleep(2 * std.time.ns_per_ms);
     }
+    try q.start();
 
     // Drain the read side until both control markers seen.
     var buf: [8192]u8 = undefined;

@@ -2,6 +2,8 @@ const std = @import("std");
 const cross = @import("cross.zig");
 const terminal_session = @import("terminal_session.zig");
 
+const max_pump_bytes_per_turn = 8 * 1024;
+
 /// Global child PID registry for signal-safe cleanup. forkpty children
 /// call setsid() so they're not in the daemon's process group. The
 /// signal handler iterates this array to kill them on SIGTERM.
@@ -119,16 +121,16 @@ pub const PtyHost = struct {
             const written = std.posix.write(self.master_fd, remaining) catch |err| switch (err) {
                 error.WouldBlock => {
                     try self.waitWritableOrReadable();
-                    try self.pump(session);
+                    _ = try self.pump(session);
                     continue;
                 },
                 else => return err,
             };
             if (written == 0) return;
             remaining = remaining[written..];
-            try self.pump(session);
+            _ = try self.pump(session);
         }
-        try self.pump(session);
+        _ = try self.pump(session);
     }
 
     pub fn resize(self: *PtyHost, cols: u16, rows: u16) !void {
@@ -173,22 +175,25 @@ pub const PtyHost = struct {
         _ = try std.posix.poll(&fds, -1);
     }
 
-    pub fn pump(self: *PtyHost, session: *terminal_session.TerminalSession) !void {
+    pub fn pump(self: *PtyHost, session: *terminal_session.TerminalSession) !bool {
         var buf: [32 * 1024]u8 = undefined;
+        var pumped_bytes: usize = 0;
         while (true) {
             const read_len = std.posix.read(self.master_fd, &buf) catch |err| switch (err) {
-                error.WouldBlock => break,
+                error.WouldBlock => return false,
                 error.InputOutput, error.BrokenPipe => {
                     self.markClosed();
-                    break;
+                    return false;
                 },
                 else => return err,
             };
             if (read_len == 0) {
                 self.markClosed();
-                break;
+                return false;
             }
             try session.feed(buf[0..read_len]);
+            pumped_bytes += read_len;
+            if (pumped_bytes >= max_pump_bytes_per_turn) return true;
         }
     }
 

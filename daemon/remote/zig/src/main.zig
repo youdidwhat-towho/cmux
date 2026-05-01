@@ -109,7 +109,7 @@ fn run(args: []const []const u8) !u8 {
 }
 
 fn isTopLevelSessionCommand(command: []const u8) bool {
-    return std.mem.eql(u8, command, "attach") or std.mem.eql(u8, command, "ls") or std.mem.eql(u8, command, "list") or std.mem.eql(u8, command, "status") or std.mem.eql(u8, command, "history") or std.mem.eql(u8, command, "kill") or std.mem.eql(u8, command, "new");
+    return cli_session.isCommand(command);
 }
 
 fn usage(stderr: anytype) !void {

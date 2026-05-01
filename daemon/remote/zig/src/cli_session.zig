@@ -102,6 +102,10 @@ pub fn parseArgs(alloc: std.mem.Allocator, args: []const []const u8) !ParsedArgs
     return parsed;
 }
 
+pub fn isCommand(raw: []const u8) bool {
+    return switchCommand(raw) != null;
+}
+
 fn switchCommand(raw: []const u8) ?Command {
     if (std.mem.eql(u8, raw, "attach")) return .attach;
     if (std.mem.eql(u8, raw, "ls")) return .list;

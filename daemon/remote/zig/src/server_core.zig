@@ -34,13 +34,31 @@ pub fn handleLine(service: *session_service.Service, output: anytype, raw_line: 
 }
 
 pub fn dispatch(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
-    const seq_before = service.workspace_reg.change_seq;
-    const result = try dispatchInner(service, req);
-    // If any workspace state changed, notify subscribers
-    if (service.workspace_reg.change_seq != seq_before) {
-        notifyWorkspaceSubscribers(service);
+    if (usesWorkspaceRegistry(req.method)) {
+        service.workspace_mutex.lock();
+        var locked = true;
+        defer if (locked) service.workspace_mutex.unlock();
+
+        const seq_before = service.workspace_reg.change_seq;
+        const result = try dispatchInner(service, req);
+        const changed = service.workspace_reg.change_seq != seq_before;
+
+        service.workspace_mutex.unlock();
+        locked = false;
+
+        if (changed) {
+            notifyWorkspaceSubscribers(service);
+        }
+        return result;
     }
-    return result;
+
+    return dispatchInner(service, req);
+}
+
+fn usesWorkspaceRegistry(method: []const u8) bool {
+    return std.mem.eql(u8, method, "hello") or
+        std.mem.startsWith(u8, method, "workspace.") or
+        std.mem.startsWith(u8, method, "pane.");
 }
 
 fn dispatchInner(service: *session_service.Service, req: *const json_rpc.Request) ![]u8 {
@@ -680,7 +698,9 @@ fn handleWorkspaceList(service: *session_service.Service, req: *const json_rpc.R
         const runtimes_snapshot = try service.runtimes.valuesSnapshot(alloc);
         defer alloc.free(runtimes_snapshot);
         for (runtimes_snapshot) |rt| {
-            rt.pty.pump(&rt.terminal) catch {};
+            rt.lock.lock();
+            _ = rt.pty.pump(&rt.terminal) catch {};
+            rt.lock.unlock();
         }
     }
 
@@ -768,8 +788,6 @@ fn handleWorkspaceCreate(service: *session_service.Service, req: *const json_rpc
     // Record in history log. Keep payload schema minimal so changes to
     // title/color/pinned can be added via dedicated history events later.
     service.appendHistory(id, "created", "{}");
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -872,8 +890,6 @@ fn handleWorkspaceOpenPane(service: *session_service.Service, req: *const json_r
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -905,8 +921,6 @@ fn handleWorkspaceRename(service: *session_service.Service, req: *const json_rpc
 
     service.appendHistory(workspace_id, "renamed", "{}");
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -928,8 +942,6 @@ fn handleWorkspacePin(service: *session_service.Service, req: *const json_rpc.Re
     service.workspace_reg.setPin(workspace_id, pinned) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -954,8 +966,6 @@ fn handleWorkspaceSetColor(service: *session_service.Service, req: *const json_r
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -976,8 +986,6 @@ fn handleWorkspaceClose(service: *session_service.Service, req: *const json_rpc.
 
     service.appendHistory(workspace_id, "closed", "{}");
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -995,8 +1003,6 @@ fn handleWorkspaceSelect(service: *session_service.Service, req: *const json_rpc
     service.workspace_reg.select(workspace_id) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1024,8 +1030,6 @@ fn handlePaneSplit(service: *session_service.Service, req: *const json_rpc.Reque
 
     service.appendHistory(workspace_id, "pane_split", "{}");
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1049,8 +1053,6 @@ fn handlePaneClose(service: *session_service.Service, req: *const json_rpc.Reque
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1070,8 +1072,6 @@ fn handlePaneFocus(service: *session_service.Service, req: *const json_rpc.Reque
     service.workspace_reg.focusPane(workspace_id, pane_id) catch |err| {
         return try errorResponse(alloc, req.id, "not_found", @errorName(err));
     };
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1095,8 +1095,6 @@ fn handleWorkspaceSetUnread(service: *session_service.Service, req: *const json_
         return try errorResponse(alloc, req.id, "not_found", "workspace not found");
     ws.unread_count = unread_count;
     service.workspace_reg.change_seq += 1;
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1122,8 +1120,6 @@ fn handleWorkspaceSetPreview(service: *session_service.Service, req: *const json
     ws.preview = new_preview;
     service.workspace_reg.change_seq += 1;
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1147,8 +1143,6 @@ fn handleWorkspaceSetPhase(service: *session_service.Service, req: *const json_r
     alloc.free(ws.phase);
     ws.phase = new_phase;
     service.workspace_reg.change_seq += 1;
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1175,8 +1169,6 @@ fn handleWorkspaceSetDirectory(service: *session_service.Service, req: *const js
     ws.directory = new_dir;
     ws.last_activity_at = std.time.milliTimestamp();
     service.workspace_reg.change_seq += 1;
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1220,8 +1212,6 @@ fn handleWorkspaceReorder(service: *session_service.Service, req: *const json_rp
     }
     reg.change_seq += 1;
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1252,8 +1242,6 @@ fn handlePaneSetTitle(service: *session_service.Service, req: *const json_rpc.Re
     ws.last_activity_at = std.time.milliTimestamp();
     service.workspace_reg.change_seq += 1;
 
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1279,8 +1267,6 @@ fn handlePaneResize(service: *session_service.Service, req: *const json_rpc.Requ
         error.WorkspaceNotFound => return try errorResponse(alloc, req.id, "not_found", "workspace not found"),
         else => return try errorResponse(alloc, req.id, "not_found", "pane has no parent split"),
     };
-
-    if (service.on_workspace_changed) |cb| cb(service);
 
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
@@ -1381,8 +1367,6 @@ fn handleWorkspaceSync(service: *session_service.Service, req: *const json_rpc.R
 
     // Broadcast the new state so subscribed clients (iOS, other desktops)
     // pick up title / pinned / pane updates without waiting for a poll.
-    if (service.on_workspace_changed) |cb| cb(service);
-
     return try json_rpc.encodeResponse(alloc, .{
         .id = req.id,
         .ok = true,
@@ -1579,6 +1563,7 @@ pub fn encodeWorkspaceChangedEvent(service: *session_service.Service, alloc: std
 
 pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
     const alloc = service.alloc;
+    service.workspace_mutex.lock();
     // Persist first for normal workspace mutations so a crash between mutation
     // and broadcast still lands the state on disk. Pump-origin unread updates
     // cannot block on the writer queue: closeSession may be waiting for the
@@ -1588,9 +1573,12 @@ pub fn notifyWorkspaceSubscribers(service: *session_service.Service) void {
     } else {
         service.persistWorkspaces();
     }
-    const event = encodeWorkspaceChangedEvent(service, alloc) orelse return;
-    defer alloc.free(event);
-    service.subscriptions.notifyAllAlloc(alloc, event);
+    const event = encodeWorkspaceChangedEvent(service, alloc);
+    service.workspace_mutex.unlock();
+
+    const payload = event orelse return;
+    defer alloc.free(payload);
+    service.subscriptions.notifyAllAlloc(alloc, payload);
 }
 
 fn errorResponse(alloc: std.mem.Allocator, id: ?std.json.Value, code: []const u8, message: []const u8) ![]u8 {

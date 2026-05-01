@@ -61,8 +61,9 @@ pub fn run(alloc: std.mem.Allocator, socket_path: []const u8, session_name: []co
     var pending_output: std.ArrayList(u8) = .empty;
     defer pending_output.deinit(alloc);
 
-    // Subscribe with no offset → snapshot is empty (start from current next_offset).
-    const snapshot = try subscribeTerminal(alloc, &client, session_name, stderr);
+    // CLI attach should replay scrollback on attach/reattach. Tail-only
+    // subscriptions are still available to clients by omitting offset.
+    const snapshot = try subscribeTerminal(alloc, &client, session_name, 0, stderr);
     defer alloc.free(snapshot.data);
     if (snapshot.data.len > 0) {
         try pending_output.appendSlice(alloc, snapshot.data);
@@ -376,11 +377,14 @@ fn detachSession(client: *rpc_client.Client, session_name: []const u8, attachmen
     response.deinit();
 }
 
-fn subscribeTerminal(alloc: std.mem.Allocator, client: *rpc_client.Client, session_name: []const u8, stderr: anytype) !SubscribeSnapshot {
+fn subscribeTerminal(alloc: std.mem.Allocator, client: *rpc_client.Client, session_name: []const u8, offset: u64, stderr: anytype) !SubscribeSnapshot {
     var response = try call(client, .{
         .id = "1",
         .method = "terminal.subscribe",
-        .params = .{ .session_id = session_name },
+        .params = .{
+            .session_id = session_name,
+            .offset = offset,
+        },
     }, stderr);
     defer response.deinit();
     const result = response.value.object.get("result") orelse return error.InvalidResponse;

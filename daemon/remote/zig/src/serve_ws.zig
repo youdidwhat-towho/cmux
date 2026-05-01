@@ -23,17 +23,13 @@ pub fn serve(cfg: Config) !void {
     service.ensurePumpStarted();
     service.ensureWriterStarted();
 
-    serveShared(&service, try std.fmt.parseInt(u16, blk: {
-        const colon = std.mem.lastIndexOfScalar(u8, cfg.listen_addr, ':') orelse break :blk cfg.listen_addr;
-        break :blk cfg.listen_addr[colon + 1 ..];
-    }, 10), cfg.secret, cfg.instance_id) catch {};
+    serveShared(&service, try parseListenAddress(cfg.listen_addr), cfg.secret, cfg.instance_id) catch {};
 }
 
-/// Serve WebSocket on the given port, sharing an existing session service.
+/// Serve WebSocket on the given address, sharing an existing session service.
 /// Intended to be called from a spawned thread alongside serve_unix.
-pub fn serveShared(service: *session_service.Service, port: u16, secret: []const u8, instance_id: []const u8) !void {
+pub fn serveShared(service: *session_service.Service, address: std.net.Address, secret: []const u8, instance_id: []const u8) !void {
     service.instance_id = instance_id;
-    const address = try std.net.Address.parseIp("0.0.0.0", port);
     var server = try address.listen(.{ .reuse_address = true });
     defer server.deinit();
 
@@ -42,6 +38,19 @@ pub fn serveShared(service: *session_service.Service, port: u16, secret: []const
         const thread = try std.Thread.spawn(.{}, handleClientThreadShared, .{ service, secret, conn.stream });
         thread.detach();
     }
+}
+
+pub fn listenAddressForPort(port: u16) !std.net.Address {
+    return std.net.Address.parseIp("0.0.0.0", port);
+}
+
+fn parseListenAddress(listen_addr: []const u8) !std.net.Address {
+    const colon = std.mem.lastIndexOfScalar(u8, listen_addr, ':') orelse return error.InvalidListenAddress;
+    const host = listen_addr[0..colon];
+    const port = try std.fmt.parseInt(u16, listen_addr[colon + 1 ..], 10);
+    if (host.len == 0) return listenAddressForPort(port);
+    if (std.mem.eql(u8, host, "localhost")) return std.net.Address.parseIp("127.0.0.1", port);
+    return std.net.Address.parseIp(host, port);
 }
 
 const SharedService = struct {
@@ -136,6 +145,9 @@ fn handleClient(service: *session_service.Service, secret: []const u8, stream: s
             const response = try handleTerminalSubscribe(service, &mutable_stream, &write_mutex, &req);
             defer alloc.free(response);
             try sendWsTextMessageLocked(&write_mutex, stream, response);
+            if (terminalSubscribeSessionId(&req)) |session_id| {
+                _ = service.activateTerminalSubscription(&mutable_stream, session_id);
+            }
             continue;
         }
         if (std.mem.eql(u8, req.method, "terminal.unsubscribe")) {
@@ -150,6 +162,14 @@ fn handleClient(service: *session_service.Service, secret: []const u8, stream: s
         attachments.recordResponse(&req, response);
         try sendWsTextMessageLocked(&write_mutex, stream, response);
     }
+}
+
+fn terminalSubscribeSessionId(req: *const json_rpc.Request) ?[]const u8 {
+    const params_value = req.parsed.value.object.get("params") orelse return null;
+    if (params_value != .object) return null;
+    const session_id_v = params_value.object.get("session_id") orelse return null;
+    if (session_id_v != .string) return null;
+    return session_id_v.string;
 }
 
 fn sendWsTextMessageLocked(lock: *std.Thread.Mutex, stream: std.net.Stream, data: []const u8) !void {
@@ -182,7 +202,7 @@ fn handleTerminalSubscribe(
         break :blk @intCast(off_v.integer);
     };
 
-    const snap = service.subscribeTerminal(stream, write_mutex, session_id, requested_offset) catch |err| switch (err) {
+    const snap = service.subscribeTerminalPaused(stream, write_mutex, session_id, requested_offset) catch |err| switch (err) {
         error.TerminalSessionNotFound => return try errorResp(alloc, req.id, "not_found", "terminal session not found"),
         else => return try errorResp(alloc, req.id, "internal_error", @errorName(err)),
     };
@@ -413,14 +433,6 @@ fn verifySecret(msg: []const u8, expected: []const u8) bool {
 
 // --- Helpers ---
 
-fn listen(listen_addr: []const u8) !std.net.Server {
-    const colon = std.mem.lastIndexOfScalar(u8, listen_addr, ':') orelse return error.InvalidListenAddress;
-    const host = listen_addr[0..colon];
-    const port = try std.fmt.parseInt(u16, listen_addr[colon + 1 ..], 10);
-    const address = try std.net.Address.parseIp(host, port);
-    return address.listen(.{ .reuse_address = true });
-}
-
 fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     for (a, b) |ca, cb| {
@@ -432,4 +444,17 @@ fn asciiEqlIgnoreCase(a: []const u8, b: []const u8) bool {
 fn asciiStartsWithIgnoreCase(haystack: []const u8, prefix: []const u8) bool {
     if (haystack.len < prefix.len) return false;
     return asciiEqlIgnoreCase(haystack[0..prefix.len], prefix);
+}
+
+test "parseListenAddress preserves explicit host" {
+    const loopback = try parseListenAddress("127.0.0.1:8123");
+    try std.testing.expectEqualDeep(try std.net.Address.parseIp("127.0.0.1", 8123), loopback);
+
+    const localhost = try parseListenAddress("localhost:8124");
+    try std.testing.expectEqualDeep(try std.net.Address.parseIp("127.0.0.1", 8124), localhost);
+
+    const wildcard = try parseListenAddress(":8125");
+    try std.testing.expectEqualDeep(try std.net.Address.parseIp("0.0.0.0", 8125), wildcard);
+
+    try std.testing.expectError(error.InvalidListenAddress, parseListenAddress("8126"));
 }

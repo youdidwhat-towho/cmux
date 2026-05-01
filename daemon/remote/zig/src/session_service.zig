@@ -36,6 +36,7 @@ pub const TerminalSubscription = struct {
     last_offset: u64,
     seq: u64 = 0,
     dead: std.atomic.Value(bool) = .init(false),
+    active: std.atomic.Value(bool) = .init(true),
     /// Last bell_count observed when we pushed to this subscriber.
     last_bell_count: u64 = 0,
     /// Last command_seq observed when we pushed to this subscriber.
@@ -213,7 +214,7 @@ const RuntimeSession = struct {
 
         while (true) {
             self.lock.lock();
-            try self.pty.pump(&self.terminal);
+            _ = try self.pty.pump(&self.terminal);
             const window = self.terminal.offsetWindow();
             var effective_offset = offset;
             const truncated = effective_offset < window.base_offset;
@@ -287,7 +288,7 @@ const RuntimeSession = struct {
     fn historyDump(self: *RuntimeSession, alloc: std.mem.Allocator, format: serialize.HistoryFormat) !TerminalHistorySnapshot {
         self.lock.lock();
         defer self.lock.unlock();
-        try self.pty.pump(&self.terminal);
+        _ = try self.pty.pump(&self.terminal);
         const window = self.terminal.offsetWindow();
         return .{
             .history = try self.terminal.history(alloc, format),
@@ -336,6 +337,10 @@ pub const Service = struct {
     registry: session_registry.Registry,
     runtimes: RuntimeMap,
     workspace_reg: workspace_registry.Registry,
+    /// Serializes workspace registry reads/mutations across Unix and
+    /// WebSocket transports. Session/runtime state has its own locks/actor
+    /// queue; workspace_registry itself is intentionally plain data.
+    workspace_mutex: std.Thread.Mutex = .{},
     subscriptions: workspace_registry.SubscriptionManager = .{},
     pump: ?pty_pump.Pump = null,
     /// Serializes `ensurePumpStarted`. Without it, two transports
@@ -1142,7 +1147,17 @@ pub const Service = struct {
         session_id: []const u8,
         requested_offset: ?u64,
     ) !SubscribeSnapshot {
-        return self.subscribeTerminalQueued(stream, stream_lock, null, session_id, requested_offset);
+        return self.subscribeTerminalQueuedActive(stream, stream_lock, null, session_id, requested_offset, true);
+    }
+
+    pub fn subscribeTerminalPaused(
+        self: *Service,
+        stream: *std.net.Stream,
+        stream_lock: *std.Thread.Mutex,
+        session_id: []const u8,
+        requested_offset: ?u64,
+    ) !SubscribeSnapshot {
+        return self.subscribeTerminalQueuedActive(stream, stream_lock, null, session_id, requested_offset, false);
     }
 
     /// Same as `subscribeTerminal` but routes pushes through a per-connection
@@ -1155,17 +1170,90 @@ pub const Service = struct {
         session_id: []const u8,
         requested_offset: ?u64,
     ) !SubscribeSnapshot {
-        const entry = try self.runtimes.getEntryDupedKey(self.alloc, session_id) orelse
-            return error.TerminalSessionNotFound;
-        errdefer self.alloc.free(entry.key);
-        const runtime = entry.value;
-        const canonical_session_id = entry.key;
+        return self.subscribeTerminalQueuedActive(stream, stream_lock, queue, session_id, requested_offset, false);
+    }
+
+    fn subscribeTerminalQueuedActive(
+        self: *Service,
+        stream: *std.net.Stream,
+        stream_lock: *std.Thread.Mutex,
+        queue: ?*outbound_queue.OutboundQueue,
+        session_id: []const u8,
+        requested_offset: ?u64,
+        active: bool,
+    ) !SubscribeSnapshot {
+        const Ctx = struct {
+            service: *Service,
+            stream: *std.net.Stream,
+            stream_lock: *std.Thread.Mutex,
+            queue: ?*outbound_queue.OutboundQueue,
+            session_id: []const u8,
+            requested_offset: ?u64,
+            active: bool,
+            result: ?SubscribeSnapshot = null,
+            err: ?anyerror = null,
+            fire_workspace_changed: bool = false,
+        };
+        var ctx = Ctx{
+            .service = self,
+            .stream = stream,
+            .stream_lock = stream_lock,
+            .queue = queue,
+            .session_id = session_id,
+            .requested_offset = requested_offset,
+            .active = active,
+        };
+
+        self.runtimes.withSharedLock(&ctx, struct {
+            fn run(inner: *RuntimeMap.Inner, c: *Ctx) void {
+                const entry = inner.getEntry(c.session_id) orelse {
+                    c.err = error.TerminalSessionNotFound;
+                    return;
+                };
+                const canonical_session_id = c.service.alloc.dupe(u8, entry.key_ptr.*) catch |err| {
+                    c.err = err;
+                    return;
+                };
+                c.result = c.service.subscribeTerminalQueuedActiveWithRuntime(
+                    entry.value_ptr.*,
+                    canonical_session_id,
+                    c.stream,
+                    c.stream_lock,
+                    c.queue,
+                    c.requested_offset,
+                    c.active,
+                    &c.fire_workspace_changed,
+                ) catch |err| {
+                    c.err = err;
+                    return;
+                };
+            }
+        }.run);
+
+        if (ctx.err) |err| return err;
+        if (ctx.fire_workspace_changed) self.fireWorkspaceChanged();
+        return ctx.result orelse error.TerminalSessionNotFound;
+    }
+
+    fn subscribeTerminalQueuedActiveWithRuntime(
+        self: *Service,
+        runtime: *RuntimeSession,
+        canonical_session_id: []u8,
+        stream: *std.net.Stream,
+        stream_lock: *std.Thread.Mutex,
+        queue: ?*outbound_queue.OutboundQueue,
+        requested_offset: ?u64,
+        active: bool,
+        fire_workspace_changed: *bool,
+    ) !SubscribeSnapshot {
+        errdefer self.alloc.free(canonical_session_id);
 
         runtime.lock.lock();
-        defer runtime.lock.unlock();
+        var runtime_locked = true;
+        defer if (runtime_locked) runtime.lock.unlock();
 
         // Best-effort: drain any pending bytes so the snapshot is fresh.
-        runtime.pty.pump(&runtime.terminal) catch {};
+        _ = runtime.pty.pump(&runtime.terminal) catch {};
 
         const window = runtime.terminal.offsetWindow();
         const start = requested_offset orelse window.next_offset;
@@ -1191,6 +1279,7 @@ pub const Service = struct {
             .queue = queue,
             .last_offset = raw.offset,
             .seq = 0,
+            .active = .init(active),
             .last_bell_count = runtime.terminal.bell_count,
             .last_command_seq = runtime.terminal.command_seq,
             .last_notification_seq = runtime.terminal.notification_seq,
@@ -1203,9 +1292,12 @@ pub const Service = struct {
         };
         self.sub_mutex.unlock();
 
+        runtime.lock.unlock();
+        runtime_locked = false;
+
         // A new subscriber clears any "unread while idle" marker.
         const was_unread = runtime.has_unread_output.swap(false, .seq_cst);
-        if (was_unread) self.fireWorkspaceChanged();
+        if (was_unread) fire_workspace_changed.* = true;
 
         return .{
             .data = raw.data,
@@ -1215,6 +1307,39 @@ pub const Service = struct {
             .eof = eof_now,
             .seq = 0,
         };
+    }
+
+    pub fn activateTerminalSubscription(self: *Service, stream: *std.net.Stream, session_id: []const u8) bool {
+        var target: ?*TerminalSubscription = null;
+        self.sub_mutex.lock();
+        for (self.terminal_subs.items) |sub| {
+            if (sub.dead.load(.seq_cst)) continue;
+            if (sub.stream == stream and std.mem.eql(u8, sub.session_id, session_id)) {
+                sub.active.store(true, .seq_cst);
+                sub.retainForPush();
+                target = sub;
+                break;
+            }
+        }
+        self.sub_mutex.unlock();
+
+        const sub = target orelse return false;
+        defer sub.releasePush();
+
+        const runtime = self.acquireRuntime(session_id) orelse return true;
+        defer runtime.release();
+
+        const entry: pty_pump.Entry = .{
+            .pty = &runtime.pty,
+            .terminal = &runtime.terminal,
+            .lock = &runtime.lock,
+            .session_id = sub.session_id,
+            .in_flight = &runtime.pump_in_flight,
+        };
+        self.pushOneSubscriber(entry, sub) catch {
+            sub.dead.store(true, .seq_cst);
+        };
+        return true;
     }
 
     /// Clear the has_unread_output flag for `session_id`. Returns true iff
@@ -1393,6 +1518,7 @@ pub const Service = struct {
         self.sub_mutex.lock();
         for (self.terminal_subs.items) |sub| {
             if (sub.dead.load(.seq_cst)) continue;
+            if (!sub.active.load(.seq_cst)) continue;
             if (std.mem.eql(u8, sub.session_id, entry.session_id)) {
                 matching.append(self.alloc, sub) catch break;
                 sub.retainForPush();
@@ -1677,6 +1803,9 @@ pub const Service = struct {
     /// workspace currently references the session (the daemon can still
     /// have a terminal without any workspace binding during bootstrap).
     fn findWorkspaceIdForSession(self: *Service, session_id: []const u8) ?[]u8 {
+        self.workspace_mutex.lock();
+        defer self.workspace_mutex.unlock();
+
         const reg = &self.workspace_reg;
         var iter = reg.workspaces.iterator();
         while (iter.next()) |entry| {

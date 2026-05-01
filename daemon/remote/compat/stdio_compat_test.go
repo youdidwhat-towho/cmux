@@ -61,7 +61,7 @@ func TestTerminalOpenOnlyFixtureExitsOnEOF(t *testing.T) {
 
 	bin := daemonBinary(t)
 	fixture := writeCompatFixture(t,
-		`{"id":1,"method":"terminal.open","params":{"command":"printf READY; stty raw -echo -onlcr; exec cat","cols":120,"rows":40}}`,
+		`{"id":1,"method":"terminal.open","params":{"command":"stty raw -echo -onlcr; printf READY; exec cat","cols":120,"rows":40}}`,
 	)
 	run := runJSONLFixtureWithExitTimeout(t, bin, nil, 5*time.Second, "serve", "--stdio", fixture)
 	if run.TimedOut {
@@ -80,7 +80,7 @@ func TestTerminalOpenReadFixtureExitsOnEOF(t *testing.T) {
 
 	bin := daemonBinary(t)
 	fixture := writeCompatFixture(t,
-		`{"id":1,"method":"terminal.open","params":{"command":"printf READY; stty raw -echo -onlcr; exec cat","cols":120,"rows":40}}`,
+		`{"id":1,"method":"terminal.open","params":{"command":"stty raw -echo -onlcr; printf READY; exec cat","cols":120,"rows":40}}`,
 		`{"id":2,"method":"terminal.read","params":{"session_id":"{{session_id}}","offset":0,"max_bytes":1024,"timeout_ms":1000}}`,
 	)
 	run := runJSONLFixtureWithExitTimeout(t, bin, nil, 5*time.Second, "serve", "--stdio", fixture)

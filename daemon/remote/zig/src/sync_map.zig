@@ -73,22 +73,6 @@ pub fn SyncStringHashMap(comptime V: type) type {
             return self.inner.contains(key);
         }
 
-        /// Look up the canonical (map-owned) key slice alongside the
-        /// value. Returns a duped copy of the key so the caller owns
-        /// its lifetime regardless of what other threads do with the
-        /// map. Caller frees `.key` with `alloc` when finished.
-        pub fn getEntryDupedKey(
-            self: *Self,
-            alloc: std.mem.Allocator,
-            key: []const u8,
-        ) !?struct { key: []u8, value: V } {
-            self.lock.lockShared();
-            defer self.lock.unlockShared();
-            const entry = self.inner.getEntry(key) orelse return null;
-            const duped = try alloc.dupe(u8, entry.key_ptr.*);
-            return .{ .key = duped, .value = entry.value_ptr.* };
-        }
-
         pub fn put(self: *Self, key: []const u8, value: V) !void {
             self.lock.lock();
             defer self.lock.unlock();

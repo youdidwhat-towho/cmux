@@ -66,7 +66,7 @@ pub fn serve(cfg: Config) !void {
         if (cfg.ws_secret.len > 0) {
             const ws_thread = try std.Thread.spawn(.{}, serve_ws.serveShared, .{
                 &shared.service,
-                ws_port,
+                try serve_ws.listenAddressForPort(ws_port),
                 cfg.ws_secret,
                 cfg.instance_id,
             });
@@ -210,7 +210,11 @@ fn handleLine(
 
     if (std.mem.eql(u8, req.method, "terminal.subscribe")) {
         const resp = try handleTerminalSubscribe(service, queue, stream, write_mutex, &req);
-        return enqueueResponse(queue, alloc, resp);
+        try enqueueResponse(queue, alloc, resp);
+        if (terminalSubscribeSessionId(&req)) |session_id| {
+            _ = service.activateTerminalSubscription(stream, session_id);
+        }
+        return;
     }
     if (std.mem.eql(u8, req.method, "terminal.unsubscribe")) {
         const resp = try handleTerminalUnsubscribe(service, stream, &req);
@@ -225,6 +229,14 @@ fn handleLine(
     const response = try server_core.dispatch(service, &req);
     attachments.recordResponse(&req, response);
     return enqueueResponse(queue, alloc, response);
+}
+
+fn terminalSubscribeSessionId(req: *const json_rpc.Request) ?[]const u8 {
+    const params_value = req.parsed.value.object.get("params") orelse return null;
+    if (params_value != .object) return null;
+    const session_id_v = params_value.object.get("session_id") orelse return null;
+    if (session_id_v != .string) return null;
+    return session_id_v.string;
 }
 
 fn enqueueResponse(queue: *outbound_queue.OutboundQueue, alloc: std.mem.Allocator, payload: []u8) !void {

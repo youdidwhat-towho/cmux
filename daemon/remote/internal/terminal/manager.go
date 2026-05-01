@@ -56,31 +56,32 @@ func (m *Manager) Open(sessionID string, command string, cols, rows int) error {
 		return ErrInvalidCommand
 	}
 
-	m.mu.Lock()
-	if _, exists := m.sessions[sessionID]; exists {
-		m.mu.Unlock()
-		return ErrSessionExists
-	}
-	state := &sessionState{
-		notify: make(chan struct{}),
-	}
-	m.sessions[sessionID] = state
-	m.mu.Unlock()
-
 	cmd := exec.Command("/bin/sh", "-lc", command)
 	file, err := pty.StartWithSize(cmd, &pty.Winsize{
 		Cols: uint16(max(1, cols)),
 		Rows: uint16(max(1, rows)),
 	})
 	if err != nil {
-		m.mu.Lock()
-		delete(m.sessions, sessionID)
-		m.mu.Unlock()
 		return err
 	}
 
-	state.cmd = cmd
-	state.pty = file
+	m.mu.Lock()
+	if _, exists := m.sessions[sessionID]; exists {
+		m.mu.Unlock()
+		_ = file.Close()
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		return ErrSessionExists
+	}
+	state := &sessionState{
+		cmd:    cmd,
+		pty:    file,
+		notify: make(chan struct{}),
+	}
+	m.sessions[sessionID] = state
+	m.mu.Unlock()
 
 	go state.captureOutput()
 	return nil

@@ -188,41 +188,49 @@ const KqueuePump = struct {
                 if (ev.filter != readFilter()) continue;
 
                 const fd: std.posix.fd_t = @intCast(ev.ident);
-                self.map_mutex.lock();
-                const maybe_entry = self.entries.get(fd);
-                // Bump the entry's in_flight counter while the map is
-                // still locked so concurrent `unregister` (which does
-                // `fetchRemove` under the same lock) can't observe a
-                // stale 0 and free the backing RuntimeSession before
-                // we're done using its pointers.
-                if (maybe_entry) |e| e.in_flight.retain();
-                self.map_mutex.unlock();
-
-                const entry = maybe_entry orelse continue;
-                defer entry.in_flight.release();
-
-                entry.lock.lock();
-                entry.pty.pump(entry.terminal) catch |err| {
-                    std.log.warn("pty_pump: pump failed for fd {d}: {s}", .{ fd, @errorName(err) });
-                };
-                const closed = entry.pty.isClosed();
-                entry.lock.unlock();
-
-                if (self.notify_fn) |f| f(self.notify_ctx, entry);
-
-                if (closed) {
-                    var changes = [_]std.posix.Kevent{.{
-                        .ident = @intCast(fd),
-                        .filter = readFilter(),
-                        .flags = EV_DELETE,
-                        .fflags = 0,
-                        .data = 0,
-                        .udata = 0,
-                    }};
-                    _ = std.posix.kevent(self.kq, &changes, &.{}, null) catch {};
+                while (!self.shutdown.load(.seq_cst)) {
+                    if (!self.pumpFd(fd)) break;
+                    std.Thread.yield() catch {};
                 }
             }
         }
+    }
+
+    fn pumpFd(self: *KqueuePump, fd: std.posix.fd_t) bool {
+        self.map_mutex.lock();
+        const maybe_entry = self.entries.get(fd);
+        // Bump the entry's in_flight counter while the map is still locked so
+        // concurrent `unregister` cannot observe a stale zero and free the
+        // backing RuntimeSession before this pump quantum finishes.
+        if (maybe_entry) |e| e.in_flight.retain();
+        self.map_mutex.unlock();
+
+        const entry = maybe_entry orelse return false;
+        defer entry.in_flight.release();
+
+        entry.lock.lock();
+        const more = entry.pty.pump(entry.terminal) catch |err| blk: {
+            std.log.warn("pty_pump: pump failed for fd {d}: {s}", .{ fd, @errorName(err) });
+            break :blk false;
+        };
+        const closed = entry.pty.isClosed();
+        entry.lock.unlock();
+
+        if (self.notify_fn) |f| f(self.notify_ctx, entry);
+
+        if (closed) {
+            var changes = [_]std.posix.Kevent{.{
+                .ident = @intCast(fd),
+                .filter = readFilter(),
+                .flags = EV_DELETE,
+                .fflags = 0,
+                .data = 0,
+                .udata = 0,
+            }};
+            _ = std.posix.kevent(self.kq, &changes, &.{}, null) catch {};
+        }
+
+        return more and !closed;
     }
 
     const FilterT = @TypeOf(@as(std.posix.Kevent, undefined).filter);

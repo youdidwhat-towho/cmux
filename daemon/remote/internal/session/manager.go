@@ -177,8 +177,14 @@ func (m *Manager) Status(sessionID string) (SessionStatus, error) {
 
 func (m *Manager) ensureLocked(sessionID string) (string, *sessionState) {
 	if sessionID == "" {
-		sessionID = fmt.Sprintf("sess-%d", m.nextSessionID)
-		m.nextSessionID++
+		for {
+			candidate := fmt.Sprintf("sess-%d", m.nextSessionID)
+			m.nextSessionID++
+			if _, exists := m.sessions[candidate]; !exists {
+				sessionID = candidate
+				break
+			}
+		}
 	}
 
 	state, ok := m.sessions[sessionID]

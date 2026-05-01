@@ -172,7 +172,14 @@ func runJSONLFixtureDetailed(t *testing.T, bin string, initialVars map[string]st
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
-		<-waitCh
+		err := <-waitCh
+		if err == nil {
+			return jsonlFixtureResult{
+				Responses: responses,
+				Stderr:    stderr.String(),
+				ExitErr:   nil,
+			}
+		}
 		return jsonlFixtureResult{
 			Responses: responses,
 			Stderr:    stderr.String(),

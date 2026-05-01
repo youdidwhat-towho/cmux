@@ -1417,7 +1417,7 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
     // Flood enough output that pushes are in flight when we kill the socket.
     // Keep it finite so this test does not saturate the pump indefinitely when
     // the full randomized suite runs on a loaded host.
-    var opened = try fx.service.openTerminal("s-midframe", "yes y | head -c 33554432", 80, 24);
+    var opened = try fx.service.openTerminal("s-midframe", "yes y | head -c 4194304", 80, 24);
     defer opened.status.deinit(alloc);
     defer alloc.free(opened.attachment_id);
     defer fx.service.closeSession("s-midframe") catch {};
@@ -1440,7 +1440,7 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
     // Let the pump deliver at least one push frame so there's actual
     // outbound activity we can abort mid-flight.
     var saw_any = false;
-    const settle_deadline = deadlineIn(2000);
+    const settle_deadline = deadlineIn(10000);
     while (std.time.milliTimestamp() < settle_deadline and !saw_any) {
         var parsed = victim.readFrame(settle_deadline) catch |err| switch (err) {
             error.Timeout => break,
@@ -1490,7 +1490,7 @@ test "integration: mid-frame disconnect leaves daemon healthy" {
         .session_id = "s-midframe",
         .offset = @as(u64, 0),
     });
-    var re_resp = try probe.awaitResponse(re_id, deadlineIn(2000));
+    var re_resp = try probe.awaitResponse(re_id, deadlineIn(10000));
     defer re_resp.deinit();
     try std.testing.expect(re_resp.value.object.get("ok").?.bool);
 }

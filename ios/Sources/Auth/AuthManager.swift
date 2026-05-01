@@ -186,6 +186,9 @@ final class AuthManager {
                 await applySignedInUser(user)
                 return
             }
+            log.info("Cached session validation returned no current user")
+            clearAuthState()
+            return
         } catch {
             log.error("Session validation failed: \(error.localizedDescription, privacy: .public)")
         }
