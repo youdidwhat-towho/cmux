@@ -199,10 +199,7 @@ final class BrowserPaneNavigationKeybindUITests: XCTestCase {
             return
         }
 
-        guard let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore) else {
-            XCTFail("Expected selected surface \(selectedBefore) to exist in left pane surfaces \(leftSurfacesBefore)")
-            return
-        }
+        let expectedSurfaceId = nextSurfaceId(after: selectedBefore, in: leftSurfacesBefore)
         app.typeKey("]", modifierFlags: [.command, .shift])
 
         XCTAssertTrue(
