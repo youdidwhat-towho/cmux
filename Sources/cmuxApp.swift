@@ -826,7 +826,7 @@ struct cmuxApp: App {
 
     private func menuShortcut(for action: KeyboardShortcutSettings.Action) -> StoredShortcut {
         let _ = keyboardShortcutSettingsObserver.revision
-        return KeyboardShortcutSettings.shortcut(for: action)
+        return KeyboardShortcutSettings.menuShortcut(for: action)
     }
 
     private var notificationMenuSnapshot: NotificationMenuSnapshot {
