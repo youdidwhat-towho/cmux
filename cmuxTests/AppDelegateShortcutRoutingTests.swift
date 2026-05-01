@@ -5119,7 +5119,7 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         XCTAssertEqual(appDelegate.fileExplorerState?.mode, .find)
     }
 
-    func testCmdPlusFromFileTreeZoomsFileExplorerAndPersistsZoomLevel() {
+    func testCmdPlusMinusFromFileTreeZoomsFileExplorerAndPersistsZoomLevel() {
         guard let appDelegate = AppDelegate.shared else {
             XCTFail("Expected AppDelegate.shared")
             return
@@ -5161,23 +5161,42 @@ final class AppDelegateShortcutRoutingTests: XCTestCase {
         fileExplorerState.setVisible(true)
         appDelegate.noteRightSidebarKeyboardFocusIntent(mode: .files, in: window)
 
-        guard let event = makeKeyDownEvent(
-            key: "=",
-            modifiers: [.command],
+        guard let zoomInEvent = makeKeyDownEvent(
+            key: "+",
+            modifiers: [.command, .shift],
             keyCode: 24,
             windowNumber: window.windowNumber
         ) else {
-            XCTFail("Failed to construct Cmd+= event")
+            XCTFail("Failed to construct Cmd++ event")
             return
         }
 
 #if DEBUG
-        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: event))
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: zoomInEvent))
 #else
         XCTFail("debugHandleCustomShortcut is only available in DEBUG")
 #endif
 
         XCTAssertEqual(fileExplorerState.zoomLevel, FileExplorerZoomSettings.defaultZoomLevel + 1)
+        XCTAssertEqual(defaults.integer(forKey: FileExplorerZoomSettings.defaultsKey), fileExplorerState.zoomLevel)
+
+        guard let zoomOutEvent = makeKeyDownEvent(
+            key: "-",
+            modifiers: [.command],
+            keyCode: 27,
+            windowNumber: window.windowNumber
+        ) else {
+            XCTFail("Failed to construct Cmd+- event")
+            return
+        }
+
+#if DEBUG
+        XCTAssertTrue(appDelegate.debugHandleCustomShortcut(event: zoomOutEvent))
+#else
+        XCTFail("debugHandleCustomShortcut is only available in DEBUG")
+#endif
+
+        XCTAssertEqual(fileExplorerState.zoomLevel, FileExplorerZoomSettings.defaultZoomLevel)
         XCTAssertEqual(defaults.integer(forKey: FileExplorerZoomSettings.defaultsKey), fileExplorerState.zoomLevel)
     }
 

@@ -2003,6 +2003,7 @@ struct ContentView: View {
         static let panelShouldPin = "panel.shouldPin"
         static let panelHasUnread = "panel.hasUnread"
         static let panelCanMoveToNewWorkspace = "panel.canMoveToNewWorkspace"
+        static let fileExplorerHasFocus = "fileExplorer.hasFocus"
         static let updateHasAvailable = "update.hasAvailable"
         static let cliInstalledInPATH = "cli.installedInPATH"
         static let browserDisabled = "browser.disabled"
@@ -6760,6 +6761,12 @@ struct ContentView: View {
             return .splitRight
         case "palette.terminalSplitDown":
             return .splitDown
+        case "palette.fileExplorerZoomIn":
+            return .fileExplorerZoomIn
+        case "palette.fileExplorerZoomOut":
+            return .fileExplorerZoomOut
+        case "palette.fileExplorerZoomReset":
+            return .fileExplorerZoomReset
         case "palette.findInDirectory":
             return .findInDirectory
         case "palette.terminalFind":
@@ -6829,6 +6836,10 @@ struct ContentView: View {
         snapshot.setBool(CommandPaletteContextKeys.workspaceMinimalModeEnabled, isMinimalMode)
         snapshot.setBool(CommandPaletteContextKeys.sidebarMatchTerminalBackground, sidebarMatchTerminalBackground)
         snapshot.setBool(CommandPaletteContextKeys.browserDisabled, BrowserAvailabilitySettings.isDisabled())
+        snapshot.setBool(
+            CommandPaletteContextKeys.fileExplorerHasFocus,
+            AppDelegate.shared?.fileExplorerOwnsZoomFocus(in: observedWindow) == true
+        )
 
         if let workspace = tabManager.selectedWorkspace {
             snapshot.setBool(CommandPaletteContextKeys.hasWorkspace, true)
@@ -6913,6 +6924,10 @@ struct ContentView: View {
             let name = context.string(CommandPaletteContextKeys.panelName) ?? String(localized: "commandPalette.subtitle.tabFallback", defaultValue: "Tab")
             return String(localized: "commandPalette.subtitle.browserWithName", defaultValue: "Browser • \(name)")
         }
+
+        let fileExplorerSubtitle = constant(
+            String(localized: "commandPalette.subtitle.fileExplorer", defaultValue: "File Explorer")
+        )
 
         func terminalPanelSubtitle(_ context: CommandPaletteContextSnapshot) -> String {
             let name = context.string(CommandPaletteContextKeys.panelName) ?? String(localized: "commandPalette.subtitle.tabFallback", defaultValue: "Tab")
@@ -7512,6 +7527,33 @@ struct ContentView: View {
                 subtitle: browserPanelSubtitle,
                 keywords: ["browser", "zoom", "reset", "actual size"],
                 when: { $0.bool(CommandPaletteContextKeys.panelIsBrowser) }
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.fileExplorerZoomIn",
+                title: constant(String(localized: "command.fileExplorerZoomIn.title", defaultValue: "Zoom In")),
+                subtitle: fileExplorerSubtitle,
+                keywords: ["file", "explorer", "zoom", "in"],
+                when: { $0.bool(CommandPaletteContextKeys.fileExplorerHasFocus) }
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.fileExplorerZoomOut",
+                title: constant(String(localized: "command.fileExplorerZoomOut.title", defaultValue: "Zoom Out")),
+                subtitle: fileExplorerSubtitle,
+                keywords: ["file", "explorer", "zoom", "out"],
+                when: { $0.bool(CommandPaletteContextKeys.fileExplorerHasFocus) }
+            )
+        )
+        contributions.append(
+            CommandPaletteCommandContribution(
+                commandId: "palette.fileExplorerZoomReset",
+                title: constant(String(localized: "command.fileExplorerZoomReset.title", defaultValue: "Actual Size")),
+                subtitle: fileExplorerSubtitle,
+                keywords: ["file", "explorer", "zoom", "reset", "actual size"],
+                when: { $0.bool(CommandPaletteContextKeys.fileExplorerHasFocus) }
             )
         )
         contributions.append(
@@ -8134,6 +8176,21 @@ struct ContentView: View {
         }
         registry.register(commandId: "palette.browserZoomReset") {
             if !tabManager.resetZoomFocusedBrowser() {
+                NSSound.beep()
+            }
+        }
+        registry.register(commandId: "palette.fileExplorerZoomIn") {
+            if !tabManager.zoomInFocusedFileExplorer() {
+                NSSound.beep()
+            }
+        }
+        registry.register(commandId: "palette.fileExplorerZoomOut") {
+            if !tabManager.zoomOutFocusedFileExplorer() {
+                NSSound.beep()
+            }
+        }
+        registry.register(commandId: "palette.fileExplorerZoomReset") {
+            if !tabManager.resetZoomFocusedFileExplorer() {
                 NSSound.beep()
             }
         }

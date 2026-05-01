@@ -890,6 +890,7 @@ class TabManager: ObservableObject {
     /// The window that owns this TabManager. Set by AppDelegate.registerMainWindow().
     /// Used to apply title updates to the correct window instead of NSApp.keyWindow.
     weak var window: NSWindow?
+    weak var fileExplorerState: FileExplorerState?
 
     @Published var tabs: [Workspace] = []
     @Published private(set) var isWorkspaceCycleHot: Bool = false
@@ -4721,6 +4722,15 @@ class TabManager: ObservableObject {
         return tab.panels[panelId] as? BrowserPanel
     }
 
+    var focusedFileExplorerState: FileExplorerState? {
+        guard let fileExplorerState,
+              let window,
+              AppDelegate.shared?.fileExplorerOwnsZoomFocus(in: window) == true else {
+            return nil
+        }
+        return fileExplorerState
+    }
+
     @discardableResult
     func zoomInFocusedBrowser() -> Bool {
         focusedBrowserPanel?.zoomIn() ?? false
@@ -4734,6 +4744,21 @@ class TabManager: ObservableObject {
     @discardableResult
     func resetZoomFocusedBrowser() -> Bool {
         focusedBrowserPanel?.resetZoom() ?? false
+    }
+
+    @discardableResult
+    func zoomInFocusedFileExplorer() -> Bool {
+        focusedFileExplorerState?.zoomIn() ?? false
+    }
+
+    @discardableResult
+    func zoomOutFocusedFileExplorer() -> Bool {
+        focusedFileExplorerState?.zoomOut() ?? false
+    }
+
+    @discardableResult
+    func resetZoomFocusedFileExplorer() -> Bool {
+        focusedFileExplorerState?.resetZoom() ?? false
     }
 
     @discardableResult

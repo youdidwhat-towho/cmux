@@ -64,12 +64,27 @@ enum FileExplorerStyle: Int, CaseIterable {
     }
 
     var nameFont: NSFont {
+        nameFont(zoomLevel: FileExplorerZoomSettings.defaultZoomLevel)
+    }
+
+    func nameFont(zoomLevel: Int) -> NSFont {
+        let size = FileExplorerZoomSettings.fontSize(base: baseNameFontSize, zoomLevel: zoomLevel)
         switch self {
-        case .liquidGlass: return .systemFont(ofSize: 13, weight: .medium)
-        case .highDensity: return .systemFont(ofSize: 11, weight: .regular)
-        case .terminalStealth: return .monospacedSystemFont(ofSize: 12, weight: .regular)
-        case .proStudio: return .systemFont(ofSize: 14, weight: .semibold)
-        case .finder: return .systemFont(ofSize: 13, weight: .regular)
+        case .liquidGlass: return .systemFont(ofSize: size, weight: .medium)
+        case .highDensity: return .systemFont(ofSize: size, weight: .regular)
+        case .terminalStealth: return .monospacedSystemFont(ofSize: size, weight: .regular)
+        case .proStudio: return .systemFont(ofSize: size, weight: .semibold)
+        case .finder: return .systemFont(ofSize: size, weight: .regular)
+        }
+    }
+
+    private var baseNameFontSize: CGFloat {
+        switch self {
+        case .liquidGlass: return 13
+        case .highDensity: return 11
+        case .terminalStealth: return 12
+        case .proStudio: return 14
+        case .finder: return 13
         }
     }
 
@@ -198,6 +213,47 @@ enum FileExplorerStyle: Int, CaseIterable {
             return .highDensity
         }
         return FileExplorerStyle(rawValue: defaults.integer(forKey: "fileExplorer.style")) ?? .highDensity
+    }
+}
+
+// MARK: - Explorer Zoom
+
+enum FileExplorerZoomSettings {
+    static let defaultsKey = "fileExplorer.zoomLevel"
+    static let defaultZoomLevel = 0
+    static let minimumZoomLevel = -4
+    static let maximumZoomLevel = 8
+    static let fontStep: CGFloat = 1
+    static let rowHeightStep: CGFloat = 2
+    static let minimumTreeRowHeight: CGFloat = 18
+    static let baseSearchResultRowHeight: CGFloat = 46
+    static let minimumSearchResultRowHeight: CGFloat = 36
+
+    static func persistedZoomLevel(defaults: UserDefaults = .standard) -> Int {
+        guard defaults.object(forKey: defaultsKey) != nil else {
+            return defaultZoomLevel
+        }
+        return clamped(defaults.integer(forKey: defaultsKey))
+    }
+
+    static func clamped(_ zoomLevel: Int) -> Int {
+        min(maximumZoomLevel, max(minimumZoomLevel, zoomLevel))
+    }
+
+    static func fontSize(base: CGFloat, zoomLevel: Int) -> CGFloat {
+        max(8, base + CGFloat(clamped(zoomLevel)) * fontStep)
+    }
+
+    static func iconSize(base: CGFloat, zoomLevel: Int) -> CGFloat {
+        max(10, base + CGFloat(clamped(zoomLevel)) * fontStep)
+    }
+
+    static func treeRowHeight(for style: FileExplorerStyle, zoomLevel: Int) -> CGFloat {
+        max(minimumTreeRowHeight, style.rowHeight + CGFloat(clamped(zoomLevel)) * rowHeightStep)
+    }
+
+    static func searchResultRowHeight(zoomLevel: Int) -> CGFloat {
+        max(minimumSearchResultRowHeight, baseSearchResultRowHeight + CGFloat(clamped(zoomLevel)) * rowHeightStep)
     }
 }
 
@@ -443,6 +499,16 @@ final class FileExplorerState: ObservableObject {
         didSet { UserDefaults.standard.set(showHiddenFiles, forKey: "fileExplorer.showHidden") }
     }
 
+    @Published var zoomLevel: Int {
+        didSet {
+            let clamped = FileExplorerZoomSettings.clamped(zoomLevel)
+            if zoomLevel != clamped {
+                zoomLevel = clamped
+            }
+            UserDefaults.standard.set(clamped, forKey: FileExplorerZoomSettings.defaultsKey)
+        }
+    }
+
     /// Active mode for the right sidebar (file tree or session index).
     @Published var mode: RightSidebarMode {
         didSet { UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey) }
@@ -457,6 +523,7 @@ final class FileExplorerState: ObservableObject {
         self.dividerPosition = storedPosition > 0 ? CGFloat(storedPosition) : 0.6
         let storedShowHidden = defaults.object(forKey: "fileExplorer.showHidden")
         self.showHiddenFiles = storedShowHidden == nil ? true : defaults.bool(forKey: "fileExplorer.showHidden")
+        self.zoomLevel = FileExplorerZoomSettings.persistedZoomLevel(defaults: defaults)
         let storedMode = defaults.string(forKey: Self.modeKey) ?? RightSidebarMode.files.rawValue
         if storedMode == RightSidebarMode.feed.rawValue,
            defaults.bool(forKey: Self.feedDockMigrationKey) == false {
@@ -492,6 +559,29 @@ final class FileExplorerState: ObservableObject {
         withTransaction(transaction) {
             isVisible = nextValue
         }
+    }
+
+    @discardableResult
+    func zoomIn() -> Bool {
+        setZoomLevel(zoomLevel + 1)
+    }
+
+    @discardableResult
+    func zoomOut() -> Bool {
+        setZoomLevel(zoomLevel - 1)
+    }
+
+    @discardableResult
+    func resetZoom() -> Bool {
+        setZoomLevel(FileExplorerZoomSettings.defaultZoomLevel)
+    }
+
+    @discardableResult
+    func setZoomLevel(_ nextZoomLevel: Int) -> Bool {
+        let clamped = FileExplorerZoomSettings.clamped(nextZoomLevel)
+        guard zoomLevel != clamped else { return false }
+        zoomLevel = clamped
+        return true
     }
 }
 

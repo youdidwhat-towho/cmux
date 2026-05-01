@@ -678,15 +678,21 @@ struct cmuxApp: App {
             }
 
             splitCommandButton(title: String(localized: "menu.view.zoomIn", defaultValue: "Zoom In"), shortcut: menuShortcut(for: .browserZoomIn)) {
-                _ = activeTabManager.zoomInFocusedBrowser()
+                if !activeTabManager.zoomInFocusedBrowser() {
+                    _ = activeTabManager.zoomInFocusedFileExplorer()
+                }
             }
 
             splitCommandButton(title: String(localized: "menu.view.zoomOut", defaultValue: "Zoom Out"), shortcut: menuShortcut(for: .browserZoomOut)) {
-                _ = activeTabManager.zoomOutFocusedBrowser()
+                if !activeTabManager.zoomOutFocusedBrowser() {
+                    _ = activeTabManager.zoomOutFocusedFileExplorer()
+                }
             }
 
             splitCommandButton(title: String(localized: "menu.view.actualSize", defaultValue: "Actual Size"), shortcut: menuShortcut(for: .browserZoomReset)) {
-                _ = activeTabManager.resetZoomFocusedBrowser()
+                if !activeTabManager.resetZoomFocusedBrowser() {
+                    _ = activeTabManager.resetZoomFocusedFileExplorer()
+                }
             }
 
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {

@@ -65,6 +65,24 @@ export const shortcutCategories: ShortcutCategory[] = [
       { id: "editWorkspaceDescription", combos: [["⌥", "⌘", "E"]], description: { en: "Edit workspace description", ja: "ワークスペースの説明を編集" } },
       { id: "focusRightSidebar", combos: [["⌘", "⇧", "E"]], description: { en: "Focus right sidebar", ja: "右サイドバーにフォーカス" } },
       {
+        id: "fileExplorerZoomIn",
+        combos: [["⌘", "+"], ["⌘", "="]],
+        description: { en: "Zoom file explorer in", ja: "ファイルエクスプローラーを拡大" },
+        note: { en: "when Files or Find is focused", ja: "ファイルまたは検索にフォーカス中" },
+      },
+      {
+        id: "fileExplorerZoomOut",
+        combos: [["⌘", "-"]],
+        description: { en: "Zoom file explorer out", ja: "ファイルエクスプローラーを縮小" },
+        note: { en: "when Files or Find is focused", ja: "ファイルまたは検索にフォーカス中" },
+      },
+      {
+        id: "fileExplorerZoomReset",
+        combos: [["⌘", "0"]],
+        description: { en: "Reset file explorer zoom", ja: "ファイルエクスプローラーのズームをリセット" },
+        note: { en: "when Files or Find is focused", ja: "ファイルまたは検索にフォーカス中" },
+      },
+      {
         id: "switchRightSidebarMode",
         combos: [["⌃", "1 / 2 / 3 / 4 / 5"]],
         description: { en: "Switch Files / Find / Sessions / Feed / Dock", ja: "ファイル / 検索 / セッション / フィード / Dockを切り替え" },

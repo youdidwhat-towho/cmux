@@ -48,6 +48,7 @@ struct FileExplorerPanelView: NSViewRepresentable {
         context.coordinator.onOpenFilePreview = onOpenFilePreview
         container.updateHeader(store: store)
         container.updatePresentation(presentation)
+        container.updateZoomLevel(state.zoomLevel)
         context.coordinator.reloadIfNeeded()
         container.registerWithKeyboardFocusCoordinatorIfNeeded()
     }
@@ -195,7 +196,7 @@ struct FileExplorerPanelView: NSViewRepresentable {
             }
 
             let gitStatus = store.gitStatusByPath[node.path]
-            cellView.configure(with: node, gitStatus: gitStatus)
+            cellView.configure(with: node, gitStatus: gitStatus, zoomLevel: state.zoomLevel)
             cellView.onHover = { [weak self] isHovering in
                 guard let self else { return }
                 if isHovering {
@@ -253,7 +254,7 @@ struct FileExplorerPanelView: NSViewRepresentable {
         }
 
         func outlineView(_ outlineView: NSOutlineView, heightOfRowByItem item: Any) -> CGFloat {
-            FileExplorerStyle.current.rowHeight
+            FileExplorerZoomSettings.treeRowHeight(for: FileExplorerStyle.current, zoomLevel: state.zoomLevel)
         }
 
         // MARK: - Path-Owned Navigation
@@ -596,6 +597,7 @@ final class FileExplorerContainerView: NSView {
     private var currentRootPath = ""
     private var currentProviderIsLocal = false
     private var currentContentRevision = 0
+    private var currentZoomLevel: Int
     private var isSearchVisible = false
     private var presentation: FileExplorerPanelPresentation
     private let coordinator: FileExplorerPanelView.Coordinator
@@ -612,6 +614,7 @@ final class FileExplorerContainerView: NSView {
         emptyLabel = NSTextField(labelWithString: String(localized: "fileExplorer.empty", defaultValue: "No folder open"))
         loadingIndicator = NSProgressIndicator()
         searchController = FileSearchController()
+        currentZoomLevel = coordinator.state.zoomLevel
         self.presentation = presentation
         self.coordinator = coordinator
 
@@ -723,7 +726,7 @@ final class FileExplorerContainerView: NSView {
         searchResultsView.style = .plain
         searchResultsView.selectionHighlightStyle = .regular
         searchResultsView.backgroundColor = .clear
-        searchResultsView.rowHeight = 46
+        searchResultsView.rowHeight = FileExplorerZoomSettings.searchResultRowHeight(zoomLevel: currentZoomLevel)
         searchResultsView.intercellSpacing = NSSize(width: 0, height: 0)
         searchResultsView.onCancel = { [weak self] in
             self?.closeSearchAndFocusOutline()
@@ -853,6 +856,17 @@ final class FileExplorerContainerView: NSView {
         if shouldRefreshSearch {
             refreshSearchIfNeeded()
         }
+    }
+
+    func updateZoomLevel(_ zoomLevel: Int) {
+        let nextZoomLevel = FileExplorerZoomSettings.clamped(zoomLevel)
+        guard currentZoomLevel != nextZoomLevel else { return }
+        currentZoomLevel = nextZoomLevel
+        outlineView.noteHeightOfRows(withIndexesChanged: IndexSet(0..<outlineView.numberOfRows))
+        outlineView.reloadData()
+        searchResultsView.rowHeight = FileExplorerZoomSettings.searchResultRowHeight(zoomLevel: nextZoomLevel)
+        searchResultsView.noteHeightOfRows(withIndexesChanged: IndexSet(0..<searchResultsView.numberOfRows))
+        searchResultsView.reloadData()
     }
 
     func representedRightSidebarMode() -> RightSidebarMode {
@@ -1162,7 +1176,7 @@ extension FileExplorerContainerView: NSSearchFieldDelegate, NSTableViewDataSourc
     }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        46
+        FileExplorerZoomSettings.searchResultRowHeight(zoomLevel: currentZoomLevel)
     }
 
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
@@ -1174,7 +1188,7 @@ extension FileExplorerContainerView: NSSearchFieldDelegate, NSTableViewDataSourc
         } else {
             cellView = FileExplorerSearchResultCellView(identifier: identifier)
         }
-        cellView.configure(with: searchSnapshot.results[row])
+        cellView.configure(with: searchSnapshot.results[row], zoomLevel: currentZoomLevel)
         return cellView
     }
 
@@ -1421,7 +1435,15 @@ private final class FileExplorerSearchResultCellView: NSTableCellView {
         ])
     }
 
-    func configure(with result: FileSearchResult) {
+    func configure(with result: FileSearchResult, zoomLevel: Int) {
+        pathLabel.font = .systemFont(
+            ofSize: FileExplorerZoomSettings.fontSize(base: 12, zoomLevel: zoomLevel),
+            weight: .semibold
+        )
+        previewLabel.font = .monospacedSystemFont(
+            ofSize: FileExplorerZoomSettings.fontSize(base: 11, zoomLevel: zoomLevel),
+            weight: .regular
+        )
         pathLabel.stringValue = "\(result.relativePath):\(result.lineNumber)"
         previewLabel.stringValue = result.preview.isEmpty ? " " : result.preview
         toolTip = "\(result.path):\(result.lineNumber):\(result.columnNumber)"
@@ -1579,30 +1601,31 @@ final class FileExplorerCellView: NSTableCellView {
         nameLabelTrailingToLoadingConstraint.isActive = false
     }
 
-    func configure(with node: FileExplorerNode, gitStatus: GitFileStatus? = nil) {
+    func configure(with node: FileExplorerNode, gitStatus: GitFileStatus? = nil, zoomLevel: Int) {
         let style = FileExplorerStyle.current
+        let iconSize = FileExplorerZoomSettings.iconSize(base: style.iconSize, zoomLevel: zoomLevel)
 
         nameLabel.stringValue = node.name
-        nameLabel.font = style.nameFont
+        nameLabel.font = style.nameFont(zoomLevel: zoomLevel)
 
-        iconWidthConstraint.constant = style.iconSize
-        iconHeightConstraint.constant = style.iconSize
+        iconWidthConstraint.constant = iconSize
+        iconHeightConstraint.constant = iconSize
         iconToTextConstraint.constant = style.iconToTextSpacing
 
         if style == .finder {
             if node.isDirectory {
                 let folderIcon = NSWorkspace.shared.icon(for: .folder)
-                folderIcon.size = NSSize(width: style.iconSize, height: style.iconSize)
+                folderIcon.size = NSSize(width: iconSize, height: iconSize)
                 iconView.image = folderIcon
                 iconView.contentTintColor = nil
             } else {
                 let fileIcon = NSWorkspace.shared.icon(forFileType: (node.name as NSString).pathExtension)
-                fileIcon.size = NSSize(width: style.iconSize, height: style.iconSize)
+                fileIcon.size = NSSize(width: iconSize, height: iconSize)
                 iconView.image = fileIcon
                 iconView.contentTintColor = nil
             }
         } else {
-            let symbolConfig = NSImage.SymbolConfiguration(pointSize: style.iconSize, weight: style.iconWeight)
+            let symbolConfig = NSImage.SymbolConfiguration(pointSize: iconSize, weight: style.iconWeight)
             if node.isDirectory {
                 iconView.image = NSImage(systemSymbolName: "folder.fill", accessibilityDescription: nil)?
                     .withSymbolConfiguration(symbolConfig)

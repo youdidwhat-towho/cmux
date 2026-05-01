@@ -502,6 +502,18 @@ final class MainWindowFocusController {
         return .mainPanelFind
     }
 
+    func ownsFileExplorerZoomFocus(currentResponder: NSResponder? = nil) -> Bool {
+        let responder = currentResponder ?? window?.firstResponder
+        if let responder,
+           let mode = rightSidebarModeOwning(responder) {
+            return mode == .files || mode == .find
+        }
+        if case .rightSidebar(let mode) = intent {
+            return mode == .files || mode == .find
+        }
+        return false
+    }
+
     @discardableResult
     func focusTerminal() -> Bool {
         guard let tabManager,

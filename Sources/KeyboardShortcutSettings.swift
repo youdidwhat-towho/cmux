@@ -85,6 +85,9 @@ enum KeyboardShortcutSettings {
 
         // File Explorer
         case toggleFileExplorer
+        case fileExplorerZoomIn
+        case fileExplorerZoomOut
+        case fileExplorerZoomReset
 
         // Panels
         case saveFilePreview
@@ -158,6 +161,9 @@ enum KeyboardShortcutSettings {
             case .splitBrowserRight: return String(localized: "shortcut.splitBrowserRight.label", defaultValue: "Split Browser Right")
             case .splitBrowserDown: return String(localized: "shortcut.splitBrowserDown.label", defaultValue: "Split Browser Down")
             case .toggleFileExplorer: return String(localized: "shortcut.toggleFileExplorer.label", defaultValue: "Toggle File Explorer")
+            case .fileExplorerZoomIn: return String(localized: "shortcut.fileExplorerZoomIn.label", defaultValue: "File Explorer Zoom In")
+            case .fileExplorerZoomOut: return String(localized: "shortcut.fileExplorerZoomOut.label", defaultValue: "File Explorer Zoom Out")
+            case .fileExplorerZoomReset: return String(localized: "shortcut.fileExplorerZoomReset.label", defaultValue: "Reset File Explorer Zoom")
             case .saveFilePreview: return String(localized: "shortcut.saveFilePreview.label", defaultValue: "Save File Preview")
             case .openBrowser: return String(localized: "shortcut.openBrowser.label", defaultValue: "Open Browser")
             case .focusBrowserAddressBar: return String(localized: "command.browserFocusAddressBar.title", defaultValue: "Focus Address Bar")
@@ -297,6 +303,12 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "1", command: true, shift: false, option: false, control: false)
             case .toggleFileExplorer:
                 return StoredShortcut(key: "b", command: true, shift: false, option: true, control: false)
+            case .fileExplorerZoomIn:
+                return StoredShortcut(key: "=", command: true, shift: false, option: false, control: false)
+            case .fileExplorerZoomOut:
+                return StoredShortcut(key: "-", command: true, shift: false, option: false, control: false)
+            case .fileExplorerZoomReset:
+                return StoredShortcut(key: "0", command: true, shift: false, option: false, control: false)
             case .saveFilePreview:
                 return StoredShortcut(key: "s", command: true, shift: false, option: false, control: false)
             case .openBrowser:
@@ -366,12 +378,29 @@ enum KeyboardShortcutSettings {
             guard conflictScope == proposedAction.conflictScope else {
                 return false
             }
+            if allowsContextualShortcutDuplicate(with: proposedAction) {
+                return false
+            }
             return KeyboardShortcutSettings.shortcutsConflict(
                 proposedShortcut,
                 proposedUsesNumberedDigitMatching: proposedAction.usesNumberedDigitMatching,
                 configuredShortcut,
                 configuredUsesNumberedDigitMatching: usesNumberedDigitMatching
             )
+        }
+
+        private func allowsContextualShortcutDuplicate(with proposedAction: Action) -> Bool {
+            switch (self, proposedAction) {
+            case (.browserZoomIn, .fileExplorerZoomIn),
+                 (.fileExplorerZoomIn, .browserZoomIn),
+                 (.browserZoomOut, .fileExplorerZoomOut),
+                 (.fileExplorerZoomOut, .browserZoomOut),
+                 (.browserZoomReset, .fileExplorerZoomReset),
+                 (.fileExplorerZoomReset, .browserZoomReset):
+                return true
+            default:
+                return false
+            }
         }
 
         func normalizedRecordedShortcutResult(_ shortcut: StoredShortcut) -> RecordedShortcutResolution {

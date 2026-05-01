@@ -85032,6 +85032,55 @@
         }
       }
     },
+    "shortcut.fileExplorerZoomIn.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File Explorer Zoom In" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ファイルエクスプローラーを拡大" } }
+      }
+    },
+    "shortcut.fileExplorerZoomOut.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File Explorer Zoom Out" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ファイルエクスプローラーを縮小" } }
+      }
+    },
+    "shortcut.fileExplorerZoomReset.label": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Reset File Explorer Zoom" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ファイルエクスプローラーのズームをリセット" } }
+      }
+    },
+    "command.fileExplorerZoomIn.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Zoom In" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "拡大" } }
+      }
+    },
+    "command.fileExplorerZoomOut.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Zoom Out" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "縮小" } }
+      }
+    },
+    "command.fileExplorerZoomReset.title": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "Actual Size" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "実際のサイズ" } }
+      }
+    },
+    "commandPalette.subtitle.fileExplorer": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": { "stringUnit": { "state": "translated", "value": "File Explorer" } },
+        "ja": { "stringUnit": { "state": "translated", "value": "ファイルエクスプローラー" } }
+      }
+    },
     "fileExplorer.empty": {
       "extractionState": "manual",
       "localizations": {

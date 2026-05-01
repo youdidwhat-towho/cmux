@@ -3592,6 +3592,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             tabManager.window = window
             existing.window = window
             let resolvedFileExplorerState = fileExplorerState ?? existing.fileExplorerState
+            tabManager.fileExplorerState = resolvedFileExplorerState
             if let fileExplorerState {
                 existing.fileExplorerState = fileExplorerState
             }
@@ -3626,6 +3627,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             tabManager.window = window
             existing.window = window
             let resolvedFileExplorerState = fileExplorerState ?? existing.fileExplorerState
+            tabManager.fileExplorerState = resolvedFileExplorerState
             if let fileExplorerState {
                 existing.fileExplorerState = fileExplorerState
             }
@@ -3640,6 +3642,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             reindexMainWindowContextIfNeeded(existing, for: window)
         } else {
             tabManager.window = window
+            tabManager.fileExplorerState = fileExplorerState
             mainWindowContexts[key] = MainWindowContext(
                 windowId: windowId,
                 tabManager: tabManager,
@@ -5564,6 +5567,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func noteRightSidebarKeyboardFocusIntent(mode: RightSidebarMode, in window: NSWindow?) {
         keyboardFocusCoordinator(for: window)?.noteRightSidebarInteraction(mode: mode)
+    }
+
+    func fileExplorerOwnsZoomFocus(in window: NSWindow?) -> Bool {
+        guard let context = preferredRegisteredMainWindowContext(preferredWindow: window) else {
+            return false
+        }
+        let resolvedWindow = window ?? context.window ?? windowForMainWindowId(context.windowId)
+        return context.keyboardFocusCoordinator.ownsFileExplorerZoomFocus(
+            currentResponder: resolvedWindow?.firstResponder
+        )
     }
 
     func syncKeyboardFocusAfterFirstResponderChange(in window: NSWindow?) {
@@ -11291,16 +11304,63 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             return true
         }
 
-        if matchConfiguredShortcut(event: event, action: .browserZoomIn) {
-            return tabManager?.zoomInFocusedBrowser() ?? false
+        let standardZoomShortcutAction = browserZoomShortcutAction(
+            flags: event.modifierFlags,
+            chars: event.charactersIgnoringModifiers ?? "",
+            keyCode: event.keyCode,
+            literalChars: event.characters
+        )
+        func matchesZoomShortcut(
+            _ configuredAction: KeyboardShortcutSettings.Action,
+            standardAction: BrowserZoomShortcutAction
+        ) -> Bool {
+            if matchConfiguredShortcut(event: event, action: configuredAction) {
+                return true
+            }
+            return KeyboardShortcutSettings.shortcut(for: configuredAction) == configuredAction.defaultShortcut &&
+                standardZoomShortcutAction == standardAction
         }
 
-        if matchConfiguredShortcut(event: event, action: .browserZoomOut) {
-            return tabManager?.zoomOutFocusedBrowser() ?? false
+        if matchesZoomShortcut(.browserZoomIn, standardAction: .zoomIn) {
+            if tabManager?.zoomInFocusedBrowser() == true {
+                return true
+            }
+            if matchesZoomShortcut(.fileExplorerZoomIn, standardAction: .zoomIn) {
+                return tabManager?.zoomInFocusedFileExplorer() ?? false
+            }
+            return false
         }
 
-        if matchConfiguredShortcut(event: event, action: .browserZoomReset) {
-            return tabManager?.resetZoomFocusedBrowser() ?? false
+        if matchesZoomShortcut(.browserZoomOut, standardAction: .zoomOut) {
+            if tabManager?.zoomOutFocusedBrowser() == true {
+                return true
+            }
+            if matchesZoomShortcut(.fileExplorerZoomOut, standardAction: .zoomOut) {
+                return tabManager?.zoomOutFocusedFileExplorer() ?? false
+            }
+            return false
+        }
+
+        if matchesZoomShortcut(.browserZoomReset, standardAction: .reset) {
+            if tabManager?.resetZoomFocusedBrowser() == true {
+                return true
+            }
+            if matchesZoomShortcut(.fileExplorerZoomReset, standardAction: .reset) {
+                return tabManager?.resetZoomFocusedFileExplorer() ?? false
+            }
+            return false
+        }
+
+        if matchesZoomShortcut(.fileExplorerZoomIn, standardAction: .zoomIn) {
+            return tabManager?.zoomInFocusedFileExplorer() ?? false
+        }
+
+        if matchesZoomShortcut(.fileExplorerZoomOut, standardAction: .zoomOut) {
+            return tabManager?.zoomOutFocusedFileExplorer() ?? false
+        }
+
+        if matchesZoomShortcut(.fileExplorerZoomReset, standardAction: .reset) {
+            return tabManager?.resetZoomFocusedFileExplorer() ?? false
         }
 
         if matchConfiguredShortcut(event: event, action: .findInDirectory) {
