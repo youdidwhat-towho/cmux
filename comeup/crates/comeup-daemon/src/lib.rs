@@ -10,7 +10,7 @@
 )]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -18,9 +18,11 @@ use anyhow::{Context, Result, anyhow};
 use comeup_core::Model;
 use comeup_protocol::{
     ClientId, ClientMsg, Command, PROTOCOL_VERSION, ServerMsg, TerminalId, Viewport,
-    VisibleTerminal,
+    VisibleTerminal, read_msg, write_msg,
 };
 use portable_pty::{ChildKiller, CommandBuilder, PtySize, native_pty_system};
+use tokio::io::BufReader;
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task;
 
@@ -78,6 +80,95 @@ impl ComeupServer {
     pub fn shutdown(&self) {
         let _ = self.tx.send(DaemonMsg::Shutdown);
     }
+}
+
+pub async fn serve_unix_socket(socket_path: impl AsRef<Path>, opts: ServerOptions) -> Result<()> {
+    let socket_path = socket_path.as_ref();
+    if socket_path.exists() {
+        std::fs::remove_file(socket_path)
+            .with_context(|| format!("remove stale socket {}", socket_path.display()))?;
+    }
+    if let Some(parent) = socket_path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create socket parent {}", parent.display()))?;
+    }
+
+    let listener = UnixListener::bind(socket_path)
+        .with_context(|| format!("bind unix socket {}", socket_path.display()))?;
+    let server = ComeupServer::start(opts)?;
+
+    loop {
+        let (stream, _) = listener.accept().await.context("accept unix client")?;
+        let server = server.clone();
+        tokio::spawn(async move {
+            let _ = handle_unix_client(server, stream).await;
+        });
+    }
+}
+
+async fn handle_unix_client(server: ComeupServer, stream: UnixStream) -> Result<()> {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+
+    let Some(hello) = read_msg::<_, ClientMsg>(&mut reader)
+        .await
+        .context("read unix client hello")?
+    else {
+        return Ok(());
+    };
+    let ClientMsg::Hello { version, viewport } = hello else {
+        write_msg(
+            &mut write_half,
+            &ServerMsg::Error {
+                message: "first message must be hello".to_string(),
+            },
+        )
+        .await
+        .ok();
+        return Ok(());
+    };
+    if version != PROTOCOL_VERSION {
+        write_msg(
+            &mut write_half,
+            &ServerMsg::Error {
+                message: format!("unsupported protocol version {version}"),
+            },
+        )
+        .await
+        .ok();
+        return Ok(());
+    }
+
+    let LocalClient {
+        client_id,
+        tx,
+        mut rx,
+    } = server.connect(viewport).await?;
+
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if write_msg(&mut write_half, &msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    loop {
+        let msg = read_msg::<_, ClientMsg>(&mut reader).await?;
+        let Some(msg) = msg else {
+            break;
+        };
+        if tx.send(DaemonMsg::Client { client_id, msg }).is_err() {
+            break;
+        }
+    }
+
+    let _ = tx.send(DaemonMsg::Client {
+        client_id,
+        msg: ClientMsg::Detach,
+    });
+    writer.abort();
+    Ok(())
 }
 
 #[derive(Debug)]

@@ -1,5 +1,5 @@
 [package]
-name = "comeup-daemon"
+name = "comeup-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,14 +8,8 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-comeup-core = { path = "../comeup-core" }
 comeup-protocol = { path = "../comeup-protocol" }
-portable-pty.workspace = true
 tokio.workspace = true
-
-[dev-dependencies]
-comeup-client = { path = "../comeup-client" }
-tempfile.workspace = true
 
 [lints]
 workspace = true
