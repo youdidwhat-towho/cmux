@@ -50,48 +50,39 @@ extension CMUXCLI {
         reload()
         renderer.draw(devices: devices, selection: selection, status: statusLine, pending: pending)
 
-        // Reader thread pushes one keystroke at a time onto a bounded channel.
-        let stdin = FileHandle.standardInput
-        let queue = DispatchQueue(label: "cmux.sim.tui.input")
-        var pendingByte: Int32?
-        let semaphore = DispatchSemaphore(value: 0)
-        var stop = false
-        let lock = NSLock()
+        // Single-threaded loop. poll() blocks up to 200ms for keyboard
+        // input, then we re-render. Anything ESC-prefixed is read in
+        // burst with a 50ms continuation poll so we capture the full
+        // CSI sequence in one place — no second reader thread to race.
+        var nextRefresh = Date().addingTimeInterval(2.0)
 
-        queue.async {
-            var buf = [UInt8](repeating: 0, count: 1)
-            while true {
-                let n = read(stdin.fileDescriptor, &buf, 1)
-                if n <= 0 { return }
-                lock.lock()
-                if stop { lock.unlock(); return }
-                pendingByte = Int32(buf[0])
-                lock.unlock()
-                semaphore.signal()
-            }
-        }
-
-        // Auto-refresh every 2s.
-        let refreshDeadline = Date().addingTimeInterval(2.0)
-        var nextRefresh = refreshDeadline
-
-        while true {
-            // Wait up to 200ms for a key, then re-render / refresh as needed.
-            let timeout: DispatchTime = .now() + .milliseconds(200)
-            let signaled = semaphore.wait(timeout: timeout)
-            var key: Int32?
-            if signaled == .success {
-                lock.lock()
-                key = pendingByte
-                pendingByte = nil
-                lock.unlock()
-            }
+        loop: while true {
+            let waitMs: Int32 = 200
+            let key = readKey(timeoutMs: waitMs)
 
             if let key {
-                if key == 0x03 || key == Int32(Character("q").asciiValue!) {
-                    break
+                if key == .ctrlC || key == .char(UInt8(ascii: "q")) {
+                    break loop
                 }
-                let action = handleKey(key, stdin: stdin)
+                let action: SimulatorTUIAction
+                switch key {
+                case .up:    action = .moveUp
+                case .down:  action = .moveDown
+                case .char(let c):
+                    switch c {
+                    case UInt8(ascii: "k"): action = .moveUp
+                    case UInt8(ascii: "j"): action = .moveDown
+                    case UInt8(ascii: "r"): action = .refresh
+                    case UInt8(ascii: "b"): action = .bootSelection
+                    case UInt8(ascii: "s"): action = .shutdownSelection
+                    case UInt8(ascii: "\r"), UInt8(ascii: "\n"), UInt8(ascii: " "):
+                        action = .openSelection
+                    default: action = .none
+                    }
+                case .ctrlC:
+                    break loop
+                }
+
                 switch action {
                 case .none:
                     break
@@ -150,7 +141,6 @@ extension CMUXCLI {
             renderer.draw(devices: devices, selection: selection, status: statusLine, pending: pending)
         }
 
-        lock.lock(); stop = true; lock.unlock()
         renderer.teardown()
     }
 
@@ -163,27 +153,52 @@ extension CMUXCLI {
         case shutdownSelection
     }
 
-    private func handleKey(_ key: Int32, stdin: FileHandle) -> SimulatorTUIAction {
-        // Arrow keys arrive as ESC [ A/B/C/D — read 2 more bytes after ESC.
-        if key == 0x1B {
-            var buf = [UInt8](repeating: 0, count: 2)
-            let n = read(stdin.fileDescriptor, &buf, 2)
-            guard n == 2, buf[0] == 0x5B else { return .none }
-            switch buf[1] {
-            case 0x41: return .moveUp     // ↑
-            case 0x42: return .moveDown   // ↓
-            default: return .none
-            }
+    private enum SimulatorTUIKey: Equatable {
+        case up
+        case down
+        case ctrlC
+        case char(UInt8)
+    }
+
+    /// Wait up to `timeoutMs` for one keystroke. Decodes CSI arrow keys
+    /// by reading any ESC continuation bytes inline, so there's a single
+    /// reader and the arrow-key follow-up bytes can never race a
+    /// background thread.
+    private func readKey(timeoutMs: Int32) -> SimulatorTUIKey? {
+        var pfd = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        let n = poll(&pfd, 1, timeoutMs)
+        guard n > 0, (Int32(pfd.revents) & POLLIN) != 0 else { return nil }
+
+        var byte: UInt8 = 0
+        let r = read(STDIN_FILENO, &byte, 1)
+        guard r == 1 else { return nil }
+
+        // Ctrl-C
+        if byte == 0x03 { return .ctrlC }
+
+        // ESC: try to grab a CSI sequence. Wait briefly for the next byte
+        // — if the user pressed plain Esc, it'll time out and we return nil
+        // rather than consuming the next unrelated keystroke.
+        if byte == 0x1B {
+            return readCSITail()
         }
 
-        switch UnicodeScalar(UInt8(key)) {
-        case "k": return .moveUp
-        case "j": return .moveDown
-        case "r": return .refresh
-        case "b": return .bootSelection
-        case "s": return .shutdownSelection
-        case "\r", "\n", " ": return .openSelection
-        default: return .none
+        return .char(byte)
+    }
+
+    private func readCSITail() -> SimulatorTUIKey? {
+        // ESC alone times out -> ignore. CSI is ESC [ X.
+        var pfd = pollfd(fd: STDIN_FILENO, events: Int16(POLLIN), revents: 0)
+        guard poll(&pfd, 1, 50) > 0 else { return nil }
+        var b1: UInt8 = 0
+        guard read(STDIN_FILENO, &b1, 1) == 1, b1 == 0x5B else { return nil }
+        guard poll(&pfd, 1, 50) > 0 else { return nil }
+        var b2: UInt8 = 0
+        guard read(STDIN_FILENO, &b2, 1) == 1 else { return nil }
+        switch b2 {
+        case 0x41: return .up      // ESC [ A
+        case 0x42: return .down    // ESC [ B
+        default:   return nil
         }
     }
 }
