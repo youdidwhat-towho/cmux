@@ -1,6 +1,30 @@
 {
   "sourceLanguage" : "en",
   "strings" : {
+    "auth.error.invalid_session" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The saved Stack Auth session is invalid." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "保存された Stack Auth セッションが無効です。" } }
+      }
+    },
+    "auth.error.keychain" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not update Stack Auth session in Keychain (%d)." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Keychain の Stack Auth セッションを更新できませんでした（%d）。" } }
+      }
+    },
+    "auth.error.missing_tokens" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The sign-in callback did not include Stack Auth tokens." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "サインイン コールバックに Stack Auth トークンが含まれていません。" } }
+      }
+    },
+    "auth.error.unsupported_callback" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This sign-in callback is not for cmux." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "このサインイン コールバックは cmux 用ではありません。" } }
+      }
+    },
     "bridge.summary.empty" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste a bridge ticket to attach this device." } },
@@ -329,6 +353,12 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge ticket is missing its Stack project id." } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジチケットに Stack プロジェクト ID がありません。" } }
+      }
+    },
+    "ticket.error.stack_auth_required" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Sign in with Stack Auth before using this Rivet pairing ticket." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "この Rivet ペアリング チケットを使用する前に Stack Auth でサインインしてください。" } }
       }
     },
     "ticket.error.unsupported_server_message" : {

@@ -8,6 +8,9 @@ struct CMuxMobileApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(connectionStore)
+                .onOpenURL { url in
+                    connectionStore.handleOpenURL(url)
+                }
         }
     }
 }

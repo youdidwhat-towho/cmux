@@ -32,6 +32,7 @@ Current implementation status:
 - The home screen now uses an iMessage-style workspace inbox shell with node pins and full-width conversation rows. The data source is still demo state until Stack Auth and Rivet hive discovery land.
 - The rail/resize bounds helper from the old iOS branch lives at `scripts/tui-terminal-bounds-check.sh`, and the Rust tmux dogfood suite verifies the helper tracks the maximum pane size after resize.
 - Iroh bridge tickets can now include non-secret node metadata (`id`, `name`, `subtitle`, `kind`). iOS uses that metadata for the connected node row, falling back to the endpoint id until Stack Auth and Rivet hive discovery are wired.
+- iOS handles the existing web Stack Auth deep link (`cmux://auth-callback` / `cmux-dev://auth-callback`), stores the Stack tokens in Keychain, and refuses `rivet_stack` tickets until that session exists.
 
 The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 
@@ -50,6 +51,8 @@ The current bridge defaults to iroh's N0 preset for discovery and relay behavior
 Stack Auth owns user identity. RivetKit carries the short-lived pairing control plane: pairing id, encrypted or otherwise protected secret material, device presence, invite/session metadata, and durable account-scoped connection records through actor state, key/value, or database APIs. The terminal stream stays peer-to-peer over iroh.
 
 The bridge does not put the pairing secret in the iroh ticket. The ticket advertises the pairing id, Rivet endpoint, Stack project id, and expiration. A client signed in with Stack asks Rivet for the pairing secret, connects over iroh, receives a nonce, and proves possession with an HMAC before the bridge opens the local `cmx` socket. Direct unauthenticated tickets are only for explicit local development.
+
+The iOS side now has the first part of that flow: native Stack Auth callback parsing, Keychain persistence, and bearer headers ready for Rivet/Stack-authenticated calls. The Rivet actor/API that returns the short-lived pairing secret is still a remaining step.
 
 RivetKit docs that matter for that future step:
 

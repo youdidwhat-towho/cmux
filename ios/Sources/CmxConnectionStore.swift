@@ -9,6 +9,7 @@ final class CmxConnectionStore: ObservableObject {
     @Published private(set) var errorText: String?
     @Published private(set) var isConnecting = false
     @Published private(set) var isConnected = false
+    @Published private(set) var stackAuthSession: CmxStackAuthSession?
     @Published var nodes = CmxDemoState.nodes
     @Published var workspaces = CmxDemoState.workspaces
     @Published private(set) var nativeSnapshot: CmxNativeSnapshot?
@@ -17,9 +18,12 @@ final class CmxConnectionStore: ObservableObject {
     @Published var selectedTerminalID: UInt64 = CmxDemoState.workspaces[0].spaces[0].terminals[0].id
     @Published private var outputChunksByTerminalID: [UInt64: [CmxTerminalOutputChunk]] = [:]
     @Published private var nextOutputChunkID = 1
+    private let authSessionStore: CmxStackAuthSessionStore
     private var webSocketSession: CmxWebSocketTerminalSession?
 
-    init() {
+    init(authSessionStore: CmxStackAuthSessionStore = CmxKeychainStackAuthSessionStore()) {
+        self.authSessionStore = authSessionStore
+        stackAuthSession = try? authSessionStore.load()
         if let ticket = CmxLaunchConfiguration.ticket() {
             ticketText = ticket
         }
@@ -70,11 +74,18 @@ final class CmxConnectionStore: ObservableObject {
     func connect() {
         do {
             let parsed = try CmxBridgeTicketParser.parse(ticketText)
+            if parsed.auth?.requiresStackSession == true, stackAuthSession == nil {
+                throw CmxConnectionError.missingStackAuthSession
+            }
             guard let webSocketURL = parsed.webSocketURL else {
                 throw CmxConnectionError.missingWebSocketRoute
             }
             webSocketSession?.disconnect()
-            let session = CmxWebSocketTerminalSession(url: webSocketURL, token: parsed.webSocketToken)
+            let session = CmxWebSocketTerminalSession(
+                url: webSocketURL,
+                token: parsed.webSocketToken,
+                headers: parsed.auth?.requiresStackSession == true ? stackAuthSession?.authorizationHeaders ?? [:] : [:]
+            )
             session.delegate = self
             webSocketSession = session
             ticket = parsed
@@ -89,6 +100,26 @@ final class CmxConnectionStore: ObservableObject {
             errorText = error.localizedDescription
             isConnecting = false
             isConnected = false
+        }
+    }
+
+    func handleOpenURL(_ url: URL) {
+        do {
+            let session = try CmxStackAuthCallback.parse(url: url)
+            try authSessionStore.save(session)
+            stackAuthSession = session
+            errorText = nil
+        } catch {
+            errorText = error.localizedDescription
+        }
+    }
+
+    func signOut() {
+        do {
+            try authSessionStore.clear()
+            stackAuthSession = nil
+        } catch {
+            errorText = error.localizedDescription
         }
     }
 
@@ -390,11 +421,14 @@ extension CmxConnectionStore: CmxWebSocketTerminalSessionDelegate {
 
 enum CmxConnectionError: LocalizedError {
     case missingWebSocketRoute
+    case missingStackAuthSession
 
     var errorDescription: String? {
         switch self {
         case .missingWebSocketRoute:
             String(localized: "ticket.error.websocket_route", defaultValue: "This ticket does not include a WebSocket cmx route yet.")
+        case .missingStackAuthSession:
+            String(localized: "ticket.error.stack_auth_required", defaultValue: "Sign in with Stack Auth before using this Rivet pairing ticket.")
         }
     }
 }

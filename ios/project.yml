@@ -89,6 +89,11 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         ITSAppUsesNonExemptEncryption: false
+        CFBundleURLTypes:
+          - CFBundleURLName: dev.cmux.ios.auth
+            CFBundleURLSchemes:
+              - cmux
+              - cmux-dev
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
 

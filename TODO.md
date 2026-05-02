@@ -15,11 +15,12 @@
 - [x] Add iMessage-style node/workspace inbox shell with full-width conversation rows and node pins
 - [x] Copy the rail/resize bounds helper from the previous iOS branch and add a tmux dogfood test that verifies it tracks maximum pane size after resize
 - [x] Carry non-secret node metadata in iroh bridge tickets and use it for connected iOS node rows
+- [x] Handle Stack Auth native callbacks on iOS, persist tokens in Keychain, and require a stored Stack session before using `rivet_stack` tickets
 - [ ] Replace WebSocket dev route with real iroh transport for production tickets
 - [ ] Add Rust daemon integration tests for `Hello`/`PtyBytes`/`Input` round trip
 - [ ] Add iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output
 - [ ] Replace demo node/workspace source with Stack Auth + Rivet signed-in hive discovery
-- [ ] Wire Stack Auth + Rivet pairing secrets before enabling production tickets
+- [ ] Fetch Rivet pairing secrets with the stored Stack Auth session before enabling production tickets
 
 ## Issue 151: Remote SSH (Living Execution)
 - [x] `cmux ssh` creates remote workspace metadata and does not require `--name`

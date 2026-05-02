@@ -19,22 +19,34 @@ final class CmxWebSocketTerminalSession {
     private let url: URL
     private let token: String?
     private let mode: Mode
+    private let headers: [String: String]
     private let urlSession: URLSession
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var closedByClient = false
     private var nextCommandID: UInt32 = 1
 
-    init(url: URL, token: String?, mode: Mode = .nativeLibghostty, urlSession: URLSession = .shared) {
+    init(
+        url: URL,
+        token: String?,
+        mode: Mode = .nativeLibghostty,
+        headers: [String: String] = [:],
+        urlSession: URLSession = .shared
+    ) {
         self.url = url
         self.token = token
         self.mode = mode
+        self.headers = headers
         self.urlSession = urlSession
     }
 
     func start(viewport: CmxWireViewport) {
         closedByClient = false
-        let task = urlSession.webSocketTask(with: url)
+        var request = URLRequest(url: url)
+        for (name, value) in headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        let task = urlSession.webSocketTask(with: request)
         self.task = task
         task.resume()
         receiveTask = Task { [weak self] in

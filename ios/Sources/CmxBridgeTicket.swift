@@ -42,6 +42,11 @@ enum CmxBridgeTicketAuth: Decodable, Equatable {
         return pairingID
     }
 
+    var requiresStackSession: Bool {
+        guard case .rivetStack = self else { return false }
+        return true
+    }
+
     var label: String {
         switch self {
         case .direct:

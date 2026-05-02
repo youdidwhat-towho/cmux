@@ -161,4 +161,90 @@ final class CmxBridgeTicketTests: XCTestCase {
         XCTAssertEqual(CmxLaunchConfiguration.ticket(arguments: arguments, environment: [:]), "ticket")
         XCTAssertTrue(CmxLaunchConfiguration.shouldAutoconnect(arguments: arguments, environment: [:]))
     }
+
+    func testStackAuthCallbackParsesNativeDeepLinkWithoutLeakingTokens() throws {
+        let accessPayload = #"["refresh-cookie","access-token"]"#
+            .addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)!
+        let url = URL(string: "cmux-dev://auth-callback?stack_refresh=refresh-explicit&stack_access=\(accessPayload)")!
+
+        let session = try CmxStackAuthCallback.parse(url: url)
+
+        XCTAssertEqual(session.refreshToken, "refresh-explicit")
+        XCTAssertEqual(session.accessToken, "access-token")
+        XCTAssertEqual(session.authorizationHeaders["Authorization"], "Bearer access-token")
+        XCTAssertEqual(session.authorizationHeaders["X-Stack-Refresh-Token"], "refresh-explicit")
+        XCTAssertFalse(String(describing: session).contains("access-token"))
+        XCTAssertFalse(String(describing: session).contains("refresh-explicit"))
+    }
+
+    func testStackAuthCallbackRejectsMissingTokens() {
+        XCTAssertThrowsError(
+            try CmxStackAuthCallback.parse(url: URL(string: "cmux://auth-callback?stack_refresh=refresh")!)
+        ) { error in
+            XCTAssertEqual(error as? CmxStackAuthCallbackError, .missingTokens)
+        }
+    }
+
+    @MainActor
+    func testConnectionStorePersistsStackAuthCallbackAndCanSignOut() {
+        let sessionStore = MemoryStackAuthSessionStore()
+        let store = CmxConnectionStore(authSessionStore: sessionStore)
+
+        store.handleOpenURL(URL(string: "cmux://auth-callback?stack_refresh=refresh&stack_access=access")!)
+
+        XCTAssertEqual(store.stackAuthSession, CmxStackAuthSession(refreshToken: "refresh", accessToken: "access"))
+        XCTAssertEqual(sessionStore.session, CmxStackAuthSession(refreshToken: "refresh", accessToken: "access"))
+
+        store.signOut()
+
+        XCTAssertNil(store.stackAuthSession)
+        XCTAssertNil(sessionStore.session)
+    }
+
+    @MainActor
+    func testRivetStackTicketRequiresStoredStackSessionBeforeConnect() {
+        let store = CmxConnectionStore(authSessionStore: MemoryStackAuthSessionStore())
+        store.ticketText = """
+        {
+          "version": 1,
+          "alpn": "/cmux/cmx/3",
+          "endpoint": {
+            "id": "endpoint-public-key",
+            "addrs": [
+              { "Custom": "ws://127.0.0.1:8787?token=dev" }
+            ]
+          },
+          "auth": {
+            "mode": "rivet_stack",
+            "pairing_id": "pairing-1",
+            "rivet_endpoint": "https://rivet.example.test",
+            "stack_project_id": "stack-project",
+            "expires_at_unix": 4000000000
+          }
+        }
+        """
+
+        store.connect()
+
+        XCTAssertNil(store.ticket)
+        XCTAssertFalse(store.isConnecting)
+        XCTAssertFalse(store.isConnected)
+        XCTAssertEqual(store.errorText, CmxConnectionError.missingStackAuthSession.errorDescription)
+    }
+}
+
+private final class MemoryStackAuthSessionStore: CmxStackAuthSessionStore {
+    var session: CmxStackAuthSession?
+
+    func load() throws -> CmxStackAuthSession? {
+        session
+    }
+
+    func save(_ session: CmxStackAuthSession) throws {
+        self.session = session
+    }
+
+    func clear() throws {
+        session = nil
+    }
 }
