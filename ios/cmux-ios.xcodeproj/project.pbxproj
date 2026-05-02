@@ -14,6 +14,7 @@
 		426CDC5D96305E85ABFD86FD /* CmxConnectionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F879DF9A12C97742E91048EC /* CmxConnectionStore.swift */; };
 		4B2571AC80A3529521892410 /* CmxWebSocketTerminalSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B65BE12CE77CE29F82E2587 /* CmxWebSocketTerminalSession.swift */; };
 		4C61AB29D974E25C10FB3DB6 /* GhosttyTerminalSurface.swift in Sources */ = {isa = PBXBuildFile; fileRef = 859F1700DA659FFBA5CD133F /* GhosttyTerminalSurface.swift */; };
+		52AE18A86F4618EB33E8F19F /* CmxTerminalLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D8F13F64F19D531154478F4 /* CmxTerminalLayoutTests.swift */; };
 		6AB7A10AC70BC7A211F4BA25 /* CmxGhosttyTerminalSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA700DAAB5080FB8C0F49011 /* CmxGhosttyTerminalSurfaceTests.swift */; };
 		6F690A4EFBB9693BFFA77F64 /* CmxBridgeTicket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B883D20F5E53B38079E582 /* CmxBridgeTicket.swift */; };
 		79761B08A1BFAB4EC092CE21 /* CmxMobileModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */; };
@@ -39,6 +40,7 @@
 /* Begin PBXFileReference section */
 		2ECCE021F8FE9EE036403391 /* Ghostty-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Ghostty-Bridging-Header.h"; sourceTree = "<group>"; };
 		37514174EEBB8853B706B2E2 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		4D8F13F64F19D531154478F4 /* CmxTerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxTerminalLayoutTests.swift; sourceTree = "<group>"; };
 		5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxMobileModels.swift; sourceTree = "<group>"; };
 		685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxProtocol.swift; sourceTree = "<group>"; };
 		6D04796B335A4EF9472F3C7B /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
@@ -95,6 +97,7 @@
 				EA700DAAB5080FB8C0F49011 /* CmxGhosttyTerminalSurfaceTests.swift */,
 				9BB7530110ACCA8D612E4AB8 /* CmxPairingAuthTests.swift */,
 				A530CA69638B5047244BB585 /* CmxProtocolTests.swift */,
+				4D8F13F64F19D531154478F4 /* CmxTerminalLayoutTests.swift */,
 				A89154ADDA444FB97AB5CC34 /* CmxWorkspacePresentationTests.swift */,
 			);
 			path = Tests;
@@ -217,6 +220,7 @@
 				6AB7A10AC70BC7A211F4BA25 /* CmxGhosttyTerminalSurfaceTests.swift in Sources */,
 				9A08A168FB76F15214E7FEFD /* CmxPairingAuthTests.swift in Sources */,
 				3F6B7E0B59FAA1567D655E91 /* CmxProtocolTests.swift in Sources */,
+				52AE18A86F4618EB33E8F19F /* CmxTerminalLayoutTests.swift in Sources */,
 				3145A407A3F7E4D11A941C9E /* CmxWorkspacePresentationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

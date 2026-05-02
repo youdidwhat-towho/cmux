@@ -37,6 +37,11 @@ struct CmxNativeTabInfo: Equatable, Sendable {
     var bellCount: UInt64
 }
 
+struct CmxNativeTabSelection: Equatable, Sendable {
+    var panelID: UInt64
+    var index: Int
+}
+
 enum CmxNativeSplitDirection: String, Equatable, Sendable {
     case horizontal
     case vertical
@@ -57,6 +62,16 @@ indirect enum CmxNativePanelNode: Equatable, Sendable {
             tabs
         case .split(_, _, let first, let second):
             first.flattenedTabs + second.flattenedTabs
+        }
+    }
+
+    func selection(for tabID: UInt64) -> CmxNativeTabSelection? {
+        switch self {
+        case .leaf(let panelID, let tabs, _, _):
+            guard let index = tabs.firstIndex(where: { $0.id == tabID }) else { return nil }
+            return CmxNativeTabSelection(panelID: panelID, index: index)
+        case .split(_, _, let first, let second):
+            return first.selection(for: tabID) ?? second.selection(for: tabID)
         }
     }
 }
@@ -122,14 +137,22 @@ enum CmxClientMessage: Equatable, Sendable {
     case resize(CmxWireViewport)
     case nativeInput(tabID: UInt64, data: Data)
     case nativeLayout([CmxWireTerminalViewport])
+    case command(id: UInt32, CmxClientCommand)
     case detach
     case ping
+}
+
+enum CmxClientCommand: Equatable, Sendable {
+    case selectWorkspace(index: Int)
+    case selectSpace(index: Int)
+    case selectTabInPanel(panelID: UInt64, index: Int)
 }
 
 enum CmxServerMessage: Equatable, Sendable {
     case welcome(serverVersion: String, sessionID: String)
     case ptyBytes(tabID: UInt64, data: Data)
     case hostControl(Data)
+    case commandReply(id: UInt32)
     case activeTabChanged(index: Int, tabID: UInt64)
     case activeWorkspaceChanged(index: Int, workspaceID: UInt64, title: String)
     case activeSpaceChanged(index: Int, spaceID: UInt64, title: String)
@@ -242,6 +265,14 @@ enum CmxWireCodec {
                 writer.writeString("rows")
                 writer.writeUInt(UInt64(terminal.rows))
             }
+        case .command(let id, let command):
+            writer.writeMapHeader(3)
+            writer.writeString("kind")
+            writer.writeString("command")
+            writer.writeString("id")
+            writer.writeUInt(UInt64(id))
+            writer.writeString("command")
+            writeCommand(command, to: &writer)
         case .detach:
             writer.writeMapHeader(1)
             writer.writeString("kind")
@@ -277,6 +308,8 @@ enum CmxWireCodec {
             )
         case "host_control":
             return .hostControl(try requiredData(map, "data"))
+        case "command_reply":
+            return .commandReply(id: UInt32(clamping: try requiredUInt(map, "id")))
         case "active_tab_changed":
             return .activeTabChanged(
                 index: Int(try requiredUInt(map, "index")),
@@ -326,6 +359,31 @@ enum CmxWireCodec {
         writer.writeUInt(UInt64(viewport.cols))
         writer.writeString("rows")
         writer.writeUInt(UInt64(viewport.rows))
+    }
+
+    private static func writeCommand(_ command: CmxClientCommand, to writer: inout MessagePackWriter) {
+        switch command {
+        case .selectWorkspace(let index):
+            writer.writeMapHeader(2)
+            writer.writeString("name")
+            writer.writeString("select-workspace")
+            writer.writeString("index")
+            writer.writeUInt(UInt64(index))
+        case .selectSpace(let index):
+            writer.writeMapHeader(2)
+            writer.writeString("name")
+            writer.writeString("select-space")
+            writer.writeString("index")
+            writer.writeUInt(UInt64(index))
+        case .selectTabInPanel(let panelID, let index):
+            writer.writeMapHeader(3)
+            writer.writeString("name")
+            writer.writeString("select-tab-in-panel")
+            writer.writeString("panel_id")
+            writer.writeUInt(panelID)
+            writer.writeString("index")
+            writer.writeUInt(UInt64(index))
+        }
     }
 
     private static func requiredString(_ map: [String: MessagePackValue], _ key: String) throws -> String {
@@ -513,6 +571,7 @@ private enum MessagePackValue: Equatable {
     case bool(Bool)
     case int(Int64)
     case uint(UInt64)
+    case float(Double)
     case string(String)
     case binary(Data)
     case array([MessagePackValue])
@@ -587,6 +646,11 @@ struct MessagePackWriter {
             data.append(0xCF)
             appendBigEndian(value)
         }
+    }
+
+    mutating func writeFloat64(_ value: Double) {
+        data.append(0xCB)
+        appendBigEndian(value.bitPattern)
     }
 
     mutating func writeString(_ string: String) {
@@ -691,6 +755,10 @@ private struct MessagePackReader {
             return try readBinary(count: Int(readUInt16()))
         case 0xC6:
             return try readBinary(count: Int(readUInt32()))
+        case 0xCA:
+            return .float(Double(Float32(bitPattern: try readUInt32())))
+        case 0xCB:
+            return .float(Double(bitPattern: try readUInt64()))
         case 0xCC:
             return .uint(UInt64(try readByte()))
         case 0xCD:
@@ -732,8 +800,12 @@ private struct MessagePackReader {
         var map: [String: MessagePackValue] = [:]
         map.reserveCapacity(count)
         for _ in 0..<count {
-            let key = try readValue().stringValue()
-            map[key] = try readValue()
+            let key = try readValue()
+            let value = try readValue()
+            // Rust may include ignored nested maps keyed by numeric theme color indexes.
+            if case .string(let stringKey) = key {
+                map[stringKey] = value
+            }
         }
         return .map(map)
     }

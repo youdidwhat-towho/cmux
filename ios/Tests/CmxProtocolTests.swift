@@ -47,6 +47,17 @@ final class CmxProtocolTests: XCTestCase {
         XCTAssertNotNil(payload.range(of: Data("libghostty".utf8)))
     }
 
+    func testCommandEncodingSelectsNativeTabInPanel() throws {
+        let payload = try CmxWireCodec.encode(
+            .command(id: 7, .selectTabInPanel(panelID: 31, index: 2))
+        )
+
+        XCTAssertNotNil(payload.range(of: Data("command".utf8)))
+        XCTAssertNotNil(payload.range(of: Data("select-tab-in-panel".utf8)))
+        XCTAssertNotNil(payload.range(of: Data("panel_id".utf8)))
+        XCTAssertNotNil(payload.range(of: Data("index".utf8)))
+    }
+
     func testDecodeWelcome() throws {
         let payload = Data([
             0x83,
@@ -64,6 +75,21 @@ final class CmxProtocolTests: XCTestCase {
             try CmxWireCodec.decodeServerMessage(payload),
             .welcome(serverVersion: "0.1.0", sessionID: "abc")
         )
+    }
+
+    func testDecodeCommandReplyIgnoresResultShape() throws {
+        var writer = MessagePackWriter()
+        writer.writeMapHeader(3)
+        writer.writeString("kind")
+        writer.writeString("command_reply")
+        writer.writeString("id")
+        writer.writeUInt(7)
+        writer.writeString("result")
+        writer.writeMapHeader(1)
+        writer.writeString("ok")
+        writer.writeBool(true)
+
+        XCTAssertEqual(try CmxWireCodec.decodeServerMessage(writer.data), .commandReply(id: 7))
     }
 
     func testDecodePtyBytes() throws {
@@ -110,6 +136,7 @@ final class CmxProtocolTests: XCTestCase {
         XCTAssertEqual(snapshot.workspaces.map(\.title), ["main", "agents"])
         XCTAssertEqual(snapshot.spaces.map(\.title), ["space-a"])
         XCTAssertEqual(snapshot.panels.flattenedTabs.map(\.id), [41, 42])
+        XCTAssertEqual(snapshot.panels.selection(for: 42), CmxNativeTabSelection(panelID: 31, index: 1))
     }
 
     func testDecodeTerminalGridSnapshot() throws {
@@ -153,7 +180,7 @@ final class CmxProtocolTests: XCTestCase {
     }
 
     private func writeNativeSnapshot(to writer: inout MessagePackWriter) {
-        writer.writeMapHeader(9)
+        writer.writeMapHeader(12)
         writer.writeString("workspaces")
         writer.writeArrayHeader(2)
         writeWorkspace(id: 11, title: "main", spaces: 1, terminals: 2, pinned: true, to: &writer)
@@ -187,6 +214,29 @@ final class CmxProtocolTests: XCTestCase {
         writer.writeUInt(31)
         writer.writeString("focused_tab_id")
         writer.writeUInt(41)
+        writer.writeString("terminal_theme")
+        writer.writeMapHeader(1)
+        writer.writeString("default")
+        writer.writeMapHeader(2)
+        writer.writeString("palette")
+        writer.writeMapHeader(1)
+        writer.writeUInt(1)
+        writer.writeString("#f92672")
+        writer.writeString("background")
+        writer.writeString("#272822")
+        writer.writeString("terminal_font")
+        writer.writeMapHeader(2)
+        writer.writeString("families")
+        writer.writeArrayHeader(1)
+        writer.writeString("JetBrains Mono")
+        writer.writeString("size")
+        writer.writeFloat64(13.0)
+        writer.writeString("terminal_cursor")
+        writer.writeMapHeader(2)
+        writer.writeString("style")
+        writer.writeString("block")
+        writer.writeString("blink")
+        writer.writeBool(true)
     }
 
     private func writeWorkspace(

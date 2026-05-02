@@ -54,6 +54,19 @@ final class CmxGhosttyTerminalSurfaceTests: XCTestCase {
         await fulfillment(of: [inputExpectation], timeout: 2.0)
     }
 
+    func testGhosttySurfaceCanForceInitialGridReportAfterCoordinatorBinding() throws {
+        let (surfaceView, delegate) = try makeSurfaceView()
+        surfaceView.frame = CGRect(x: 0, y: 0, width: 390, height: 640)
+        surfaceView.layoutIfNeeded()
+        delegate.lastSize = nil
+
+        surfaceView.reportCurrentGridSize()
+
+        XCTAssertNotNil(delegate.lastSize)
+        XCTAssertGreaterThan(delegate.lastSize?.columns ?? 0, 0)
+        XCTAssertGreaterThan(delegate.lastSize?.rows ?? 0, 0)
+    }
+
     private func makeSurfaceView() throws -> (GhosttyTerminalSurfaceView, DelegateRecorder) {
         let delegate = DelegateRecorder()
         let runtime = try GhosttyRuntime.shared()

@@ -61,4 +61,45 @@ final class CmxWorkspacePresentationTests: XCTestCase {
         XCTAssertEqual(store.selectedSpace.terminals.map(\.id), [41, 42])
         XCTAssertEqual(store.selectedTerminal.title, "shell")
     }
+
+    func testNativeSnapshotAllowsZeroValuedRustTabID() {
+        let store = CmxConnectionStore()
+
+        store.applyNativeSnapshot(
+            CmxNativeSnapshot(
+                workspaces: [
+                    CmxNativeWorkspaceInfo(
+                        id: 11,
+                        title: "main",
+                        spaceCount: 1,
+                        tabCount: 1,
+                        terminalCount: 1,
+                        pinned: false,
+                        color: nil
+                    ),
+                ],
+                activeWorkspace: 0,
+                activeWorkspaceID: 11,
+                spaces: [
+                    CmxNativeSpaceInfo(id: 21, title: "space-1", paneCount: 1, terminalCount: 1),
+                ],
+                activeSpace: 0,
+                activeSpaceID: 21,
+                panels: .leaf(
+                    panelID: 31,
+                    tabs: [
+                        CmxNativeTabInfo(id: 0, title: "shell", hasActivity: false, bellCount: 0),
+                    ],
+                    active: 0,
+                    activeTabID: 0
+                ),
+                focusedPanelID: 31,
+                focusedTabID: 0
+            )
+        )
+        store.updateTerminalSize(terminalID: 0, size: CmxTerminalSize(cols: 111, rows: 33))
+
+        XCTAssertEqual(store.selectedTerminal.id, 0)
+        XCTAssertEqual(store.terminalSize(for: 0), CmxTerminalSize(cols: 111, rows: 33))
+    }
 }

@@ -23,6 +23,7 @@ final class CmxWebSocketTerminalSession {
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
     private var closedByClient = false
+    private var nextCommandID: UInt32 = 1
 
     init(url: URL, token: String?, mode: Mode = .nativeLibghostty, urlSession: URLSession = .shared) {
         self.url = url
@@ -69,6 +70,12 @@ final class CmxWebSocketTerminalSession {
 
     func sendNativeLayout(_ terminals: [CmxWireTerminalViewport]) {
         send(.nativeLayout(terminals))
+    }
+
+    func sendCommand(_ command: CmxClientCommand) {
+        let id = nextCommandID
+        nextCommandID = nextCommandID == UInt32.max ? 1 : nextCommandID + 1
+        send(.command(id: id, command))
     }
 
     func disconnect() {

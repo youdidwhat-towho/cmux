@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @EnvironmentObject private var store: CmxConnectionStore
@@ -82,12 +83,6 @@ private struct WorkspaceListView: View {
                         .accessibilityLabel(String(localized: "home.menu.more", defaultValue: "More"))
                 }
             }
-        }
-        .safeAreaInset(edge: .bottom) {
-            TicketPanel()
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(.bar)
         }
     }
 }
@@ -316,84 +311,95 @@ private struct EmptyWorkspaceSearch: View {
     }
 }
 
-private struct TicketPanel: View {
-    @EnvironmentObject private var store: CmxConnectionStore
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Label(store.statusText, systemImage: store.isConnected ? "checkmark.circle.fill" : "bolt.horizontal.circle")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(store.isConnected ? .green : .secondary)
-                Spacer()
-                Button(store.isConnected || store.isConnecting ? String(localized: "button.disconnect", defaultValue: "Disconnect") : String(localized: "button.connect", defaultValue: "Connect")) {
-                    if store.isConnected || store.isConnecting {
-                        store.disconnect()
-                    } else {
-                        store.connect()
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-            }
-
-            TextField(
-                String(localized: "ticket.placeholder", defaultValue: "Paste iroh bridge ticket"),
-                text: $store.ticketText,
-                axis: .vertical
-            )
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-            .font(.system(.caption, design: .monospaced))
-            .lineLimit(2...4)
-
-            if let errorText = store.errorText {
-                Text(errorText)
-                    .font(.caption)
-                    .foregroundStyle(.red)
-            }
-        }
-    }
-}
-
 private struct TerminalDetailView: View {
     @EnvironmentObject private var store: CmxConnectionStore
+    @State private var keyboardOverlap: CGFloat = 0
 
     var body: some View {
-        VStack(spacing: 0) {
-            SpaceStrip()
+        ZStack {
             TerminalPane(terminal: store.selectedTerminal)
-            BridgeSummary(ticket: store.ticket)
         }
-        .navigationTitle(store.selectedWorkspace.title)
+        .padding(.bottom, keyboardOverlap)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TerminalThemeChrome.background.ignoresSafeArea())
+        .background(KeyboardOverlapReader(overlap: $keyboardOverlap).allowsHitTesting(false))
+        .ignoresSafeArea(edges: [.horizontal, .bottom])
+        .ignoresSafeArea(.keyboard, edges: .bottom)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                TerminalPickerMenu()
+            }
+        }
+        .toolbarBackground(TerminalThemeChrome.background, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarColorScheme(TerminalThemeChrome.toolbarColorScheme, for: .navigationBar)
     }
 }
 
-private struct SpaceStrip: View {
+private struct TerminalPickerMenu: View {
     @EnvironmentObject private var store: CmxConnectionStore
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                ForEach(store.selectedWorkspace.spaces) { space in
+        Menu {
+            ForEach(store.workspaces) { workspace in
+                Button {
+                    store.select(workspace: workspace)
+                } label: {
+                    Label(
+                        workspace.title,
+                        systemImage: workspace.id == store.selectedWorkspaceID ? "checkmark" : "rectangle.stack"
+                    )
+                }
+            }
+
+            Divider()
+
+            ForEach(store.selectedWorkspace.spaces) { space in
+                Menu {
                     Button {
                         store.select(space: space)
                     } label: {
-                        Text(space.title)
-                            .font(.callout.weight(.semibold))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(space.id == store.selectedSpaceID ? Color.accentColor.opacity(0.14) : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 8))
+                        Label(
+                            space.title,
+                            systemImage: space.id == store.selectedSpaceID ? "checkmark" : "rectangle.split.1x2"
+                        )
                     }
-                    .buttonStyle(.plain)
+
+                    if !space.terminals.isEmpty {
+                        Divider()
+                    }
+
+                    ForEach(space.terminals) { terminal in
+                        Button {
+                            store.select(space: space)
+                            store.select(terminal: terminal)
+                        } label: {
+                            Label(
+                                terminal.title,
+                                systemImage: terminal.id == store.selectedTerminal.id ? "terminal.fill" : "terminal"
+                            )
+                        }
+                    }
+                } label: {
+                    Label(
+                        space.title,
+                        systemImage: space.id == store.selectedSpaceID ? "checkmark.circle" : "rectangle.split.1x2"
+                    )
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+        } label: {
+            HStack(spacing: 5) {
+                Text(store.selectedWorkspace.title)
+                    .font(.headline.weight(.semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(TerminalThemeChrome.foreground)
+            .accessibilityIdentifier("terminal.selector")
         }
-        .background(.bar)
     }
 }
 
@@ -402,45 +408,160 @@ private struct TerminalPane: View {
     let terminal: CmxTerminal
 
     var body: some View {
-        CmxGhosttyTerminalView(store: store, terminalID: terminal.id)
-            .id(terminal.id)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.black)
+        GeometryReader { proxy in
+            CmxGhosttyTerminalView(store: store, terminalID: terminal.id)
+                .id(terminal.id)
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(TerminalThemeChrome.background)
+        .ignoresSafeArea(edges: [.horizontal, .bottom])
     }
 }
 
-private struct BridgeSummary: View {
-    let ticket: CmxBridgeTicket?
+private enum TerminalThemeChrome {
+    @MainActor
+    static var background: Color {
+        Color(
+            GhosttyRuntime.configuredUIColor(
+                named: "background",
+                fallback: UIColor(red: 0x27 / 255, green: 0x28 / 255, blue: 0x22 / 255, alpha: 1)
+            )
+        )
+    }
 
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(String(localized: "bridge.summary.title", defaultValue: "Iroh bridge"))
-                .font(.caption.weight(.semibold))
-            if let ticket {
-                Text(ticket.endpoint.id)
-                    .font(.system(.caption2, design: .monospaced))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let auth = ticket.auth {
-                    Text(auth.label)
-                        .font(.system(.caption2, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                ForEach(ticket.endpoint.addrs) { route in
-                    Text(route.label)
-                        .font(.system(.caption2, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            } else {
-                Text(String(localized: "bridge.summary.empty", defaultValue: "Paste a bridge ticket to attach this device."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+    @MainActor
+    static var foreground: Color {
+        Color(
+            GhosttyRuntime.configuredUIColor(
+                named: "foreground",
+                fallback: UIColor(red: 0xfd / 255, green: 0xff / 255, blue: 0xf1 / 255, alpha: 1)
+            )
+        )
+    }
+
+    @MainActor
+    static var toolbarColorScheme: ColorScheme {
+        GhosttyRuntime.configuredUIColor(
+            named: "background",
+            fallback: UIColor(red: 0x27 / 255, green: 0x28 / 255, blue: 0x22 / 255, alpha: 1)
+        ).cmxIsDark ? .dark : .light
+    }
+}
+
+private struct KeyboardOverlapReader: UIViewRepresentable {
+    @Binding var overlap: CGFloat
+
+    func makeUIView(context: Context) -> KeyboardOverlapProbeView {
+        let view = KeyboardOverlapProbeView()
+        view.onOverlapChange = { newValue in
+            guard abs(overlap - newValue) > 0.5 else { return }
+            overlap = newValue
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.bar)
+        return view
+    }
+
+    func updateUIView(_ view: KeyboardOverlapProbeView, context: Context) {
+        view.onOverlapChange = { newValue in
+            guard abs(overlap - newValue) > 0.5 else { return }
+            overlap = newValue
+        }
+        view.reportOverlap()
+    }
+}
+
+@MainActor
+final class KeyboardOverlapProbeView: UIView {
+    var onOverlapChange: ((CGFloat) -> Void)?
+    private var lastOverlap: CGFloat = -1
+    private var keyboardFrameInScreen: CGRect?
+    private var keyboardVisible = false
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isUserInteractionEnabled = false
+        backgroundColor = .clear
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleKeyboardFrameChange(_:)),
+            name: UIResponder.keyboardWillChangeFrameNotification,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleKeyboardHide(_:)),
+            name: UIResponder.keyboardWillHideNotification,
+            object: nil
+        )
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) is not supported")
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        reportOverlap()
+    }
+
+    func reportOverlap() {
+        let keyboardFrame = currentKeyboardFrameInView()
+        let newOverlap = CmxKeyboardOverlap.visibleHeight(
+            containerBounds: bounds,
+            keyboardFrame: keyboardFrame
+        )
+        guard abs(lastOverlap - newOverlap) > 0.5 else { return }
+        lastOverlap = newOverlap
+        onOverlapChange?(newOverlap)
+    }
+
+    @objc private func handleKeyboardFrameChange(_ notification: Notification) {
+        keyboardFrameInScreen = (notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
+        keyboardVisible = keyboardFrameInScreen?.isEmpty == false
+        reportOverlap()
+    }
+
+    @objc private func handleKeyboardHide(_ notification: Notification) {
+        keyboardVisible = false
+        keyboardFrameInScreen = nil
+        reportOverlap()
+    }
+
+    private func currentKeyboardFrameInView() -> CGRect {
+        guard keyboardVisible,
+              let keyboardFrameInScreen,
+              let window else { return .zero }
+        let frameInWindow = window.convert(keyboardFrameInScreen, from: nil)
+        return convert(frameInWindow, from: nil)
+    }
+}
+
+enum CmxKeyboardOverlap {
+    static func visibleHeight(containerBounds: CGRect, keyboardFrame: CGRect) -> CGFloat {
+        guard !containerBounds.isNull,
+              !containerBounds.isEmpty,
+              !keyboardFrame.isNull,
+              !keyboardFrame.isEmpty else { return 0 }
+        guard keyboardFrame.minY > containerBounds.minY else { return 0 }
+        guard keyboardFrame.maxY >= containerBounds.maxY - 1 else { return 0 }
+        let overlap = containerBounds.maxY - max(containerBounds.minY, keyboardFrame.minY)
+        return max(0, min(containerBounds.height, overlap))
+    }
+}
+
+private extension UIColor {
+    var cmxIsDark: Bool {
+        var red: CGFloat = 0
+        var green: CGFloat = 0
+        var blue: CGFloat = 0
+        var alpha: CGFloat = 0
+        guard getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return true }
+        let luminance = (0.299 * red) + (0.587 * green) + (0.114 * blue)
+        return luminance < 0.55
     }
 }

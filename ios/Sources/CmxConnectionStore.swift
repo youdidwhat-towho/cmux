@@ -2,6 +2,8 @@ import Foundation
 
 @MainActor
 final class CmxConnectionStore: ObservableObject {
+    private static let placeholderTerminalID = UInt64.max
+
     @Published var ticketText = ""
     @Published private(set) var ticket: CmxBridgeTicket?
     @Published private(set) var errorText: String?
@@ -12,6 +14,7 @@ final class CmxConnectionStore: ObservableObject {
     @Published private(set) var nativeSnapshot: CmxNativeSnapshot?
     @Published var selectedWorkspaceID: UInt64 = CmxDemoState.workspaces[0].id
     @Published var selectedSpaceID: UInt64 = CmxDemoState.workspaces[0].spaces[0].id
+    @Published var selectedTerminalID: UInt64 = CmxDemoState.workspaces[0].spaces[0].terminals[0].id
     @Published private var outputChunksByTerminalID: [UInt64: [CmxTerminalOutputChunk]] = [:]
     @Published private var nextOutputChunkID = 1
     private var webSocketSession: CmxWebSocketTerminalSession?
@@ -39,10 +42,12 @@ final class CmxConnectionStore: ObservableObject {
     }
 
     var selectedTerminal: CmxTerminal {
-        selectedSpace.terminals.first
+        selectedSpace.terminals.first(where: { $0.id == selectedTerminalID })
+            ?? selectedWorkspace.spaces.flatMap(\.terminals).first(where: { $0.id == selectedTerminalID })
+            ?? selectedSpace.terminals.first
             ?? workspaces.flatMap(\.spaces).flatMap(\.terminals).first
             ?? CmxTerminal(
-                id: 0,
+                id: Self.placeholderTerminalID,
                 title: String(localized: "demo.terminal.cmx", defaultValue: "cmx"),
                 size: .phoneDefault,
                 rows: []
@@ -99,11 +104,27 @@ final class CmxConnectionStore: ObservableObject {
         if let firstSpace = workspace.spaces.first {
             selectedSpaceID = firstSpace.id
         }
+        selectedTerminalID = selectedSpace.terminals.first?.id ?? selectedTerminalID
+        if let index = workspaces.firstIndex(where: { $0.id == workspace.id }) {
+            webSocketSession?.sendCommand(.selectWorkspace(index: index))
+        }
         syncNativeLayoutForVisibleTerminal()
     }
 
     func select(space: CmxSpace) {
         selectedSpaceID = space.id
+        selectedTerminalID = space.terminals.first?.id ?? selectedTerminalID
+        if let index = selectedWorkspace.spaces.firstIndex(where: { $0.id == space.id }) {
+            webSocketSession?.sendCommand(.selectSpace(index: index))
+        }
+        syncNativeLayoutForVisibleTerminal()
+    }
+
+    func select(terminal: CmxTerminal) {
+        selectedTerminalID = terminal.id
+        if let selection = nativeSnapshot?.panels.selection(for: terminal.id) {
+            webSocketSession?.sendCommand(.selectTabInPanel(panelID: selection.panelID, index: selection.index))
+        }
         syncNativeLayoutForVisibleTerminal()
     }
 
@@ -235,6 +256,7 @@ final class CmxConnectionStore: ObservableObject {
         }
         selectedWorkspaceID = snapshot.activeWorkspaceID
         selectedSpaceID = snapshot.activeSpaceID
+        selectedTerminalID = snapshot.focusedTabID
     }
 
     private func updateConnectedNode(for ticket: CmxBridgeTicket) {
@@ -253,7 +275,7 @@ final class CmxConnectionStore: ObservableObject {
 
     private func syncNativeLayoutForVisibleTerminal() {
         let terminal = selectedTerminal
-        guard terminal.id != 0 else { return }
+        guard terminal.id != Self.placeholderTerminalID else { return }
         webSocketSession?.sendNativeLayout([
             CmxWireTerminalViewport(
                 tabID: terminal.id,
@@ -329,7 +351,7 @@ extension CmxConnectionStore: CmxWebSocketTerminalSessionDelegate {
             errorText = nil
         case .ptyBytes(let tabID, let data):
             appendOutput(data, terminalID: tabID)
-        case .hostControl:
+        case .hostControl, .commandReply:
             break
         case .nativeSnapshot(let snapshot):
             applyNativeSnapshot(snapshot)

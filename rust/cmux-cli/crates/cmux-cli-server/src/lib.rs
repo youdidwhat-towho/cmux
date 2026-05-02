@@ -5996,6 +5996,29 @@ async fn run_native_session(
                     }
                     Some(ClientMsg::NativeLayout { terminals }) => {
                         has_native_layout = !terminals.is_empty();
+                        if probe::verbose_enabled() {
+                            probe::log_event(
+                                "server",
+                                "native_layout",
+                                &[
+                                    ("session_id", session_id.clone()),
+                                    ("count", terminals.len().to_string()),
+                                    (
+                                        "terminals",
+                                        terminals
+                                            .iter()
+                                            .map(|terminal| {
+                                                format!(
+                                                    "{}:{}x{}",
+                                                    terminal.tab_id, terminal.cols, terminal.rows
+                                                )
+                                            })
+                                            .collect::<Vec<_>>()
+                                            .join(","),
+                                    ),
+                                ],
+                            );
+                        }
                         daemon.update_client_native_view(&session_id, terminals).await;
                         if has_native_layout {
                             match terminal_renderer {

@@ -500,6 +500,87 @@ async fn websocket_native_libghostty_mode_streams_pty_bytes_instead_of_terminal_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_native_layout_resizes_pty_to_visible_client_size() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = dir.path().join("server.sock");
+    let ws_addr = pick_free_port().await;
+    let opts = ServerOptions {
+        socket_path: socket.clone(),
+        shell: "/bin/sh".into(),
+        cwd: Some(dir.path().to_path_buf()),
+        initial_viewport: (80, 24),
+        snapshot_path: None,
+        settings_path: None,
+        ws_bind: Some(ws_addr),
+        auth_token: Some("sekrit".into()),
+    };
+    let server = tokio::spawn(async move {
+        let _ = run(opts).await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let mut ws = connect_ws(ws_addr).await;
+    send_client_msg(
+        &mut ws,
+        &ClientMsg::HelloNative {
+            version: PROTOCOL_VERSION,
+            viewport: Viewport { cols: 80, rows: 24 },
+            token: Some("sekrit".into()),
+            terminal_renderer: NativeTerminalRenderer::Libghostty,
+        },
+    )
+    .await;
+
+    match recv_server_msg(&mut ws).await {
+        ServerMsg::Welcome { .. } => {}
+        other => panic!("expected Welcome, got {other:?}"),
+    }
+    let tab_id = recv_native_snapshot(&mut ws).await.focused_tab_id;
+    send_client_msg(
+        &mut ws,
+        &ClientMsg::NativeLayout {
+            terminals: vec![cmux_cli_protocol::NativeTerminalViewport {
+                tab_id,
+                cols: 111,
+                rows: 33,
+            }],
+        },
+    )
+    .await;
+    send_client_msg(
+        &mut ws,
+        &ClientMsg::NativeInput {
+            tab_id,
+            data: b"stty size\n".to_vec(),
+        },
+    )
+    .await;
+
+    let needle = b"33 111";
+    let seen = recv_until_server_msg(&mut ws, Duration::from_secs(3), |message| match message {
+        ServerMsg::PtyBytes { data, .. } => {
+            data.windows(needle.len()).any(|window| window == needle)
+        }
+        _ => false,
+    })
+    .await
+    .expect("expected native layout to resize the PTY");
+    match seen {
+        ServerMsg::PtyBytes {
+            tab_id: got_tab_id,
+            data,
+        } => {
+            assert_eq!(got_tab_id, tab_id);
+            assert!(data.windows(needle.len()).any(|window| window == needle));
+        }
+        other => panic!("expected PTY bytes, got {other:?}"),
+    }
+
+    server.abort();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn websocket_native_snapshot_reports_attached_client_layouts() {
     let dir = tempfile::tempdir().unwrap();
     let socket = dir.path().join("server.sock");

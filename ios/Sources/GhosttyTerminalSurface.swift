@@ -351,6 +351,21 @@ public final class GhosttyRuntime {
         ghostty_app_tick(app)
     }
 
+    public static func configuredUIColor(named key: String, fallback: UIColor) -> UIColor {
+        guard let runtime = try? shared(),
+              let config = runtime.config else { return fallback }
+        var color = ghostty_config_color_s()
+        if ghostty_config_get(config, &color, key, UInt(key.utf8.count)) {
+            return UIColor(
+                red: CGFloat(color.r) / 255,
+                green: CGFloat(color.g) / 255,
+                blue: CGFloat(color.b) / 255,
+                alpha: 1
+            )
+        }
+        return fallback
+    }
+
     private static func initializeBackendIfNeeded() throws {
         guard !backendInitialized else { return }
         let result = ghostty_init(UInt(CommandLine.argc), CommandLine.unsafeArgv)
@@ -596,6 +611,8 @@ private enum GhosttySurfaceDisposer {
 
 @MainActor
 public final class GhosttyTerminalSurfaceView: UIView {
+    private static let defaultMobileFontSize: Float32 = 16
+
     private weak var runtime: GhosttyRuntime?
     private weak var delegate: GhosttyTerminalSurfaceViewDelegate?
     private let bridge = GhosttySurfaceBridge()
@@ -736,6 +753,10 @@ public final class GhosttyTerminalSurfaceView: UIView {
         syncSurfaceGeometry(reportResize: false)
     }
 
+    public func reportCurrentGridSize() {
+        syncSurfaceGeometry(reportResize: true, forceReport: true)
+    }
+
     @objc public func focusInput() {
         inputProxy.becomeFirstResponder()
     }
@@ -806,7 +827,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
             ios: ghostty_platform_ios_s(uiview: Unmanaged.passUnretained(self).toOpaque())
         )
         surfaceConfig.scale_factor = screenScale
-        surfaceConfig.font_size = 10
+        surfaceConfig.font_size = Self.defaultMobileFontSize
         surfaceConfig.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
         surfaceConfig.io_mode = GHOSTTY_SURFACE_IO_MANUAL
         surfaceConfig.io_write_cb = { userdata, buffer, length in
@@ -833,7 +854,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
         window?.windowScene?.screen.scale ?? traitCollection.displayScale.nonZero ?? 2
     }
 
-    private func syncSurfaceGeometry(reportResize: Bool = true) {
+    private func syncSurfaceGeometry(reportResize: Bool = true, forceReport: Bool = false) {
         guard let surface else { return }
         let scale = screenScale
         let width = UInt32(max(1, Int((max(bounds.width, 1) * scale).rounded(.down))))
@@ -847,7 +868,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
             pixelWidth: Int(size.width_px),
             pixelHeight: Int(size.height_px)
         )
-        if reportResize, gridSize != lastReportedSize {
+        if reportResize, forceReport || gridSize != lastReportedSize {
             lastReportedSize = gridSize
             delegate?.ghosttyTerminalSurfaceView(self, didResize: gridSize)
         }
@@ -862,17 +883,10 @@ public final class GhosttyTerminalSurfaceView: UIView {
     }
 
     private func applyConfiguredBackground() {
-        guard let config = runtime?.config else { return }
-        var color = ghostty_config_color_s()
-        let key = "background"
-        if ghostty_config_get(config, &color, key, UInt(key.utf8.count)) {
-            backgroundColor = UIColor(
-                red: CGFloat(color.r) / 255,
-                green: CGFloat(color.g) / 255,
-                blue: CGFloat(color.b) / 255,
-                alpha: 1
-            )
-        }
+        backgroundColor = GhosttyRuntime.configuredUIColor(
+            named: "background",
+            fallback: UIColor(red: 0x27 / 255, green: 0x28 / 255, blue: 0x22 / 255, alpha: 1)
+        )
     }
 
     @objc private func handleScrollPan(_ gesture: UIPanGestureRecognizer) {
@@ -1160,13 +1174,18 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
 
     @MainActor
     func makeUIView(context: Context) -> UIView {
+        let container = CmxTerminalHostedViewContainer()
+        container.backgroundColor = GhosttyRuntime.configuredUIColor(
+            named: "background",
+            fallback: UIColor(red: 0x27 / 255, green: 0x28 / 255, blue: 0x22 / 255, alpha: 1)
+        )
         do {
             let surfaceView = GhosttyTerminalSurfaceView(
                 runtime: try GhosttyRuntime.shared(),
                 delegate: context.coordinator
             )
+            container.setHostedView(surfaceView)
             context.coordinator.apply(store: store, terminalID: terminalID, to: surfaceView)
-            return surfaceView
         } catch {
             let fallback = UILabel()
             fallback.backgroundColor = .black
@@ -1180,14 +1199,24 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
             fallback.isAccessibilityElement = true
             fallback.accessibilityIdentifier = "terminal.surface"
             fallback.accessibilityValue = fallback.text
-            return fallback
+            container.setHostedView(fallback)
         }
+        return container
     }
 
     @MainActor
     func updateUIView(_ view: UIView, context: Context) {
-        guard let surfaceView = view as? GhosttyTerminalSurfaceView else { return }
+        guard let container = view as? CmxTerminalHostedViewContainer,
+              let surfaceView = container.hostedView as? GhosttyTerminalSurfaceView else { return }
         context.coordinator.apply(store: store, terminalID: terminalID, to: surfaceView)
+    }
+
+    @MainActor
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        CGSize(
+            width: proposal.width ?? uiView.bounds.width,
+            height: proposal.height ?? uiView.bounds.height
+        )
     }
 
     @MainActor
@@ -1195,24 +1224,21 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
         private weak var store: CmxConnectionStore?
         private var terminalID: UInt64?
         private var lastAppliedOutputID = 0
-        private var lastAppliedSize: CmxTerminalSize?
 
         func apply(store: CmxConnectionStore, terminalID: UInt64, to surfaceView: GhosttyTerminalSurfaceView) {
-            if self.terminalID != terminalID {
+            let didChangeTerminal = self.terminalID != terminalID
+            if didChangeTerminal {
                 lastAppliedOutputID = 0
-                lastAppliedSize = nil
             }
             self.store = store
             self.terminalID = terminalID
 
-            let size = store.terminalSize(for: terminalID)
-            if lastAppliedSize != size {
-                lastAppliedSize = size
-                surfaceView.applyViewSize(cols: size.cols, rows: size.rows)
-            }
             for chunk in store.outputChunks(for: terminalID) where chunk.id > lastAppliedOutputID {
                 surfaceView.processOutput(chunk.data)
                 lastAppliedOutputID = chunk.id
+            }
+            if didChangeTerminal {
+                surfaceView.reportCurrentGridSize()
             }
         }
 
@@ -1228,5 +1254,29 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
                 size: CmxTerminalSize(cols: size.columns, rows: size.rows)
             )
         }
+    }
+}
+
+private final class CmxTerminalHostedViewContainer: UIView {
+    private(set) var hostedView: UIView?
+
+    func setHostedView(_ view: UIView) {
+        guard hostedView !== view else { return }
+
+        hostedView?.removeFromSuperview()
+        hostedView = view
+
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        view.setContentHuggingPriority(.defaultLow, for: .vertical)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+        addSubview(view)
+        NSLayoutConstraint.activate([
+            view.leadingAnchor.constraint(equalTo: leadingAnchor),
+            view.trailingAnchor.constraint(equalTo: trailingAnchor),
+            view.topAnchor.constraint(equalTo: topAnchor),
+            view.bottomAnchor.constraint(equalTo: bottomAnchor),
+        ])
     }
 }
