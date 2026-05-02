@@ -1,6 +1,12 @@
 name: LLM Diff Lint
 
 on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull request number to lint"
+        required: true
+        type: string
   pull_request_target:
     types:
       - opened
@@ -21,13 +27,13 @@ on:
 permissions: {}
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || inputs.pr_number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
   deepseek-rule:
     name: LLM rule (deepseek / ${{ matrix.rule }})
-    if: github.event.pull_request.draft == false
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,7 +58,7 @@ jobs:
       - name: Resolve pull request
         id: pr
         env:
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail
@@ -90,7 +96,7 @@ jobs:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           DEEPSEEK_BASE_URL: ${{ vars.DEEPSEEK_BASE_URL }}
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
-          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
+          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '8192' }}
           LLM_DIFF_LINT_PROVIDER: deepseek
           LLM_DIFF_LINT_THINKING: ${{ vars.LLM_DIFF_LINT_THINKING || vars.DEEPSEEK_THINKING || 'disabled' }}
         shell: bash
@@ -118,7 +124,7 @@ jobs:
 
   google-vertex-rule:
     name: LLM rule (google-vertex / ${{ matrix.rule }})
-    if: github.event.pull_request.draft == false
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -144,7 +150,7 @@ jobs:
       - name: Resolve pull request
         id: pr
         env:
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail
@@ -188,7 +194,7 @@ jobs:
           GOOGLE_VERTEX_LOCATION: ${{ vars.GOOGLE_VERTEX_LOCATION || 'global' }}
           GOOGLE_VERTEX_PROJECT: ${{ vars.GOOGLE_VERTEX_PROJECT || 'manaflow-437420' }}
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
-          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '4096' }}
+          LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '8192' }}
           LLM_DIFF_LINT_PROVIDER: google-vertex
         shell: bash
         run: |
@@ -220,7 +226,7 @@ jobs:
       - google-vertex-rule
     if: |
       always() &&
-      github.event.pull_request.draft == false
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     steps:
       - name: Require all provider rule checks to pass
@@ -243,7 +249,7 @@ jobs:
       - google-vertex-rule
     if: |
       always() &&
-      github.event.pull_request.draft == false
+      (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -258,7 +264,7 @@ jobs:
       - name: Resolve pull request
         id: pr
         env:
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
         shell: bash
         run: |
           set -euo pipefail

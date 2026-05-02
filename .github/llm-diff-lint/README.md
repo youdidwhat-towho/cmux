@@ -7,7 +7,7 @@ The workflow uses `pull_request_target` and fetches the net PR diff with `gh pr 
 Security boundaries:
 
 - no `pull_request` trigger, so fork or branch PR code never runs with repository secrets
-- no `workflow_dispatch`, so branch-modified workflow code cannot be manually run with repository secrets
+- manual `workflow_dispatch` accepts only a numeric PR number and still checks out the repository default branch
 - checkout always uses the repository default branch
 - `id-token: write` is scoped only to the Google Vertex job
 - model input and model output are redacted before artifacts, annotations, and PR comments
@@ -25,7 +25,7 @@ Optional repository variables:
 - `GCP_SERVICE_ACCOUNT`, defaults to `cmux-vertex-ai@manaflow-437420.iam.gserviceaccount.com`
 - `GOOGLE_VERTEX_PROJECT`, required for Gemini unless `GOOGLE_CLOUD_PROJECT` is set in the environment
 - `GOOGLE_VERTEX_LOCATION`, defaults to `global`
-- `LLM_DIFF_LINT_MAX_TOKENS`, defaults to `4096`
+- `LLM_DIFF_LINT_MAX_TOKENS`, defaults to `8192`
 - `LLM_DIFF_LINT_THINKING`, defaults to `disabled` for DeepSeek
 - `LLM_DIFF_LINT_MAX_DIFF_BYTES`, defaults to `5000000`
 - `DEEPSEEK_BASE_URL`, optional DeepSeek override

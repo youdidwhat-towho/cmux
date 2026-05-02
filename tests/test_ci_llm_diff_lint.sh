@@ -236,8 +236,24 @@ if grep -Eq '^  pull_request:' "$WORKFLOW"; then
   exit 1
 fi
 
-if grep -Fq 'workflow_dispatch:' "$WORKFLOW"; then
-  echo "workflow_dispatch must not expose repository secrets from branch workflow code" >&2
+if ! grep -Fq 'workflow_dispatch:' "$WORKFLOW"; then
+  echo "workflow_dispatch should allow trusted maintainers to lint an existing PR by number" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'pr_number:' "$WORKFLOW"; then
+  echo "workflow_dispatch must require a pull request number input" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'EVENT_PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}' "$WORKFLOW"; then
+  echo "workflow_dispatch must share the numeric PR validation path" >&2
+  exit 1
+fi
+
+default_checkout_count="$(grep -Fc 'ref: ${{ github.event.repository.default_branch }}' "$WORKFLOW")"
+if [ "$default_checkout_count" -ne 3 ]; then
+  echo "all workflow checkouts must use repository default branch, got $default_checkout_count" >&2
   exit 1
 fi
 

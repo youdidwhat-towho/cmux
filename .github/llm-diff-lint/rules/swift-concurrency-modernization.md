@@ -14,6 +14,6 @@ Allowed cases:
 - AppKit, SwiftUI, XCTest, OS, or third-party API boundaries that require a callback or main queue hop.
 - Minimal `DispatchQueue.main.async` used only to cross into UI isolation from a legacy callback, when a larger migration is outside the diff.
 - Existing legacy code that is only moved or touched nearby without making the pattern worse.
-- Tests that intentionally exercise a legacy boundary.
+- Tests that intentionally exercise a legacy boundary or create a controlled race/interleaving with `DispatchGroup`, `DispatchQueue.global`, semaphores, or sleeps. Do not flag test-only synchronization unless it ships in app/runtime code or makes production code worse.
 
 When reporting, explain the concrete concurrency replacement. Prefer one finding for the highest-risk changed block instead of listing every instance.
