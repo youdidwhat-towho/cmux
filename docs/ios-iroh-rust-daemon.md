@@ -35,6 +35,8 @@ Current implementation status:
 - iOS handles the existing web Stack Auth deep link (`cmux://auth-callback` / `cmux-dev://auth-callback`), stores the Stack tokens in Keychain, and refuses `rivet_stack` tickets until that session exists.
 - iOS fetches and validates the short-lived Rivet pairing secret with the stored Stack Auth session before a `rivet_stack` ticket is allowed to open its transport.
 - The iOS terminal detail now stays inside the iPad split-view detail column and resizes the actual Ghostty surface above the software keyboard/accessory bar. XcodeBuildMCP snapshot verification showed the iPad surface shrink from 1290 px high to 843 px while the keyboard was open, then restore to 1290 px after hiding the keyboard.
+- A direct WebSocket dogfood run launched iPhone and iPad simulators against the same Rust server in `$HOME/fun/cmux-cli` and attached `cmx attach` to the same socket. Both iOS and cmux-tmux showed `lawrence in ~/fun/cmux-cli on main λ`, and typing `echo IOS_PHONE_SYNC_OK` through iPhone rendered `IOS_PHONE_SYNC_OK` in the cmux-tmux TUI.
+- Rust tests now cover the old TUI round trip (`Hello`/`PtyBytes`/`Input`), native `libghostty` PTY byte streaming, native layout resize, attached native client layout reporting, and the rail/bounds helper resize dogfood path.
 
 The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 
