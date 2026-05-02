@@ -1974,6 +1974,8 @@ struct ContentView: View {
         private var boolValues: [String: Bool] = [:]
         private var stringValues: [String: String] = [:]
 
+        init() {}
+
         mutating func setBool(_ key: String, _ value: Bool) {
             boolValues[key] = value
         }
@@ -6692,84 +6694,13 @@ struct ContentView: View {
            let configuredShortcut = cmuxConfigStore.resolvedAction(id: configuredPaletteAction)?.shortcut {
             return configuredShortcut.displayString
         }
-        if let action = commandPaletteShortcutAction(for: contribution.commandId) {
+        if let action = Self.commandPaletteShortcutAction(forCommandID: contribution.commandId) {
             return KeyboardShortcutSettings.shortcut(for: action).displayString
         }
         if let staticShortcut = commandPaletteStaticShortcutHint(for: contribution.commandId) {
             return staticShortcut
         }
         return contribution.shortcutHint
-    }
-
-    private func commandPaletteShortcutAction(for commandId: String) -> KeyboardShortcutSettings.Action? {
-        switch commandId {
-        case "palette.newWorkspace":
-            return .newTab
-        case "palette.newWindow":
-            return .newWindow
-        case "palette.openFolder":
-            return .openFolder
-        case "palette.reopenPreviousSession":
-            return .reopenPreviousSession
-        case "palette.newTerminalTab":
-            return .newSurface
-        case "palette.newBrowserTab":
-            return .openBrowser
-        case "palette.closeWindow":
-            return .closeWindow
-        case "palette.toggleSidebar":
-            return .toggleSidebar
-        case "palette.showNotifications":
-            return .showNotifications
-        case "palette.jumpUnread":
-            return .jumpToUnread
-        case "palette.renameTab":
-            return .renameTab
-        case "palette.renameWorkspace":
-            return .renameWorkspace
-        case "palette.editWorkspaceDescription":
-            return .editWorkspaceDescription
-        case "palette.nextWorkspace":
-            return .nextSidebarTab
-        case "palette.previousWorkspace":
-            return .prevSidebarTab
-        case "palette.nextTabInPane":
-            return .nextSurface
-        case "palette.previousTabInPane":
-            return .prevSurface
-        case "palette.browserToggleDevTools":
-            return .toggleBrowserDeveloperTools
-        case "palette.browserConsole":
-            return .showBrowserJavaScriptConsole
-        case "palette.browserReactGrab":
-            return .toggleReactGrab
-        case "palette.browserSplitRight", "palette.terminalSplitBrowserRight":
-            return .splitBrowserRight
-        case "palette.browserSplitDown", "palette.terminalSplitBrowserDown":
-            return .splitBrowserDown
-        case "palette.terminalSplitRight":
-            return .splitRight
-        case "palette.terminalSplitDown":
-            return .splitDown
-        case "palette.findInDirectory":
-            return .findInDirectory
-        case "palette.terminalFind":
-            return .find
-        case "palette.terminalFindNext":
-            return .findNext
-        case "palette.terminalFindPrevious":
-            return .findPrevious
-        case "palette.terminalHideFind":
-            return .hideFind
-        case "palette.terminalUseSelectionForFind":
-            return .useSelectionForFind
-        case "palette.toggleSplitZoom":
-            return .toggleSplitZoom
-        case "palette.triggerFlash":
-            return .triggerFlash
-        default:
-            return nil
-        }
     }
 
     private func commandPaletteStaticShortcutHint(for commandId: String) -> String? {
@@ -6822,11 +6753,13 @@ struct ContentView: View {
         snapshot.setBool(CommandPaletteContextKeys.browserDisabled, BrowserAvailabilitySettings.isDisabled())
 
         if let workspace = tabManager.selectedWorkspace {
+            let pinTarget = WorkspaceActionDispatcher.Target.single(workspace.id)
+            let pinState = WorkspaceActionDispatcher.pinState(in: tabManager, target: pinTarget)
             snapshot.setBool(CommandPaletteContextKeys.hasWorkspace, true)
             snapshot.setString(CommandPaletteContextKeys.workspaceName, workspaceDisplayName(workspace))
             snapshot.setBool(CommandPaletteContextKeys.workspaceHasCustomName, workspace.customTitle != nil)
             snapshot.setBool(CommandPaletteContextKeys.workspaceHasCustomDescription, workspace.hasCustomDescription)
-            snapshot.setBool(CommandPaletteContextKeys.workspaceShouldPin, !workspace.isPinned)
+            snapshot.setBool(CommandPaletteContextKeys.workspaceShouldPin, pinState?.pinned ?? !workspace.isPinned)
             snapshot.setBool(
                 CommandPaletteContextKeys.workspaceHasPullRequests,
                 !workspace.sidebarPullRequestsInDisplayOrder().isEmpty
@@ -7080,6 +7013,7 @@ struct ContentView: View {
                 keywords: ["toggle", "sidebar", "layout"]
             )
         )
+        contributions.append(contentsOf: Self.commandPaletteRightSidebarModeCommandContributions())
         contributions.append(
             CommandPaletteCommandContribution(
                 commandId: "palette.toggleMatchTerminalBackground",
@@ -7088,7 +7022,7 @@ struct ContentView: View {
                         ? String(localized: "command.disableMatchTerminalBackground.title", defaultValue: "Disable Match Terminal Background")
                         : String(localized: "command.enableMatchTerminalBackground.title", defaultValue: "Enable Match Terminal Background")
                 },
-                subtitle: constant(String(localized: "command.matchTerminalBackground.subtitle", defaultValue: "Sidebar Appearance")),
+                subtitle: constant(String(localized: "command.matchTerminalBackground.subtitle", defaultValue: "Sidebar")),
                 keywords: ["match", "terminal", "background", "transparency", "sidebar", "surface", "chrome"]
             )
         )
@@ -7857,12 +7791,9 @@ struct ContentView: View {
                 defaultValue: "Invalid cmux.json"
             )
             return String(format: format, issue.message ?? fallback)
-        case .newWorkspaceActionRequiresWorkspaceCommand:
-            let format = String(
-                localized: "command.cmuxConfig.issue.newWorkspaceActionRequiresWorkspaceCommand.detail",
-                defaultValue: "%@ must reference a workspace command action"
-            )
-            return String(format: format, issue.settingName)
+        case .newWorkspaceActionNotFound:
+            let format = String(localized: "command.cmuxConfig.issue.newWorkspaceActionNotFound.detail", defaultValue: "%@ references missing action '%@'")
+            return String(format: format, issue.settingName, issue.commandName ?? "")
         case .newWorkspaceCommandNotFound:
             let format = String(
                 localized: "command.cmuxConfig.issue.newWorkspaceCommandNotFound.detail",
@@ -7964,6 +7895,20 @@ struct ContentView: View {
         registry.register(commandId: "palette.toggleSidebar") {
             sidebarState.toggle()
         }
+        for mode in RightSidebarMode.allCases {
+            registry.register(commandId: Self.commandPaletteRightSidebarModeCommandID(mode)) {
+                if AppDelegate.shared?.focusRightSidebarInActiveMainWindow(
+                    mode: mode,
+                    focusFirstItem: true,
+                    preferredWindow: observedWindow ?? NSApp.keyWindow ?? NSApp.mainWindow
+                ) != true {
+                    fileExplorerState.setVisible(true)
+                    if fileExplorerState.mode != mode {
+                        fileExplorerState.mode = mode
+                    }
+                }
+            }
+        }
         registry.register(commandId: "palette.toggleMatchTerminalBackground") {
             sidebarMatchTerminalBackground.toggle()
         }
@@ -8039,7 +7984,11 @@ struct ContentView: View {
                 NSSound.beep()
                 return
             }
-            tabManager.setPinned(workspace, pinned: !workspace.isPinned)
+            let pinTarget = WorkspaceActionDispatcher.Target.single(workspace.id)
+            guard WorkspaceActionDispatcher.performPinAction(in: tabManager, target: pinTarget) != nil else {
+                NSSound.beep()
+                return
+            }
         }
         registry.register(commandId: "palette.resetWorkspaceColor") {
             guard let workspace = tabManager.selectedWorkspace else {
@@ -10181,6 +10130,14 @@ struct VerticalTabsSidebar: View {
             contextMenuWorkspaceIds.allSatisfy { workspaceId in
                 renderContext.workspaceTerminalScrollBarHiddenById[workspaceId] == true
             }
+        let contextMenuPinTarget = WorkspaceActionDispatcher.Target(
+            workspaceIds: contextMenuWorkspaceIds,
+            anchorWorkspaceId: tab.id
+        )
+        let contextMenuPinState = WorkspaceActionDispatcher.pinState(
+            in: tabManager,
+            target: contextMenuPinTarget
+        )
         let liveUnreadCount = notificationStore.unreadCount(forTabId: tab.id)
         let liveLatestNotificationText: String? = {
             guard showsSidebarNotificationMessage,
@@ -10230,6 +10187,7 @@ struct VerticalTabsSidebar: View {
             allRemoteContextMenuTargetsConnecting: allRemoteContextMenuTargetsConnecting,
             allRemoteContextMenuTargetsDisconnected: allRemoteContextMenuTargetsDisconnected,
             allContextMenuWorkspacesHideTerminalScrollBar: allContextMenuWorkspacesHideTerminalScrollBar,
+            contextMenuPinState: contextMenuPinState,
             settings: renderContext.tabItemSettings,
             livePresentation: livePresentation,
             frozenPresentation: $frozenTabItemPresentation
@@ -12623,6 +12581,7 @@ struct SidebarWorkspaceSnapshotBuilder {
         let branchLinesContainBranch: Bool
         let pullRequestRows: [PullRequestDisplay]
         let listeningPorts: [Int]
+
     }
 }
 
@@ -12655,6 +12614,7 @@ private struct TabItemView: View, Equatable {
         lhs.allRemoteContextMenuTargetsConnecting == rhs.allRemoteContextMenuTargetsConnecting &&
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.allContextMenuWorkspacesHideTerminalScrollBar == rhs.allContextMenuWorkspacesHideTerminalScrollBar &&
+        lhs.contextMenuPinState == rhs.contextMenuPinState &&
         lhs.settings == rhs.settings
     }
 
@@ -12686,6 +12646,7 @@ private struct TabItemView: View, Equatable {
     let allRemoteContextMenuTargetsConnecting: Bool
     let allRemoteContextMenuTargetsDisconnected: Bool
     let allContextMenuWorkspacesHideTerminalScrollBar: Bool
+    let contextMenuPinState: WorkspaceActionDispatcher.PinState?
     let settings: SidebarTabItemSettingsSnapshot
     let livePresentation: SidebarTabItemPresentationSnapshot
     @Binding var frozenPresentation: SidebarTabItemPresentationSnapshot?
@@ -13164,15 +13125,16 @@ private struct TabItemView: View, Equatable {
             if detailVisibility.showsPorts, !workspaceSnapshot.listeningPorts.isEmpty {
                 HStack(spacing: 4) {
                     ForEach(workspaceSnapshot.listeningPorts, id: \.self) { port in
-                        let portText = String(port)
+                        let portLabel = SidebarPortDisplayText.label(for: port)
+                        let portTooltip = SidebarPortDisplayText.openTooltip(for: port)
                         Button(action: {
                             openPortLink(port)
                         }) {
-                            Text(String(localized: "sidebar.port.label", defaultValue: ":\(portText)"))
+                            Text(portLabel)
                                 .underline()
                         }
                         .buttonStyle(.plain)
-                        .safeHelp(String(localized: "sidebar.port.openTooltip", defaultValue: "Open localhost:\(portText)"))
+                        .safeHelp(portTooltip)
                     }
                     Spacer(minLength: 0)
                 }
@@ -13340,29 +13302,21 @@ private struct TabItemView: View, Equatable {
 
     private func refreshWorkspaceSnapshot(force: Bool = false) {
         let nextSnapshot = makeWorkspaceSnapshot()
+        let decision = SidebarWorkspaceSnapshotRefreshPolicy.decision(
+            current: workspaceSnapshotStorage,
+            next: nextSnapshot,
+            force: force,
+            contextMenuVisible: contextMenuState.isVisible
+        )
 
-        if contextMenuState.isVisible {
-            let deferredBaseline = contextMenuState.pendingWorkspaceSnapshot ?? workspaceSnapshotStorage
-            // Color changes are driven by explicit clicks in the Workspace Color
-            // submenu, and SwiftUI's context-menu content does not reliably fire
-            // `.onDisappear` after a button tap (issue #3037). Apply color
-            // changes immediately so the row reflects the user's selection
-            // instead of waiting on a flush that may never happen.
-            if deferredBaseline?.customColorHex != nextSnapshot.customColorHex {
-                workspaceSnapshotStorage = nextSnapshot
-                contextMenuState.pendingWorkspaceSnapshot = nil
-                contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
-                return
-            }
-            if force || deferredBaseline != nextSnapshot {
-                contextMenuState.hasDeferredWorkspaceObservationInvalidation = true
-                contextMenuState.pendingWorkspaceSnapshot = nextSnapshot
-            }
-            return
+        if workspaceSnapshotStorage != decision.workspaceSnapshotStorage {
+            workspaceSnapshotStorage = decision.workspaceSnapshotStorage
         }
-
-        if force || workspaceSnapshotStorage != nextSnapshot {
-            workspaceSnapshotStorage = nextSnapshot
+        if contextMenuState.pendingWorkspaceSnapshot != decision.pendingWorkspaceSnapshot {
+            contextMenuState.pendingWorkspaceSnapshot = decision.pendingWorkspaceSnapshot
+        }
+        if contextMenuState.hasDeferredWorkspaceObservationInvalidation != decision.hasDeferredWorkspaceObservationInvalidation {
+            contextMenuState.hasDeferredWorkspaceObservationInvalidation = decision.hasDeferredWorkspaceObservationInvalidation
         }
     }
 
@@ -13391,7 +13345,7 @@ private struct TabItemView: View, Equatable {
         let targetIds = contextMenuWorkspaceIds
         let isMulti = targetIds.count > 1
         let tabColorPalette = WorkspaceTabColorSettings.palette()
-        let shouldPin = !tab.isPinned
+        let shouldPin = contextMenuPinState?.pinned ?? !tab.isPinned
         let reconnectLabel = contextMenuLabel(
             multi: String(localized: "contextMenu.reconnectWorkspaces", defaultValue: "Reconnect Workspaces"),
             single: String(localized: "contextMenu.reconnectWorkspace", defaultValue: "Reconnect Workspace"),
@@ -13433,13 +13387,17 @@ private struct TabItemView: View, Equatable {
         let editWorkspaceDescriptionShortcut = KeyboardShortcutSettings.shortcut(for: .editWorkspaceDescription)
         let closeWorkspaceShortcut = KeyboardShortcutSettings.shortcut(for: .closeWorkspace)
         Button(pinLabel) {
-            for id in targetIds {
-                if let tab = tabManager.tabs.first(where: { $0.id == id }) {
-                    tabManager.setPinned(tab, pinned: shouldPin)
-                }
+            guard let contextMenuPinState else {
+                NSSound.beep()
+                return
+            }
+            let result = WorkspaceActionDispatcher.performPinAction(contextMenuPinState, in: tabManager)
+            if result.changedWorkspaceIds.isEmpty {
+                refreshWorkspaceSnapshot(force: true)
             }
             syncSelectionAfterMutation()
         }
+        .disabled(contextMenuPinState == nil)
 
         if let key = renameWorkspaceShortcut.keyEquivalent {
             Button(String(localized: "contextMenu.renameWorkspace", defaultValue: "Rename Workspace…")) {
@@ -15768,7 +15726,13 @@ private struct WindowBackdropLayer: View {
     private func backdrop(for policy: WindowBackdropPolicy) -> some View {
         switch policy {
         case let .ghosttyTerminalBackdrop(color, opacity, _):
-            LayerBackedBackdropColor(color: color.withAlphaComponent(opacity))
+            let backdropColor = color.withAlphaComponent(opacity)
+            switch role {
+            case .windowRoot:
+                Color(nsColor: backdropColor)
+            case .terminalCanvas, .bonsplitChrome, .titlebar, .leftSidebar, .rightSidebar, .browserSurface:
+                LayerBackedBackdropColor(color: backdropColor)
+            }
         case let .sidebarMaterial(materialPolicy):
             ZStack {
                 let usingNativeLiquidGlass = materialPolicy.preferLiquidGlass &&

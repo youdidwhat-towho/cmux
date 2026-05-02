@@ -726,7 +726,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
                 guard let self else { return }
                 self.hasFedInitialOutput = true
                 self.needsDraw = true
-                ghostty_surface_update_and_draw(surface)
+                ghostty_surface_render_now(surface)
                 self.accessibilityValue = self.accessibilityRenderedTextForTesting()
                 #if DEBUG
                 self.onOutputProcessedForTesting?()
@@ -878,7 +878,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
             sublayer.contentsScale = scale
         }
         if hasFedInitialOutput {
-            ghostty_surface_update_and_draw(surface)
+            ghostty_surface_render_now(surface)
         }
     }
 
@@ -944,7 +944,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
         guard let surface else { return }
         if needsDraw || hasFedInitialOutput {
             needsDraw = false
-            ghostty_surface_update_and_draw(surface)
+            ghostty_surface_render_now(surface)
         }
     }
 
