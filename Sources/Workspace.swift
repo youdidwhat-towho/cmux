@@ -7390,6 +7390,7 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($customDescription),
             sidebarObservationSignal($isPinned),
             sidebarObservationSignal($customColor),
+            sidebarObservationSignal($panelCustomTitles),
             sidebarObservationSignal($terminalScrollBarHidden),
             sidebarObservationSignal($latestSubmittedMessage),
         ]
@@ -8403,13 +8404,20 @@ final class Workspace: Identifiable, ObservableObject {
             panelCustomTitles[panelId] = trimmed
         }
 
-        guard let panel = panels[panelId], let tabId = surfaceIdFromPanelId(panelId) else { return }
+        guard let panel = panels[panelId] else { return }
         let baseTitle = panelTitles[panelId] ?? panel.displayTitle
-        bonsplitController.updateTab(
-            tabId,
-            title: resolvedPanelTitle(panelId: panelId, fallback: baseTitle),
-            hasCustomTitle: panelCustomTitles[panelId] != nil
-        )
+        let resolvedTitle = resolvedPanelTitle(panelId: panelId, fallback: baseTitle)
+        if let tabId = surfaceIdFromPanelId(panelId) {
+            bonsplitController.updateTab(
+                tabId,
+                title: resolvedTitle,
+                hasCustomTitle: panelCustomTitles[panelId] != nil
+            )
+        }
+
+        if panels.count == 1, customTitle == nil, self.title != resolvedTitle {
+            self.title = resolvedTitle
+        }
     }
 
     func isPanelPinned(_ panelId: UUID) -> Bool {

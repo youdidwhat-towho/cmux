@@ -12566,13 +12566,118 @@ struct SidebarWorkspaceSnapshotBuilder {
         let branchLinesContainBranch: Bool
         let pullRequestRows: [PullRequestDisplay]
         let listeningPorts: [Int]
+
+        struct ContextMenuImmediateFields: Equatable {
+            let title: String
+            let customDescription: String?
+            let isPinned: Bool
+            let customColorHex: String?
+        }
+
+        var contextMenuImmediateFields: ContextMenuImmediateFields {
+            ContextMenuImmediateFields(
+                title: title,
+                customDescription: customDescription,
+                isPinned: isPinned,
+                customColorHex: customColorHex
+            )
+        }
+
+        func applyingContextMenuImmediateFields(from snapshot: Snapshot) -> Snapshot {
+            guard contextMenuImmediateFields != snapshot.contextMenuImmediateFields else { return self }
+            return Snapshot(
+                title: snapshot.title,
+                customDescription: snapshot.customDescription,
+                isPinned: snapshot.isPinned,
+                customColorHex: snapshot.customColorHex,
+                remoteWorkspaceSidebarText: remoteWorkspaceSidebarText,
+                remoteConnectionStatusText: remoteConnectionStatusText,
+                remoteStateHelpText: remoteStateHelpText,
+                copyableSidebarSSHError: copyableSidebarSSHError,
+                latestSubmittedMessage: latestSubmittedMessage,
+                metadataEntries: metadataEntries,
+                metadataBlocks: metadataBlocks,
+                latestLog: latestLog,
+                progress: progress,
+                compactGitBranchSummaryText: compactGitBranchSummaryText,
+                compactBranchDirectoryRow: compactBranchDirectoryRow,
+                branchDirectoryLines: branchDirectoryLines,
+                branchLinesContainBranch: branchLinesContainBranch,
+                pullRequestRows: pullRequestRows,
+                listeningPorts: listeningPorts
+            )
+        }
     }
 }
 
-private final class SidebarTabItemContextMenuState: ObservableObject {
-    var isVisible = false
-    var hasDeferredWorkspaceObservationInvalidation = false
-    var pendingWorkspaceSnapshot: SidebarWorkspaceSnapshotBuilder.Snapshot?
+@MainActor
+final class SidebarWorkspaceRowStore: ObservableObject {
+    enum Phase: Equatable {
+        case live
+        case contextMenuVisible(pendingSnapshot: SidebarWorkspaceSnapshotBuilder.Snapshot?)
+    }
+
+    struct State: Equatable {
+        let snapshot: SidebarWorkspaceSnapshotBuilder.Snapshot?
+        let phase: Phase
+    }
+
+    @Published private(set) var snapshot: SidebarWorkspaceSnapshotBuilder.Snapshot?
+    private(set) var phase: Phase = .live
+
+    var isContextMenuVisible: Bool {
+        if case .contextMenuVisible = phase {
+            return true
+        }
+        return false
+    }
+
+    func refresh(next: SidebarWorkspaceSnapshotBuilder.Snapshot, force: Bool = false) {
+        apply(Self.reducedState(current: snapshot, phase: phase, next: next, force: force))
+    }
+
+    func beginContextMenu() {
+        phase = .contextMenuVisible(pendingSnapshot: nil)
+    }
+
+    func endContextMenu() {
+        if case .contextMenuVisible(let pendingSnapshot) = phase,
+           let pendingSnapshot,
+           snapshot != pendingSnapshot {
+            snapshot = pendingSnapshot
+        }
+        phase = .live
+    }
+
+    static func reducedState(
+        current: SidebarWorkspaceSnapshotBuilder.Snapshot?,
+        phase: Phase,
+        next: SidebarWorkspaceSnapshotBuilder.Snapshot,
+        force: Bool
+    ) -> State {
+        guard case .contextMenuVisible = phase else {
+            return State(
+                snapshot: force || current != next ? next : current,
+                phase: .live
+            )
+        }
+
+        let displayedBaseline = current ?? next
+        let displayedSnapshot = displayedBaseline.applyingContextMenuImmediateFields(from: next)
+        let hasDeferredChanges = force || displayedSnapshot != next
+
+        return State(
+            snapshot: displayedSnapshot,
+            phase: .contextMenuVisible(pendingSnapshot: hasDeferredChanges ? next : nil)
+        )
+    }
+
+    private func apply(_ state: State) {
+        if snapshot != state.snapshot {
+            snapshot = state.snapshot
+        }
+        phase = state.phase
+    }
 }
 
 private struct TabItemView: View, Equatable {
@@ -12632,8 +12737,7 @@ private struct TabItemView: View, Equatable {
     let settings: SidebarTabItemSettingsSnapshot
     let livePresentation: SidebarTabItemPresentationSnapshot
     @Binding var frozenPresentation: SidebarTabItemPresentationSnapshot?
-    @State private var workspaceSnapshotStorage: SidebarWorkspaceSnapshotBuilder.Snapshot?
-    @StateObject private var contextMenuState = SidebarTabItemContextMenuState()
+    @StateObject private var workspaceRowStore = SidebarWorkspaceRowStore()
     @State private var isHovering = false
     @State private var rowHeight: CGFloat = 1
 
@@ -12674,7 +12778,7 @@ private struct TabItemView: View, Equatable {
     }
 
     private var workspaceSnapshot: SidebarWorkspaceSnapshotBuilder.Snapshot {
-        workspaceSnapshotStorage ?? makeWorkspaceSnapshot()
+        workspaceRowStore.snapshot ?? makeWorkspaceSnapshot()
     }
 
     private var activeTabIndicatorStyle: SidebarActiveTabIndicatorStyle {
@@ -13250,7 +13354,7 @@ private struct TabItemView: View, Equatable {
             updateSelection()
         }
         .onHover { hovering in
-            guard !contextMenuState.isVisible else { return }
+            guard !workspaceRowStore.isContextMenuVisible else { return }
             isHovering = hovering
         }
         .safeHelp(workspaceSnapshot.title)
@@ -13266,57 +13370,21 @@ private struct TabItemView: View, Equatable {
         .contextMenu {
             workspaceContextMenu
                 .onAppear {
-                    contextMenuState.isVisible = true
-                    contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
-                    contextMenuState.pendingWorkspaceSnapshot = nil
+                    workspaceRowStore.beginContextMenu()
                     frozenPresentation = livePresentation
                 }
                 .onDisappear {
-                    contextMenuState.isVisible = false
                     frozenPresentation = nil
                     if isHovering {
                         isHovering = false
                     }
-                    flushDeferredWorkspaceObservationInvalidation()
+                    workspaceRowStore.endContextMenu()
                 }
         }
     }
 
     private func refreshWorkspaceSnapshot(force: Bool = false) {
-        let nextSnapshot = makeWorkspaceSnapshot()
-
-        if contextMenuState.isVisible {
-            let deferredBaseline = contextMenuState.pendingWorkspaceSnapshot ?? workspaceSnapshotStorage
-            // Color changes are driven by explicit clicks in the Workspace Color
-            // submenu, and SwiftUI's context-menu content does not reliably fire
-            // `.onDisappear` after a button tap (issue #3037). Apply color
-            // changes immediately so the row reflects the user's selection
-            // instead of waiting on a flush that may never happen.
-            if deferredBaseline?.customColorHex != nextSnapshot.customColorHex {
-                workspaceSnapshotStorage = nextSnapshot
-                contextMenuState.pendingWorkspaceSnapshot = nil
-                contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
-                return
-            }
-            if force || deferredBaseline != nextSnapshot {
-                contextMenuState.hasDeferredWorkspaceObservationInvalidation = true
-                contextMenuState.pendingWorkspaceSnapshot = nextSnapshot
-            }
-            return
-        }
-
-        if force || workspaceSnapshotStorage != nextSnapshot {
-            workspaceSnapshotStorage = nextSnapshot
-        }
-    }
-
-    private func flushDeferredWorkspaceObservationInvalidation() {
-        guard contextMenuState.hasDeferredWorkspaceObservationInvalidation else { return }
-        contextMenuState.hasDeferredWorkspaceObservationInvalidation = false
-        if let pendingSnapshot = contextMenuState.pendingWorkspaceSnapshot {
-            workspaceSnapshotStorage = pendingSnapshot
-        }
-        contextMenuState.pendingWorkspaceSnapshot = nil
+        workspaceRowStore.refresh(next: makeWorkspaceSnapshot(), force: force)
     }
 
     private func contextMenuLabel(multi: String, single: String, isMulti: Bool) -> String {

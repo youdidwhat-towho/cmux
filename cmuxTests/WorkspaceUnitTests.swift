@@ -2921,6 +2921,117 @@ final class WorkspacePanelCustomTitleTests: XCTestCase {
     }
 }
 
+@MainActor
+final class SidebarWorkspaceRowStoreTests: XCTestCase {
+    func testContextMenuTitleAndPinChangesUpdateDisplayedFieldsAndDeferNoisyFields() {
+        let current = Self.snapshot(
+            title: "old-title",
+            isPinned: false,
+            customColorHex: nil,
+            remoteConnectionStatusText: "Connected",
+            latestSubmittedMessage: "old message",
+            listeningPorts: [3000]
+        )
+        let next = Self.snapshot(
+            title: "new-title",
+            isPinned: true,
+            customColorHex: nil,
+            remoteConnectionStatusText: "Disconnected",
+            latestSubmittedMessage: "new message",
+            listeningPorts: [3000, 4000]
+        )
+
+        let state = SidebarWorkspaceRowStore.reducedState(
+            current: current,
+            phase: .contextMenuVisible(pendingSnapshot: nil),
+            next: next,
+            force: false
+        )
+
+        XCTAssertEqual(state.snapshot?.title, "new-title")
+        XCTAssertTrue(state.snapshot?.isPinned == true)
+        XCTAssertEqual(state.snapshot?.remoteConnectionStatusText, "Connected")
+        XCTAssertEqual(state.snapshot?.latestSubmittedMessage, "old message")
+        XCTAssertEqual(state.snapshot?.listeningPorts, [3000])
+        XCTAssertEqual(state.phase, .contextMenuVisible(pendingSnapshot: next))
+    }
+
+    func testContextMenuImmediateOnlyChangeDoesNotCreateDeferredFlush() {
+        let current = Self.snapshot(
+            title: "old-title",
+            customDescription: nil,
+            isPinned: false,
+            customColorHex: nil
+        )
+        let next = Self.snapshot(
+            title: "new-title",
+            customDescription: "description",
+            isPinned: true,
+            customColorHex: "#C0392B"
+        )
+
+        let state = SidebarWorkspaceRowStore.reducedState(
+            current: current,
+            phase: .contextMenuVisible(pendingSnapshot: nil),
+            next: next,
+            force: false
+        )
+
+        XCTAssertEqual(state.snapshot, next)
+        XCTAssertEqual(state.phase, .contextMenuVisible(pendingSnapshot: nil))
+    }
+
+    func testEndingContextMenuFlushesDeferredSnapshot() {
+        let store = SidebarWorkspaceRowStore()
+        let current = Self.snapshot(title: "old-title", remoteConnectionStatusText: "Connected")
+        let next = Self.snapshot(title: "new-title", remoteConnectionStatusText: "Disconnected")
+
+        store.refresh(next: current, force: true)
+        store.beginContextMenu()
+        store.refresh(next: next)
+
+        XCTAssertEqual(store.snapshot?.title, "new-title")
+        XCTAssertEqual(store.snapshot?.remoteConnectionStatusText, "Connected")
+
+        store.endContextMenu()
+
+        XCTAssertEqual(store.snapshot, next)
+        XCTAssertFalse(store.isContextMenuVisible)
+    }
+
+    private static func snapshot(
+        title: String = "workspace",
+        customDescription: String? = nil,
+        isPinned: Bool = false,
+        customColorHex: String? = nil,
+        remoteConnectionStatusText: String = "Disconnected",
+        latestSubmittedMessage: String? = nil,
+        listeningPorts: [Int] = []
+    ) -> SidebarWorkspaceSnapshotBuilder.Snapshot {
+        SidebarWorkspaceSnapshotBuilder.Snapshot(
+            title: title,
+            customDescription: customDescription,
+            isPinned: isPinned,
+            customColorHex: customColorHex,
+            remoteWorkspaceSidebarText: nil,
+            remoteConnectionStatusText: remoteConnectionStatusText,
+            remoteStateHelpText: "",
+            copyableSidebarSSHError: nil,
+            latestSubmittedMessage: latestSubmittedMessage,
+            metadataEntries: [],
+            metadataBlocks: [],
+            latestLog: nil,
+            progress: nil,
+            compactGitBranchSummaryText: nil,
+            compactBranchDirectoryRow: nil,
+            branchDirectoryLines: [],
+            branchLinesContainBranch: false,
+            pullRequestRows: [],
+            listeningPorts: listeningPorts
+        )
+    }
+}
+
 
 @MainActor
 final class WorkspaceTeardownTests: XCTestCase {
