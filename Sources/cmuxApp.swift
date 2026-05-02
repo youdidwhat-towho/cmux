@@ -401,6 +401,9 @@ struct cmuxApp: App {
                     Button("File Explorer Style Debug…") {
                         FileExplorerStyleDebugWindowController.shared.show()
                     }
+                    Button("iOS Simulators…") {
+                        SimulatorListWindowController.shared.show()
+                    }
                     Button(
                         String(
                             localized: "debug.menu.pdfPreviewChromeDebug",
@@ -1783,6 +1786,9 @@ private struct DebugWindowControlsView: View {
                             )
                         ) {
                             FeedTextEditorDebugWindowController.shared.show()
+                        }
+                        Button("iOS Simulators…") {
+                            SimulatorListWindowController.shared.show()
                         }
                         Button("Open All Debug Windows") {
                             BrowserImportHintDebugWindowController.shared.show()
