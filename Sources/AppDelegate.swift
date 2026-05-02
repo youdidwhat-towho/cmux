@@ -599,9 +599,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private final class MainWindowController: NSWindowController, NSWindowDelegate {
         var onClose: (() -> Void)?
 
+        #if DEBUG
+        private func logWindowEvent(_ event: String, notification: Notification) {
+            guard let window = notification.object as? NSWindow else { return }
+            let id = window.identifier?.rawValue ?? "<nil>"
+            cmuxDebugLog(
+                "mainWindow.delegate.\(event) window=\(id) visible=\(window.isVisible ? 1 : 0) mini=\(window.isMiniaturized ? 1 : 0) key=\(window.isKeyWindow ? 1 : 0) main=\(window.isMainWindow ? 1 : 0)"
+            )
+        }
+        #endif
+
         func windowWillClose(_ notification: Notification) {
             onClose?()
         }
+
+        #if DEBUG
+        func windowDidDeminiaturize(_ notification: Notification) {
+            logWindowEvent("didDeminiaturize", notification: notification)
+        }
+
+        func windowDidMiniaturize(_ notification: Notification) {
+            logWindowEvent("didMiniaturize", notification: notification)
+        }
+
+        func windowDidBecomeKey(_ notification: Notification) {
+            logWindowEvent("didBecomeKey", notification: notification)
+        }
+
+        func windowDidResignKey(_ notification: Notification) {
+            logWindowEvent("didResignKey", notification: notification)
+        }
+
+        func windowDidBecomeMain(_ notification: Notification) {
+            logWindowEvent("didBecomeMain", notification: notification)
+        }
+
+        func windowDidResignMain(_ notification: Notification) {
+            logWindowEvent("didResignMain", notification: notification)
+        }
+        #endif
+
     }
 
     struct ScriptableMainWindowState {
@@ -928,7 +965,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             _ = synchronizeActiveMainWindowContext(preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow)
             return true
         }
-        ensureInitialMainWindowIfNeeded()
+        if mainWindowVisibilityController.showApplicationWindows(
+            windows: mainWindowsForVisibilityController(),
+            reason: .applicationReopen,
+            activation: .none
+        ) == nil {
+            _ = ensureInitialMainWindowIfNeeded()
+        }
         return true
     }
 
@@ -1357,6 +1400,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #endif
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        if !hasVisibleMainTerminalWindow() {
+            _ = mainWindowVisibilityController.showApplicationWindows(
+                windows: mainWindowsForVisibilityController(),
+                reason: .applicationDidBecomeActive,
+                activation: .none
+            )
+        }
+
         sentryBreadcrumb("app.didBecomeActive", category: "lifecycle", data: [
             "tabCount": tabManager?.tabs.count ?? 0
         ])
@@ -6344,12 +6395,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             initialRect = NSRect(x: 0, y: 0, width: 460, height: 360)
         }
 
-        let window = NSWindow(
+        let window = CmuxMainWindow(
             contentRect: initialRect,
             styleMask: styleMask,
             backing: .buffered,
             defer: false
         )
+        window.miniaturizeHandler = { [weak self] window in
+            self?.dismissMainWindowFromWindowChrome(window)
+        }
+        window.animationBehavior = .none
         // When creating a new window from an existing native fullscreen window,
         // temporarily opt out of fullscreen tiling so AppKit doesn't place the
         // new window into the active fullscreen Space.
@@ -6668,11 +6723,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func captureMainWindowVisibilityRestoreTargetsForApplicationHide() {
-        mainWindowVisibilityController.captureHiddenWindowRestoreTargets(windows: NSApp.windows)
+        mainWindowVisibilityController.captureHiddenWindowRestoreTargets(windows: mainWindowsForVisibilityController())
+    }
+
+    func dismissMainWindowFromWindowChrome(_ window: NSWindow) {
+        mainWindowVisibilityController.dismissWindows(windows: [window], reason: .titlebarDismiss)
     }
 
     func toggleApplicationVisibilityFromGlobalHotkey() {
-        mainWindowVisibilityController.toggleApplicationVisibility(windows: NSApp.windows, reason: .globalHotkey)
+        mainWindowVisibilityController.toggleApplicationVisibility(
+            windows: mainWindowsForVisibilityController(),
+            reason: .globalHotkey
+        )
     }
 
     @discardableResult
@@ -6724,41 +6786,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func showMainWindowFromMenuBar() {
-        let context: MainWindowContext? = {
-            if let keyWindow = NSApp.keyWindow,
-               let keyContext = contextForMainTerminalWindow(keyWindow) {
-                return keyContext
-            }
-            if let mainWindow = NSApp.mainWindow,
-               let mainContext = contextForMainTerminalWindow(mainWindow) {
-                return mainContext
-            }
-            if let visibleContext = sortedMainWindowContextsForSessionSnapshot().first(where: { context in
-                guard let window = resolvedWindow(for: context) else { return false }
-                return window.isVisible && !window.isMiniaturized
-            }) {
-                return visibleContext
-            }
-            return sortedMainWindowContextsForSessionSnapshot().first
-        }()
-
-        let window: NSWindow? = {
-            if let context {
-                if let window = resolvedWindow(for: context) {
-                    return window
-                }
-                discardOrphanedMainWindowContext(context)
-            }
-            let windowId = ensureInitialMainWindowIfNeeded(shouldActivate: false)
-            return windowForMainWindowId(windowId)
-        }()
-
-        guard let window else {
-            NSSound.beep()
+        if mainWindowVisibilityController.showApplicationWindows(
+            windows: mainWindowsForVisibilityController(),
+            reason: .menuBar
+        ) != nil {
             return
         }
 
-        mainWindowVisibilityController.focus(window, reason: .menuBar)
+        _ = ensureInitialMainWindowIfNeeded()
+    }
+
+    private func mainWindowsForVisibilityController() -> [NSWindow] {
+        var windows: [NSWindow] = []
+        for context in sortedMainWindowContextsForSessionSnapshot() {
+            guard let window = resolvedWindow(for: context) else { continue }
+            if !windows.contains(where: { $0 === window }) {
+                windows.append(window)
+            }
+        }
+        for window in NSApp.windows where isMainTerminalWindow(window) {
+            if !windows.contains(where: { $0 === window }) {
+                windows.append(window)
+            }
+        }
+        return windows
     }
 
     func showNotificationsPopoverFromMenuBar() {

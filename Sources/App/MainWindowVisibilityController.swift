@@ -2,9 +2,24 @@ import AppKit
 import Foundation
 
 @MainActor
+final class CmuxMainWindow: NSWindow {
+    var miniaturizeHandler: ((NSWindow) -> Void)?
+
+    override func miniaturize(_ sender: Any?) {
+        if let miniaturizeHandler {
+            miniaturizeHandler(self)
+            return
+        }
+        super.miniaturize(sender)
+    }
+}
+
+@MainActor
 final class MainWindowVisibilityController {
     enum Reason: String {
         case createMainWindow
+        case applicationDidBecomeActive
+        case applicationReopen
         case ensureInitialWindow
         case feedback
         case fileSearchFocus
@@ -15,6 +30,7 @@ final class MainWindowVisibilityController {
         case notification
         case rightSidebarFocus
         case rightSidebarToggle
+        case titlebarDismiss
         case socketActivate
         case workspaceCreation
     }
@@ -41,6 +57,7 @@ final class MainWindowVisibilityController {
         var makeKeyAndOrderFront: @MainActor (NSWindow) -> Void
         var orderFront: @MainActor (NSWindow) -> Void
         var orderFrontRegardless: @MainActor (NSWindow) -> Void
+        var orderOut: @MainActor (NSWindow) -> Void
 
         static let live = WindowOperations(
             isVisible: { $0.isVisible },
@@ -51,7 +68,8 @@ final class MainWindowVisibilityController {
             deminiaturize: { $0.deminiaturize(nil) },
             makeKeyAndOrderFront: { $0.makeKeyAndOrderFront(nil) },
             orderFront: { $0.orderFront(nil) },
-            orderFrontRegardless: { $0.orderFrontRegardless() }
+            orderFrontRegardless: { $0.orderFrontRegardless() },
+            orderOut: { $0.orderOut(nil) }
         )
     }
 
@@ -101,7 +119,8 @@ final class MainWindowVisibilityController {
     }
 
     private var dependencies: Dependencies
-    private var hiddenWindowRestoreTargets: [NSWindow] = []
+    private var appHiddenWindowRestoreTargets: [NSWindow] = []
+    private var dismissedWindowRestoreTargets: [NSWindow] = []
 
     init(dependencies: Dependencies) {
         self.dependencies = dependencies
@@ -126,21 +145,39 @@ final class MainWindowVisibilityController {
 
         dependencies.setActiveMainWindow(window)
         if unhide, dependencies.isApplicationHidden() {
+            trace("focus.unhide.begin", reason: reason, windows: [window])
             dependencies.unhideApplication()
+            trace("focus.unhide.end", reason: reason, windows: [window])
         }
         if activationTiming == .beforeWindowOrdering {
             activate(activation)
         }
+        let shouldActivateBeforeWindowOrdering = activationTiming == .afterWindowOrdering &&
+            deminiaturize &&
+            dependencies.windowOperations.isMiniaturized(window)
+        if shouldActivateBeforeWindowOrdering {
+            trace("focus.activate.beforeMiniaturize.begin", reason: reason, windows: [window])
+            activate(activation)
+            trace("focus.activate.beforeMiniaturize.end", reason: reason, windows: [window])
+        }
         if deminiaturize, dependencies.windowOperations.isMiniaturized(window) {
+            trace("focus.deminiaturize.begin", reason: reason, windows: [window])
             dependencies.windowOperations.deminiaturize(window)
+            trace("focus.deminiaturize.end", reason: reason, windows: [window])
         }
         if makeKey {
+            trace("focus.orderFront.begin", reason: reason, windows: [window])
             dependencies.windowOperations.makeKeyAndOrderFront(window)
+            trace("focus.orderFront.end", reason: reason, windows: [window])
         } else {
+            trace("focus.orderFront.begin", reason: reason, windows: [window])
             dependencies.windowOperations.orderFront(window)
+            trace("focus.orderFront.end", reason: reason, windows: [window])
         }
-        if activationTiming == .afterWindowOrdering {
+        if activationTiming == .afterWindowOrdering && !shouldActivateBeforeWindowOrdering {
+            trace("focus.activate.begin", reason: reason, windows: [window])
             activate(activation)
+            trace("focus.activate.end", reason: reason, windows: [window])
         }
         log("focus", reason: reason, windows: [window])
         return true
@@ -153,23 +190,51 @@ final class MainWindowVisibilityController {
             return
         }
         if dependencies.isApplicationHidden() {
+            trace("focus.inWindow.unhide.begin", reason: reason, windows: [window])
             dependencies.unhideApplication()
+            trace("focus.inWindow.unhide.end", reason: reason, windows: [window])
         }
         if !dependencies.isApplicationActive() {
+            trace("focus.inWindow.activate.begin", reason: reason, windows: [window])
             activate(.runningApplication([.activateAllWindows]))
+            trace("focus.inWindow.activate.end", reason: reason, windows: [window])
         }
         if dependencies.windowOperations.isMiniaturized(window) {
+            trace("focus.inWindow.deminiaturize.begin", reason: reason, windows: [window])
             dependencies.windowOperations.deminiaturize(window)
+            trace("focus.inWindow.deminiaturize.end", reason: reason, windows: [window])
         }
+        trace("focus.inWindow.orderFront.begin", reason: reason, windows: [window])
         dependencies.windowOperations.makeKeyAndOrderFront(window)
+        trace("focus.inWindow.orderFront.end", reason: reason, windows: [window])
         log("focus.inWindow", reason: reason, windows: [window])
     }
 
-    func captureHiddenWindowRestoreTargets(windows: [NSWindow]) {
-        hiddenWindowRestoreTargets = uniqueWindows(windows).filter { window in
-            dependencies.windowOperations.isVisible(window) || dependencies.windowOperations.isMiniaturized(window)
+    func captureHiddenWindowRestoreTargets(windows: [NSWindow], reason: Reason = .globalHotkey) {
+        appHiddenWindowRestoreTargets = uniqueWindows(windows).filter { window in
+            dependencies.windowOperations.isVisible(window) && !dependencies.windowOperations.isMiniaturized(window)
         }
-        log("hide.capture", reason: .globalHotkey, windows: hiddenWindowRestoreTargets)
+        log("hide.capture", reason: reason, windows: appHiddenWindowRestoreTargets)
+    }
+
+    func dismissWindows(windows: [NSWindow], reason: Reason = .titlebarDismiss) {
+        let windows = uniqueWindows(windows)
+        guard !windows.isEmpty else {
+            log("dismiss.empty", reason: reason, windows: [])
+            return
+        }
+
+        let restoreTargets = windows.filter { window in
+            dependencies.windowOperations.isVisible(window) && !dependencies.windowOperations.isMiniaturized(window)
+        }
+        dismissedWindowRestoreTargets = mergeDismissedWindowRestoreTargets(with: restoreTargets)
+        log("dismiss.capture", reason: reason, windows: dismissedWindowRestoreTargets)
+        for window in windows where dependencies.windowOperations.isVisible(window) {
+            trace("dismiss.orderOut.begin", reason: reason, windows: [window])
+            dependencies.windowOperations.orderOut(window)
+            trace("dismiss.orderOut.end", reason: reason, windows: [window])
+        }
+        log("dismiss", reason: reason, windows: windows)
     }
 
     func toggleApplicationVisibility(windows: [NSWindow], reason: Reason = .globalHotkey) {
@@ -180,7 +245,7 @@ final class MainWindowVisibilityController {
         }
 
         if isFrontmost && hasVisibleWindow {
-            captureHiddenWindowRestoreTargets(windows: windows)
+            captureHiddenWindowRestoreTargets(windows: windows, reason: reason)
             dependencies.hideApplication()
             log("toggle.hide", reason: reason, windows: windows)
             return
@@ -190,30 +255,43 @@ final class MainWindowVisibilityController {
     }
 
     @discardableResult
-    func showApplicationWindows(windows allWindows: [NSWindow], reason: Reason = .globalHotkey) -> NSWindow? {
+    func showApplicationWindows(
+        windows allWindows: [NSWindow],
+        reason: Reason = .globalHotkey,
+        activation: Activation = .runningApplication([.activateAllWindows, .activateIgnoringOtherApps])
+    ) -> NSWindow? {
         let allWindows = uniqueWindows(allWindows)
+        let visibleOrMiniaturizedTargets = allWindows.filter { window in
+            dependencies.windowOperations.isVisible(window) || dependencies.windowOperations.isMiniaturized(window)
+        }
         let revealTargets: [NSWindow]
 
         if dependencies.isApplicationHidden() {
             dependencies.unhideApplication()
-            let capturedTargets = hiddenWindowRestoreTargets.filter { capturedWindow in
+            let capturedTargets = appHiddenWindowRestoreTargets.filter { capturedWindow in
                 allWindows.contains { $0 === capturedWindow }
             }
-            hiddenWindowRestoreTargets.removeAll()
+            appHiddenWindowRestoreTargets.removeAll()
             revealTargets = capturedTargets.isEmpty
                 ? allWindows.filter { dependencies.windowOperations.isMiniaturized($0) }
                 : capturedTargets
+        } else if !visibleOrMiniaturizedTargets.isEmpty {
+            revealTargets = visibleOrMiniaturizedTargets
         } else {
-            revealTargets = allWindows.filter { window in
-                dependencies.windowOperations.isVisible(window) || dependencies.windowOperations.isMiniaturized(window)
+            let dismissedTargets = dismissedWindowRestoreTargets.filter { dismissedWindow in
+                allWindows.contains { $0 === dismissedWindow }
             }
+            dismissedWindowRestoreTargets.removeAll()
+            revealTargets = dismissedTargets
         }
+
+        trace("show.begin", reason: reason, windows: revealTargets)
 
         return reveal(
             revealTargets,
             preferredWindow: nil,
             reason: reason,
-            activation: .runningApplication([.activateAllWindows, .activateIgnoringOtherApps])
+            activation: activation
         )
     }
 
@@ -231,18 +309,26 @@ final class MainWindowVisibilityController {
         }
 
         for window in windows where dependencies.windowOperations.isMiniaturized(window) {
+            trace("reveal.deminiaturize.begin", reason: reason, windows: [window])
             dependencies.windowOperations.deminiaturize(window)
+            trace("reveal.deminiaturize.end", reason: reason, windows: [window])
         }
+        trace("reveal.activate.begin", reason: reason, windows: windows)
         activate(activation)
+        trace("reveal.activate.end", reason: reason, windows: windows)
 
         let focusWindow = resolvedPreferredFocusWindow(preferredWindow: preferredWindow, in: windows)
         if let focusWindow {
             dependencies.setActiveMainWindow(focusWindow)
+            trace("reveal.makeKey.begin", reason: reason, windows: [focusWindow])
             dependencies.windowOperations.makeKeyAndOrderFront(focusWindow)
+            trace("reveal.makeKey.end", reason: reason, windows: [focusWindow])
         }
 
         for window in windows where window !== focusWindow {
+            trace("reveal.orderFrontRegardless.begin", reason: reason, windows: [window])
             dependencies.windowOperations.orderFrontRegardless(window)
+            trace("reveal.orderFrontRegardless.end", reason: reason, windows: [window])
         }
 
         log("reveal", reason: reason, windows: windows)
@@ -283,7 +369,25 @@ final class MainWindowVisibilityController {
         return result
     }
 
+    private func mergeDismissedWindowRestoreTargets(with windows: [NSWindow]) -> [NSWindow] {
+        var result = dismissedWindowRestoreTargets
+        for window in windows where !result.contains(where: { $0 === window }) {
+            result.append(window)
+        }
+        return result
+    }
+
     private func log(_ event: String, reason: Reason, windows: [NSWindow]) {
+#if DEBUG
+        let windowTokens = windows.map { window -> String in
+            let id = window.identifier?.rawValue ?? "<nil>"
+            return "\(id):visible=\(dependencies.windowOperations.isVisible(window) ? 1 : 0):mini=\(dependencies.windowOperations.isMiniaturized(window) ? 1 : 0):key=\(dependencies.windowOperations.isKeyWindow(window) ? 1 : 0)"
+        }
+        cmuxDebugLog("mainWindow.visibility.\(event) reason=\(reason.rawValue) windows=[\(windowTokens.joined(separator: ","))]")
+#endif
+    }
+
+    private func trace(_ event: String, reason: Reason, windows: [NSWindow]) {
 #if DEBUG
         let windowTokens = windows.map { window -> String in
             let id = window.identifier?.rawValue ?? "<nil>"
