@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		02436F54FFD87139D5EE2529 /* CmxRivetPairingSecretClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 691EA0F245F35CA8C73A9257 /* CmxRivetPairingSecretClient.swift */; };
 		046A1E8ABAFA1BDCA717F665 /* CmxBridgeTicketTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7012AB519D0E628DFC5968B /* CmxBridgeTicketTests.swift */; };
 		09C99FA03718C5EBDB5C7AC8 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 37514174EEBB8853B706B2E2 /* Assets.xcassets */; };
 		3145A407A3F7E4D11A941C9E /* CmxWorkspacePresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A89154ADDA444FB97AB5CC34 /* CmxWorkspacePresentationTests.swift */; };
@@ -23,6 +24,7 @@
 		9B770097C6D5A32792C2E67E /* CmxStackAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A01489CC17D9CC711CEC7E /* CmxStackAuthSession.swift */; };
 		A32908040CE9FB578983C804 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE3612A4F23C4449FD140F98 /* ContentView.swift */; };
 		A7D6541FE3FA191AA64861E3 /* CmxProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */; };
+		BF322D7B349910F850E291C9 /* CmxRivetPairingSecretClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1FAC02225FC5A6C2FDD551C /* CmxRivetPairingSecretClientTests.swift */; };
 		D3F2A03E42E52E641B1CA93A /* CMuxMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFC7AC464694127DEE49809B /* CMuxMobileApp.swift */; };
 		EDB4A6D4E42890DB83501905 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 6D04796B335A4EF9472F3C7B /* Localizable.xcstrings */; };
 		F45797CFDE33664098894AC8 /* CmxPairingAuth.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA00BE7804F5E833C3AC6783 /* CmxPairingAuth.swift */; };
@@ -44,6 +46,7 @@
 		4D8F13F64F19D531154478F4 /* CmxTerminalLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxTerminalLayoutTests.swift; sourceTree = "<group>"; };
 		5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxMobileModels.swift; sourceTree = "<group>"; };
 		685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxProtocol.swift; sourceTree = "<group>"; };
+		691EA0F245F35CA8C73A9257 /* CmxRivetPairingSecretClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxRivetPairingSecretClient.swift; sourceTree = "<group>"; };
 		6D04796B335A4EF9472F3C7B /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		7CAC0519CCDE0B798949BDDB /* CmxLaunchConfiguration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxLaunchConfiguration.swift; sourceTree = "<group>"; };
 		859F1700DA659FFBA5CD133F /* GhosttyTerminalSurface.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GhosttyTerminalSurface.swift; sourceTree = "<group>"; };
@@ -53,6 +56,7 @@
 		A530CA69638B5047244BB585 /* CmxProtocolTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxProtocolTests.swift; sourceTree = "<group>"; };
 		A6B883D20F5E53B38079E582 /* CmxBridgeTicket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxBridgeTicket.swift; sourceTree = "<group>"; };
 		A89154ADDA444FB97AB5CC34 /* CmxWorkspacePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxWorkspacePresentationTests.swift; sourceTree = "<group>"; };
+		B1FAC02225FC5A6C2FDD551C /* CmxRivetPairingSecretClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxRivetPairingSecretClientTests.swift; sourceTree = "<group>"; };
 		CA00BE7804F5E833C3AC6783 /* CmxPairingAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxPairingAuth.swift; sourceTree = "<group>"; };
 		D7012AB519D0E628DFC5968B /* CmxBridgeTicketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxBridgeTicketTests.swift; sourceTree = "<group>"; };
 		DE3612A4F23C4449FD140F98 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -99,6 +103,7 @@
 				EA700DAAB5080FB8C0F49011 /* CmxGhosttyTerminalSurfaceTests.swift */,
 				9BB7530110ACCA8D612E4AB8 /* CmxPairingAuthTests.swift */,
 				A530CA69638B5047244BB585 /* CmxProtocolTests.swift */,
+				B1FAC02225FC5A6C2FDD551C /* CmxRivetPairingSecretClientTests.swift */,
 				4D8F13F64F19D531154478F4 /* CmxTerminalLayoutTests.swift */,
 				A89154ADDA444FB97AB5CC34 /* CmxWorkspacePresentationTests.swift */,
 			);
@@ -115,6 +120,7 @@
 				5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */,
 				CA00BE7804F5E833C3AC6783 /* CmxPairingAuth.swift */,
 				685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */,
+				691EA0F245F35CA8C73A9257 /* CmxRivetPairingSecretClient.swift */,
 				E8A01489CC17D9CC711CEC7E /* CmxStackAuthSession.swift */,
 				8B65BE12CE77CE29F82E2587 /* CmxWebSocketTerminalSession.swift */,
 				DE3612A4F23C4449FD140F98 /* ContentView.swift */,
@@ -223,6 +229,7 @@
 				6AB7A10AC70BC7A211F4BA25 /* CmxGhosttyTerminalSurfaceTests.swift in Sources */,
 				9A08A168FB76F15214E7FEFD /* CmxPairingAuthTests.swift in Sources */,
 				3F6B7E0B59FAA1567D655E91 /* CmxProtocolTests.swift in Sources */,
+				BF322D7B349910F850E291C9 /* CmxRivetPairingSecretClientTests.swift in Sources */,
 				52AE18A86F4618EB33E8F19F /* CmxTerminalLayoutTests.swift in Sources */,
 				3145A407A3F7E4D11A941C9E /* CmxWorkspacePresentationTests.swift in Sources */,
 			);
@@ -239,6 +246,7 @@
 				79761B08A1BFAB4EC092CE21 /* CmxMobileModels.swift in Sources */,
 				F45797CFDE33664098894AC8 /* CmxPairingAuth.swift in Sources */,
 				A7D6541FE3FA191AA64861E3 /* CmxProtocol.swift in Sources */,
+				02436F54FFD87139D5EE2529 /* CmxRivetPairingSecretClient.swift in Sources */,
 				9B770097C6D5A32792C2E67E /* CmxStackAuthSession.swift in Sources */,
 				4B2571AC80A3529521892410 /* CmxWebSocketTerminalSession.swift in Sources */,
 				A32908040CE9FB578983C804 /* ContentView.swift in Sources */,

@@ -203,7 +203,10 @@ final class CmxBridgeTicketTests: XCTestCase {
 
     @MainActor
     func testRivetStackTicketRequiresStoredStackSessionBeforeConnect() {
-        let store = CmxConnectionStore(authSessionStore: MemoryStackAuthSessionStore())
+        let store = CmxConnectionStore(
+            authSessionStore: MemoryStackAuthSessionStore(),
+            pairingSecretClient: RecordingPairingSecretClient()
+        )
         store.ticketText = """
         {
           "version": 1,
@@ -231,6 +234,35 @@ final class CmxBridgeTicketTests: XCTestCase {
         XCTAssertFalse(store.isConnected)
         XCTAssertEqual(store.errorText, CmxConnectionError.missingStackAuthSession.errorDescription)
     }
+
+    @MainActor
+    func testRivetStackTicketFetchesPairingSecretBeforeOpeningTransport() async {
+        let sessionStore = MemoryStackAuthSessionStore()
+        sessionStore.session = CmxStackAuthSession(refreshToken: "refresh", accessToken: "access")
+        let secretClient = RecordingPairingSecretClient()
+        let store = CmxConnectionStore(authSessionStore: sessionStore, pairingSecretClient: secretClient)
+        store.ticketText = """
+        {
+          "version": 1,
+          "alpn": "/cmux/cmx/3",
+          "endpoint": { "id": "endpoint-public-key", "addrs": [] },
+          "auth": {
+            "mode": "rivet_stack",
+            "pairing_id": "pairing-1",
+            "rivet_endpoint": "https://rivet.example.test/cmux",
+            "stack_project_id": "stack-project",
+            "expires_at_unix": 4000000000
+          }
+        }
+        """
+
+        store.connect()
+        await secretClient.waitForFetch()
+
+        XCTAssertEqual(secretClient.fetchCount, 1)
+        XCTAssertEqual(secretClient.lastStackSession, sessionStore.session)
+        XCTAssertEqual(store.errorText, CmxConnectionError.missingWebSocketRoute.errorDescription)
+    }
 }
 
 private final class MemoryStackAuthSessionStore: CmxStackAuthSessionStore {
@@ -246,5 +278,32 @@ private final class MemoryStackAuthSessionStore: CmxStackAuthSessionStore {
 
     func clear() throws {
         session = nil
+    }
+}
+
+private final class RecordingPairingSecretClient: CmxRivetPairingSecretFetching {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var fetchCount = 0
+    private(set) var lastStackSession: CmxStackAuthSession?
+
+    func fetchSecret(
+        for auth: CmxBridgeTicketAuth,
+        stackSession: CmxStackAuthSession,
+        now: Date
+    ) async throws -> CmxRivetPairingSecret {
+        fetchCount += 1
+        lastStackSession = stackSession
+        continuation?.resume()
+        continuation = nil
+        return CmxRivetPairingSecret(pairingID: auth.pairingID ?? "", secret: "rivet-secret", expiresAtUnix: 4000000000)
+    }
+
+    func waitForFetch() async {
+        if fetchCount > 0 {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
     }
 }

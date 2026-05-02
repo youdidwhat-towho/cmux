@@ -19,10 +19,16 @@ final class CmxConnectionStore: ObservableObject {
     @Published private var outputChunksByTerminalID: [UInt64: [CmxTerminalOutputChunk]] = [:]
     @Published private var nextOutputChunkID = 1
     private let authSessionStore: CmxStackAuthSessionStore
+    private let pairingSecretClient: CmxRivetPairingSecretFetching
     private var webSocketSession: CmxWebSocketTerminalSession?
+    private var connectTask: Task<Void, Never>?
 
-    init(authSessionStore: CmxStackAuthSessionStore = CmxKeychainStackAuthSessionStore()) {
+    init(
+        authSessionStore: CmxStackAuthSessionStore = CmxKeychainStackAuthSessionStore(),
+        pairingSecretClient: CmxRivetPairingSecretFetching = CmxRivetPairingSecretClient()
+    ) {
         self.authSessionStore = authSessionStore
+        self.pairingSecretClient = pairingSecretClient
         stackAuthSession = try? authSessionStore.load()
         if let ticket = CmxLaunchConfiguration.ticket() {
             ticketText = ticket
@@ -74,27 +80,22 @@ final class CmxConnectionStore: ObservableObject {
     func connect() {
         do {
             let parsed = try CmxBridgeTicketParser.parse(ticketText)
-            if parsed.auth?.requiresStackSession == true, stackAuthSession == nil {
-                throw CmxConnectionError.missingStackAuthSession
+            connectTask?.cancel()
+            if parsed.auth?.requiresStackSession == true {
+                guard let stackAuthSession else {
+                    throw CmxConnectionError.missingStackAuthSession
+                }
+                ticket = parsed
+                updateConnectedNode(for: parsed)
+                errorText = nil
+                isConnecting = true
+                isConnected = false
+                connectTask = Task { @MainActor [weak self] in
+                    await self?.connectWithPairingSecret(ticket: parsed, stackAuthSession: stackAuthSession)
+                }
+                return
             }
-            guard let webSocketURL = parsed.webSocketURL else {
-                throw CmxConnectionError.missingWebSocketRoute
-            }
-            webSocketSession?.disconnect()
-            let session = CmxWebSocketTerminalSession(
-                url: webSocketURL,
-                token: parsed.webSocketToken,
-                headers: parsed.auth?.requiresStackSession == true ? stackAuthSession?.authorizationHeaders ?? [:] : [:]
-            )
-            session.delegate = self
-            webSocketSession = session
-            ticket = parsed
-            updateConnectedNode(for: parsed)
-            errorText = nil
-            isConnecting = true
-            isConnected = false
-            clearTerminal(selectedTerminal.id)
-            session.start(viewport: wireViewport(for: selectedTerminal.id))
+            try startTerminalSession(ticket: parsed)
         } catch {
             ticket = nil
             errorText = error.localizedDescription
@@ -124,6 +125,8 @@ final class CmxConnectionStore: ObservableObject {
     }
 
     func disconnect() {
+        connectTask?.cancel()
+        connectTask = nil
         webSocketSession?.disconnect()
         webSocketSession = nil
         isConnecting = false
@@ -306,6 +309,44 @@ final class CmxConnectionStore: ObservableObject {
                 rows: UInt16(clamping: terminal.size.rows)
             ),
         ])
+    }
+
+    private func connectWithPairingSecret(ticket: CmxBridgeTicket, stackAuthSession: CmxStackAuthSession) async {
+        do {
+            guard let auth = ticket.auth else {
+                throw CmxTicketError.missingAuth
+            }
+            _ = try await pairingSecretClient.fetchSecret(for: auth, stackSession: stackAuthSession, now: Date())
+            try startTerminalSession(ticket: ticket)
+        } catch is CancellationError {
+            return
+        } catch {
+            self.ticket = nil
+            errorText = error.localizedDescription
+            isConnecting = false
+            isConnected = false
+        }
+    }
+
+    private func startTerminalSession(ticket parsed: CmxBridgeTicket) throws {
+        guard let webSocketURL = parsed.webSocketURL else {
+            throw CmxConnectionError.missingWebSocketRoute
+        }
+        webSocketSession?.disconnect()
+        let session = CmxWebSocketTerminalSession(
+            url: webSocketURL,
+            token: parsed.webSocketToken,
+            headers: parsed.auth?.requiresStackSession == true ? stackAuthSession?.authorizationHeaders ?? [:] : [:]
+        )
+        session.delegate = self
+        webSocketSession = session
+        ticket = parsed
+        updateConnectedNode(for: parsed)
+        errorText = nil
+        isConnecting = true
+        isConnected = false
+        clearTerminal(selectedTerminal.id)
+        session.start(viewport: wireViewport(for: selectedTerminal.id))
     }
 
     private func terminal(matching terminalID: UInt64) -> CmxTerminal? {

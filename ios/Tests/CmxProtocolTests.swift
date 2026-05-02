@@ -58,6 +58,16 @@ final class CmxProtocolTests: XCTestCase {
         XCTAssertNotNil(payload.range(of: Data("index".utf8)))
     }
 
+    func testPingEncodingKeepsNativeWebSocketClientAlive() throws {
+        let payload = try CmxWireCodec.encode(.ping)
+
+        XCTAssertEqual(payload, Data([
+            0x81,
+            0xA4, 0x6B, 0x69, 0x6E, 0x64,
+            0xA4, 0x70, 0x69, 0x6E, 0x67,
+        ]))
+    }
+
     func testDecodeWelcome() throws {
         let payload = Data([
             0x83,

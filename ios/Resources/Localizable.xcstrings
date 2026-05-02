@@ -307,6 +307,48 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "準備完了" } }
       }
     },
+    "rivet.error.bad_status" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rivet pairing secret request failed (%d)." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet ペアリングシークレットのリクエストに失敗しました（%d）。" } }
+      }
+    },
+    "rivet.error.expired_secret" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The Rivet pairing secret has expired." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet ペアリングシークレットの有効期限が切れています。" } }
+      }
+    },
+    "rivet.error.invalid_endpoint" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The Rivet pairing endpoint is invalid." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet ペアリングエンドポイントが無効です。" } }
+      }
+    },
+    "rivet.error.invalid_response" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rivet returned an invalid pairing secret response." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet が無効なペアリングシークレット応答を返しました。" } }
+      }
+    },
+    "rivet.error.missing_secret" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rivet did not return a pairing secret." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet がペアリングシークレットを返しませんでした。" } }
+      }
+    },
+    "rivet.error.pairing_mismatch" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Rivet returned a pairing secret for a different ticket." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Rivet が別のチケット用のペアリングシークレットを返しました。" } }
+      }
+    },
+    "rivet.error.unsupported_auth" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "This ticket does not use Rivet pairing auth." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "このチケットは Rivet ペアリング認証を使用していません。" } }
+      }
+    },
     "ticket.error.alpn" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge protocol %@." } },

@@ -9,6 +9,8 @@ protocol CmxWebSocketTerminalSessionDelegate: AnyObject {
 
 @MainActor
 final class CmxWebSocketTerminalSession {
+    private static let heartbeatInterval: TimeInterval = 15
+
     enum Mode: Equatable {
         case tui
         case nativeLibghostty
@@ -23,6 +25,7 @@ final class CmxWebSocketTerminalSession {
     private let urlSession: URLSession
     private var task: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
+    private var heartbeatTimer: Timer?
     private var closedByClient = false
     private var nextCommandID: UInt32 = 1
 
@@ -58,6 +61,7 @@ final class CmxWebSocketTerminalSession {
         case .nativeLibghostty:
             send(.helloNative(viewport: viewport, token: token))
         }
+        startHeartbeat()
     }
 
     func sendInput(_ data: Data, terminalID: UInt64) {
@@ -92,6 +96,7 @@ final class CmxWebSocketTerminalSession {
 
     func disconnect() {
         closedByClient = true
+        stopHeartbeat()
         receiveTask?.cancel()
         receiveTask = nil
         send(.detach)
@@ -122,7 +127,11 @@ final class CmxWebSocketTerminalSession {
                 let message = try await task.receive()
                 switch message {
                 case .data(let payload):
-                    delegate?.webSocketTerminalSession(self, didReceive: try CmxWireCodec.decodeServerMessage(payload))
+                    let decoded = try CmxWireCodec.decodeServerMessage(payload)
+                    if case .bye = decoded {
+                        stopHeartbeat()
+                    }
+                    delegate?.webSocketTerminalSession(self, didReceive: decoded)
                 case .string:
                     throw CmxWebSocketTerminalSessionError.unexpectedTextFrame
                 @unknown default:
@@ -130,9 +139,27 @@ final class CmxWebSocketTerminalSession {
                 }
             }
         } catch {
+            stopHeartbeat()
             guard !closedByClient else { return }
             delegate?.webSocketTerminalSession(self, didFail: error)
         }
+    }
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        let timer = Timer(timeInterval: Self.heartbeatInterval, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.task != nil, !self.closedByClient else { return }
+                self.send(.ping)
+            }
+        }
+        heartbeatTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTimer?.invalidate()
+        heartbeatTimer = nil
     }
 }
 
