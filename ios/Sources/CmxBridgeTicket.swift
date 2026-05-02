@@ -251,34 +251,34 @@ enum CmxTicketError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .empty:
-            return String(localized: "ticket.error.empty", defaultValue: "Paste an iroh bridge ticket first.")
+            return String(localized: "ticket.error.empty", defaultValue: "No pairing ticket is available.")
         case .invalidUTF8:
             return String(localized: "ticket.error.utf8", defaultValue: "The ticket is not valid UTF-8.")
         case .unsupportedVersion(let version):
             return String(
-                format: String(localized: "ticket.error.version", defaultValue: "Unsupported bridge ticket version %d."),
+                format: String(localized: "ticket.error.version", defaultValue: "Unsupported pairing ticket version %d."),
                 version
             )
         case .unsupportedALPN(let alpn):
             return String(
-                format: String(localized: "ticket.error.alpn", defaultValue: "Unsupported bridge protocol %@."),
+                format: String(localized: "ticket.error.alpn", defaultValue: "Unsupported pairing protocol %@."),
                 alpn
             )
         case .missingAuth:
-            return String(localized: "ticket.error.auth_missing", defaultValue: "The bridge ticket is missing auth metadata.")
+            return String(localized: "ticket.error.auth_missing", defaultValue: "The pairing ticket is missing auth metadata.")
         case .unsupportedAuth(let mode):
             return String(
-                format: String(localized: "ticket.error.auth_unsupported", defaultValue: "Unsupported bridge auth mode %@."),
+                format: String(localized: "ticket.error.auth_unsupported", defaultValue: "Unsupported pairing auth mode %@."),
                 mode
             )
         case .missingPairingID:
-            return String(localized: "ticket.error.pairing_id", defaultValue: "The bridge ticket is missing its Rivet pairing id.")
+            return String(localized: "ticket.error.pairing_id", defaultValue: "The pairing ticket is missing its Rivet pairing id.")
         case .missingStackProjectID:
-            return String(localized: "ticket.error.stack_project_id", defaultValue: "The bridge ticket is missing its Stack project id.")
+            return String(localized: "ticket.error.stack_project_id", defaultValue: "The pairing ticket is missing its Stack project id.")
         case .invalidRivetEndpoint:
-            return String(localized: "ticket.error.rivet_endpoint", defaultValue: "The bridge ticket has an invalid Rivet endpoint.")
+            return String(localized: "ticket.error.rivet_endpoint", defaultValue: "The pairing ticket has an invalid Rivet endpoint.")
         case .expiredPairing:
-            return String(localized: "ticket.error.pairing_expired", defaultValue: "The bridge pairing ticket has expired.")
+            return String(localized: "ticket.error.pairing_expired", defaultValue: "The pairing ticket has expired.")
         }
     }
 }

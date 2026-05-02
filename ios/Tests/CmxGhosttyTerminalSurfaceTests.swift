@@ -109,9 +109,36 @@ final class CmxGhosttyTerminalSurfaceTests: XCTestCase {
 
     func testGhosttyAccessoryBarKeepsActionsInsideScrollerAndShowsMacCommand() throws {
         let (surfaceView, _) = try makeSurfaceView()
+        let defaultIdentifiers = Set(surfaceView.accessoryActionIdentifiersForTesting)
 
-        XCTAssertTrue(surfaceView.accessoryActionIdentifiersForTesting.contains("terminal.inputAccessory.hideKeyboard"))
-        XCTAssertFalse(surfaceView.accessoryActionIdentifiersForTesting.contains("terminal.inputAccessory.command"))
+        XCTAssertTrue(defaultIdentifiers.isSuperset(of: [
+            "terminal.inputAccessory.hideKeyboard",
+            "terminal.inputAccessory.control",
+            "terminal.inputAccessory.alt",
+            "terminal.inputAccessory.shift",
+            "terminal.inputAccessory.zoomOut",
+            "terminal.inputAccessory.zoomIn",
+            "terminal.inputAccessory.escape",
+            "terminal.inputAccessory.tab",
+            "terminal.inputAccessory.enter",
+            "terminal.inputAccessory.backspace",
+            "terminal.inputAccessory.deleteForward",
+            "terminal.inputAccessory.up",
+            "terminal.inputAccessory.down",
+            "terminal.inputAccessory.left",
+            "terminal.inputAccessory.right",
+            "terminal.inputAccessory.home",
+            "terminal.inputAccessory.end",
+            "terminal.inputAccessory.pageUp",
+            "terminal.inputAccessory.pageDown",
+            "terminal.inputAccessory.tilde",
+            "terminal.inputAccessory.pipe",
+            "terminal.inputAccessory.ctrlC",
+            "terminal.inputAccessory.ctrlD",
+            "terminal.inputAccessory.ctrlZ",
+            "terminal.inputAccessory.ctrlL",
+        ]))
+        XCTAssertFalse(defaultIdentifiers.contains("terminal.inputAccessory.command"))
 
         surfaceView.updateHostPlatform(.macOS)
 

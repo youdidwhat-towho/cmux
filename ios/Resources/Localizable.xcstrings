@@ -25,18 +25,6 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "このサインイン コールバックは cmux 用ではありません。" } }
       }
     },
-    "bridge.summary.empty" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste a bridge ticket to attach this device." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "このデバイスを接続するにはブリッジチケットを貼り付けてください。" } }
-      }
-    },
-    "bridge.summary.title" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Iroh bridge" } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Iroh ブリッジ" } }
-      }
-    },
     "button.connect" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Connect" } },
@@ -381,50 +369,50 @@
     },
     "ticket.error.alpn" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge protocol %@." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のブリッジプロトコル %@ です。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported pairing protocol %@." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のペアリングプロトコル %@ です。" } }
       }
     },
     "ticket.error.auth_missing" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge ticket is missing auth metadata." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジチケットに認証メタデータがありません。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pairing ticket is missing auth metadata." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットに認証メタデータがありません。" } }
       }
     },
     "ticket.error.auth_unsupported" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge auth mode %@." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のブリッジ認証モード %@ です。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported pairing auth mode %@." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のペアリング認証モード %@ です。" } }
       }
     },
     "ticket.error.empty" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste an iroh bridge ticket first." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "先に iroh ブリッジチケットを貼り付けてください。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "No pairing ticket is available." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットがありません。" } }
       }
     },
     "ticket.error.pairing_expired" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge pairing ticket has expired." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジペアリングチケットの有効期限が切れています。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pairing ticket has expired." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットの有効期限が切れています。" } }
       }
     },
     "ticket.error.pairing_id" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge ticket is missing its Rivet pairing id." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジチケットに Rivet ペアリング ID がありません。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pairing ticket is missing its Rivet pairing id." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットに Rivet ペアリング ID がありません。" } }
       }
     },
     "ticket.error.rivet_endpoint" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge ticket has an invalid Rivet endpoint." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジチケットの Rivet エンドポイントが無効です。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pairing ticket has an invalid Rivet endpoint." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットの Rivet エンドポイントが無効です。" } }
       }
     },
     "ticket.error.stack_project_id" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "The bridge ticket is missing its Stack project id." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ブリッジチケットに Stack プロジェクト ID がありません。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The pairing ticket is missing its Stack project id." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ペアリングチケットに Stack プロジェクト ID がありません。" } }
       }
     },
     "ticket.error.stack_auth_required" : {
@@ -447,8 +435,8 @@
     },
     "ticket.error.version" : {
       "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported bridge ticket version %d." } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のブリッジチケットバージョン %d です。" } }
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Unsupported pairing ticket version %d." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "未対応のペアリングチケットバージョン %d です。" } }
       }
     },
     "ticket.error.websocket_frame" : {
@@ -485,12 +473,6 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "unknown auth %@" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "不明な認証 %@" } }
-      }
-    },
-    "ticket.placeholder" : {
-      "localizations" : {
-        "en" : { "stringUnit" : { "state" : "translated", "value" : "Paste iroh bridge ticket" } },
-        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh ブリッジチケットを貼り付け" } }
       }
     },
     "pairing.error.alpn" : {
