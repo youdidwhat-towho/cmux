@@ -18,9 +18,9 @@
 		6AB7A10AC70BC7A211F4BA25 /* CmxGhosttyTerminalSurfaceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA700DAAB5080FB8C0F49011 /* CmxGhosttyTerminalSurfaceTests.swift */; };
 		6F690A4EFBB9693BFFA77F64 /* CmxBridgeTicket.swift in Sources */ = {isa = PBXBuildFile; fileRef = A6B883D20F5E53B38079E582 /* CmxBridgeTicket.swift */; };
 		79761B08A1BFAB4EC092CE21 /* CmxMobileModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */; };
-		729CCBE8CF76467A9A0EB5E2 /* CmxStackAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD76036E3E304115AAB945D2 /* CmxStackAuthSession.swift */; };
 		8BDDF4D2E3FDC3536A819744 /* CmxLaunchConfiguration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7CAC0519CCDE0B798949BDDB /* CmxLaunchConfiguration.swift */; };
 		9A08A168FB76F15214E7FEFD /* CmxPairingAuthTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BB7530110ACCA8D612E4AB8 /* CmxPairingAuthTests.swift */; };
+		9B770097C6D5A32792C2E67E /* CmxStackAuthSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8A01489CC17D9CC711CEC7E /* CmxStackAuthSession.swift */; };
 		A32908040CE9FB578983C804 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE3612A4F23C4449FD140F98 /* ContentView.swift */; };
 		A7D6541FE3FA191AA64861E3 /* CmxProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */; };
 		D3F2A03E42E52E641B1CA93A /* CMuxMobileApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = EFC7AC464694127DEE49809B /* CMuxMobileApp.swift */; };
@@ -54,9 +54,9 @@
 		A6B883D20F5E53B38079E582 /* CmxBridgeTicket.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxBridgeTicket.swift; sourceTree = "<group>"; };
 		A89154ADDA444FB97AB5CC34 /* CmxWorkspacePresentationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxWorkspacePresentationTests.swift; sourceTree = "<group>"; };
 		CA00BE7804F5E833C3AC6783 /* CmxPairingAuth.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxPairingAuth.swift; sourceTree = "<group>"; };
-		CD76036E3E304115AAB945D2 /* CmxStackAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxStackAuthSession.swift; sourceTree = "<group>"; };
 		D7012AB519D0E628DFC5968B /* CmxBridgeTicketTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxBridgeTicketTests.swift; sourceTree = "<group>"; };
 		DE3612A4F23C4449FD140F98 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		E8A01489CC17D9CC711CEC7E /* CmxStackAuthSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxStackAuthSession.swift; sourceTree = "<group>"; };
 		EA700DAAB5080FB8C0F49011 /* CmxGhosttyTerminalSurfaceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxGhosttyTerminalSurfaceTests.swift; sourceTree = "<group>"; };
 		EFC7AC464694127DEE49809B /* CMuxMobileApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMuxMobileApp.swift; sourceTree = "<group>"; };
 		F879DF9A12C97742E91048EC /* CmxConnectionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmxConnectionStore.swift; sourceTree = "<group>"; };
@@ -115,7 +115,7 @@
 				5B2EF5DAE490DB7EA55F4735 /* CmxMobileModels.swift */,
 				CA00BE7804F5E833C3AC6783 /* CmxPairingAuth.swift */,
 				685CD3EEF504FEA2717D45F7 /* CmxProtocol.swift */,
-				CD76036E3E304115AAB945D2 /* CmxStackAuthSession.swift */,
+				E8A01489CC17D9CC711CEC7E /* CmxStackAuthSession.swift */,
 				8B65BE12CE77CE29F82E2587 /* CmxWebSocketTerminalSession.swift */,
 				DE3612A4F23C4449FD140F98 /* ContentView.swift */,
 				2ECCE021F8FE9EE036403391 /* Ghostty-Bridging-Header.h */,
@@ -239,7 +239,7 @@
 				79761B08A1BFAB4EC092CE21 /* CmxMobileModels.swift in Sources */,
 				F45797CFDE33664098894AC8 /* CmxPairingAuth.swift in Sources */,
 				A7D6541FE3FA191AA64861E3 /* CmxProtocol.swift in Sources */,
-				729CCBE8CF76467A9A0EB5E2 /* CmxStackAuthSession.swift in Sources */,
+				9B770097C6D5A32792C2E67E /* CmxStackAuthSession.swift in Sources */,
 				4B2571AC80A3529521892410 /* CmxWebSocketTerminalSession.swift in Sources */,
 				A32908040CE9FB578983C804 /* ContentView.swift in Sources */,
 				4C61AB29D974E25C10FB3DB6 /* GhosttyTerminalSurface.swift in Sources */,
