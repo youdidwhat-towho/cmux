@@ -4098,10 +4098,7 @@ class TerminalController {
                 return tm
             }
         }
-        if let tabManager {
-            return tabManager
-        }
-        return v2MainSync { AppDelegate.shared?.currentScriptableMainWindow()?.tabManager }
+        return tabManager ?? v2MainSync { AppDelegate.shared?.currentScriptableMainWindow()?.tabManager }
     }
 
     func v2ResolveWindowId(tabManager: TabManager?) -> UUID? {
