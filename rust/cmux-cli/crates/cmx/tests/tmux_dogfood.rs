@@ -131,6 +131,21 @@ impl Session {
         String::from_utf8_lossy(&out.stdout).into_owned()
     }
 
+    fn resize(&self, cols: u16, rows: u16) {
+        Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t",
+                &self.name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .status()
+            .expect("tmux resize-window");
+    }
+
     /// Poll capture-pane until `predicate` matches or the deadline passes.
     fn wait_until<F: Fn(&str) -> bool>(&self, timeout: Duration, predicate: F) -> String {
         let deadline = Instant::now() + timeout;
@@ -195,6 +210,39 @@ fn find_libghostty_dir() -> Option<PathBuf> {
     best
 }
 
+fn worktree_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/cmx parent")
+        .parent()
+        .expect("crates parent")
+        .parent()
+        .expect("cmux-cli parent")
+        .parent()
+        .expect("rust parent")
+        .to_path_buf()
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn reported_bounds_size(frame: &str) -> Option<(u16, u16)> {
+    let marker = "reported size: rows=";
+    let start = frame.find(marker)? + marker.len();
+    let rest = &frame[start..];
+    let rows_end = rest.find(' ')?;
+    let rows = rest[..rows_end].parse().ok()?;
+    let cols_marker = "cols=";
+    let cols_start = rest.find(cols_marker)? + cols_marker.len();
+    let cols_rest = &rest[cols_start..];
+    let cols_end = cols_rest
+        .find(|ch: char| !ch.is_ascii_digit())
+        .unwrap_or(cols_rest.len());
+    let cols = cols_rest[..cols_end].parse().ok()?;
+    Some((rows, cols))
+}
+
 #[test]
 fn sidebar_and_prompt_render() {
     if !tmux_available() {
@@ -231,6 +279,48 @@ fn echo_typed_into_shell_appears_in_grid() {
     assert!(
         out.contains("CMX_TMUX_OK_7A"),
         "echo sentinel missing from composited grid:\n{out}"
+    );
+}
+
+#[test]
+fn bounds_helper_tracks_maximum_pane_size_after_resize() {
+    if !tmux_available() {
+        eprintln!("tmux not available; skipping");
+        return;
+    }
+    let s = Session::start("cmxtest_bounds", 100, 28);
+    s.wait_until(Duration::from_secs(3), |f| f.contains("[main · space-1]"));
+
+    let helper = worktree_root().join("scripts/tui-terminal-bounds-check.sh");
+    let command = format!(
+        "CMUX_BOUNDS_TUI_ALT_SCREEN=0 CMUX_BOUNDS_TUI_INTERVAL=0.1 {}",
+        shell_quote(&helper.display().to_string())
+    );
+    s.send_literal(&command);
+    s.enter();
+
+    let initial = s.wait_until(Duration::from_secs(5), |frame| {
+        reported_bounds_size(frame) == Some((24, 82))
+            && frame.contains("CMUX TERMINAL BOUNDS VISUAL CHECK")
+            && frame.contains("right edge col=82")
+            && frame.contains("bottom inner row=22")
+    });
+    assert_eq!(
+        reported_bounds_size(&initial),
+        Some((24, 82)),
+        "bounds helper did not use the full initial pane size:\n{initial}"
+    );
+
+    s.resize(132, 34);
+    let resized = s.wait_until(Duration::from_secs(5), |frame| {
+        reported_bounds_size(frame) == Some((30, 114))
+            && frame.contains("right edge col=114")
+            && frame.contains("bottom inner row=28")
+    });
+    assert_eq!(
+        reported_bounds_size(&resized),
+        Some((30, 114)),
+        "bounds helper did not track the resized maximum pane size:\n{resized}"
     );
 }
 
