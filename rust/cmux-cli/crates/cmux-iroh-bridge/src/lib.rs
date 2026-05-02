@@ -201,6 +201,78 @@ impl BridgeRelayMode {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct BridgeClientOptions {
+    pub ticket: BridgeTicket,
+    pub relay_mode: BridgeRelayMode,
+    pub pairing_secret: Option<String>,
+}
+
+pub struct BridgeClientConnection {
+    /// Keep the local iroh endpoint alive for as long as the cmx stream is in use.
+    pub endpoint: Endpoint,
+    pub connection: iroh::endpoint::Connection,
+    pub send: iroh::endpoint::SendStream,
+    pub recv: iroh::endpoint::RecvStream,
+}
+
+pub async fn connect_encoded_ticket(
+    encoded_ticket: &str,
+    relay_mode: BridgeRelayMode,
+    pairing_secret: Option<String>,
+) -> Result<BridgeClientConnection> {
+    connect_ticket(BridgeClientOptions {
+        ticket: BridgeTicket::decode(encoded_ticket)?,
+        relay_mode,
+        pairing_secret,
+    })
+    .await
+}
+
+pub async fn connect_ticket(options: BridgeClientOptions) -> Result<BridgeClientConnection> {
+    if let Some(node) = &options.ticket.node {
+        node.validate()?;
+    }
+    options.ticket.auth.validate()?;
+    if options.ticket.alpn.as_bytes() != CMUX_IROH_ALPN {
+        bail!("unsupported bridge ALPN {}", options.ticket.alpn);
+    }
+    let pairing_secret = match &options.ticket.auth {
+        BridgeTicketAuth::Direct => None,
+        BridgeTicketAuth::RivetStack { .. } => Some(
+            options
+                .pairing_secret
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .context("missing pairing secret")?,
+        ),
+    };
+
+    let endpoint = Endpoint::builder(presets::N0)
+        .relay_mode(options.relay_mode.as_iroh())
+        .bind()
+        .await
+        .context("bind iroh client endpoint")?;
+    let connection = endpoint
+        .connect(options.ticket.endpoint.clone(), CMUX_IROH_ALPN)
+        .await
+        .context("connect iroh bridge")?;
+    let (mut send, mut recv) = connection.open_bi().await.context("open cmx stream")?;
+
+    if let (BridgeTicketAuth::RivetStack { pairing_id, .. }, Some(pairing_secret)) =
+        (&options.ticket.auth, pairing_secret)
+    {
+        complete_client_pairing_auth(&mut send, &mut recv, pairing_id, pairing_secret).await?;
+    }
+
+    Ok(BridgeClientConnection {
+        endpoint,
+        connection,
+        send,
+        recv,
+    })
+}
+
 pub async fn serve(options: BridgeOptions) -> Result<()> {
     if let Some(pairing) = &options.pairing {
         pairing.validate()?;
@@ -377,6 +449,63 @@ where
     .await
 }
 
+async fn complete_client_pairing_auth<W, R>(
+    writer: &mut W,
+    reader: &mut R,
+    pairing_id: &str,
+    pairing_secret: &str,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let client_nonce = generate_nonce()?;
+    write_json_line(
+        writer,
+        &PairingStart {
+            kind: "pairing_start".into(),
+            pairing_id: pairing_id.into(),
+            client_nonce: client_nonce.clone(),
+        },
+    )
+    .await?;
+
+    let challenge: PairingChallenge = read_json_line(reader).await?;
+    if challenge.kind != "pairing_challenge" {
+        bail!("unexpected pairing auth frame {}", challenge.kind);
+    }
+    if challenge.pairing_id != pairing_id {
+        bail!("pairing id mismatch");
+    }
+    if challenge.alpn.as_bytes() != CMUX_IROH_ALPN {
+        bail!("unsupported pairing ALPN {}", challenge.alpn);
+    }
+    if challenge.server_nonce.trim().is_empty() {
+        bail!("missing server nonce");
+    }
+
+    write_json_line(
+        writer,
+        &PairingResponse {
+            kind: "pairing_response".into(),
+            pairing_id: pairing_id.into(),
+            proof: pairing_proof(
+                pairing_secret,
+                pairing_id,
+                &client_nonce,
+                &challenge.server_nonce,
+            )?,
+        },
+    )
+    .await?;
+
+    let accepted: PairingAccepted = read_json_line(reader).await?;
+    if accepted.kind != "pairing_accepted" {
+        bail!("unexpected pairing auth frame {}", accepted.kind);
+    }
+    Ok(())
+}
+
 fn generate_nonce() -> Result<String> {
     let mut nonce = [0u8; 32];
     getrandom::fill(&mut nonce).map_err(|error| anyhow!("generate pairing nonce: {error}"))?;
@@ -529,6 +658,90 @@ mod tests {
             proof,
             pairing_proof("secret-a", "pairing-1", "client-a", "server-b").expect("proof")
         );
+    }
+
+    #[tokio::test]
+    async fn connect_ticket_opens_authenticated_stream() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("cmx.sock");
+        let listener = UnixListener::bind(&socket_path)?;
+        let unix_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let mut input = [0u8; 4];
+            socket.read_exact(&mut input).await?;
+            assert_eq!(&input, b"ping");
+            socket.write_all(b"pong").await?;
+            Result::<()>::Ok(())
+        });
+
+        let pairing = BridgePairingOptions {
+            pairing_id: "pairing-1".into(),
+            secret: "shared-secret-from-rivet".into(),
+            rivet_endpoint: "https://rivet.example.test".into(),
+            stack_project_id: "stack-project".into(),
+            expires_at_unix: 1_800_000_000,
+        };
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let encoded_ticket = BridgeTicket::new(server.watch_addr().get(), pairing.ticket_auth())
+            .encode()
+            .expect("encode ticket");
+        let server_task = tokio::spawn({
+            let socket_path = socket_path.clone();
+            let server = server.clone();
+            let pairing = pairing.clone();
+            async move {
+                let incoming = server.accept().await.context("accept iroh")?;
+                proxy_incoming(incoming, socket_path, Some(pairing)).await
+            }
+        });
+
+        let mut client = connect_encoded_ticket(
+            &encoded_ticket,
+            BridgeRelayMode::Disabled,
+            Some(pairing.secret.clone()),
+        )
+        .await?;
+        client.send.write_all(b"ping").await?;
+        let mut output = [0u8; 4];
+        client.recv.read_exact(&mut output).await?;
+        assert_eq!(&output, b"pong");
+
+        client.endpoint.close().await;
+        server.close().await;
+        unix_server.await??;
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn connect_ticket_rejects_missing_pairing_secret_before_network_connect() -> Result<()> {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let ticket = BridgeTicket::new(
+            endpoint,
+            BridgeTicketAuth::RivetStack {
+                pairing_id: "pairing-1".into(),
+                rivet_endpoint: "https://rivet.example.test".into(),
+                stack_project_id: "stack-project".into(),
+                expires_at_unix: 1_800_000_000,
+            },
+        );
+
+        let error = match connect_ticket(BridgeClientOptions {
+            ticket,
+            relay_mode: BridgeRelayMode::Disabled,
+            pairing_secret: None,
+        })
+        .await
+        {
+            Ok(_) => bail!("missing pairing secret should fail before dialing"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("missing pairing secret"));
+        Ok(())
     }
 
     #[tokio::test]

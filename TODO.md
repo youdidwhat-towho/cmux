@@ -20,6 +20,7 @@
 - [x] Keep the iPad terminal inside the split-view detail column and resize the Ghostty surface above the software keyboard/accessory bar
 - [x] Visually dogfood one shared shell across iPhone simulator, iPad simulator, and `cmx attach`, including the `lawrence in ~/fun/cmux-cli on main λ` prompt and iPhone-typed output appearing in cmux-tmux
 - [x] Verify Rust daemon integration coverage for `Hello`/`PtyBytes`/`Input`, native `libghostty` PTY byte streaming, native layout resize, attached native client layouts, and the rail/bounds resize helper
+- [x] Add a reusable Rust iroh client connector that decodes bridge tickets, proves Rivet pairing-secret possession, and opens an authenticated cmx stream for the future iOS binding
 - [ ] Replace WebSocket dev route with real iroh transport for production tickets
 - [ ] Add committed iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output in CI
 - [ ] Replace demo node/workspace source with Stack Auth + Rivet signed-in hive discovery
