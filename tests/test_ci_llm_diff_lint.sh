@@ -46,6 +46,24 @@ if ! grep -Fq '"summary": "clean"' "$TMP_DIR/clean.json"; then
   exit 1
 fi
 
+printf -v LONG_SUMMARY '%*s' 360 ''
+LONG_SUMMARY="${LONG_SUMMARY// /x}"
+LONG_RESPONSE="$(printf '{"rule_id":"rule","violated":true,"severity":"failure","summary":"%s","findings":[]}' "$LONG_SUMMARY")"
+if bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$LONG_RESPONSE" > "$TMP_DIR/long-summary.out" 2>&1; then
+  echo "expected long summary failure mock response to fail" >&2
+  exit 1
+fi
+
+EXPECTED_TRUNCATED_SUMMARY="$(printf '%.297s...' "$LONG_SUMMARY")"
+if ! grep -Fq "\"summary\": \"$EXPECTED_TRUNCATED_SUMMARY\"" "$TMP_DIR/long-summary.out"; then
+  echo "expected model summary to be truncated" >&2
+  cat "$TMP_DIR/long-summary.out" >&2
+  exit 1
+fi
+
 CLEAN_WITH_FINDING='{"rule_id":"rule","violated":false,"severity":"failure","summary":"clean","findings":[{"file":"Sources/Foo.swift","line":2,"excerpt":"print(\"bad\")","why":"stale finding","confidence":"high"}]}'
 bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \

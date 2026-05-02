@@ -14,8 +14,9 @@ const DEFAULT_MODELS: Record<string, string> = {
   "google-vertex": "gemini-3-flash-preview",
   "openai-compatible": "model",
 };
-const DEFAULT_MAX_TOKENS = 4096;
+const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_MAX_DIFF_BYTES = 5_000_000;
+const MAX_SUMMARY_CHARS = 300;
 
 type Severity = "none" | "warning" | "failure";
 type Finding = {
@@ -230,6 +231,14 @@ function redactSecrets(text: string): string {
   return redacted;
 }
 
+function normalizeSummary(text: string): string {
+  const normalized = redactSecrets(text).replace(/\s+/g, " ").trim();
+  if (normalized.length <= MAX_SUMMARY_CHARS) {
+    return normalized;
+  }
+  return `${normalized.slice(0, MAX_SUMMARY_CHARS - 3).trimEnd()}...`;
+}
+
 function changedFiles(diff: string): string[] {
   const files = new Set<string>();
   for (const match of diff.matchAll(/^diff --git a\/(.*?) b\/(.*?)$/gm)) {
@@ -311,7 +320,7 @@ function missingKeyResult(args: Args, ruleId: string, envName: string): LintResu
     model: args.model,
     violated: false,
     severity: "none",
-    summary: redactSecrets(`${envName} is not set, skipped.`),
+    summary: normalizeSummary(`${envName} is not set, skipped.`),
     findings: [],
   };
 }
@@ -323,7 +332,7 @@ function skippedResult(args: Args, ruleId: string, summary: string): LintResult 
     model: args.model,
     violated: false,
     severity: "none",
-    summary: redactSecrets(summary),
+    summary: normalizeSummary(summary),
     findings: [],
   };
 }
@@ -335,7 +344,7 @@ function failureResult(args: Args, ruleId: string, summary: string): LintResult 
     model: args.model,
     violated: true,
     severity: "failure",
-    summary: redactSecrets(summary),
+    summary: normalizeSummary(summary),
     findings: [],
   };
 }
@@ -368,7 +377,7 @@ function normalizeResult(args: Args, ruleId: string, parsed: z.infer<typeof mode
     model: args.model,
     violated,
     severity,
-    summary: redactSecrets(String(parsed.summary || (violated ? "Rule violated." : "No violation found."))),
+    summary: normalizeSummary(String(parsed.summary || (violated ? "Rule violated." : "No violation found."))),
     findings,
   };
 }
