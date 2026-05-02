@@ -5,6 +5,7 @@ struct CmxBridgeTicket: Decodable, Equatable {
     let alpn: String
     let endpoint: CmxEndpointAddr
     let auth: CmxBridgeTicketAuth?
+    let node: CmxBridgeTicketNode?
 
     var webSocketURL: URL? {
         endpoint.addrs.lazy.compactMap(\.webSocketURL).first
@@ -17,6 +18,13 @@ struct CmxBridgeTicket: Decodable, Equatable {
         else { return nil }
         return item.value
     }
+}
+
+struct CmxBridgeTicketNode: Decodable, Equatable {
+    let id: String?
+    let name: String
+    let subtitle: String?
+    let kind: String?
 }
 
 struct CmxEndpointAddr: Decodable, Equatable {

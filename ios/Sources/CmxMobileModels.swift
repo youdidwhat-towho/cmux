@@ -8,6 +8,55 @@ struct CmxHiveNode: Identifiable, Equatable {
     var isOnline: Bool
 }
 
+enum CmxHiveNodeFactory {
+    static func connectedNode(for ticket: CmxBridgeTicket) -> CmxHiveNode {
+        let nodeKey = ticket.node?.id ?? ticket.endpoint.id
+        let endpoint = ticket.endpoint.id
+        let fallbackSubtitle = endpoint.count > 12 ? "\(endpoint.prefix(6))...\(endpoint.suffix(6))" : endpoint
+        return CmxHiveNode(
+            id: stableNodeID(for: nodeKey),
+            name: ticket.node?.name.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+                ?? String(localized: "node.connected.name", defaultValue: "cmx node"),
+            subtitle: ticket.node?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+                ?? fallbackSubtitle.nonEmpty
+                ?? String(localized: "node.connected.subtitle", defaultValue: "connected"),
+            symbolName: symbolName(for: ticket.node?.kind),
+            isOnline: true
+        )
+    }
+
+    private static func stableNodeID(for value: String) -> UInt64 {
+        let bytes = value.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "cmx-node"
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in bytes.utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 1_099_511_628_211
+        }
+        return hash == 0 ? 1 : hash
+    }
+
+    private static func symbolName(for kind: String?) -> String {
+        switch kind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "macbook", "laptop":
+            return "laptopcomputer"
+        case "macmini", "mac-mini", "mini":
+            return "macmini"
+        case "mac", "desktop":
+            return "desktopcomputer"
+        case "linux", "server":
+            return "server.rack"
+        default:
+            return "terminal"
+        }
+    }
+}
+
+private extension String {
+    var nonEmpty: String? {
+        isEmpty ? nil : self
+    }
+}
+
 struct CmxWorkspace: Identifiable, Equatable {
     let id: UInt64
     var nodeID: UInt64

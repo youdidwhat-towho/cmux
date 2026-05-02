@@ -30,12 +30,16 @@ Current implementation status:
 - Rust native mode now supports two renderer contracts: existing `server_grid` clients still receive `TerminalGridSnapshot`; iOS `libghostty` clients receive bounded PTY replay plus live `PtyBytes`, so actual libghostty/GhosttyKit owns terminal parsing, themes, colors, cursor state, and input echo.
 - The simulator dogfood path connects to `cmx server --ws-bind 0.0.0.0:8787 --auth-token dev` with a direct development ticket and verifies typed input renders back through Ghostty.
 - The home screen now uses an iMessage-style workspace inbox shell with node pins and full-width conversation rows. The data source is still demo state until Stack Auth and Rivet hive discovery land.
+- The rail/resize bounds helper from the old iOS branch lives at `scripts/tui-terminal-bounds-check.sh`, and the Rust tmux dogfood suite verifies the helper tracks the maximum pane size after resize.
+- Iroh bridge tickets can now include non-secret node metadata (`id`, `name`, `subtitle`, `kind`). iOS uses that metadata for the connected node row, falling back to the endpoint id until Stack Auth and Rivet hive discovery are wired.
 
 The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 
 ## iroh transport
 
 `cmux-iroh-bridge` exposes a local `cmx` Unix socket over iroh with ALPN `/cmux/cmx/3`. The bridge prints a JSON ticket containing the iroh endpoint address and auth metadata, and the iOS app parses that ticket before connecting.
+
+Tickets may also include node metadata for UI discovery. That metadata is intentionally non-secret and is not an authorization decision. Production auth still comes from Stack identity plus a Rivet-delivered pairing secret proven over the iroh stream before the bridge proxies the local `cmx` socket.
 
 This is not SSH and not a WebSocket tunnel. The transport is iroh's QUIC endpoint with iroh discovery/relay behavior. The application protocol above that stream remains the `cmx` MessagePack protocol, starting with TUI mode for the first iOS sync milestone.
 

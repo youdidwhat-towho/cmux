@@ -235,6 +235,18 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "ワークスペース" } }
       }
     },
+    "node.connected.name" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "cmx node" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "cmx ノード" } }
+      }
+    },
+    "node.connected.subtitle" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "connected" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "接続済み" } }
+      }
+    },
     "node.unknown.name" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Unknown Node" } },

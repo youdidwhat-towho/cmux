@@ -13,7 +13,9 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
-use cmux_iroh_bridge::{BridgeOptions, BridgePairingOptions, BridgeRelayMode, serve};
+use cmux_iroh_bridge::{
+    BridgeNodeInfo, BridgeOptions, BridgePairingOptions, BridgeRelayMode, serve,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "cmux-iroh-bridge", about = "Expose a cmx socket over iroh")]
@@ -32,6 +34,14 @@ struct Cli {
     stack_project_id: Option<String>,
     #[arg(long, env = "CMUX_PAIRING_EXPIRES_AT_UNIX")]
     expires_at_unix: Option<u64>,
+    #[arg(long, env = "CMUX_NODE_ID")]
+    node_id: Option<String>,
+    #[arg(long, env = "CMUX_NODE_NAME")]
+    node_name: Option<String>,
+    #[arg(long, env = "CMUX_NODE_SUBTITLE")]
+    node_subtitle: Option<String>,
+    #[arg(long, env = "CMUX_NODE_KIND")]
+    node_kind: Option<String>,
     #[arg(long)]
     allow_insecure_direct: bool,
 }
@@ -56,12 +66,36 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let cli = Cli::parse();
     let pairing = pairing_options(&cli)?;
+    let node = node_info(&cli)?;
     serve(BridgeOptions {
         cmx_socket_path: cli.socket,
         relay_mode: cli.relay.into(),
         pairing,
+        node,
     })
     .await
+}
+
+fn node_info(cli: &Cli) -> Result<Option<BridgeNodeInfo>> {
+    let has_node = cli.node_id.is_some()
+        || cli.node_name.is_some()
+        || cli.node_subtitle.is_some()
+        || cli.node_kind.is_some();
+    if !has_node {
+        return Ok(None);
+    }
+
+    let node = BridgeNodeInfo {
+        id: cli.node_id.clone(),
+        name: cli
+            .node_name
+            .clone()
+            .context("missing --node-name / CMUX_NODE_NAME")?,
+        subtitle: cli.node_subtitle.clone(),
+        kind: cli.node_kind.clone(),
+    };
+    node.validate()?;
+    Ok(Some(node))
 }
 
 fn pairing_options(cli: &Cli) -> Result<Option<BridgePairingOptions>> {

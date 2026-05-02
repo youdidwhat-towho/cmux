@@ -260,16 +260,8 @@ final class CmxConnectionStore: ObservableObject {
     }
 
     private func updateConnectedNode(for ticket: CmxBridgeTicket) {
-        let endpoint = ticket.endpoint.id
-        let suffix = endpoint.count > 12 ? "\(endpoint.prefix(6))...\(endpoint.suffix(6))" : endpoint
         nodes = [
-            CmxHiveNode(
-                id: 1,
-                name: String(localized: "demo.node.macbook", defaultValue: "MacBook Pro"),
-                subtitle: suffix,
-                symbolName: "laptopcomputer",
-                isOnline: true
-            ),
+            CmxHiveNodeFactory.connectedNode(for: ticket),
         ]
     }
 

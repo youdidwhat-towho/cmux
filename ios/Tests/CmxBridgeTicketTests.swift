@@ -53,6 +53,74 @@ final class CmxBridgeTicketTests: XCTestCase {
         }
     }
 
+    func testTicketDecodesNodeMetadataForHiveDiscovery() throws {
+        let ticket = try CmxBridgeTicketParser.parse(
+            """
+            {
+              "version": 1,
+              "alpn": "/cmux/cmx/3",
+              "endpoint": {
+                "id": "endpoint-public-key",
+                "addrs": [
+                  { "Custom": "ws://127.0.0.1:8787?token=sekrit" }
+                ]
+              },
+              "auth": {
+                "mode": "rivet_stack",
+                "pairing_id": "pairing-1",
+                "rivet_endpoint": "https://rivet.example.test",
+                "stack_project_id": "stack-project",
+                "expires_at_unix": 4000000000
+              },
+              "node": {
+                "id": "node-mbp",
+                "name": "Lawrence MacBook Pro",
+                "subtitle": "local dev node",
+                "kind": "macbook"
+              }
+            }
+            """
+        )
+
+        XCTAssertEqual(
+            ticket.node,
+            CmxBridgeTicketNode(
+                id: "node-mbp",
+                name: "Lawrence MacBook Pro",
+                subtitle: "local dev node",
+                kind: "macbook"
+            )
+        )
+        let node = CmxHiveNodeFactory.connectedNode(for: ticket)
+        XCTAssertEqual(node.name, "Lawrence MacBook Pro")
+        XCTAssertEqual(node.subtitle, "local dev node")
+        XCTAssertEqual(node.symbolName, "laptopcomputer")
+        XCTAssertTrue(node.isOnline)
+    }
+
+    func testTicketWithoutNodeMetadataUsesStableEndpointFallbackNode() throws {
+        let ticket = try CmxBridgeTicketParser.parse(
+            """
+            {
+              "version": 1,
+              "alpn": "/cmux/cmx/3",
+              "endpoint": {
+                "id": "abcdefghijklmnopqrstuvwxyz",
+                "addrs": []
+              },
+              "auth": { "mode": "direct" }
+            }
+            """
+        )
+
+        let first = CmxHiveNodeFactory.connectedNode(for: ticket)
+        let second = CmxHiveNodeFactory.connectedNode(for: ticket)
+        XCTAssertEqual(first.id, second.id)
+        XCTAssertEqual(first.name, "cmx node")
+        XCTAssertEqual(first.subtitle, "abcdef...uvwxyz")
+        XCTAssertEqual(first.symbolName, "terminal")
+    }
+
     func testRivetStackTicketRejectsExpiredPairing() {
         XCTAssertThrowsError(
             try CmxBridgeTicketParser.parse(

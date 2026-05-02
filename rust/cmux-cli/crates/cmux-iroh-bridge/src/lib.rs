@@ -31,6 +31,8 @@ pub struct BridgeTicket {
     pub alpn: String,
     pub endpoint: EndpointAddr,
     pub auth: BridgeTicketAuth,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<BridgeNodeInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -45,15 +47,58 @@ pub enum BridgeTicketAuth {
     },
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BridgeNodeInfo {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+}
+
+impl BridgeNodeInfo {
+    pub fn validate(&self) -> Result<()> {
+        if self.name.trim().is_empty() {
+            bail!("missing node name");
+        }
+        if self
+            .id
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("empty node id");
+        }
+        if self
+            .kind
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty())
+        {
+            bail!("empty node kind");
+        }
+        Ok(())
+    }
+}
+
 impl BridgeTicket {
     pub const VERSION: u32 = 1;
 
     pub fn new(endpoint: EndpointAddr, auth: BridgeTicketAuth) -> Self {
+        Self::new_with_node(endpoint, auth, None)
+    }
+
+    pub fn new_with_node(
+        endpoint: EndpointAddr,
+        auth: BridgeTicketAuth,
+        node: Option<BridgeNodeInfo>,
+    ) -> Self {
         Self {
             version: Self::VERSION,
             alpn: String::from_utf8_lossy(CMUX_IROH_ALPN).into_owned(),
             endpoint,
             auth,
+            node,
         }
     }
 
@@ -70,6 +115,9 @@ impl BridgeTicket {
             bail!("unsupported bridge ALPN {}", ticket.alpn);
         }
         ticket.auth.validate()?;
+        if let Some(node) = &ticket.node {
+            node.validate()?;
+        }
         Ok(ticket)
     }
 }
@@ -107,6 +155,7 @@ pub struct BridgeOptions {
     pub cmx_socket_path: PathBuf,
     pub relay_mode: BridgeRelayMode,
     pub pairing: Option<BridgePairingOptions>,
+    pub node: Option<BridgeNodeInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -156,6 +205,9 @@ pub async fn serve(options: BridgeOptions) -> Result<()> {
     if let Some(pairing) = &options.pairing {
         pairing.validate()?;
     }
+    if let Some(node) = &options.node {
+        node.validate()?;
+    }
 
     let endpoint = Endpoint::builder(presets::N0)
         .alpns(vec![CMUX_IROH_ALPN.to_vec()])
@@ -169,7 +221,10 @@ pub async fn serve(options: BridgeOptions) -> Result<()> {
         .as_ref()
         .map(BridgePairingOptions::ticket_auth)
         .unwrap_or(BridgeTicketAuth::Direct);
-    println!("{}", BridgeTicket::new(addr, ticket_auth).encode()?);
+    println!(
+        "{}",
+        BridgeTicket::new_with_node(addr, ticket_auth, options.node.clone()).encode()?
+    );
 
     while let Some(incoming) = endpoint.accept().await {
         let socket_path = options.cmx_socket_path.clone();
@@ -385,6 +440,50 @@ mod tests {
         let encoded = ticket.encode().expect("encode");
         let decoded = BridgeTicket::decode(&encoded).expect("decode");
         assert_eq!(decoded, ticket);
+    }
+
+    #[test]
+    fn ticket_roundtrips_node_metadata_without_secret_material() {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let ticket = BridgeTicket::new_with_node(
+            endpoint,
+            BridgeTicketAuth::RivetStack {
+                pairing_id: "pairing-1".into(),
+                rivet_endpoint: "https://rivet.example.test".into(),
+                stack_project_id: "stack-project".into(),
+                expires_at_unix: 1_800_000_000,
+            },
+            Some(BridgeNodeInfo {
+                id: Some("node-mbp".into()),
+                name: "MacBook Pro".into(),
+                subtitle: Some("local dev node".into()),
+                kind: Some("macbook".into()),
+            }),
+        );
+
+        let encoded = ticket.encode().expect("encode");
+        assert!(encoded.contains("\"node\""));
+        assert!(encoded.contains("\"node-mbp\""));
+        assert!(!encoded.contains("secret"));
+        assert_eq!(BridgeTicket::decode(&encoded).expect("decode"), ticket);
+    }
+
+    #[test]
+    fn ticket_rejects_empty_node_metadata() {
+        let endpoint = EndpointAddr::new(iroh::SecretKey::generate().public());
+        let ticket = BridgeTicket::new_with_node(
+            endpoint,
+            BridgeTicketAuth::Direct,
+            Some(BridgeNodeInfo {
+                id: Some(String::new()),
+                name: "MacBook Pro".into(),
+                subtitle: None,
+                kind: None,
+            }),
+        );
+        let encoded = ticket.encode().expect("encode");
+        let error = BridgeTicket::decode(&encoded).expect_err("empty node id should fail");
+        assert!(error.to_string().contains("empty node id"));
     }
 
     #[test]
