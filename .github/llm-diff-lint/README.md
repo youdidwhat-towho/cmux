@@ -26,6 +26,7 @@ Optional repository variables:
 - `GOOGLE_VERTEX_PROJECT`, required for Gemini unless `GOOGLE_CLOUD_PROJECT` is set in the environment
 - `GOOGLE_VERTEX_LOCATION`, defaults to `global`
 - `LLM_DIFF_LINT_MAX_TOKENS`, defaults to `8192`
+- `LLM_DIFF_LINT_RETRIES`, defaults to `0`
 - `LLM_DIFF_LINT_THINKING`, defaults to `disabled` for DeepSeek
 - `LLM_DIFF_LINT_MAX_DIFF_BYTES`, defaults to `5000000`
 - `DEEPSEEK_BASE_URL`, optional DeepSeek override
@@ -39,6 +40,32 @@ For local Gemini runs, authenticate Application Default Credentials first:
 ```bash
 gcloud auth application-default login
 ```
+
+## Cost Model
+
+Every provider/rule job sends the full diff plus one rule. Estimated input tokens are roughly:
+
+```text
+(diff bytes / 4 + rule tokens + prompt overhead) * provider count * rule count
+```
+
+Current published prices as of 2026-05-02:
+
+| Model | Input, cache miss | Input, cache hit | Output | Notes |
+| --- | ---: | ---: | ---: | --- |
+| `deepseek-v4-pro` | $1.74 / 1M | $0.0145 / 1M | $3.48 / 1M | DeepSeek official list price |
+| `deepseek-v4-pro` | $0.435 / 1M | $0.003625 / 1M | $0.87 / 1M | DeepSeek promotional price through 2026-05-31 |
+| `deepseek-v4-flash` | $0.14 / 1M | $0.0028 / 1M | $0.28 / 1M | Cheaper DeepSeek option, not current production model |
+| `gemini-3-flash-preview` | $0.50 / 1M | provider dependent | $3.00 / 1M | Current latest Gemini Flash model used by this workflow |
+| `gemini-2.5-flash-lite` | $0.10 / 1M | $0.01 / 1M | $0.40 / 1M | Cheapest generally available Gemini Flash-Lite model |
+
+Sources: [DeepSeek API pricing](https://api-docs.deepseek.com/quick_start/pricing), [Vertex AI Gemini pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing), and [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing).
+
+With cache misses, `deepseek-v4-pro` is currently cheaper than `gemini-3-flash-preview` during the DeepSeek promotion, but it is not cheaper than `gemini-2.5-flash-lite`. After the promotion, DeepSeek Pro is materially more expensive than both Flash options.
+
+Assume cache miss for planning unless provider billing proves otherwise. PR diffs are usually unique, and this prompt is rule-first, so repeated rule calls should not rely on prefix-cache hits.
+
+Retries repeat the full request and can multiply cost. Keep `LLM_DIFF_LINT_RETRIES=0` for required checks unless provider errors are transient and measured. One retry is reasonable for advisory shadow runs, but it did not fix repeated Gemini structured-output failures in the 2026-05-02 comparison.
 
 ## Rule Size
 

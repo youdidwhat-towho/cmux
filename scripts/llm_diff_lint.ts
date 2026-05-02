@@ -16,6 +16,7 @@ const DEFAULT_MODELS: Record<string, string> = {
 };
 const DEFAULT_MAX_TOKENS = 8192;
 const DEFAULT_MAX_DIFF_BYTES = 5_000_000;
+const DEFAULT_RETRIES = 0;
 const MAX_SUMMARY_CHARS = 300;
 
 type Severity = "none" | "warning" | "failure";
@@ -46,6 +47,7 @@ type Args = {
   maxTokens: number;
   timeout: number;
   maxDiffBytes: number;
+  retries: number;
   output?: string;
   skipIfMissingKey: boolean;
   mockResponse?: string;
@@ -103,6 +105,7 @@ function parseArgs(argv: string[]): Args {
     maxTokens: Number(process.env.LLM_DIFF_LINT_MAX_TOKENS || process.env.DEEPSEEK_MAX_TOKENS || DEFAULT_MAX_TOKENS),
     timeout: Number(process.env.LLM_DIFF_LINT_TIMEOUT || process.env.DEEPSEEK_TIMEOUT || 240),
     maxDiffBytes: Number(process.env.LLM_DIFF_LINT_MAX_DIFF_BYTES || DEFAULT_MAX_DIFF_BYTES),
+    retries: Number(process.env.LLM_DIFF_LINT_RETRIES || DEFAULT_RETRIES),
     skipIfMissingKey: false,
     thinking: process.env.LLM_DIFF_LINT_THINKING || process.env.DEEPSEEK_THINKING || "disabled",
   };
@@ -148,6 +151,9 @@ function parseArgs(argv: string[]): Args {
       case "--max-diff-bytes":
         args.maxDiffBytes = Number(next());
         break;
+      case "--retries":
+        args.retries = Number(next());
+        break;
       case "--output":
         args.output = next();
         break;
@@ -180,6 +186,9 @@ function parseArgs(argv: string[]): Args {
   }
   if (!Number.isFinite(args.maxDiffBytes) || args.maxDiffBytes < 0) {
     throw new Error(`invalid max diff byte value: ${args.maxDiffBytes}`);
+  }
+  if (!Number.isInteger(args.retries) || args.retries < 0) {
+    throw new Error(`invalid retry value: ${args.retries}`);
   }
   return { ...args, thinking: normalizeThinking(args.thinking) };
 }
@@ -516,6 +525,29 @@ async function runModel(args: Args, ruleId: string, ruleText: string, diff: stri
   return normalizeResult(args, ruleId, result.object);
 }
 
+function isRetryableModelError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return !message.includes(" is required");
+}
+
+async function runModelWithRetries(args: Args, ruleId: string, ruleText: string, diff: string): Promise<LintResult> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= args.retries; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        notice(`${args.provider}/${ruleId}: retry ${attempt} of ${args.retries}`);
+      }
+      return await runModel(args, ruleId, ruleText, diff);
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableModelError(error)) {
+        throw error;
+      }
+    }
+  }
+  throw lastError;
+}
+
 async function main(argv: string[]): Promise<number> {
   let args: Args;
   try {
@@ -568,7 +600,7 @@ async function main(argv: string[]): Promise<number> {
     if (args.mockResponse) {
       result = normalizeResult(args, ruleId, modelResultSchema.parse(JSON.parse(args.mockResponse)));
     } else {
-      result = await runModel(args, ruleId, ruleText, diff);
+      result = await runModelWithRetries(args, ruleId, ruleText, diff);
     }
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);

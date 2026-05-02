@@ -98,6 +98,7 @@ jobs:
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
           LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '8192' }}
           LLM_DIFF_LINT_PROVIDER: deepseek
+          LLM_DIFF_LINT_RETRIES: ${{ vars.LLM_DIFF_LINT_RETRIES || '0' }}
           LLM_DIFF_LINT_THINKING: ${{ vars.LLM_DIFF_LINT_THINKING || vars.DEEPSEEK_THINKING || 'disabled' }}
         shell: bash
         run: |
@@ -196,6 +197,7 @@ jobs:
           LLM_DIFF_LINT_MAX_DIFF_BYTES: ${{ vars.LLM_DIFF_LINT_MAX_DIFF_BYTES || '5000000' }}
           LLM_DIFF_LINT_MAX_TOKENS: ${{ vars.LLM_DIFF_LINT_MAX_TOKENS || vars.DEEPSEEK_MAX_TOKENS || '8192' }}
           LLM_DIFF_LINT_PROVIDER: google-vertex
+          LLM_DIFF_LINT_RETRIES: ${{ vars.LLM_DIFF_LINT_RETRIES || '0' }}
         shell: bash
         run: |
           set -euo pipefail

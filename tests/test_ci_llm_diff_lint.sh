@@ -140,6 +140,21 @@ fi
 
 if bun scripts/llm_diff_lint.ts \
   --rule "$RULE" \
+  --diff-file "$DIFF" \
+  --mock-response "$CLEAN" \
+  --retries -1 > "$TMP_DIR/invalid-retries.out" 2>&1; then
+  echo "expected invalid retry value to fail" >&2
+  exit 1
+fi
+
+if ! grep -Fq 'invalid retry value: -1' "$TMP_DIR/invalid-retries.out"; then
+  echo "expected invalid retry diagnostic" >&2
+  cat "$TMP_DIR/invalid-retries.out" >&2
+  exit 1
+fi
+
+if bun scripts/llm_diff_lint.ts \
+  --rule "$RULE" \
   --diff-file "$TMP_DIR/missing.diff" \
   --output "$TMP_DIR/load-fail.json" \
   --mock-response "$CLEAN" > "$TMP_DIR/load-fail.out" 2>&1; then
