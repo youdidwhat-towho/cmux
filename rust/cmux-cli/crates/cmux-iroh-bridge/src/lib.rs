@@ -9,6 +9,9 @@
     )
 )]
 
+pub mod ffi;
+
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -23,6 +26,7 @@ use tokio::net::UnixStream;
 
 pub const CMUX_IROH_ALPN: &[u8] = b"/cmux/cmx/3";
 const MAX_AUTH_FRAME_BYTES: usize = 4096;
+const MAX_CMX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -216,6 +220,16 @@ pub struct BridgeClientConnection {
     pub recv: iroh::endpoint::RecvStream,
 }
 
+impl BridgeClientConnection {
+    pub async fn write_payload(&mut self, payload: &[u8]) -> Result<()> {
+        write_cmx_payload(&mut self.send, payload).await
+    }
+
+    pub async fn read_payload(&mut self) -> Result<Option<Vec<u8>>> {
+        read_cmx_payload(&mut self.recv).await
+    }
+}
+
 pub async fn connect_encoded_ticket(
     encoded_ticket: &str,
     relay_mode: BridgeRelayMode,
@@ -273,6 +287,43 @@ pub async fn connect_ticket(options: BridgeClientOptions) -> Result<BridgeClient
     })
 }
 
+pub async fn write_cmx_payload<W>(writer: &mut W, payload: &[u8]) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let len = u32::try_from(payload.len()).context("cmx frame is too large")?;
+    writer.write_all(&len.to_be_bytes()).await?;
+    writer.write_all(payload).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
+pub async fn read_cmx_payload<R>(reader: &mut R) -> Result<Option<Vec<u8>>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut len_bytes = [0u8; 4];
+    if !read_exact_or_eof(reader, &mut len_bytes)
+        .await
+        .context("read cmx frame length")?
+    {
+        return Ok(None);
+    }
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    if len > MAX_CMX_FRAME_BYTES {
+        bail!("cmx frame is too large");
+    }
+
+    let mut payload = vec![0u8; len];
+    if let Err(error) = reader.read_exact(&mut payload).await {
+        if error.kind() == ErrorKind::UnexpectedEof {
+            bail!("cmx frame payload truncated");
+        }
+        return Err(error).context("read cmx frame payload");
+    }
+    Ok(Some(payload))
+}
+
 pub async fn serve(options: BridgeOptions) -> Result<()> {
     if let Some(pairing) = &options.pairing {
         pairing.validate()?;
@@ -310,6 +361,24 @@ pub async fn serve(options: BridgeOptions) -> Result<()> {
 
     endpoint.close().await;
     Ok(())
+}
+
+async fn read_exact_or_eof<R>(reader: &mut R, bytes: &mut [u8]) -> Result<bool>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let read = reader.read(&mut bytes[offset..]).await?;
+        if read == 0 {
+            if offset == 0 {
+                return Ok(false);
+            }
+            bail!("cmx frame length truncated");
+        }
+        offset += read;
+    }
+    Ok(true)
 }
 
 async fn proxy_incoming(
@@ -709,6 +778,66 @@ mod tests {
         let mut output = [0u8; 4];
         client.recv.read_exact(&mut output).await?;
         assert_eq!(&output, b"pong");
+
+        client.endpoint.close().await;
+        server.close().await;
+        unix_server.await??;
+        server_task.abort();
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn framed_client_roundtrips_payload_over_authenticated_stream() -> Result<()> {
+        let dir = tempfile::tempdir()?;
+        let socket_path = dir.path().join("cmx.sock");
+        let listener = UnixListener::bind(&socket_path)?;
+        let unix_server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await?;
+            let input = read_cmx_payload(&mut socket)
+                .await?
+                .context("expected framed payload")?;
+            assert_eq!(input, b"hello from ios");
+            write_cmx_payload(&mut socket, b"hello from cmx").await?;
+            Result::<()>::Ok(())
+        });
+
+        let pairing = BridgePairingOptions {
+            pairing_id: "pairing-1".into(),
+            secret: "shared-secret-from-rivet".into(),
+            rivet_endpoint: "https://rivet.example.test".into(),
+            stack_project_id: "stack-project".into(),
+            expires_at_unix: 1_800_000_000,
+        };
+        let server = Endpoint::builder(presets::Minimal)
+            .alpns(vec![CMUX_IROH_ALPN.to_vec()])
+            .relay_mode(RelayMode::Disabled)
+            .bind()
+            .await?;
+        let encoded_ticket = BridgeTicket::new(server.watch_addr().get(), pairing.ticket_auth())
+            .encode()
+            .expect("encode ticket");
+        let server_task = tokio::spawn({
+            let socket_path = socket_path.clone();
+            let server = server.clone();
+            let pairing = pairing.clone();
+            async move {
+                let incoming = server.accept().await.context("accept iroh")?;
+                proxy_incoming(incoming, socket_path, Some(pairing)).await
+            }
+        });
+
+        let mut client = connect_encoded_ticket(
+            &encoded_ticket,
+            BridgeRelayMode::Disabled,
+            Some(pairing.secret.clone()),
+        )
+        .await?;
+        client.write_payload(b"hello from ios").await?;
+        let output = client
+            .read_payload()
+            .await?
+            .context("expected reply payload")?;
+        assert_eq!(output, b"hello from cmx");
 
         client.endpoint.close().await;
         server.close().await;

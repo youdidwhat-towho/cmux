@@ -26,6 +26,11 @@ targets:
       - Sources
       - Resources
       - Assets.xcassets
+    preBuildScripts:
+      - name: Build Rust iroh bridge
+        script: scripts/build-iroh-bridge.sh
+        outputFiles:
+          - "$(DERIVED_FILE_DIR)/libcmux_iroh_bridge.a"
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.cmux.ios
@@ -43,12 +48,15 @@ targets:
         CLANG_CXX_LIBRARY: libc++
         HEADER_SEARCH_PATHS[sdk=iphoneos*]:
           - "$(inherited)"
+          - "$(SRCROOT)/Sources"
           - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64/Headers"
         HEADER_SEARCH_PATHS[sdk=iphonesimulator*]:
           - "$(inherited)"
+          - "$(SRCROOT)/Sources"
           - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64-simulator/Headers"
         OTHER_LDFLAGS[sdk=iphoneos*]:
           - "$(inherited)"
+          - "$(DERIVED_FILE_DIR)/libcmux_iroh_bridge.a"
           - "-lc++"
           - "-framework"
           - "CoreGraphics"
@@ -60,9 +68,16 @@ targets:
           - "Network"
           - "-framework"
           - "QuartzCore"
+          - "-framework"
+          - "Security"
+          - "-framework"
+          - "SystemConfiguration"
+          - "-framework"
+          - "CFNetwork"
           - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64/libghostty-internal-fat.a"
         OTHER_LDFLAGS[sdk=iphonesimulator*]:
           - "$(inherited)"
+          - "$(DERIVED_FILE_DIR)/libcmux_iroh_bridge.a"
           - "-lc++"
           - "-framework"
           - "CoreGraphics"
@@ -74,6 +89,12 @@ targets:
           - "Network"
           - "-framework"
           - "QuartzCore"
+          - "-framework"
+          - "Security"
+          - "-framework"
+          - "SystemConfiguration"
+          - "-framework"
+          - "CFNetwork"
           - "$(SRCROOT)/../GhosttyKit.xcframework/ios-arm64-simulator/libghostty-internal-fat.a"
     info:
       path: Info.plist

@@ -25,8 +25,8 @@ Current implementation status:
 - iOS renders the terminal with actual libghostty/GhosttyKit.
 - The iOS renderer has unit coverage for unchanged PTY byte forwarding, actual Ghostty surface creation, ANSI output rendering, and outbound typed input.
 - iOS has a local Swift `cmx` MessagePack codec with unit coverage for the TUI wire contract plus native `HelloNative`, `NativeSnapshot`, and `TerminalGridSnapshot` decoding.
-- iOS has the Stack/Rivet pairing auth frame model and HMAC proof algorithm. The Swift proof test shares the Rust bridge vector `w62sYb9esNfmw-GwP36Z2ooce7olwxryi3xdRWVRpHs`, so the eventual iroh client can prove possession of the Rivet-delivered secret before opening the cmx stream.
-- Connected mode uses a real `cmx` WebSocket dev stream. iOS now requests `HelloNative` with `terminal_renderer = libghostty`, applies Rust-owned `NativeSnapshot` state to the workspace UI, sends `NativeInput` scoped to the selected tab, and sends `NativeLayout` for the visible terminal.
+- iOS has the Stack/Rivet pairing auth frame model and HMAC proof algorithm. The Swift proof test shares the Rust bridge vector `w62sYb9esNfmw-GwP36Z2ooce7olwxryi3xdRWVRpHs`, and the Rust iroh client binding uses the Rivet-delivered secret before opening the cmx stream.
+- Connected mode supports both an explicit `cmx` WebSocket dev stream and the production iroh stream. iOS requests `HelloNative` with `terminal_renderer = libghostty`, applies Rust-owned `NativeSnapshot` state to the workspace UI, sends `NativeInput` scoped to the selected tab, and sends `NativeLayout` for the visible terminal.
 - Rust native mode now supports two renderer contracts: existing `server_grid` clients still receive `TerminalGridSnapshot`; iOS `libghostty` clients receive bounded PTY replay plus live `PtyBytes`, so actual libghostty/GhosttyKit owns terminal parsing, themes, colors, cursor state, and input echo.
 - The simulator dogfood path connects to `cmx server --ws-bind 0.0.0.0:8787 --auth-token dev` with a direct development ticket and verifies typed input renders back through Ghostty.
 - The home screen now uses an iMessage-style workspace inbox shell with node pins and full-width conversation rows. The data source is still demo state until Stack Auth and Rivet hive discovery land.
@@ -36,15 +36,16 @@ Current implementation status:
 - iOS fetches and validates the short-lived Rivet pairing secret with the stored Stack Auth session before a `rivet_stack` ticket is allowed to open its transport.
 - The iOS terminal detail now stays inside the iPad split-view detail column and resizes the actual Ghostty surface above the software keyboard/accessory bar. XcodeBuildMCP snapshot verification showed the iPad surface shrink from 1290 px high to 843 px while the keyboard was open, then restore to 1290 px after hiding the keyboard.
 - A direct WebSocket dogfood run launched iPhone and iPad simulators against the same Rust server in `$HOME/fun/cmux-cli` and attached `cmx attach` to the same socket. Both iOS and cmux-tmux showed `lawrence in ~/fun/cmux-cli on main λ`, and typing `echo IOS_PHONE_SYNC_OK` through iPhone rendered `IOS_PHONE_SYNC_OK` in the cmux-tmux TUI.
+- A direct iroh dogfood run launched iPhone simulator tag `irh` with an iroh-only ticket (no WebSocket route). The home screen showed `Lawrence MacBook Pro, iroh dogfood`, opening the workspace showed the shared `lawrence in ~/fun/cmux-cli on main λ` shell, and typing `echo IROH_IOS_FFI_OK` from iOS rendered `IROH_IOS_FFI_OK` through Ghostty.
 - Rust tests now cover the old TUI round trip (`Hello`/`PtyBytes`/`Input`), native `libghostty` PTY byte streaming, native layout resize, attached native client layout reporting, and the rail/bounds helper resize dogfood path.
-- `cmux-iroh-bridge` now exposes a reusable Rust client connector that takes an encoded or decoded bridge ticket, optionally takes the Rivet pairing secret, opens the iroh bidirectional stream, performs the client-side HMAC proof, and returns the authenticated cmx stream. This is the transport core that the iOS binding should call instead of reimplementing the iroh handshake in Swift.
+- `cmux-iroh-bridge` now exposes a reusable Rust client connector and iOS C ABI that takes an encoded bridge ticket, optionally takes the Rivet pairing secret, opens the iroh bidirectional stream, performs the client-side HMAC proof, and frames cmx MessagePack payloads over the authenticated stream.
 - The iOS terminal accessory scroller now carries the terminal action set (Esc, Tab, Enter, Backspace, Delete, arrows, Home/End, PgUp/PgDn, tilde, pipe, Ctrl-C/D/Z/L, zoom) plus one-shot/sticky Ctrl/Alt/Shift modifiers. Connected node metadata infers macOS hosts and swaps the bar to macOS-style `⌃`/`⌥` labels with a Mac-only `⌘` control.
 
-The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
+The WebSocket route remains an explicit dev fallback for local tickets that include `ws://` or `wss://`. Production tickets without a WebSocket route use the Rust iroh client binding.
 
 ## iroh transport
 
-`cmux-iroh-bridge` exposes a local `cmx` Unix socket over iroh with ALPN `/cmux/cmx/3`. The bridge prints a JSON ticket containing the iroh endpoint address and auth metadata, and the iOS app parses that ticket before connecting.
+`cmux-iroh-bridge` exposes a local `cmx` Unix socket over iroh with ALPN `/cmux/cmx/3`. The bridge prints a JSON ticket containing the iroh endpoint address and auth metadata, and the iOS app passes that ticket to the Rust iroh C ABI before sending framed cmx MessagePack payloads.
 
 Tickets may also include node metadata for UI discovery. That metadata is intentionally non-secret and is not an authorization decision. Production auth still comes from Stack identity plus a Rivet-delivered pairing secret proven over the iroh stream before the bridge proxies the local `cmx` socket.
 
@@ -58,7 +59,7 @@ Stack Auth owns user identity. RivetKit carries the short-lived pairing control 
 
 The bridge does not put the pairing secret in the iroh ticket. The ticket advertises the pairing id, Rivet endpoint, Stack project id, and expiration. A client signed in with Stack asks Rivet for the pairing secret, connects over iroh, receives a nonce, and proves possession with an HMAC before the bridge opens the local `cmx` socket. Direct unauthenticated tickets are only for explicit local development.
 
-The iOS side now has the first transport auth pieces: native Stack Auth callback parsing, Keychain persistence, and a Stack-authenticated Rivet pairing-secret client. The Rivet actor/API still needs to be implemented server-side, and the fetched secret still needs to feed the real iroh client once that replaces the WebSocket dogfood route.
+The iOS side now has native Stack Auth callback parsing, Keychain persistence, a Stack-authenticated Rivet pairing-secret client, and a Rust iroh client binding that receives the fetched secret. The Rivet actor/API still needs to be implemented server-side.
 
 RivetKit docs that matter for that future step:
 

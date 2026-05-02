@@ -20,15 +20,18 @@ final class CmxConnectionStore: ObservableObject {
     @Published private var nextOutputChunkID = 1
     private let authSessionStore: CmxStackAuthSessionStore
     private let pairingSecretClient: CmxRivetPairingSecretFetching
-    private var webSocketSession: CmxWebSocketTerminalSession?
+    private let terminalSessionFactory: any CmxTerminalSessionMaking
+    private var terminalSession: (any CmxTerminalSession)?
     private var connectTask: Task<Void, Never>?
 
     init(
         authSessionStore: CmxStackAuthSessionStore = CmxKeychainStackAuthSessionStore(),
-        pairingSecretClient: CmxRivetPairingSecretFetching = CmxRivetPairingSecretClient()
+        pairingSecretClient: CmxRivetPairingSecretFetching = CmxRivetPairingSecretClient(),
+        terminalSessionFactory: any CmxTerminalSessionMaking = CmxDefaultTerminalSessionFactory()
     ) {
         self.authSessionStore = authSessionStore
         self.pairingSecretClient = pairingSecretClient
+        self.terminalSessionFactory = terminalSessionFactory
         stackAuthSession = try? authSessionStore.load()
         if let ticket = CmxLaunchConfiguration.ticket() {
             ticketText = ticket
@@ -83,7 +86,8 @@ final class CmxConnectionStore: ObservableObject {
 
     func connect() {
         do {
-            let parsed = try CmxBridgeTicketParser.parse(ticketText)
+            let rawTicket = ticketText.trimmingCharacters(in: .whitespacesAndNewlines)
+            let parsed = try CmxBridgeTicketParser.parse(rawTicket)
             connectTask?.cancel()
             if parsed.auth?.requiresStackSession == true {
                 guard let stackAuthSession else {
@@ -95,11 +99,15 @@ final class CmxConnectionStore: ObservableObject {
                 isConnecting = true
                 isConnected = false
                 connectTask = Task { @MainActor [weak self] in
-                    await self?.connectWithPairingSecret(ticket: parsed, stackAuthSession: stackAuthSession)
+                    await self?.connectWithPairingSecret(
+                        rawTicket: rawTicket,
+                        ticket: parsed,
+                        stackAuthSession: stackAuthSession
+                    )
                 }
                 return
             }
-            try startTerminalSession(ticket: parsed)
+            try startTerminalSession(rawTicket: rawTicket, ticket: parsed, pairingSecret: nil)
         } catch {
             ticket = nil
             errorText = error.localizedDescription
@@ -131,8 +139,8 @@ final class CmxConnectionStore: ObservableObject {
     func disconnect() {
         connectTask?.cancel()
         connectTask = nil
-        webSocketSession?.disconnect()
-        webSocketSession = nil
+        terminalSession?.disconnect()
+        terminalSession = nil
         isConnecting = false
         isConnected = false
     }
@@ -144,7 +152,7 @@ final class CmxConnectionStore: ObservableObject {
         }
         selectedTerminalID = selectedSpace.terminals.first?.id ?? selectedTerminalID
         if let index = workspaces.firstIndex(where: { $0.id == workspace.id }) {
-            webSocketSession?.sendCommand(.selectWorkspace(index: index))
+            terminalSession?.sendCommand(.selectWorkspace(index: index))
         }
         syncNativeLayoutForVisibleTerminal()
     }
@@ -153,7 +161,7 @@ final class CmxConnectionStore: ObservableObject {
         selectedSpaceID = space.id
         selectedTerminalID = space.terminals.first?.id ?? selectedTerminalID
         if let index = selectedWorkspace.spaces.firstIndex(where: { $0.id == space.id }) {
-            webSocketSession?.sendCommand(.selectSpace(index: index))
+            terminalSession?.sendCommand(.selectSpace(index: index))
         }
         syncNativeLayoutForVisibleTerminal()
     }
@@ -161,7 +169,7 @@ final class CmxConnectionStore: ObservableObject {
     func select(terminal: CmxTerminal) {
         selectedTerminalID = terminal.id
         if let selection = nativeSnapshot?.panels.selection(for: terminal.id) {
-            webSocketSession?.sendCommand(.selectTabInPanel(panelID: selection.panelID, index: selection.index))
+            terminalSession?.sendCommand(.selectTabInPanel(panelID: selection.panelID, index: selection.index))
         }
         syncNativeLayoutForVisibleTerminal()
     }
@@ -218,7 +226,7 @@ final class CmxConnectionStore: ObservableObject {
                     workspaces[workspaceIndex].spaces[spaceIndex].terminals[terminalIndex].size = size
                 }
                 if terminalID == selectedTerminal.id {
-                    webSocketSession?.sendResize(wireViewport(for: terminalID), terminalID: terminalID)
+                    terminalSession?.sendResize(wireViewport(for: terminalID), terminalID: terminalID)
                 }
                 return
             }
@@ -226,8 +234,8 @@ final class CmxConnectionStore: ObservableObject {
     }
 
     func sendInput(_ data: Data, terminalID: UInt64) {
-        if terminalID == selectedTerminal.id, let webSocketSession {
-            webSocketSession.sendInput(data, terminalID: terminalID)
+        if terminalID == selectedTerminal.id, let terminalSession {
+            terminalSession.sendInput(data, terminalID: terminalID)
             return
         }
         appendOutput(renderEcho(for: data), terminalID: terminalID)
@@ -307,7 +315,7 @@ final class CmxConnectionStore: ObservableObject {
     private func syncNativeLayoutForVisibleTerminal() {
         let terminal = selectedTerminal
         guard terminal.id != Self.placeholderTerminalID else { return }
-        webSocketSession?.sendNativeLayout([
+        terminalSession?.sendNativeLayout([
             CmxWireTerminalViewport(
                 tabID: terminal.id,
                 cols: UInt16(clamping: terminal.size.cols),
@@ -316,13 +324,17 @@ final class CmxConnectionStore: ObservableObject {
         ])
     }
 
-    private func connectWithPairingSecret(ticket: CmxBridgeTicket, stackAuthSession: CmxStackAuthSession) async {
+    private func connectWithPairingSecret(
+        rawTicket: String,
+        ticket: CmxBridgeTicket,
+        stackAuthSession: CmxStackAuthSession
+    ) async {
         do {
             guard let auth = ticket.auth else {
                 throw CmxTicketError.missingAuth
             }
-            _ = try await pairingSecretClient.fetchSecret(for: auth, stackSession: stackAuthSession, now: Date())
-            try startTerminalSession(ticket: ticket)
+            let secret = try await pairingSecretClient.fetchSecret(for: auth, stackSession: stackAuthSession, now: Date())
+            try startTerminalSession(rawTicket: rawTicket, ticket: ticket, pairingSecret: secret.secret)
         } catch is CancellationError {
             return
         } catch {
@@ -333,18 +345,20 @@ final class CmxConnectionStore: ObservableObject {
         }
     }
 
-    private func startTerminalSession(ticket parsed: CmxBridgeTicket) throws {
-        guard let webSocketURL = parsed.webSocketURL else {
-            throw CmxConnectionError.missingWebSocketRoute
-        }
-        webSocketSession?.disconnect()
-        let session = CmxWebSocketTerminalSession(
-            url: webSocketURL,
-            token: parsed.webSocketToken,
-            headers: parsed.auth?.requiresStackSession == true ? stackAuthSession?.authorizationHeaders ?? [:] : [:]
+    private func startTerminalSession(
+        rawTicket: String,
+        ticket parsed: CmxBridgeTicket,
+        pairingSecret: String?
+    ) throws {
+        terminalSession?.disconnect()
+        let session = try terminalSessionFactory.makeSession(
+            rawTicket: rawTicket,
+            ticket: parsed,
+            pairingSecret: pairingSecret,
+            stackAuthSession: stackAuthSession
         )
         session.delegate = self
-        webSocketSession = session
+        terminalSession = session
         ticket = parsed
         updateConnectedNode(for: parsed)
         errorText = nil
@@ -410,9 +424,9 @@ final class CmxConnectionStore: ObservableObject {
     }
 }
 
-extension CmxConnectionStore: CmxWebSocketTerminalSessionDelegate {
-    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didReceive message: CmxServerMessage) {
-        guard session === webSocketSession else { return }
+extension CmxConnectionStore: CmxTerminalSessionDelegate {
+    func terminalSession(_ session: any CmxTerminalSession, didReceive message: CmxServerMessage) {
+        guard session === terminalSession else { return }
         switch message {
         case .welcome:
             isConnecting = false
@@ -433,12 +447,12 @@ extension CmxConnectionStore: CmxWebSocketTerminalSessionDelegate {
         case .activeTabChanged, .activeWorkspaceChanged, .activeSpaceChanged, .pong:
             break
         case .bye:
-            webSocketSession = nil
+            terminalSession = nil
             isConnecting = false
             isConnected = false
         case .error(let message):
             errorText = message
-            webSocketSession = nil
+            terminalSession = nil
             isConnecting = false
             isConnected = false
         case .unsupported(let kind):
@@ -449,30 +463,27 @@ extension CmxConnectionStore: CmxWebSocketTerminalSessionDelegate {
         }
     }
 
-    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didFail error: Error) {
-        guard session === webSocketSession else { return }
+    func terminalSession(_ session: any CmxTerminalSession, didFail error: Error) {
+        guard session === terminalSession else { return }
         errorText = error.localizedDescription
-        webSocketSession = nil
+        terminalSession = nil
         isConnecting = false
         isConnected = false
     }
 
-    func webSocketTerminalSessionDidClose(_ session: CmxWebSocketTerminalSession) {
-        guard session === webSocketSession else { return }
-        webSocketSession = nil
+    func terminalSessionDidClose(_ session: any CmxTerminalSession) {
+        guard session === terminalSession else { return }
+        terminalSession = nil
         isConnecting = false
         isConnected = false
     }
 }
 
 enum CmxConnectionError: LocalizedError {
-    case missingWebSocketRoute
     case missingStackAuthSession
 
     var errorDescription: String? {
         switch self {
-        case .missingWebSocketRoute:
-            String(localized: "ticket.error.websocket_route", defaultValue: "This ticket does not include a WebSocket cmx route yet.")
         case .missingStackAuthSession:
             String(localized: "ticket.error.stack_auth_required", defaultValue: "Sign in with Stack Auth before using this Rivet pairing ticket.")
         }

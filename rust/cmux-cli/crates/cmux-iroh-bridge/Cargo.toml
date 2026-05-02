@@ -8,6 +8,9 @@ repository.workspace = true
 authors.workspace = true
 description = "Iroh transport bridge for the cmux-cli native protocol."
 
+[lib]
+crate-type = ["rlib", "staticlib"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true

@@ -242,7 +242,8 @@ final class CmxBridgeTicketTests: XCTestCase {
     func testRivetStackTicketRequiresStoredStackSessionBeforeConnect() {
         let store = CmxConnectionStore(
             authSessionStore: MemoryStackAuthSessionStore(),
-            pairingSecretClient: RecordingPairingSecretClient()
+            pairingSecretClient: RecordingPairingSecretClient(),
+            terminalSessionFactory: RecordingTerminalSessionFactory()
         )
         store.ticketText = """
         {
@@ -277,7 +278,12 @@ final class CmxBridgeTicketTests: XCTestCase {
         let sessionStore = MemoryStackAuthSessionStore()
         sessionStore.session = CmxStackAuthSession(refreshToken: "refresh", accessToken: "access")
         let secretClient = RecordingPairingSecretClient()
-        let store = CmxConnectionStore(authSessionStore: sessionStore, pairingSecretClient: secretClient)
+        let sessionFactory = RecordingTerminalSessionFactory()
+        let store = CmxConnectionStore(
+            authSessionStore: sessionStore,
+            pairingSecretClient: secretClient,
+            terminalSessionFactory: sessionFactory
+        )
         store.ticketText = """
         {
           "version": 1,
@@ -295,10 +301,89 @@ final class CmxBridgeTicketTests: XCTestCase {
 
         store.connect()
         await secretClient.waitForFetch()
+        await sessionFactory.waitForMake()
 
         XCTAssertEqual(secretClient.fetchCount, 1)
         XCTAssertEqual(secretClient.lastStackSession, sessionStore.session)
-        XCTAssertEqual(store.errorText, CmxConnectionError.missingWebSocketRoute.errorDescription)
+        XCTAssertEqual(sessionFactory.lastPairingSecret, "rivet-secret")
+        XCTAssertEqual(sessionFactory.lastStackAuthSession, sessionStore.session)
+        XCTAssertTrue(sessionFactory.session.didStart)
+        XCTAssertNil(store.errorText)
+        XCTAssertTrue(store.isConnecting)
+        XCTAssertFalse(store.isConnected)
+    }
+
+    @MainActor
+    func testDirectIrohTicketWithoutWebSocketStartsTerminalSession() throws {
+        let sessionFactory = RecordingTerminalSessionFactory()
+        let store = CmxConnectionStore(
+            authSessionStore: MemoryStackAuthSessionStore(),
+            pairingSecretClient: RecordingPairingSecretClient(),
+            terminalSessionFactory: sessionFactory
+        )
+        store.ticketText = """
+        {
+          "version": 1,
+          "alpn": "/cmux/cmx/3",
+          "endpoint": { "id": "endpoint-public-key", "addrs": [] },
+          "auth": { "mode": "direct" }
+        }
+        """
+
+        store.connect()
+
+        XCTAssertNil(sessionFactory.lastPairingSecret)
+        XCTAssertTrue(sessionFactory.session.didStart)
+        XCTAssertNil(store.errorText)
+    }
+
+    @MainActor
+    func testDefaultSessionFactoryUsesIrohWhenTicketHasNoWebSocketRoute() throws {
+        let rawTicket = """
+        {
+          "version": 1,
+          "alpn": "/cmux/cmx/3",
+          "endpoint": { "id": "endpoint-public-key", "addrs": [] },
+          "auth": { "mode": "direct" }
+        }
+        """
+        let ticket = try CmxBridgeTicketParser.parse(rawTicket)
+
+        let session = try CmxDefaultTerminalSessionFactory().makeSession(
+            rawTicket: rawTicket,
+            ticket: ticket,
+            pairingSecret: nil,
+            stackAuthSession: nil
+        )
+
+        XCTAssertTrue(session is CmxIrohTerminalSession)
+    }
+
+    @MainActor
+    func testDefaultSessionFactoryKeepsWebSocketForExplicitDevRoute() throws {
+        let rawTicket = """
+        {
+          "version": 1,
+          "alpn": "/cmux/cmx/3",
+          "endpoint": {
+            "id": "local",
+            "addrs": [
+              { "Custom": "ws://127.0.0.1:8787?token=sekrit" }
+            ]
+          },
+          "auth": { "mode": "direct" }
+        }
+        """
+        let ticket = try CmxBridgeTicketParser.parse(rawTicket)
+
+        let session = try CmxDefaultTerminalSessionFactory().makeSession(
+            rawTicket: rawTicket,
+            ticket: ticket,
+            pairingSecret: nil,
+            stackAuthSession: nil
+        )
+
+        XCTAssertTrue(session is CmxWebSocketTerminalSession)
     }
 }
 
@@ -343,4 +428,64 @@ private final class RecordingPairingSecretClient: CmxRivetPairingSecretFetching 
             self.continuation = continuation
         }
     }
+}
+
+@MainActor
+private final class RecordingTerminalSessionFactory: CmxTerminalSessionMaking {
+    let session = RecordingTerminalSession()
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var lastRawTicket: String?
+    private(set) var lastTicket: CmxBridgeTicket?
+    private(set) var lastPairingSecret: String?
+    private(set) var lastStackAuthSession: CmxStackAuthSession?
+
+    func makeSession(
+        rawTicket: String,
+        ticket: CmxBridgeTicket,
+        pairingSecret: String?,
+        stackAuthSession: CmxStackAuthSession?
+    ) throws -> any CmxTerminalSession {
+        lastRawTicket = rawTicket
+        lastTicket = ticket
+        lastPairingSecret = pairingSecret
+        lastStackAuthSession = stackAuthSession
+        continuation?.resume()
+        continuation = nil
+        return session
+    }
+
+    func waitForMake() async {
+        if lastTicket != nil {
+            return
+        }
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+}
+
+@MainActor
+private final class RecordingTerminalSession: CmxTerminalSession {
+    weak var delegate: CmxTerminalSessionDelegate?
+    private(set) var didStart = false
+    private(set) var sentLayouts: [[CmxWireTerminalViewport]] = []
+    private(set) var sentCommands: [CmxClientCommand] = []
+
+    func start(viewport: CmxWireViewport) {
+        didStart = true
+    }
+
+    func sendInput(_ data: Data, terminalID: UInt64) {}
+
+    func sendResize(_ viewport: CmxWireViewport, terminalID: UInt64) {}
+
+    func sendNativeLayout(_ terminals: [CmxWireTerminalViewport]) {
+        sentLayouts.append(terminals)
+    }
+
+    func sendCommand(_ command: CmxClientCommand) {
+        sentCommands.append(command)
+    }
+
+    func disconnect() {}
 }

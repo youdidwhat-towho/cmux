@@ -259,6 +259,36 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "ワークスペース" } }
       }
     },
+    "iroh.error.remote" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Iroh connection failed: %@" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Iroh 接続に失敗しました: %@" } }
+      }
+    },
+    "iroh.error.remote_unknown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "unknown error" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "不明なエラー" } }
+      }
+    },
+    "iroh.error.send" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not send data to the iroh terminal session." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh ターミナル セッションにデータを送信できませんでした。" } }
+      }
+    },
+    "iroh.error.start" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Could not start the iroh terminal session." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh ターミナル セッションを開始できませんでした。" } }
+      }
+    },
+    "iroh.error.unknown_event" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "The iroh terminal session sent an unknown event." } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "iroh ターミナル セッションが不明なイベントを送信しました。" } }
+      }
+    },
     "node.connected.name" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "cmx node" } },

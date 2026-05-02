@@ -1,14 +1,7 @@
 import Foundation
 
 @MainActor
-protocol CmxWebSocketTerminalSessionDelegate: AnyObject {
-    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didReceive message: CmxServerMessage)
-    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didFail error: Error)
-    func webSocketTerminalSessionDidClose(_ session: CmxWebSocketTerminalSession)
-}
-
-@MainActor
-final class CmxWebSocketTerminalSession {
+final class CmxWebSocketTerminalSession: CmxTerminalSession {
     private static let heartbeatInterval: TimeInterval = 15
 
     enum Mode: Equatable {
@@ -16,7 +9,7 @@ final class CmxWebSocketTerminalSession {
         case nativeLibghostty
     }
 
-    weak var delegate: CmxWebSocketTerminalSessionDelegate?
+    weak var delegate: CmxTerminalSessionDelegate?
 
     private let url: URL
     private let token: String?
@@ -112,11 +105,11 @@ final class CmxWebSocketTerminalSession {
                 guard let error else { return }
                 Task { @MainActor in
                     guard let self, !self.closedByClient else { return }
-                    self.delegate?.webSocketTerminalSession(self, didFail: error)
+                    self.delegate?.terminalSession(self, didFail: error)
                 }
             }
         } catch {
-            delegate?.webSocketTerminalSession(self, didFail: error)
+            delegate?.terminalSession(self, didFail: error)
         }
     }
 
@@ -131,7 +124,7 @@ final class CmxWebSocketTerminalSession {
                     if case .bye = decoded {
                         stopHeartbeat()
                     }
-                    delegate?.webSocketTerminalSession(self, didReceive: decoded)
+                    delegate?.terminalSession(self, didReceive: decoded)
                 case .string:
                     throw CmxWebSocketTerminalSessionError.unexpectedTextFrame
                 @unknown default:
@@ -141,7 +134,7 @@ final class CmxWebSocketTerminalSession {
         } catch {
             stopHeartbeat()
             guard !closedByClient else { return }
-            delegate?.webSocketTerminalSession(self, didFail: error)
+            delegate?.terminalSession(self, didFail: error)
         }
     }
 
