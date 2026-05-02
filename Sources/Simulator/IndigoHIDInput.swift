@@ -6,13 +6,18 @@ enum SimulatorButton {
 }
 
 /// Drives input into a booted simulator via SimulatorKit's host-HID
-/// pipeline. Uses the 9-arg `IndigoHIDMessageForMouseNSEvent` recipe from
-/// Xcode 26's preview-kit (verified by https://github.com/tddworks/baguette
-/// against iOS 26.x). Single-finger taps + drags + home/lock buttons.
+/// pipeline. Uses the 9-arg `IndigoHIDMessageForMouseNSEvent` recipe
+/// from Xcode 26's preview-kit (verified by tddworks/baguette).
 ///
-/// One instance per simulator UDID. Service warmup happens lazily on first
-/// dispatch and stays warm for the instance's lifetime; deinit removes the
-/// pointer service.
+/// Dispatch path (matches baguette):
+///   - The receiver is a `_TtC12SimulatorKit24SimDeviceLegacyHIDClient`
+///     instantiated via `initWithDevice:error:`.
+///   - Each Indigo HID message is delivered with
+///     `sendWithMessage:freeWhenDone:completionQueue:completion:`.
+///
+/// One instance per simulator UDID. Service warmup happens lazily on
+/// first dispatch and stays warm for the instance's lifetime; deinit
+/// removes the pointer service.
 final class IndigoHIDInput: @unchecked Sendable {
     private let udid: String
 
@@ -30,7 +35,6 @@ final class IndigoHIDInput: @unchecked Sendable {
 
     private let lock = NSLock()
     private var client: AnyObject?
-    private var warmed = false
     private var mouseFn: MouseFn?
     private var buttonFn: ButtonFn?
     private var createPointerSvc: ServiceFn?
@@ -50,10 +54,8 @@ final class IndigoHIDInput: @unchecked Sendable {
     }
 
     deinit {
-        if warmed, let client {
-            if let remove = removePointerSvc, let msg = remove() {
-                send(message: msg, to: client)
-            }
+        if let client, let remove = removePointerSvc, let msg = remove() {
+            send(message: msg, to: client)
         }
     }
 
@@ -111,48 +113,67 @@ final class IndigoHIDInput: @unchecked Sendable {
 
     private func ensureWarm() -> AnyObject? {
         lock.lock(); defer { lock.unlock() }
-        if warmed, let client { return client }
+        if let client { return client }
         guard SimulatorPrivateFrameworks.ensureLoaded() else { return nil }
         guard let device = (try? SimulatorService.shared.resolveDevice(udid: udid)) ?? nil else {
             return nil
         }
-        guard let io = device.perform(NSSelectorFromString("io"))?
-            .takeUnretainedValue() as? NSObject else { return nil }
-
-        // The HID "client" is the SimDevice's IOClient. SimulatorKit dispatches
-        // messages on it by selector name; we call -sendMessage:.
-        client = io
-
         guard resolveSymbols() else { return nil }
 
-        // Bring up pointer + mouse services. These are required before mouse
-        // messages route correctly to the touch digitizer.
-        if let createPointerSvc, let createMouseSvc, let c = client {
-            if let msg = createPointerSvc() { send(message: msg, to: c) }
-            if let msg = createMouseSvc() { send(message: msg, to: c) }
+        // Allocate a fresh SimDeviceLegacyHIDClient bound to this device.
+        // This is the dispatch target the preview-kit pipeline expects;
+        // SimDevice.io is NOT it. Discovered via tddworks/baguette.
+        guard let cls = NSClassFromString("_TtC12SimulatorKit24SimDeviceLegacyHIDClient") else {
+            return nil
+        }
+        guard let metaCls = object_getClass(cls) else { return nil }
+        let allocSel = NSSelectorFromString("alloc")
+        guard let allocImp = class_getMethodImplementation(metaCls, allocSel) else { return nil }
+        typealias AllocFn = @convention(c) (AnyClass, Selector) -> AnyObject?
+        guard let allocated = unsafeBitCast(allocImp, to: AllocFn.self)(cls, allocSel) else { return nil }
+
+        let initSel = NSSelectorFromString("initWithDevice:error:")
+        guard let initImp = class_getMethodImplementation(cls, initSel) else { return nil }
+        typealias InitFn = @convention(c) (
+            AnyObject, Selector, AnyObject, AutoreleasingUnsafeMutablePointer<NSError?>
+        ) -> AnyObject?
+        var initErr: NSError?
+        guard let c = unsafeBitCast(initImp, to: InitFn.self)(allocated, initSel, device, &initErr) else {
+            return nil
+        }
+        client = c
+
+        // Bring up pointer + mouse services with a short settle between them.
+        if let create = createPointerSvc, let msg = create() {
+            send(message: msg, to: c)
+            usleep(20_000)
+        }
+        if let create = createMouseSvc, let msg = create() {
+            send(message: msg, to: c)
+            usleep(20_000)
         }
 
-        warmed = true
-        return client
+        return c
     }
 
     private func resolveSymbols() -> Bool {
-        // RTLD_DEFAULT does its job on macOS for symbols in dlopen'd dylibs
-        // because they were loaded with RTLD_GLOBAL.
+        // RTLD_DEFAULT works because SimulatorPrivateFrameworks.ensureLoaded()
+        // dlopen'd both frameworks RTLD_GLOBAL.
         let handle = UnsafeMutableRawPointer(bitPattern: -2)  // RTLD_DEFAULT
         guard let sym = dlsym(handle, "IndigoHIDMessageForMouseNSEvent") else { return false }
         mouseFn = unsafeBitCast(sym, to: MouseFn.self)
 
-        if let bSym = dlsym(handle, "IndigoHIDMessageForButton") {
-            buttonFn = unsafeBitCast(bSym, to: ButtonFn.self)
+        if let s = dlsym(handle, "IndigoHIDMessageForButton") {
+            buttonFn = unsafeBitCast(s, to: ButtonFn.self)
         }
-        if let s = dlsym(handle, "IndigoHIDMessageForCreatePointerService") {
+        // Symbol names use "MessageTo..." for service ops, not "MessageFor...".
+        if let s = dlsym(handle, "IndigoHIDMessageToCreatePointerService") {
             createPointerSvc = unsafeBitCast(s, to: ServiceFn.self)
         }
-        if let s = dlsym(handle, "IndigoHIDMessageForCreateMouseService") {
+        if let s = dlsym(handle, "IndigoHIDMessageToCreateMouseService") {
             createMouseSvc = unsafeBitCast(s, to: ServiceFn.self)
         }
-        if let s = dlsym(handle, "IndigoHIDMessageForRemovePointerService") {
+        if let s = dlsym(handle, "IndigoHIDMessageToRemovePointerService") {
             removePointerSvc = unsafeBitCast(s, to: ServiceFn.self)
         }
         return mouseFn != nil
@@ -201,10 +222,17 @@ final class IndigoHIDInput: @unchecked Sendable {
         return true
     }
 
+    /// Hand the Indigo message to SimDeviceLegacyHIDClient. Selector and
+    /// signature come from baguette's verified recipe; freeWhenDone=YES
+    /// makes SimulatorKit own the message buffer afterwards.
     private func send(message: UnsafeMutableRawPointer, to client: AnyObject) {
-        let sel = NSSelectorFromString("sendMessage:")
-        guard (client as AnyObject).responds(to: sel) else { return }
-        _ = (client as AnyObject).perform(sel, with: unsafeBitCast(message, to: NSObject.self))
+        let sel = NSSelectorFromString("sendWithMessage:freeWhenDone:completionQueue:completion:")
+        guard let cls = object_getClass(client),
+              let imp = class_getMethodImplementation(cls, sel) else { return }
+        typealias Fn = @convention(c) (
+            AnyObject, Selector, UnsafeMutableRawPointer, ObjCBool, AnyObject?, AnyObject?
+        ) -> Void
+        unsafeBitCast(imp, to: Fn.self)(client, sel, message, ObjCBool(true), nil, nil)
     }
 
     private func mouseEvent(for phase: TouchPhase) -> (UInt32, UInt32) {
