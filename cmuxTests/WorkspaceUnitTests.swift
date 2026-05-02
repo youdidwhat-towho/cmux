@@ -2879,6 +2879,48 @@ final class WorkspaceNotificationReorderTests: XCTestCase {
     }
 }
 
+@MainActor
+final class WorkspacePanelCustomTitleTests: XCTestCase {
+    func testSinglePanelCustomTitleUpdatesWorkspaceTitleForSidebarRows() {
+        let workspace = Workspace()
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected focused panel in new workspace")
+            return
+        }
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: panelId, title: "runtime-title"))
+
+        workspace.setPanelCustomTitle(panelId: panelId, title: "custom-tab-title")
+
+        XCTAssertEqual(workspace.panelTitle(panelId: panelId), "custom-tab-title")
+        XCTAssertEqual(
+            workspace.title,
+            "custom-tab-title",
+            "A single-surface workspace should project tab renames into the sidebar row title"
+        )
+    }
+
+    func testClearingSinglePanelCustomTitleRestoresWorkspaceRuntimeTitle() {
+        let workspace = Workspace()
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected focused panel in new workspace")
+            return
+        }
+
+        XCTAssertTrue(workspace.updatePanelTitle(panelId: panelId, title: "runtime-title"))
+        workspace.setPanelCustomTitle(panelId: panelId, title: "custom-tab-title")
+
+        workspace.setPanelCustomTitle(panelId: panelId, title: nil)
+
+        XCTAssertEqual(workspace.panelTitle(panelId: panelId), "runtime-title")
+        XCTAssertEqual(
+            workspace.title,
+            "runtime-title",
+            "Clearing a single-surface custom tab title should refresh the sidebar row title"
+        )
+    }
+}
+
 
 @MainActor
 final class WorkspaceTeardownTests: XCTestCase {
