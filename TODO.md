@@ -17,6 +17,7 @@
 - [x] Carry non-secret node metadata in iroh bridge tickets and use it for connected iOS node rows
 - [x] Handle Stack Auth native callbacks on iOS, persist tokens in Keychain, and require a stored Stack session before using `rivet_stack` tickets
 - [x] Fetch and validate Stack-authenticated Rivet pairing secrets before a production ticket opens transport
+- [x] Keep the iPad terminal inside the split-view detail column and resize the Ghostty surface above the software keyboard/accessory bar
 - [ ] Replace WebSocket dev route with real iroh transport for production tickets
 - [ ] Add Rust daemon integration tests for `Hello`/`PtyBytes`/`Input` round trip
 - [ ] Add iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output

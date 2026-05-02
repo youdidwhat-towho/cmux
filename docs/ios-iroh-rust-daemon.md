@@ -34,6 +34,7 @@ Current implementation status:
 - Iroh bridge tickets can now include non-secret node metadata (`id`, `name`, `subtitle`, `kind`). iOS uses that metadata for the connected node row, falling back to the endpoint id until Stack Auth and Rivet hive discovery are wired.
 - iOS handles the existing web Stack Auth deep link (`cmux://auth-callback` / `cmux-dev://auth-callback`), stores the Stack tokens in Keychain, and refuses `rivet_stack` tickets until that session exists.
 - iOS fetches and validates the short-lived Rivet pairing secret with the stored Stack Auth session before a `rivet_stack` ticket is allowed to open its transport.
+- The iOS terminal detail now stays inside the iPad split-view detail column and resizes the actual Ghostty surface above the software keyboard/accessory bar. XcodeBuildMCP snapshot verification showed the iPad surface shrink from 1290 px high to 843 px while the keyboard was open, then restore to 1290 px after hiding the keyboard.
 
 The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 

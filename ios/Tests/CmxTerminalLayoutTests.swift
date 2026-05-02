@@ -41,4 +41,22 @@ final class CmxTerminalLayoutTests: XCTestCase {
             0
         )
     }
+
+    func testTerminalVisibleHeightShrinksByKeyboardOverlap() {
+        XCTAssertEqual(
+            CmxTerminalVisibleBounds.height(totalHeight: 1_290, keyboardOverlap: 441),
+            849
+        )
+    }
+
+    func testTerminalVisibleHeightClampsOutOfRangeKeyboardOverlap() {
+        XCTAssertEqual(
+            CmxTerminalVisibleBounds.height(totalHeight: 800, keyboardOverlap: -30),
+            800
+        )
+        XCTAssertEqual(
+            CmxTerminalVisibleBounds.height(totalHeight: 800, keyboardOverlap: 900),
+            0
+        )
+    }
 }
