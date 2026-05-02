@@ -3278,13 +3278,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         !isTerminatingApp
     }
 
-    nonisolated static func shouldRouteMainWindowCloseToQuit(
-        isTerminatingApp: Bool,
-        remainingMainWindowCount: Int
-    ) -> Bool {
-        !isTerminatingApp && remainingMainWindowCount <= 1
-    }
-
     nonisolated static func shouldSkipSessionSaveDuringRestore(
         isApplyingSessionRestore: Bool,
         includeScrollback: Bool
@@ -13155,11 +13148,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     private func handleMainTerminalWindowShouldClose() -> Bool {
-        let routeToQuit = Self.shouldRouteMainWindowCloseToQuit(
-            isTerminatingApp: isTerminatingApp,
-            remainingMainWindowCount: mainWindowContexts.count)
-        if routeToQuit { _ = handleQuitShortcutWarning() }
-        return !routeToQuit
+        // Route the last cmux window's red X through the same Cmd+Q termination
+        // path so snapshot save, cleanup, and warn-before-quit dialog are shared.
+        guard !isTerminatingApp, mainWindowContexts.count <= 1 else { return true }
+        _ = handleQuitShortcutWarning()
+        return false
     }
 
     private func unregisterMainWindow(_ window: NSWindow) {
