@@ -49,8 +49,18 @@ if ! rustup target list --installed | grep -qx "$TARGET"; then
 fi
 
 DEPLOYMENT_TARGET="${IPHONEOS_DEPLOYMENT_TARGET:-26.0}"
-export CFLAGS_aarch64_apple_ios="-miphoneos-version-min=$DEPLOYMENT_TARGET ${CFLAGS_aarch64_apple_ios:-}"
-export CFLAGS_aarch64_apple_ios_sim="-mios-simulator-version-min=$DEPLOYMENT_TARGET ${CFLAGS_aarch64_apple_ios_sim:-}"
+export IPHONEOS_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+case "$PLATFORM" in
+    iphoneos)
+        MIN_VERSION_FLAG="-miphoneos-version-min=$DEPLOYMENT_TARGET"
+        ;;
+    iphonesimulator)
+        MIN_VERSION_FLAG="-mios-simulator-version-min=$DEPLOYMENT_TARGET"
+        ;;
+esac
+export CFLAGS="$MIN_VERSION_FLAG ${CFLAGS:-}"
+export CFLAGS_aarch64_apple_ios="$MIN_VERSION_FLAG ${CFLAGS_aarch64_apple_ios:-}"
+export CFLAGS_aarch64_apple_ios_sim="$MIN_VERSION_FLAG ${CFLAGS_aarch64_apple_ios_sim:-}"
 
 PROFILE="debug"
 CARGO_ARGS=(build -p cmux-iroh-bridge --lib --target "$TARGET")
