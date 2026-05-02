@@ -43,9 +43,15 @@ extension AppDelegate {
         return false
     }
 
+    private func liveRecoverableMainWindow(windowId: UUID, cachedWindow: NSWindow?) -> NSWindow? {
+        cachedWindow ?? windowForMainWindowId(windowId)
+    }
+
     private func pruneRecoverableMainWindowRoutes() {
         recoverableMainWindowRouteStore.routesByWindowId = recoverableMainWindowRouteStore.routesByWindowId.filter { _, route in
             guard let manager = route.tabManager else { return false }
+            guard let window = liveRecoverableMainWindow(windowId: route.windowId, cachedWindow: route.window) else { return false }
+            route.window = window
             return tabManagerHasRegisteredTerminalSurface(manager)
         }
     }
@@ -55,6 +61,7 @@ extension AppDelegate {
     }
 
     func rememberRecoverableMainWindowRoute(windowId: UUID, tabManager: TabManager, window: NSWindow?) {
+        guard let window = liveRecoverableMainWindow(windowId: windowId, cachedWindow: window) else { return }
         guard tabManagerHasRegisteredTerminalSurface(tabManager) else { return }
         recoverableMainWindowRouteStore.routesByWindowId[windowId] = RecoverableMainWindowRoute(
             windowId: windowId,
@@ -106,7 +113,7 @@ extension AppDelegate {
     }
 
     func tabManagerFor(windowId: UUID) -> TabManager? {
-        if let manager = mainWindowContexts.values.first(where: { $0.windowId == windowId })?.tabManager {
+        if let manager = tabManagerForLiveRegisteredMainWindow(windowId: windowId) {
             return manager
         }
         return recoverableMainWindowRoute(windowId: windowId)?.tabManager

@@ -97,7 +97,11 @@ final class AppDelegateIssue2907RoutingTests: XCTestCase {
 
     func testWorkspaceListResolvesLiveSurfaceAfterMainWindowContextAssociationIsLost() throws {
         _ = NSApplication.shared
+        let previousAppDelegate = AppDelegate.shared
         let app = AppDelegate()
+        defer {
+            AppDelegate.shared = previousAppDelegate
+        }
 
         let windowId = UUID()
         let window = makeMainWindow(id: windowId)
@@ -133,7 +137,11 @@ final class AppDelegateIssue2907RoutingTests: XCTestCase {
 
     func testIssue2907TabManagerDependentSocketCommandsRecoverLiveSurfaceContext() throws {
         _ = NSApplication.shared
+        let previousAppDelegate = AppDelegate.shared
         let app = AppDelegate()
+        defer {
+            AppDelegate.shared = previousAppDelegate
+        }
 
         let windowId = UUID()
         let window = makeMainWindow(id: windowId)
@@ -226,7 +234,11 @@ final class AppDelegateIssue2907RoutingTests: XCTestCase {
 
     func testIssue2907NoTargetCommandsPreferKeyRecoveredWindowOverRegisteredWindow() throws {
         _ = NSApplication.shared
+        let previousAppDelegate = AppDelegate.shared
         let app = AppDelegate()
+        defer {
+            AppDelegate.shared = previousAppDelegate
+        }
 
         let registeredWindowId = UUID()
         let recoveredWindowId = UUID()

@@ -4980,6 +4980,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
+    private func pruneWindowlessMainWindowContexts() {
+        for context in Array(mainWindowContexts.values) where resolvedWindow(for: context) == nil {
+            discardOrphanedMainWindowContext(context)
+        }
+    }
+
+    func tabManagerForLiveRegisteredMainWindow(windowId: UUID) -> TabManager? {
+        guard let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }) else {
+            return nil
+        }
+        guard resolvedWindow(for: context) != nil else {
+            discardOrphanedMainWindowContext(context)
+            return nil
+        }
+        return context.tabManager
+    }
+
 #if DEBUG
     func unregisterMainWindowContextForTesting(windowId: UUID) {
         mainWindowContexts.values.filter { $0.windowId == windowId }.forEach { discardOrphanedMainWindowContext($0, allowWindowlessFallback: true) }
@@ -6416,6 +6433,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         event: NSEvent? = nil,
         debugSource: String = "unspecified"
     ) -> MainWindowContext? {
+        if let activeManager = tabManager,
+           let activeContext = mainWindowContext(for: activeManager),
+           resolvedWindow(for: activeContext) == nil {
+            discardOrphanedMainWindowContext(activeContext)
+#if DEBUG
+            logWorkspaceCreationRouting(
+                phase: "choose",
+                source: debugSource,
+                reason: "active_context_window_missing",
+                event: event,
+                chosenContext: nil
+            )
+#endif
+            return nil
+        }
+
         if let context = mainWindowContext(forShortcutEvent: event, debugSource: debugSource) {
             return context
         }
@@ -6478,6 +6511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
+        pruneWindowlessMainWindowContexts()
         let fallback = mainWindowContexts.values.first(where: { resolvedWindow(for: $0) != nil })
         #if DEBUG
         logWorkspaceCreationRouting(
