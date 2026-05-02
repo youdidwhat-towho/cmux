@@ -3430,8 +3430,8 @@ struct CMUXCLI {
         case "markdown":
             try runMarkdownCommand(commandArgs: commandArgs, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
 
-        // iOS simulator viewer
-        case "ios", "simulator":
+        // Simulator viewer (iOS / iPadOS / etc.)
+        case "sim", "simulator":
             try runSimulatorCommand(commandArgs: commandArgs, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
 
         default:
@@ -3592,6 +3592,67 @@ struct CMUXCLI {
         jsonOutput: Bool,
         idFormat: CLIIDFormat
     ) throws {
+        let sub = commandArgs.first?.lowercased() ?? ""
+        let rest = sub.isEmpty ? commandArgs : Array(commandArgs.dropFirst())
+
+        switch sub {
+        case "", "tui", "ui":
+            try runSimulatorTUI(client: client, idFormat: idFormat)
+        case "list", "ls":
+            try runSimulatorList(client: client, jsonOutput: jsonOutput)
+        case "boot":
+            try runSimulatorLifecycle(method: "simulator.boot", args: rest, client: client, jsonOutput: jsonOutput, verb: "boot")
+        case "shutdown", "stop":
+            try runSimulatorLifecycle(method: "simulator.shutdown", args: rest, client: client, jsonOutput: jsonOutput, verb: "shutdown")
+        case "open":
+            try runSimulatorOpen(commandArgs: rest, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
+        default:
+            throw CLIError(message: "Unknown sim subcommand: \(sub). Usage: cmux sim [open|list|boot|shutdown] (no args = interactive)")
+        }
+    }
+
+    func runSimulatorList(client: SocketClient, jsonOutput: Bool) throws {
+        let payload = try client.sendV2(method: "simulator.list", params: [:])
+        let devices = (payload["devices"] as? [[String: Any]]) ?? []
+        if jsonOutput {
+            print(jsonString(payload))
+            return
+        }
+        let grouped = Dictionary(grouping: devices) { ($0["runtime"] as? String) ?? "Other" }
+        for runtime in grouped.keys.sorted() {
+            print(runtime.isEmpty ? "Other" : runtime)
+            let rows = (grouped[runtime] ?? []).sorted {
+                ($0["name"] as? String ?? "") < ($1["name"] as? String ?? "")
+            }
+            for row in rows {
+                let name = (row["name"] as? String) ?? "?"
+                let state = (row["state"] as? String) ?? "?"
+                let udid = (row["udid"] as? String) ?? ""
+                print("  \(state == "booted" ? "●" : "○") \(name)  \(udid)  [\(state)]")
+            }
+        }
+    }
+
+    private func runSimulatorLifecycle(method: String, args: [String], client: SocketClient, jsonOutput: Bool, verb: String) throws {
+        let (udidOpt, rest) = parseOption(args, name: "--udid")
+        let udid = udidOpt ?? rest.first
+        guard let udid, !udid.isEmpty else {
+            throw CLIError(message: "sim \(verb) requires a UDID. Usage: cmux sim \(verb) <udid>")
+        }
+        let payload = try client.sendV2(method: method, params: ["udid": udid])
+        if jsonOutput {
+            print(jsonString(payload))
+        } else {
+            print("OK \(verb) udid=\(udid)")
+        }
+    }
+
+    private func runSimulatorOpen(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
         var args = commandArgs
         let (workspaceOpt, argsAfterWorkspace) = parseOption(args, name: "--workspace")
         let (windowOpt, argsAfterWindow) = parseOption(argsAfterWorkspace, name: "--window")
@@ -3600,19 +3661,16 @@ struct CMUXCLI {
         let (udidOpt, argsAfterUDID) = parseOption(argsAfterDirection, name: "--udid")
         args = argsAfterUDID
 
-        if let first = args.first, first.lowercased() == "open" {
-            args = Array(args.dropFirst())
-        }
         if let unknownFlag = args.first(where: { $0.hasPrefix("-") }) {
             throw CLIError(
                 message:
-                    "ios open: unknown flag '\(unknownFlag)'. Usage: cmux ios open [--udid <udid>] [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--direction right|down|left|up]"
+                    "sim open: unknown flag '\(unknownFlag)'. Usage: cmux sim open [--udid <udid>] [--direction right|down|left|up]"
             )
         }
         if let extraArg = args.first {
             throw CLIError(
                 message:
-                    "ios open: unexpected argument '\(extraArg)'. Usage: cmux ios open [--udid <udid>] [--direction right|down|left|up]"
+                    "sim open: unexpected argument '\(extraArg)'. Usage: cmux sim open [--udid <udid>] [--direction right|down|left|up]"
             )
         }
 

@@ -2717,6 +2717,12 @@ class TerminalController {
         // Simulator
         case "simulator.open":
             return v2Result(id: id, self.v2SimulatorOpen(params: params))
+        case "simulator.list":
+            return v2Result(id: id, self.v2SimulatorList(params: params))
+        case "simulator.boot":
+            return v2Result(id: id, self.v2SimulatorBoot(params: params))
+        case "simulator.shutdown":
+            return v2Result(id: id, self.v2SimulatorShutdown(params: params))
 
         case "surface.read_text":
             return v2Result(id: id, self.v2SurfaceReadText(params: params))
@@ -8873,6 +8879,49 @@ class TerminalController {
     }
 
     // MARK: - Simulator
+
+    private func v2SimulatorList(params: [String: Any]) -> V2CallResult {
+        _ = params
+        do {
+            let devices = try SimulatorService.shared.listDevices()
+            let payload = devices.map { device -> [String: Any] in
+                [
+                    "udid": device.udid,
+                    "name": device.name,
+                    "state": device.state.rawValue,
+                    "runtime": device.runtime,
+                    "is_booted": device.isBooted,
+                ]
+            }
+            return .ok(["devices": payload])
+        } catch {
+            return .err(code: "simulator_unavailable", message: error.localizedDescription, data: nil)
+        }
+    }
+
+    private func v2SimulatorBoot(params: [String: Any]) -> V2CallResult {
+        guard let udid = v2String(params, "udid"), !udid.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing 'udid'", data: nil)
+        }
+        do {
+            try SimulatorService.shared.boot(udid: udid)
+            return .ok(["udid": udid])
+        } catch {
+            return .err(code: "boot_failed", message: error.localizedDescription, data: ["udid": udid])
+        }
+    }
+
+    private func v2SimulatorShutdown(params: [String: Any]) -> V2CallResult {
+        guard let udid = v2String(params, "udid"), !udid.isEmpty else {
+            return .err(code: "invalid_params", message: "Missing 'udid'", data: nil)
+        }
+        do {
+            try SimulatorService.shared.shutdown(udid: udid)
+            return .ok(["udid": udid])
+        } catch {
+            return .err(code: "shutdown_failed", message: error.localizedDescription, data: ["udid": udid])
+        }
+    }
 
     private func v2SimulatorOpen(params: [String: Any]) -> V2CallResult {
         guard let tabManager = v2ResolveTabManager(params: params) else {
