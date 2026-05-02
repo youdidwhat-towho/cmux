@@ -3430,6 +3430,10 @@ struct CMUXCLI {
         case "markdown":
             try runMarkdownCommand(commandArgs: commandArgs, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
 
+        // iOS simulator viewer
+        case "ios", "simulator":
+            try runSimulatorCommand(commandArgs: commandArgs, client: client, jsonOutput: jsonOutput, idFormat: idFormat)
+
         default:
             print(usage())
             throw CLIError(message: "Unknown command: \(command)")
@@ -3577,6 +3581,72 @@ struct CMUXCLI {
             let paneText = formatHandle(payload, kind: "pane", idFormat: idFormat) ?? "unknown"
             let filePath = (payload["path"] as? String) ?? absolutePath
             print("OK surface=\(surfaceText) pane=\(paneText) path=\(filePath)")
+        }
+    }
+
+    // MARK: - Simulator Commands
+
+    private func runSimulatorCommand(
+        commandArgs: [String],
+        client: SocketClient,
+        jsonOutput: Bool,
+        idFormat: CLIIDFormat
+    ) throws {
+        var args = commandArgs
+        let (workspaceOpt, argsAfterWorkspace) = parseOption(args, name: "--workspace")
+        let (windowOpt, argsAfterWindow) = parseOption(argsAfterWorkspace, name: "--window")
+        let (surfaceOpt, argsAfterSurface) = parseOption(argsAfterWindow, name: "--surface")
+        let (directionOpt, argsAfterDirection) = parseOption(argsAfterSurface, name: "--direction")
+        let (udidOpt, argsAfterUDID) = parseOption(argsAfterDirection, name: "--udid")
+        args = argsAfterUDID
+
+        if let first = args.first, first.lowercased() == "open" {
+            args = Array(args.dropFirst())
+        }
+        if let unknownFlag = args.first(where: { $0.hasPrefix("-") }) {
+            throw CLIError(
+                message:
+                    "ios open: unknown flag '\(unknownFlag)'. Usage: cmux ios open [--udid <udid>] [--workspace <id|ref|index>] [--surface <id|ref|index>] [--window <id|ref|index>] [--direction right|down|left|up]"
+            )
+        }
+        if let extraArg = args.first {
+            throw CLIError(
+                message:
+                    "ios open: unexpected argument '\(extraArg)'. Usage: cmux ios open [--udid <udid>] [--direction right|down|left|up]"
+            )
+        }
+
+        let direction = directionOpt ?? "right"
+        var params: [String: Any] = ["direction": direction]
+        if let udid = udidOpt, !udid.isEmpty {
+            params["udid"] = udid
+        }
+        if let surfaceRaw = surfaceOpt {
+            if let surface = try normalizeSurfaceHandle(surfaceRaw, client: client) {
+                params["surface_id"] = surface
+            }
+        }
+        let workspaceRaw = workspaceOpt ?? (windowOpt == nil ? ProcessInfo.processInfo.environment["CMUX_WORKSPACE_ID"] : nil)
+        if let workspaceRaw {
+            if let workspace = try normalizeWorkspaceHandle(workspaceRaw, client: client) {
+                params["workspace_id"] = workspace
+            }
+        }
+        if let windowRaw = windowOpt {
+            if let window = try normalizeWindowHandle(windowRaw, client: client) {
+                params["window_id"] = window
+            }
+        }
+
+        let payload = try client.sendV2(method: "simulator.open", params: params)
+
+        if jsonOutput {
+            print(jsonString(formatIDs(payload, mode: idFormat)))
+        } else {
+            let surfaceText = formatHandle(payload, kind: "surface", idFormat: idFormat) ?? "unknown"
+            let paneText = formatHandle(payload, kind: "pane", idFormat: idFormat) ?? "unknown"
+            let udidText = (payload["udid"] as? String) ?? "(none)"
+            print("OK surface=\(surfaceText) pane=\(paneText) udid=\(udidText)")
         }
     }
 

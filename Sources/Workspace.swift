@@ -444,6 +444,9 @@ extension Workspace {
             browserSnapshot = nil
             markdownSnapshot = nil
             filePreviewSnapshot = SessionFilePreviewPanelSnapshot(filePath: filePreviewPanel.filePath)
+        case .simulator:
+            // Simulator panels are ephemeral; their state lives in the OS, not in cmux.
+            return nil
         }
 
         return SessionPanelSnapshot(
@@ -693,6 +696,9 @@ extension Workspace {
             }
             applySessionPanelMetadata(snapshot, toPanelId: filePreviewPanel.id)
             return filePreviewPanel.id
+        case .simulator:
+            // Not restorable; we never persist simulator snapshots in the first place.
+            return nil
         }
     }
 
@@ -7367,6 +7373,7 @@ final class Workspace: Identifiable, ObservableObject {
         static let browser = "browser"
         static let markdown = "markdown"
         static let filePreview = "filePreview"
+        static let simulator = "simulator"
     }
 
     enum PanelShellActivityState: String {
@@ -8197,6 +8204,8 @@ final class Workspace: Identifiable, ObservableObject {
             return SurfaceKind.markdown
         case .filePreview:
             return SurfaceKind.filePreview
+        case .simulator:
+            return SurfaceKind.simulator
         }
     }
 
@@ -10400,6 +10409,113 @@ final class Workspace: Identifiable, ObservableObject {
 
         installMarkdownPanelSubscription(markdownPanel)
         return markdownPanel
+    }
+
+    @discardableResult
+    func newSimulatorSplit(
+        from panelId: UUID,
+        orientation: SplitOrientation,
+        insertFirst: Bool = false,
+        preferredUDID: String? = nil,
+        focus: Bool = true
+    ) -> SimulatorPanel? {
+        guard let sourceTabId = surfaceIdFromPanelId(panelId) else { return nil }
+        var sourcePaneId: PaneID?
+        for paneId in bonsplitController.allPaneIds {
+            if bonsplitController.tabs(inPane: paneId).contains(where: { $0.id == sourceTabId }) {
+                sourcePaneId = paneId
+                break
+            }
+        }
+        guard let paneId = sourcePaneId else { return nil }
+
+        let simulatorPanel = SimulatorPanel(workspaceId: id, preferredUDID: preferredUDID)
+        panels[simulatorPanel.id] = simulatorPanel
+        panelTitles[simulatorPanel.id] = simulatorPanel.displayTitle
+
+        let newTab = Bonsplit.Tab(
+            title: simulatorPanel.displayTitle,
+            icon: simulatorPanel.displayIcon,
+            kind: SurfaceKind.simulator,
+            isDirty: false,
+            isLoading: false,
+            isPinned: false
+        )
+        surfaceIdToPanelId[newTab.id] = simulatorPanel.id
+        let previousFocusedPanelId = focusedPanelId
+
+        isProgrammaticSplit = true
+        defer { isProgrammaticSplit = false }
+        guard bonsplitController.splitPane(
+            paneId,
+            orientation: orientation,
+            withTab: newTab,
+            insertFirst: insertFirst
+        ) != nil else {
+            surfaceIdToPanelId.removeValue(forKey: newTab.id)
+            panels.removeValue(forKey: simulatorPanel.id)
+            panelTitles.removeValue(forKey: simulatorPanel.id)
+            return nil
+        }
+
+        let previousHostedView = focusedTerminalPanel?.hostedView
+        if focus {
+            previousHostedView?.suppressReparentFocus()
+            focusPanel(simulatorPanel.id)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                previousHostedView?.clearSuppressReparentFocus()
+            }
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: simulatorPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+        return simulatorPanel
+    }
+
+    @discardableResult
+    func newSimulatorSurface(
+        inPane paneId: PaneID,
+        preferredUDID: String? = nil,
+        focus: Bool? = nil
+    ) -> SimulatorPanel? {
+        let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
+        let previousFocusedPanelId = focusedPanelId
+        let previousHostedView = focusedTerminalPanel?.hostedView
+
+        let simulatorPanel = SimulatorPanel(workspaceId: id, preferredUDID: preferredUDID)
+        panels[simulatorPanel.id] = simulatorPanel
+        panelTitles[simulatorPanel.id] = simulatorPanel.displayTitle
+
+        guard let newTabId = bonsplitController.createTab(
+            title: simulatorPanel.displayTitle,
+            icon: simulatorPanel.displayIcon,
+            kind: SurfaceKind.simulator,
+            isDirty: false,
+            isLoading: false,
+            isPinned: false,
+            inPane: paneId
+        ) else {
+            panels.removeValue(forKey: simulatorPanel.id)
+            panelTitles.removeValue(forKey: simulatorPanel.id)
+            return nil
+        }
+
+        surfaceIdToPanelId[newTabId] = simulatorPanel.id
+        if shouldFocusNewTab {
+            bonsplitController.focusPane(paneId)
+            bonsplitController.selectTab(newTabId)
+            applyTabSelection(tabId: newTabId, inPane: paneId)
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: simulatorPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+        return simulatorPanel
     }
 
     @discardableResult

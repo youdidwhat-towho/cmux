@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import IOSurface
 import ObjectiveC
@@ -14,7 +13,7 @@ final class SimulatorScreen: @unchecked Sendable {
     private var ioClient: NSObject?
     private var descriptors: [NSObject] = []
     private var callbackUUIDs: [ObjectIdentifier: NSUUID] = [:]
-    private var onFrame: (@Sendable (IOSurface) -> Void)?
+    private var onFrame: (@Sendable (IOSurface, CGSize) -> Void)?
 
     init(udid: String) {
         self.udid = udid
@@ -24,7 +23,7 @@ final class SimulatorScreen: @unchecked Sendable {
         stop()
     }
 
-    func start(onFrame: @escaping @Sendable (IOSurface) -> Void) throws {
+    func start(onFrame: @escaping @Sendable (IOSurface, CGSize) -> Void) throws {
         self.onFrame = onFrame
         guard let device = try SimulatorService.shared.resolveDevice(udid: udid) else {
             throw SimulatorError.notFound(udid: udid)
@@ -118,18 +117,21 @@ final class SimulatorScreen: @unchecked Sendable {
     private func captureLatest() {
         let surfSel = NSSelectorFromString("framebufferSurface")
         var best: IOSurface?
+        var bestSize = CGSize.zero
         var bestArea = 0
         for desc in descriptors {
             guard let surfObj = desc.perform(surfSel)?.takeUnretainedValue() else { continue }
             let surf = unsafeBitCast(surfObj, to: IOSurface.self)
             let ref = unsafeBitCast(surfObj, to: IOSurfaceRef.self)
-            let area = IOSurfaceGetWidth(ref) * IOSurfaceGetHeight(ref)
+            let w = IOSurfaceGetWidth(ref)
+            let h = IOSurfaceGetHeight(ref)
+            let area = w * h
             if area > bestArea {
                 best = surf
+                bestSize = CGSize(width: w, height: h)
                 bestArea = area
             }
         }
-        if let best { onFrame?(best) }
+        if let best { onFrame?(best, bestSize) }
     }
 }
-#endif

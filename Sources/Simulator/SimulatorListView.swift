@@ -1,4 +1,3 @@
-#if DEBUG
 import AppKit
 import IOSurface
 import SwiftUI
@@ -10,8 +9,10 @@ final class SimulatorListModel: ObservableObject {
     @Published var loadError: String?
     @Published var selectedUDID: String?
     @Published var lastFrame: NSImage?
+    @Published var lastFrameSize: CGSize = .zero
 
     private var screen: SimulatorScreen?
+    private var input: IndigoHIDInput?
     private var refreshTimer: Timer?
     nonisolated private let ciContext = CIContext()
 
@@ -76,17 +77,52 @@ final class SimulatorListModel: ObservableObject {
         startStreaming(udid: device.udid)
     }
 
+    func selectByUDID(_ udid: String?) {
+        guard let udid else { select(nil); return }
+        if let device = devices.first(where: { $0.udid == udid }) {
+            select(device)
+        } else {
+            selectedUDID = udid
+        }
+    }
+
+    // MARK: - input
+
+    func tap(at pointInFrame: CGPoint) {
+        guard let input, lastFrameSize != .zero else { return }
+        let size = lastFrameSize
+        Task.detached { input.tap(at: pointInFrame, deviceSize: size) }
+    }
+
+    func drag(from start: CGPoint, to end: CGPoint) {
+        guard let input, lastFrameSize != .zero else { return }
+        let size = lastFrameSize
+        Task.detached { input.drag(from: start, to: end, deviceSize: size) }
+    }
+
+    func press(_ button: SimulatorButton) {
+        guard let input else { return }
+        Task.detached { input.press(button) }
+    }
+
+    // MARK: - lifecycle
+
     private func startStreaming(udid: String) {
         let screen = SimulatorScreen(udid: udid)
         self.screen = screen
+        self.input = IndigoHIDInput(udid: udid)
         do {
-            try screen.start { [weak self] surface in
+            try screen.start { [weak self] surface, size in
                 guard let self else { return }
                 guard let image = Self.makeImage(from: surface, ciContext: self.ciContext) else { return }
-                Task { @MainActor in self.lastFrame = image }
+                Task { @MainActor in
+                    self.lastFrame = image
+                    self.lastFrameSize = size
+                }
             }
         } catch {
             self.screen = nil
+            self.input = nil
             loadError = error.localizedDescription
         }
     }
@@ -94,7 +130,9 @@ final class SimulatorListModel: ObservableObject {
     private func stopStreaming() {
         screen?.stop()
         screen = nil
+        input = nil
         lastFrame = nil
+        lastFrameSize = .zero
     }
 
     nonisolated private static func makeImage(from surface: IOSurface, ciContext: CIContext) -> NSImage? {
@@ -105,19 +143,34 @@ final class SimulatorListModel: ObservableObject {
     }
 }
 
+/// SwiftUI view used by both the Debug Window and the bonsplit panel.
+/// `initialUDID` selects a device automatically when the view appears.
 struct SimulatorListView: View {
     @StateObject private var model = SimulatorListModel()
+    var initialUDID: String?
+    var hidesDeviceList: Bool = false
 
     var body: some View {
-        HSplitView {
-            list
-                .frame(minWidth: 280)
-            preview
-                .frame(minWidth: 320)
+        Group {
+            if hidesDeviceList {
+                preview
+            } else {
+                HSplitView {
+                    list
+                        .frame(minWidth: 280)
+                    preview
+                        .frame(minWidth: 320)
+                }
+            }
         }
-        .onAppear { model.startAutoRefresh() }
+        .onAppear {
+            model.startAutoRefresh()
+            if let initialUDID { model.selectByUDID(initialUDID) }
+        }
         .onDisappear { model.stopAutoRefresh() }
     }
+
+    // MARK: - panes
 
     private var list: some View {
         VStack(spacing: 0) {
@@ -126,13 +179,9 @@ struct SimulatorListView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(.secondary)
                 Spacer()
-                Button {
-                    model.refresh()
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .buttonStyle(.borderless)
-                .help("Refresh")
+                Button { model.refresh() } label: { Image(systemName: "arrow.clockwise") }
+                    .buttonStyle(.borderless)
+                    .help("Refresh")
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
@@ -148,10 +197,7 @@ struct SimulatorListView: View {
             }
             List(selection: Binding(
                 get: { model.selectedUDID },
-                set: { newValue in
-                    let device = newValue.flatMap { id in model.devices.first(where: { $0.udid == id }) }
-                    model.select(device)
-                }
+                set: { model.selectByUDID($0) }
             )) {
                 ForEach(groupedRuntimes, id: \.self) { runtime in
                     Section(runtime.isEmpty ? "Other" : runtime) {
@@ -168,31 +214,45 @@ struct SimulatorListView: View {
 
     private var preview: some View {
         VStack(spacing: 0) {
-            HStack {
-                if let udid = model.selectedUDID,
-                   let device = model.devices.first(where: { $0.udid == udid }) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(device.name).font(.system(size: 12, weight: .semibold))
-                        Text(device.runtime).font(.system(size: 10)).foregroundColor(.secondary)
-                    }
-                } else {
-                    Text("Select a booted simulator")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
+            previewHeader
             Divider()
+            previewCanvas
+            Divider()
+            previewToolbar
+        }
+    }
+
+    private var previewHeader: some View {
+        HStack {
+            if let udid = model.selectedUDID,
+               let device = model.devices.first(where: { $0.udid == udid }) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(device.name).font(.system(size: 12, weight: .semibold))
+                    Text(device.runtime).font(.system(size: 10)).foregroundColor(.secondary)
+                }
+            } else {
+                Text("Select a booted simulator")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var previewCanvas: some View {
+        GeometryReader { proxy in
             ZStack {
                 Color.black.opacity(0.04)
-                if let frame = model.lastFrame {
+                if let frame = model.lastFrame, model.lastFrameSize != .zero {
+                    let rendered = renderRect(for: model.lastFrameSize, in: proxy.size)
                     Image(nsImage: frame)
                         .resizable()
                         .interpolation(.high)
-                        .aspectRatio(contentMode: .fit)
-                        .padding(8)
+                        .frame(width: rendered.width, height: rendered.height)
+                        .position(x: rendered.midX, y: rendered.midY)
+                        .gesture(dragGesture(in: rendered))
                 } else if let udid = model.selectedUDID,
                           let device = model.devices.first(where: { $0.udid == udid }),
                           !device.isBooted {
@@ -202,13 +262,85 @@ struct SimulatorListView: View {
                             .font(.system(size: 12))
                             .foregroundColor(.secondary)
                     }
-                } else {
+                } else if model.selectedUDID != nil {
                     ProgressView().controlSize(.small)
+                } else {
+                    Text("No device selected")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
+
+    private var previewToolbar: some View {
+        HStack(spacing: 8) {
+            Button {
+                model.press(.home)
+            } label: {
+                Image(systemName: "house").imageScale(.medium)
+            }
+            .buttonStyle(.bordered)
+            .help("Home button")
+            .disabled(!isBootedSelection)
+
+            Button {
+                model.press(.lock)
+            } label: {
+                Image(systemName: "lock").imageScale(.medium)
+            }
+            .buttonStyle(.bordered)
+            .help("Lock button")
+            .disabled(!isBootedSelection)
+
+            Spacer()
+
+            Text(deviceSizeCaption)
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    // MARK: - gesture
+
+    private func dragGesture(in rendered: CGRect) -> some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onEnded { value in
+                let start = devicePoint(viewPoint: value.startLocation, rendered: rendered)
+                let end = devicePoint(viewPoint: value.location, rendered: rendered)
+                let dx = end.x - start.x
+                let dy = end.y - start.y
+                let dist = (dx * dx + dy * dy).squareRoot()
+                if dist < 6 {
+                    model.tap(at: start)
+                } else {
+                    model.drag(from: start, to: end)
+                }
+            }
+    }
+
+    private func devicePoint(viewPoint: CGPoint, rendered: CGRect) -> CGPoint {
+        let xRatio = (viewPoint.x - rendered.minX) / rendered.width
+        let yRatio = (viewPoint.y - rendered.minY) / rendered.height
+        let x = max(0, min(1, xRatio)) * model.lastFrameSize.width
+        let y = max(0, min(1, yRatio)) * model.lastFrameSize.height
+        return CGPoint(x: x, y: y)
+    }
+
+    private func renderRect(for content: CGSize, in container: CGSize) -> CGRect {
+        guard content.width > 0, content.height > 0 else { return .zero }
+        let scale = min(container.width / content.width, container.height / content.height)
+        let w = content.width * scale
+        let h = content.height * scale
+        let x = (container.width - w) / 2
+        let y = (container.height - h) / 2
+        return CGRect(x: x, y: y, width: w, height: h)
+    }
+
+    // MARK: - rows
 
     private func row(for device: SimulatorDevice) -> some View {
         HStack(spacing: 8) {
@@ -256,6 +388,16 @@ struct SimulatorListView: View {
         return Circle().fill(color).frame(width: 8, height: 8)
     }
 
+    private var isBootedSelection: Bool {
+        guard let udid = model.selectedUDID else { return false }
+        return model.devices.first(where: { $0.udid == udid })?.isBooted == true
+    }
+
+    private var deviceSizeCaption: String {
+        guard model.lastFrameSize != .zero else { return "" }
+        return "\(Int(model.lastFrameSize.width))×\(Int(model.lastFrameSize.height))"
+    }
+
     private var groupedRuntimes: [String] {
         Array(Set(model.devices.map(\.runtime))).sorted()
     }
@@ -264,4 +406,3 @@ struct SimulatorListView: View {
         Dictionary(grouping: model.devices, by: \.runtime)
     }
 }
-#endif

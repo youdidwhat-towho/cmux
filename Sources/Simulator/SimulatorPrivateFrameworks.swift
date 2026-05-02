@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import ObjectiveC
 
@@ -62,4 +61,3 @@ enum SimulatorPrivateFrameworks {
         return String(cString: cstr)
     }
 }
-#endif

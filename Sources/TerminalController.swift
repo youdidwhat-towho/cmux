@@ -2714,6 +2714,10 @@ class TerminalController {
         case "file.open":
             return v2Result(id: id, self.v2FileOpen(params: params))
 
+        // Simulator
+        case "simulator.open":
+            return v2Result(id: id, self.v2SimulatorOpen(params: params))
+
         case "surface.read_text":
             return v2Result(id: id, self.v2SurfaceReadText(params: params))
 
@@ -8863,6 +8867,90 @@ class TerminalController {
                 "target_pane_id": v2OrNull(targetPaneUUID?.uuidString),
                 "target_pane_ref": v2Ref(kind: .pane, uuid: targetPaneUUID),
                 "path": filePath
+            ])
+        }
+        return result
+    }
+
+    // MARK: - Simulator
+
+    private func v2SimulatorOpen(params: [String: Any]) -> V2CallResult {
+        guard let tabManager = v2ResolveTabManager(params: params) else {
+            return .err(code: "unavailable", message: "TabManager not available", data: nil)
+        }
+        let preferredUDID = v2String(params, "udid")?.trimmingCharacters(in: .whitespaces)
+        let directionStr = v2String(params, "direction") ?? "right"
+        guard let direction = parseSplitDirection(directionStr) else {
+            return .err(
+                code: "invalid_params",
+                message: "Invalid direction '\(directionStr)' (left|right|up|down)",
+                data: nil
+            )
+        }
+
+        var result: V2CallResult = .err(
+            code: "internal_error",
+            message: "Failed to create simulator panel",
+            data: nil
+        )
+        v2MainSync {
+            guard let ws = v2ResolveWorkspace(params: params, tabManager: tabManager) else {
+                result = .err(code: "not_found", message: "Workspace not found", data: nil)
+                return
+            }
+            v2MaybeFocusWindow(for: tabManager)
+            v2MaybeSelectWorkspace(tabManager, workspace: ws)
+
+            let sourceSurfaceId = v2UUID(params, "surface_id") ?? ws.focusedPanelId
+            guard let sourceSurfaceId else {
+                result = .err(code: "not_found", message: "No focused surface to split", data: nil)
+                return
+            }
+            guard ws.panels[sourceSurfaceId] != nil else {
+                result = .err(
+                    code: "not_found",
+                    message: "Source surface not found",
+                    data: ["surface_id": sourceSurfaceId.uuidString]
+                )
+                return
+            }
+
+            let sourcePaneUUID = ws.paneId(forPanelId: sourceSurfaceId)?.id
+            let orientation: SplitOrientation = direction.isHorizontal ? .horizontal : .vertical
+            let insertFirst = (direction == .left || direction == .up)
+
+            let createdPanel = ws.newSimulatorSplit(
+                from: sourceSurfaceId,
+                orientation: orientation,
+                insertFirst: insertFirst,
+                preferredUDID: preferredUDID?.isEmpty == false ? preferredUDID : nil,
+                focus: v2FocusAllowed()
+            )
+            guard let simulatorPanelId = createdPanel?.id else {
+                result = .err(
+                    code: "internal_error",
+                    message: "Failed to create simulator panel",
+                    data: nil
+                )
+                return
+            }
+
+            let targetPaneUUID = ws.paneId(forPanelId: simulatorPanelId)?.id
+            let windowId = v2ResolveWindowId(tabManager: tabManager)
+            result = .ok([
+                "window_id": v2OrNull(windowId?.uuidString),
+                "window_ref": v2Ref(kind: .window, uuid: windowId),
+                "workspace_id": ws.id.uuidString,
+                "workspace_ref": v2Ref(kind: .workspace, uuid: ws.id),
+                "pane_id": v2OrNull(targetPaneUUID?.uuidString),
+                "pane_ref": v2Ref(kind: .pane, uuid: targetPaneUUID),
+                "surface_id": simulatorPanelId.uuidString,
+                "surface_ref": v2Ref(kind: .surface, uuid: simulatorPanelId),
+                "source_surface_id": sourceSurfaceId.uuidString,
+                "source_surface_ref": v2Ref(kind: .surface, uuid: sourceSurfaceId),
+                "source_pane_id": v2OrNull(sourcePaneUUID?.uuidString),
+                "source_pane_ref": v2Ref(kind: .pane, uuid: sourcePaneUUID),
+                "udid": v2OrNull(preferredUDID?.isEmpty == false ? preferredUDID : nil)
             ])
         }
         return result

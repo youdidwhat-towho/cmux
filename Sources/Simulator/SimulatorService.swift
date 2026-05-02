@@ -1,4 +1,3 @@
-#if DEBUG
 import Foundation
 import ObjectiveC
 
@@ -240,4 +239,3 @@ func invokeClassObjWithObjAndError(
     }
     return result?.takeUnretainedValue() as? NSObject
 }
-#endif
