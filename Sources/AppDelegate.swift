@@ -597,6 +597,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     @MainActor
+    private final class RecoverableMainWindowRoute {
+        let windowId: UUID
+        weak var tabManager: TabManager?
+        weak var window: NSWindow?
+
+        init(context: MainWindowContext) {
+            self.windowId = context.windowId
+            self.tabManager = context.tabManager
+            self.window = context.window
+        }
+    }
+
+    @MainActor
     private final class NewWorkspaceContextMenuActionBox: NSObject {
         let windowId: UUID
         let action: CmuxResolvedConfigAction
@@ -802,6 +815,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 #endif
 
     private var mainWindowContexts: [ObjectIdentifier: MainWindowContext] = [:]
+    private var recoverableMainWindowRoutesByWindowId: [UUID: RecoverableMainWindowRoute] = [:]
     private var mainWindowControllers: [MainWindowController] = []
 
     /// Tracks the cascade point for new windows, matching Ghostty's upstream algorithm.
@@ -3584,6 +3598,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NotificationCenter.default.post(name: .mainWindowContextsDidChange, object: self)
     }
 
+    private func tabManagerHasRegisteredTerminalSurface(_ manager: TabManager) -> Bool {
+        for workspace in manager.tabs {
+            for panel in workspace.panels.values {
+                guard let terminalPanel = panel as? TerminalPanel else { continue }
+                if TerminalSurfaceRegistry.shared.surface(id: terminalPanel.id) === terminalPanel.surface {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
+    private func pruneRecoverableMainWindowRoutes() {
+        recoverableMainWindowRoutesByWindowId = recoverableMainWindowRoutesByWindowId.filter { _, route in
+            guard let manager = route.tabManager else { return false }
+            return tabManagerHasRegisteredTerminalSurface(manager)
+        }
+    }
+
+    private func rememberRecoverableMainWindowRoute(_ context: MainWindowContext) {
+        guard tabManagerHasRegisteredTerminalSurface(context.tabManager) else { return }
+        recoverableMainWindowRoutesByWindowId[context.windowId] = RecoverableMainWindowRoute(context: context)
+    }
+
+    private func recoverableMainWindowRoute(windowId: UUID) -> RecoverableMainWindowRoute? {
+        pruneRecoverableMainWindowRoutes()
+        return recoverableMainWindowRoutesByWindowId[windowId]
+    }
+
+    private func recoverableMainWindowRoutes() -> [RecoverableMainWindowRoute] {
+        pruneRecoverableMainWindowRoutes()
+        return recoverableMainWindowRoutesByWindowId.values.sorted {
+            $0.windowId.uuidString < $1.windowId.uuidString
+        }
+    }
+
     /// Register a terminal window with the AppDelegate so menu commands and socket control
     /// can target whichever window is currently active.
     func registerMainWindow(
@@ -3596,6 +3646,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cmuxConfigStore: CmuxConfigStore? = nil
     ) {
         let key = ObjectIdentifier(window)
+        recoverableMainWindowRoutesByWindowId.removeValue(forKey: windowId)
         #if DEBUG
         let priorManagerToken = debugManagerToken(self.tabManager)
         #endif
@@ -3743,7 +3794,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     func listMainWindowSummaries() -> [MainWindowSummary] {
         let contexts = Array(mainWindowContexts.values)
-        return contexts.map { ctx in
+        var seen: Set<UUID> = []
+        var summaries = contexts.map { ctx in
+            seen.insert(ctx.windowId)
             let window = ctx.window ?? windowForMainWindowId(ctx.windowId)
             return MainWindowSummary(
                 windowId: ctx.windowId,
@@ -3753,6 +3806,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 selectedWorkspaceId: ctx.tabManager.selectedTabId
             )
         }
+        for route in recoverableMainWindowRoutes() {
+            guard seen.insert(route.windowId).inserted,
+                  let manager = route.tabManager else { continue }
+            let window = route.window ?? windowForMainWindowId(route.windowId)
+            summaries.append(
+                MainWindowSummary(
+                    windowId: route.windowId,
+                    isKeyWindow: window?.isKeyWindow ?? false,
+                    isVisible: window?.isVisible ?? false,
+                    workspaceCount: manager.tabs.count,
+                    selectedWorkspaceId: manager.selectedTabId
+                )
+            )
+        }
+        return summaries
     }
 
     func windowMoveTargets(referenceWindowId: UUID?) -> [WindowMoveTarget] {
@@ -4156,11 +4224,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func tabManagerFor(windowId: UUID) -> TabManager? {
-        mainWindowContexts.values.first(where: { $0.windowId == windowId })?.tabManager
+        if let manager = mainWindowContexts.values.first(where: { $0.windowId == windowId })?.tabManager {
+            return manager
+        }
+        return recoverableMainWindowRoute(windowId: windowId)?.tabManager
     }
 
     func windowId(for tabManager: TabManager) -> UUID? {
-        mainWindowContexts.values.first(where: { $0.tabManager === tabManager })?.windowId
+        if let windowId = mainWindowContexts.values.first(where: { $0.tabManager === tabManager })?.windowId {
+            return windowId
+        }
+        return recoverableMainWindowRoutes().first(where: { $0.tabManager === tabManager })?.windowId
     }
 
     func mainWindow(for windowId: UUID) -> NSWindow? {
@@ -4173,7 +4247,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return window
             }
         }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager,
+                  manager.tabs.contains(where: { $0.id == workspaceId }) else {
+                continue
+            }
+            if let window = route.window ?? windowForMainWindowId(route.windowId) {
+                return window
+            }
+        }
         return nil
+    }
+
+    private func scriptableMainWindow(for window: NSWindow) -> ScriptableMainWindowState? {
+        if let context = contextForMainTerminalWindow(window, reindex: false) {
+            return ScriptableMainWindowState(
+                windowId: context.windowId,
+                tabManager: context.tabManager,
+                window: context.window ?? windowForMainWindowId(context.windowId)
+            )
+        }
+
+        if let windowId = mainWindowId(from: window),
+           let route = recoverableMainWindowRoute(windowId: windowId),
+           let manager = route.tabManager {
+            return ScriptableMainWindowState(
+                windowId: route.windowId,
+                tabManager: manager,
+                window: route.window ?? windowForMainWindowId(route.windowId)
+            )
+        }
+
+        let windowNumber = window.windowNumber
+        guard windowNumber >= 0 else { return nil }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager,
+                  let routeWindow = route.window ?? windowForMainWindowId(route.windowId),
+                  routeWindow === window || routeWindow.windowNumber == windowNumber else {
+                continue
+            }
+            return ScriptableMainWindowState(
+                windowId: route.windowId,
+                tabManager: manager,
+                window: routeWindow
+            )
+        }
+        return nil
+    }
+
+    func currentScriptableMainWindow() -> ScriptableMainWindowState? {
+        var seenWindows = Set<ObjectIdentifier>()
+
+        func resolve(_ window: NSWindow?) -> ScriptableMainWindowState? {
+            guard let window else { return nil }
+            guard seenWindows.insert(ObjectIdentifier(window)).inserted else { return nil }
+            return scriptableMainWindow(for: window)
+        }
+
+        if let state = resolve(NSApp.keyWindow) {
+            return state
+        }
+        if let state = resolve(NSApp.mainWindow) {
+            return state
+        }
+        for window in NSApp.orderedWindows {
+            if let state = resolve(window) {
+                return state
+            }
+        }
+        return scriptableMainWindows().first
     }
 
     func scriptableMainWindows() -> [ScriptableMainWindowState] {
@@ -4181,15 +4323,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         var seen: Set<UUID> = []
 
         for window in NSApp.orderedWindows {
-            guard let context = contextForMainTerminalWindow(window, reindex: false) else { continue }
-            guard seen.insert(context.windowId).inserted else { continue }
-            results.append(
-                ScriptableMainWindowState(
-                    windowId: context.windowId,
-                    tabManager: context.tabManager,
-                    window: context.window ?? windowForMainWindowId(context.windowId)
-                )
-            )
+            guard let state = scriptableMainWindow(for: window) else { continue }
+            guard seen.insert(state.windowId).inserted else { continue }
+            results.append(state)
         }
 
         let remaining = mainWindowContexts.values
@@ -4206,27 +4342,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             )
         }
 
+        for route in recoverableMainWindowRoutes() where seen.insert(route.windowId).inserted {
+            guard let manager = route.tabManager else { continue }
+            results.append(
+                ScriptableMainWindowState(
+                    windowId: route.windowId,
+                    tabManager: manager,
+                    window: route.window ?? windowForMainWindowId(route.windowId)
+                )
+            )
+        }
+
         return results
     }
 
     func scriptableMainWindow(windowId: UUID) -> ScriptableMainWindowState? {
-        guard let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }) else {
-            return nil
+        if let context = mainWindowContexts.values.first(where: { $0.windowId == windowId }) {
+            return ScriptableMainWindowState(
+                windowId: context.windowId,
+                tabManager: context.tabManager,
+                window: context.window ?? windowForMainWindowId(context.windowId)
+            )
         }
+        guard let route = recoverableMainWindowRoute(windowId: windowId),
+              let manager = route.tabManager else { return nil }
         return ScriptableMainWindowState(
-            windowId: context.windowId,
-            tabManager: context.tabManager,
-            window: context.window ?? windowForMainWindowId(context.windowId)
+            windowId: route.windowId,
+            tabManager: manager,
+            window: route.window ?? windowForMainWindowId(route.windowId)
         )
     }
 
     func scriptableMainWindowForTab(_ tabId: UUID) -> ScriptableMainWindowState? {
-        guard let context = contextContainingTabId(tabId) else { return nil }
-        return ScriptableMainWindowState(
-            windowId: context.windowId,
-            tabManager: context.tabManager,
-            window: context.window ?? windowForMainWindowId(context.windowId)
-        )
+        if let context = contextContainingTabId(tabId) {
+            return ScriptableMainWindowState(
+                windowId: context.windowId,
+                tabManager: context.tabManager,
+                window: context.window ?? windowForMainWindowId(context.windowId)
+            )
+        }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager,
+                  manager.tabs.contains(where: { $0.id == tabId }) else {
+                continue
+            }
+            return ScriptableMainWindowState(
+                windowId: route.windowId,
+                tabManager: manager,
+                window: route.window ?? windowForMainWindowId(route.windowId)
+            )
+        }
+        return nil
     }
 
     @discardableResult
@@ -4677,6 +4843,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 }
             }
         }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager else { continue }
+            for ws in manager.tabs {
+                if ws.panels[surfaceId] != nil {
+                    return (route.windowId, ws.id, manager)
+                }
+            }
+        }
         return nil
     }
 
@@ -4722,6 +4896,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     guard let terminal = panel as? TerminalPanel else { continue }
                     if terminal.surface.surface == surface {
                         return (ctx.windowId, ws.id, panelId, ctx.tabManager)
+                    }
+                }
+            }
+        }
+        for route in recoverableMainWindowRoutes() {
+            guard let manager = route.tabManager else { continue }
+            for ws in manager.tabs {
+                for (panelId, panel) in ws.panels {
+                    guard let terminal = panel as? TerminalPanel else { continue }
+                    if terminal.surface.surface == surface {
+                        return (route.windowId, ws.id, panelId, manager)
                     }
                 }
             }
@@ -5012,6 +5197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for key in removedKeys {
             mainWindowContexts.removeValue(forKey: key)
         }
+        rememberRecoverableMainWindowRoute(removed)
         notifyMainWindowContextsDidChange()
         return removed
     }
@@ -5023,6 +5209,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for key in contextKeys {
             mainWindowContexts.removeValue(forKey: key)
         }
+        rememberRecoverableMainWindowRoute(context)
         notifyMainWindowContextsDidChange()
 
         commandPaletteVisibilityByWindowId.removeValue(forKey: context.windowId)
@@ -13222,11 +13409,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     /// Returns the `TabManager` that owns `tabId`, if any.
     func tabManagerFor(tabId: UUID) -> TabManager? {
-        contextContainingTabId(tabId)?.tabManager
+        if let manager = contextContainingTabId(tabId)?.tabManager {
+            return manager
+        }
+        return recoverableMainWindowRoutes()
+            .compactMap(\.tabManager)
+            .first { manager in
+                manager.tabs.contains(where: { $0.id == tabId })
+            }
     }
 
     private func workspaceForMainActor(tabId: UUID) -> Workspace? {
-        contextContainingTabId(tabId)?.tabManager.tabs.first(where: { $0.id == tabId })
+        tabManagerFor(tabId: tabId)?.tabs.first(where: { $0.id == tabId })
     }
 
     /// Returns the `Workspace` that owns `tabId`, if any.
