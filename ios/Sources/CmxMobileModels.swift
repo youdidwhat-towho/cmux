@@ -78,7 +78,7 @@ enum CmxHiveNodeFactory {
             return "laptopcomputer"
         case "macmini", "mac-mini", "mini":
             return "macmini"
-        case "mac", "desktop":
+        case "mac", "macos", "darwin", "desktop":
             return "desktopcomputer"
         case "linux", "server":
             return "server.rack"

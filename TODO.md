@@ -23,7 +23,7 @@
 - [x] Add a reusable Rust iroh client connector that decodes bridge tickets, proves Rivet pairing-secret possession, and opens an authenticated cmx stream for the future iOS binding
 - [x] Expand the iOS terminal keyboard action scroller with terminal actions, one-shot/sticky Ctrl/Alt/Shift modifiers, and Mac-only Cmd affordances inferred from connected node metadata
 - [x] Add the real iroh transport for production tickets without a WebSocket route, while keeping explicit WebSocket routes as a dev fallback
-- [ ] Add committed iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output in CI
+- [x] Add committed iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output in CI
 - [ ] Replace demo node/workspace source with Stack Auth + Rivet signed-in hive discovery
 
 ## Issue 151: Remote SSH (Living Execution)

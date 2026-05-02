@@ -10,6 +10,7 @@
 )]
 
 use std::path::PathBuf;
+use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, ValueEnum};
@@ -77,25 +78,97 @@ async fn main() -> Result<()> {
 }
 
 fn node_info(cli: &Cli) -> Result<Option<BridgeNodeInfo>> {
-    let has_node = cli.node_id.is_some()
-        || cli.node_name.is_some()
-        || cli.node_subtitle.is_some()
-        || cli.node_kind.is_some();
-    if !has_node {
-        return Ok(None);
-    }
+    let detected = autodetected_node_info();
 
     let node = BridgeNodeInfo {
-        id: cli.node_id.clone(),
-        name: cli
-            .node_name
-            .clone()
-            .context("missing --node-name / CMUX_NODE_NAME")?,
-        subtitle: cli.node_subtitle.clone(),
-        kind: cli.node_kind.clone(),
+        id: cli.node_id.clone().or(detected.id),
+        name: cli.node_name.clone().unwrap_or(detected.name),
+        subtitle: cli.node_subtitle.clone().or(detected.subtitle),
+        kind: cli.node_kind.clone().or(detected.kind),
     };
     node.validate()?;
     Ok(Some(node))
+}
+
+fn autodetected_node_info() -> BridgeNodeInfo {
+    let host_name = host_name();
+    let kind = default_node_kind().to_owned();
+    BridgeNodeInfo {
+        id: host_name.as_ref().map(|name| format!("{}:{}", kind, name)),
+        name: platform_display_name()
+            .or_else(|| host_name.clone())
+            .unwrap_or_else(|| "cmux node".to_owned()),
+        subtitle: Some(format!(
+            "{} {}",
+            default_node_label(),
+            std::env::consts::ARCH
+        )),
+        kind: Some(kind),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn default_node_kind() -> &'static str {
+    "macos"
+}
+
+#[cfg(target_os = "linux")]
+fn default_node_kind() -> &'static str {
+    "linux"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn default_node_kind() -> &'static str {
+    std::env::consts::OS
+}
+
+#[cfg(target_os = "macos")]
+fn default_node_label() -> &'static str {
+    "macOS"
+}
+
+#[cfg(target_os = "linux")]
+fn default_node_label() -> &'static str {
+    "Linux"
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn default_node_label() -> &'static str {
+    std::env::consts::OS
+}
+
+#[cfg(target_os = "macos")]
+fn platform_display_name() -> Option<String> {
+    command_stdout("scutil", &["--get", "ComputerName"])
+}
+
+#[cfg(not(target_os = "macos"))]
+fn platform_display_name() -> Option<String> {
+    None
+}
+
+fn host_name() -> Option<String> {
+    std::env::var("HOSTNAME")
+        .ok()
+        .and_then(non_empty)
+        .or_else(|| command_stdout("hostname", &[]))
+}
+
+fn command_stdout(command: &str, args: &[&str]) -> Option<String> {
+    let output = Command::new(command).args(args).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    non_empty(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn non_empty(value: String) -> Option<String> {
+    let trimmed = value.trim().to_owned();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed)
+    }
 }
 
 fn pairing_options(cli: &Cli) -> Result<Option<BridgePairingOptions>> {
@@ -134,4 +207,55 @@ fn pairing_options(cli: &Cli) -> Result<Option<BridgePairingOptions>> {
             .expires_at_unix
             .context("missing --expires-at-unix / CMUX_PAIRING_EXPIRES_AT_UNIX")?,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli() -> Cli {
+        Cli {
+            socket: PathBuf::from("/tmp/cmx.sock"),
+            relay: RelayArg::Default,
+            pairing_id: None,
+            pairing_secret: None,
+            rivet_endpoint: None,
+            stack_project_id: None,
+            expires_at_unix: None,
+            node_id: None,
+            node_name: None,
+            node_subtitle: None,
+            node_kind: None,
+            allow_insecure_direct: true,
+        }
+    }
+
+    #[test]
+    fn node_info_defaults_to_detected_platform_metadata() {
+        let node = node_info(&cli()).expect("node info").expect("node");
+
+        assert!(!node.name.trim().is_empty());
+        assert!(
+            node.subtitle
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty())
+        );
+        assert_eq!(node.kind.as_deref(), Some(default_node_kind()));
+    }
+
+    #[test]
+    fn node_info_allows_cli_metadata_overrides() {
+        let mut cli = cli();
+        cli.node_id = Some("manual-id".into());
+        cli.node_name = Some("Linux Builder".into());
+        cli.node_subtitle = Some("remote".into());
+        cli.node_kind = Some("linux".into());
+
+        let node = node_info(&cli).expect("node info").expect("node");
+
+        assert_eq!(node.id.as_deref(), Some("manual-id"));
+        assert_eq!(node.name, "Linux Builder");
+        assert_eq!(node.subtitle.as_deref(), Some("remote"));
+        assert_eq!(node.kind.as_deref(), Some("linux"));
+    }
 }

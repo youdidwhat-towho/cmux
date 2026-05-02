@@ -39,6 +39,12 @@ struct CmxDefaultTerminalSessionFactory: CmxTerminalSessionMaking {
         pairingSecret: String?,
         stackAuthSession: CmxStackAuthSession?
     ) throws -> any CmxTerminalSession {
+        #if DEBUG
+        if CmxLaunchConfiguration.usesUITestingEchoSession() {
+            return CmxUITestingEchoTerminalSession()
+        }
+        #endif
+
         if let webSocketURL = ticket.webSocketURL {
             return CmxWebSocketTerminalSession(
                 url: webSocketURL,

@@ -20,6 +20,16 @@ enum CmxLaunchConfiguration {
         normalized(arguments: arguments).contains("--cmux-autoconnect") || environment["CMUX_IOS_AUTOCONNECT"] == "1"
     }
 
+    #if DEBUG
+    static func usesUITestingEchoSession(
+        arguments: [String] = ProcessInfo.processInfo.arguments,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        normalized(arguments: arguments).contains("--cmux-ui-testing-echo-session")
+            || environment["CMUX_IOS_UI_TESTING_ECHO_SESSION"] == "1"
+    }
+    #endif
+
     private static func normalized(arguments: [String]) -> [String] {
         arguments.flatMap { argument -> [String] in
             guard argument.first == "[",

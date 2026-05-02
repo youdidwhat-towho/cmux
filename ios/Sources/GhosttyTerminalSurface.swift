@@ -25,18 +25,10 @@ public protocol GhosttyTerminalSurfaceViewDelegate: AnyObject {
 public enum TerminalFontZoomDirection: Equatable {
     case decrease
     case increase
-
-    var bindingAction: String {
-        switch self {
-        case .decrease:
-            "decrease_font_size:1"
-        case .increase:
-            "increase_font_size:1"
-        }
-    }
 }
 
 public enum TerminalInputAccessoryAction: Int, CaseIterable {
+    case hideKeyboard
     case control
     case alternate
     case command
@@ -69,6 +61,8 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     func title(isMacRemote: Bool) -> String {
         switch self {
+        case .hideKeyboard:
+            ""
         case .control:
             isMacRemote ? "⌃" : String(localized: "ios.terminal.inputAccessory.control", defaultValue: "Ctrl")
         case .alternate:
@@ -122,6 +116,7 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var accessibilityIdentifier: String {
         switch self {
+        case .hideKeyboard: "terminal.inputAccessory.hideKeyboard"
         case .control: "terminal.inputAccessory.control"
         case .alternate: "terminal.inputAccessory.alt"
         case .command: "terminal.inputAccessory.command"
@@ -152,6 +147,8 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var accessibilityLabel: String? {
         switch self {
+        case .hideKeyboard:
+            String(localized: "ios.terminal.inputAccessory.hideKeyboard", defaultValue: "Hide Keyboard")
         case .zoomOut:
             String(localized: "ios.terminal.inputAccessory.zoomOut", defaultValue: "Zoom Out")
         case .zoomIn:
@@ -163,6 +160,8 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var symbolName: String? {
         switch self {
+        case .hideKeyboard:
+            "keyboard.chevron.compact.down"
         case .zoomOut:
             "minus.magnifyingglass"
         case .zoomIn:
@@ -194,7 +193,7 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var output: Data? {
         switch self {
-        case .control, .alternate, .command, .shift, .zoomOut, .zoomIn:
+        case .hideKeyboard, .control, .alternate, .command, .shift, .zoomOut, .zoomIn:
             nil
         case .escape:
             Data([0x1B])
@@ -712,6 +711,9 @@ private enum GhosttySurfaceDisposer {
 @MainActor
 public final class GhosttyTerminalSurfaceView: UIView {
     private static let defaultMobileFontSize: Float32 = 16
+    private static let minimumMobileFontSize: Float32 = 9
+    private static let maximumMobileFontSize: Float32 = 30
+    private static let mobileFontZoomStep: Float32 = 1
 
     private weak var runtime: GhosttyRuntime?
     private weak var delegate: GhosttyTerminalSurfaceViewDelegate?
@@ -721,6 +723,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
     private var hasFedInitialOutput = false
     private var needsDraw = false
     private var pinchAccumulatedScale: CGFloat = 1
+    private var currentFontSize = GhosttyTerminalSurfaceView.defaultMobileFontSize
     #if DEBUG
     var onOutputProcessedForTesting: (() -> Void)?
     #endif
@@ -877,6 +880,19 @@ public final class GhosttyTerminalSurfaceView: UIView {
         inputProxy.simulateAccessoryActionForTesting(action)
     }
 
+    public var accessoryActionIdentifiersForTesting: [String] {
+        inputProxy.accessoryActionIdentifiersForTesting
+    }
+
+    @discardableResult
+    public func simulateFontZoomForTesting(_ direction: TerminalFontZoomDirection) -> Bool {
+        performFontZoom(direction)
+    }
+
+    public var fontSizeForTesting: Float32 {
+        currentFontSize
+    }
+
     public func renderedTextForTesting(pointTag: ghostty_point_tag_e = GHOSTTY_POINT_VIEWPORT) -> String? {
         guard let surface else { return nil }
         let selection = ghostty_selection_s(
@@ -958,7 +974,11 @@ public final class GhosttyTerminalSurfaceView: UIView {
         window?.windowScene?.screen.scale ?? traitCollection.displayScale.nonZero ?? 2
     }
 
-    private func syncSurfaceGeometry(reportResize: Bool = true, forceReport: Bool = false) {
+    private func syncSurfaceGeometry(
+        reportResize: Bool = true,
+        forceReport: Bool = false,
+        renderNow: Bool = true
+    ) {
         guard let surface else { return }
         let scale = screenScale
         let width = UInt32(max(1, Int((max(bounds.width, 1) * scale).rounded(.down))))
@@ -982,7 +1002,11 @@ public final class GhosttyTerminalSurfaceView: UIView {
             sublayer.contentsScale = scale
         }
         if hasFedInitialOutput {
-            ghostty_surface_render_now(surface)
+            if renderNow {
+                ghostty_surface_render_now(surface)
+            } else {
+                needsDraw = true
+            }
         }
     }
 
@@ -1008,33 +1032,51 @@ public final class GhosttyTerminalSurfaceView: UIView {
         case .changed:
             let delta = gesture.scale - pinchAccumulatedScale
             guard abs(delta) >= 0.15 else { return }
-            if performFontZoom(delta > 0 ? .increase : .decrease) {
-                pinchAccumulatedScale = gesture.scale
-            }
+            _ = performFontZoom(delta > 0 ? .increase : .decrease, reportResize: false)
+            pinchAccumulatedScale = gesture.scale
         case .ended, .cancelled:
-            syncSurfaceGeometry()
+            syncSurfaceGeometry(forceReport: true)
         default:
             break
         }
     }
 
     @discardableResult
-    private func performFontZoom(_ direction: TerminalFontZoomDirection) -> Bool {
+    private func performFontZoom(
+        _ direction: TerminalFontZoomDirection,
+        reportResize: Bool = true
+    ) -> Bool {
         guard let surface else { return false }
-        let action = direction.bindingAction
+        let nextFontSize = nextMobileFontSize(after: direction)
+        guard nextFontSize != currentFontSize else { return false }
+        let action = "set_font_size:\(nextFontSize)"
         let handled = action.withCString { pointer in
             ghostty_surface_binding_action(surface, pointer, UInt(action.utf8.count))
         }
         guard handled else { return false }
-        syncSurfaceGeometry()
+        currentFontSize = nextFontSize
+        syncSurfaceGeometry(reportResize: reportResize, renderNow: false)
         needsDraw = true
         return true
+    }
+
+    private func nextMobileFontSize(after direction: TerminalFontZoomDirection) -> Float32 {
+        let delta = switch direction {
+        case .decrease:
+            -Self.mobileFontZoomStep
+        case .increase:
+            Self.mobileFontZoomStep
+        }
+        return min(
+            Self.maximumMobileFontSize,
+            max(Self.minimumMobileFontSize, currentFontSize + delta)
+        )
     }
 
     private func startDisplayLink() {
         guard displayLink == nil else { return }
         let link = CADisplayLink(target: self, selector: #selector(handleDisplayLink))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         link.add(to: .main, forMode: .common)
         displayLink = link
     }
@@ -1046,7 +1088,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
 
     @objc private func handleDisplayLink() {
         guard let surface else { return }
-        if needsDraw || hasFedInitialOutput {
+        if needsDraw {
             needsDraw = false
             ghostty_surface_render_now(surface)
         }
@@ -1059,6 +1101,7 @@ public final class GhosttyTerminalSurfaceView: UIView {
             view.runtime?.tick()
             if let surface = view.surface {
                 ghostty_surface_refresh(surface)
+                view.needsDraw = true
             }
         }
     }
@@ -1137,13 +1180,6 @@ private final class GhosttyInputTextView: UITextView {
         let container = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 44))
         container.backgroundColor = Self.accessoryBackground
 
-        let dismissButton = UIButton(type: .system)
-        dismissButton.translatesAutoresizingMaskIntoConstraints = false
-        dismissButton.setImage(UIImage(systemName: "keyboard.chevron.compact.down"), for: .normal)
-        dismissButton.tintColor = UIColor(white: 0.75, alpha: 1)
-        dismissButton.accessibilityIdentifier = "terminal.inputAccessory.hideKeyboard"
-        dismissButton.addTarget(self, action: #selector(handleHideKeyboard), for: .touchUpInside)
-
         let scrollView = UIScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.showsHorizontalScrollIndicator = false
@@ -1166,16 +1202,10 @@ private final class GhosttyInputTextView: UITextView {
         }
 
         scrollView.addSubview(stack)
-        container.addSubview(dismissButton)
         container.addSubview(scrollView)
 
         NSLayoutConstraint.activate([
-            dismissButton.leadingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.leadingAnchor, constant: 12),
-            dismissButton.centerYAnchor.constraint(equalTo: container.centerYAnchor),
-            dismissButton.widthAnchor.constraint(equalToConstant: 32),
-            dismissButton.heightAnchor.constraint(equalToConstant: 32),
-
-            scrollView.leadingAnchor.constraint(equalTo: dismissButton.trailingAnchor, constant: 8),
+            scrollView.leadingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.leadingAnchor, constant: 12),
             scrollView.trailingAnchor.constraint(equalTo: container.safeAreaLayoutGuide.trailingAnchor, constant: -12),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
             scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
@@ -1205,6 +1235,9 @@ private final class GhosttyInputTextView: UITextView {
         keyboardType = .default
         textContainerInset = .zero
         inputAccessoryView = terminalAccessoryToolbar
+        isAccessibilityElement = true
+        accessibilityIdentifier = "terminal.input"
+        accessibilityLabel = String(localized: "ios.terminal.input.accessibility", defaultValue: "Terminal input")
     }
 
     required init?(coder: NSCoder) {
@@ -1278,6 +1311,11 @@ private final class GhosttyInputTextView: UITextView {
         handleAccessoryAction(action)
     }
 
+    var accessoryActionIdentifiersForTesting: [String] {
+        guard let stack = accessoryStackView else { return [] }
+        return stack.arrangedSubviews.compactMap(\.accessibilityIdentifier)
+    }
+
     private func resetStickyTapTimeForTesting(_ action: TerminalInputAccessoryAction) {
         switch action {
         case .control:
@@ -1298,10 +1336,6 @@ private final class GhosttyInputTextView: UITextView {
         _ = handleHardwareKeyInput(input: input, modifierFlags: sender.modifierFlags)
     }
 
-    @objc private func handleHideKeyboard() {
-        onHideKeyboard?()
-    }
-
     @objc private func handleAccessoryButton(_ sender: UIButton) {
         guard let action = TerminalInputAccessoryAction(rawValue: sender.tag) else { return }
         handleAccessoryAction(action)
@@ -1317,6 +1351,13 @@ private final class GhosttyInputTextView: UITextView {
     }
 
     private func handleAccessoryAction(_ action: TerminalInputAccessoryAction) {
+        if action == .hideKeyboard {
+            disarmAllModifiers()
+            refreshAccessoryButtonStyles()
+            onHideKeyboard?()
+            return
+        }
+
         if let zoomDirection = action.zoomDirection {
             disarmAllModifiers()
             refreshAccessoryButtonStyles()

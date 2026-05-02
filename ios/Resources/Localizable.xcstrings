@@ -553,6 +553,12 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "libghostty を起動できませんでした" } }
       }
     },
+    "ios.terminal.input.accessibility" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Terminal input" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "ターミナル入力" } }
+      }
+    },
     "ios.terminal.inputAccessory.alt" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Alt" } },
@@ -605,6 +611,12 @@
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Esc" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "Esc" } }
+      }
+    },
+    "ios.terminal.inputAccessory.hideKeyboard" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Hide Keyboard" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "キーボードを隠す" } }
       }
     },
     "ios.terminal.inputAccessory.home" : {

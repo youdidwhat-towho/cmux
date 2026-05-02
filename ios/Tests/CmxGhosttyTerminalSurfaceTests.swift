@@ -80,6 +80,7 @@ final class CmxGhosttyTerminalSurfaceTests: XCTestCase {
         let actions = Set(TerminalInputAccessoryAction.allCases)
 
         XCTAssertTrue(actions.isSuperset(of: [
+            .hideKeyboard,
             .control,
             .alternate,
             .command,
@@ -104,6 +105,35 @@ final class CmxGhosttyTerminalSurfaceTests: XCTestCase {
             .ctrlZ,
             .ctrlL,
         ]))
+    }
+
+    func testGhosttyAccessoryBarKeepsActionsInsideScrollerAndShowsMacCommand() throws {
+        let (surfaceView, _) = try makeSurfaceView()
+
+        XCTAssertTrue(surfaceView.accessoryActionIdentifiersForTesting.contains("terminal.inputAccessory.hideKeyboard"))
+        XCTAssertFalse(surfaceView.accessoryActionIdentifiersForTesting.contains("terminal.inputAccessory.command"))
+
+        surfaceView.updateHostPlatform(.macOS)
+
+        XCTAssertTrue(surfaceView.accessoryActionIdentifiersForTesting.contains("terminal.inputAccessory.command"))
+    }
+
+    func testGhosttyFontZoomClampsRepeatedGesturesToMobileBounds() throws {
+        let (surfaceView, _) = try makeSurfaceView()
+
+        for _ in 0..<100 {
+            _ = surfaceView.simulateFontZoomForTesting(.decrease)
+        }
+        let minimum = surfaceView.fontSizeForTesting
+        XCTAssertFalse(surfaceView.simulateFontZoomForTesting(.decrease))
+
+        for _ in 0..<100 {
+            _ = surfaceView.simulateFontZoomForTesting(.increase)
+        }
+        let maximum = surfaceView.fontSizeForTesting
+        XCTAssertFalse(surfaceView.simulateFontZoomForTesting(.increase))
+        XCTAssertGreaterThanOrEqual(minimum, 9)
+        XCTAssertLessThanOrEqual(maximum, 30)
     }
 
     func testGhosttySurfaceCanForceInitialGridReportAfterCoordinatorBinding() throws {
