@@ -3,6 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IOS_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$IOS_DIR/.." && pwd)"
 cd "$IOS_DIR"
 
 TAG=""
@@ -40,6 +41,8 @@ if [ -n "$TAG" ]; then
     BUNDLE_ID="dev.cmux.ios.$TAG_SLUG"
     APP_NAME="$TAG"
 fi
+
+"$REPO_ROOT/scripts/ensure-ghosttykit.sh"
 
 if command -v xcodegen >/dev/null 2>&1; then
     xcodegen generate >/dev/null

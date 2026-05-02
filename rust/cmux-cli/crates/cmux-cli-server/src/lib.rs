@@ -29,7 +29,7 @@ pub mod render;
 pub mod snapshot;
 mod terminal_query;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -47,6 +47,7 @@ const FLASH_PULSE_MS: u64 = 150;
 const SELECTION_AUTOSCROLL_LINES: isize = 3;
 const SELECTION_AUTOSCROLL_TICK_MS: u64 = 80;
 const NATIVE_GRID_FRAME_MS: u64 = 16;
+const PTY_REPLAY_MAX_BYTES: usize = 4 * 1024 * 1024;
 
 fn flash_is_on(deadline_ms: u64, now_ms: u64) -> bool {
     if deadline_ms <= now_ms {
@@ -118,9 +119,9 @@ use cmux_cli_core::settings::{self, InputHandler, KeybindTable};
 use cmux_cli_protocol::{
     AttachedClientInfo, AttachedClientKind, BufferInfo, ClientMsg, CodecError, Command,
     CommandData, CommandResult, NativePanelNode, NativeSnapshot, NativeSplitDirection,
-    NativeTerminalCursor, NativeTerminalFont, NativeTerminalThemeSet, NativeTerminalViewport,
-    PROTOCOL_VERSION, ServerMsg, SpaceInfo, SplitDropEdge, SplitPathStep, TabInfo, Viewport,
-    WorkspaceInfo, read_msg, write_msg,
+    NativeTerminalCursor, NativeTerminalFont, NativeTerminalRenderer, NativeTerminalThemeSet,
+    NativeTerminalViewport, PROTOCOL_VERSION, ServerMsg, SpaceInfo, SplitDropEdge, SplitPathStep,
+    TabInfo, Viewport, WorkspaceInfo, read_msg, write_msg,
 };
 use futures_util::{SinkExt, StreamExt};
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -330,6 +331,55 @@ struct TabSpawnOptions {
 
 // ------------------------------- Tab -----------------------------------
 
+#[derive(Debug)]
+struct PtyReplayBuffer {
+    max_bytes: usize,
+    byte_len: usize,
+    chunks: VecDeque<Vec<u8>>,
+}
+
+impl PtyReplayBuffer {
+    fn new(max_bytes: usize) -> Self {
+        Self {
+            max_bytes,
+            byte_len: 0,
+            chunks: VecDeque::new(),
+        }
+    }
+
+    fn record(&mut self, data: &[u8]) {
+        if data.is_empty() || self.max_bytes == 0 {
+            return;
+        }
+        if data.len() > self.max_bytes {
+            self.chunks.clear();
+            self.chunks
+                .push_back(data[data.len() - self.max_bytes..].to_vec());
+            self.byte_len = self.max_bytes;
+            return;
+        }
+        self.chunks.push_back(data.to_vec());
+        self.byte_len += data.len();
+        while self.byte_len > self.max_bytes {
+            let Some(front) = self.chunks.pop_front() else {
+                self.byte_len = 0;
+                return;
+            };
+            self.byte_len = self.byte_len.saturating_sub(front.len());
+        }
+    }
+
+    fn chunks(&self) -> Vec<Vec<u8>> {
+        self.chunks.iter().cloned().collect()
+    }
+}
+
+fn record_pty_replay(replay: &Arc<StdMutex<PtyReplayBuffer>>, chunk: &[u8]) {
+    if let Ok(mut replay) = replay.lock() {
+        replay.record(chunk);
+    }
+}
+
 pub struct Tab {
     pub id: u64,
     /// Tab title. `ArcSwap` lets the render thread push updates
@@ -342,6 +392,7 @@ pub struct Tab {
     explicit_title: Arc<AtomicBool>,
     pub cwd: Mutex<Option<PathBuf>>,
     output_tx: broadcast::Sender<Vec<u8>>,
+    pty_replay: Arc<StdMutex<PtyReplayBuffer>>,
     pty_tx: Arc<mpsc::UnboundedSender<PtyOp>>,
     alive_rx: watch::Receiver<bool>,
     /// True while the program inside the PTY has mouse tracking enabled
@@ -377,6 +428,15 @@ pub(crate) enum PtyOp {
     Write(Vec<u8>),
     TerminalResponse(TerminalResponse),
     Resize(PtySize),
+}
+
+impl Tab {
+    fn pty_replay_chunks(&self) -> Vec<Vec<u8>> {
+        match self.pty_replay.lock() {
+            Ok(replay) => replay.chunks(),
+            Err(_) => Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -614,6 +674,7 @@ impl Tab {
         let reader = master.try_clone_reader().context("clone pty reader")?;
 
         let (output_tx, _) = broadcast::channel::<Vec<u8>>(1024);
+        let pty_replay = Arc::new(StdMutex::new(PtyReplayBuffer::new(PTY_REPLAY_MAX_BYTES)));
         let (pty_tx_raw, mut pty_rx) = mpsc::unbounded_channel::<PtyOp>();
         let pty_tx = Arc::new(pty_tx_raw);
         let (alive_tx, alive_rx) = watch::channel(true);
@@ -654,6 +715,7 @@ impl Tab {
         let codex_enter_ms_reader = codex_enter_ms.clone();
         let codex_output_seq_reader = codex_output_seq.clone();
         let pty_tx_reader = Arc::downgrade(&pty_tx);
+        let pty_replay_reader = Arc::clone(&pty_replay);
         task::spawn_blocking(move || {
             use std::io::Read;
             let mut reader = reader;
@@ -735,6 +797,7 @@ impl Tab {
                             let end = probe.current_end.min(data.len());
                             if end > offset {
                                 let chunk = data[offset..end].to_vec();
+                                record_pty_replay(&pty_replay_reader, &chunk);
                                 broker_reader.pty_bytes(id, chunk.clone());
                                 let _ = output_broadcast.send(chunk);
                                 offset = end;
@@ -785,6 +848,7 @@ impl Tab {
                         }
                         if offset < data.len() {
                             let chunk = data[offset..].to_vec();
+                            record_pty_replay(&pty_replay_reader, &chunk);
                             broker_reader.pty_bytes(id, chunk.clone());
                             let _ = output_broadcast.send(chunk);
                         }
@@ -893,6 +957,7 @@ impl Tab {
             explicit_title,
             cwd: Mutex::new(effective_cwd),
             output_tx,
+            pty_replay,
             pty_tx,
             alive_rx,
             mouse_tracking: mouse_tracking_rx,
@@ -5263,6 +5328,87 @@ impl Drop for NativeTerminalDirtyMux {
     }
 }
 
+#[derive(Debug)]
+struct NativePtyOutputEvent {
+    tab_id: TabId,
+    data: Vec<u8>,
+}
+
+struct NativePtyOutputMux {
+    tx: mpsc::UnboundedSender<NativePtyOutputEvent>,
+    rx: mpsc::UnboundedReceiver<NativePtyOutputEvent>,
+    tasks: HashMap<TabId, tokio::task::JoinHandle<()>>,
+}
+
+impl NativePtyOutputMux {
+    fn new() -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        Self {
+            tx,
+            rx,
+            tasks: HashMap::new(),
+        }
+    }
+
+    fn sync(&mut self, tabs: &[Arc<Tab>]) {
+        let wanted: HashSet<TabId> = tabs.iter().map(|tab| tab.id).collect();
+        self.tasks.retain(|tab_id, task| {
+            if wanted.contains(tab_id) {
+                true
+            } else {
+                task.abort();
+                false
+            }
+        });
+
+        for tab in tabs {
+            if self.tasks.contains_key(&tab.id) {
+                continue;
+            }
+            let tab_id = tab.id;
+            let mut rx = tab.output_tx.subscribe();
+            let tx = self.tx.clone();
+            let task = tokio::spawn(async move {
+                loop {
+                    match rx.recv().await {
+                        Ok(data) => {
+                            if tx.send(NativePtyOutputEvent { tab_id, data }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                            if probe::verbose_enabled() {
+                                probe::log_event(
+                                    "server",
+                                    "native_pty_lagged",
+                                    &[
+                                        ("tab_id", tab_id.to_string()),
+                                        ("skipped", skipped.to_string()),
+                                    ],
+                                );
+                            }
+                        }
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+            self.tasks.insert(tab_id, task);
+        }
+    }
+
+    async fn recv(&mut self) -> Option<NativePtyOutputEvent> {
+        self.rx.recv().await
+    }
+}
+
+impl Drop for NativePtyOutputMux {
+    fn drop(&mut self) {
+        for (_, task) in self.tasks.drain() {
+            task.abort();
+        }
+    }
+}
+
 async fn run_session(
     daemon: Arc<Daemon>,
     mut session: Session,
@@ -5274,17 +5420,24 @@ async fn run_session(
         .recv()
         .await?
         .ok_or_else(|| anyhow!("client disconnected before Hello"))?;
-    let (native, version, viewport, token) = match hello {
+    let (native, version, viewport, token, terminal_renderer) = match hello {
         ClientMsg::Hello {
             version,
             viewport,
             token,
-        } => (false, version, viewport, token),
+        } => (
+            false,
+            version,
+            viewport,
+            token,
+            NativeTerminalRenderer::ServerGrid,
+        ),
         ClientMsg::HelloNative {
             version,
             viewport,
             token,
-        } => (true, version, viewport, token),
+            terminal_renderer,
+        } => (true, version, viewport, token, terminal_renderer),
         _ => bail!("expected Hello, got {hello:?}"),
     };
 
@@ -5309,7 +5462,15 @@ async fn run_session(
         return Ok(());
     }
     if native {
-        return run_native_session(daemon, session, viewport, heartbeat, websocket_session).await;
+        return run_native_session(
+            daemon,
+            session,
+            viewport,
+            terminal_renderer,
+            heartbeat,
+            websocket_session,
+        )
+        .await;
     }
     let mut input = InputHandler::new(daemon.keybind_table());
     let mut keybinds_rx = daemon.keybinds_rx();
@@ -5634,6 +5795,7 @@ async fn run_native_session(
     daemon: Arc<Daemon>,
     mut session: Session,
     viewport: Viewport,
+    terminal_renderer: NativeTerminalRenderer,
     heartbeat: HeartbeatConfig,
     websocket_session: bool,
 ) -> Result<()> {
@@ -5653,7 +5815,9 @@ async fn run_native_session(
     let mut window = WindowState::new(&daemon).await;
     let mut viewport_state = (viewport.cols, viewport.rows);
     let mut output_mux = NativeTerminalDirtyMux::new();
+    let mut pty_mux = NativePtyOutputMux::new();
     let mut pending_native_dirty_tabs = HashSet::<TabId>::new();
+    let mut replayed_native_pty_tabs = HashSet::<TabId>::new();
     let mut has_native_layout = false;
     let _view_guard = ClientViewRegistration::new(daemon.clone(), session_id.clone());
     let heartbeat_enabled = heartbeat.enabled && websocket_session;
@@ -5666,7 +5830,18 @@ async fn run_native_session(
     native_grid_tick.tick().await;
     let mut last_client_seen = Instant::now();
 
-    send_native_snapshot(&mut session, &daemon, &mut window, &mut output_mux, false).await?;
+    refresh_native_snapshot_for_renderer(
+        &mut session,
+        &daemon,
+        &mut window,
+        terminal_renderer,
+        has_native_layout,
+        &mut output_mux,
+        &mut pty_mux,
+        &mut replayed_native_pty_tabs,
+        false,
+    )
+    .await?;
 
     loop {
         tokio::select! {
@@ -5685,11 +5860,15 @@ async fn run_native_session(
                 if changed.is_err() {
                     return Ok(());
                 }
-                if let Err(e) = send_native_snapshot(
+                if let Err(e) = refresh_native_snapshot_for_renderer(
                     &mut session,
                     &daemon,
                     &mut window,
+                    terminal_renderer,
+                    has_native_layout,
                     &mut output_mux,
+                    &mut pty_mux,
+                    &mut replayed_native_pty_tabs,
                     has_native_layout,
                 ).await {
                     tracing::warn!(error = %e, "could not refresh native client snapshot");
@@ -5754,11 +5933,15 @@ async fn run_native_session(
                                     .await?;
                             }
                             if repaint {
-                                send_native_snapshot(
+                                refresh_native_snapshot_for_renderer(
                                     &mut session,
                                     &daemon,
                                     &mut window,
+                                    terminal_renderer,
+                                    has_native_layout,
                                     &mut output_mux,
+                                    &mut pty_mux,
+                                    &mut replayed_native_pty_tabs,
                                     has_native_layout,
                                 ).await?;
                             }
@@ -5797,11 +5980,15 @@ async fn run_native_session(
                                     .await?;
                             }
                             if repaint {
-                                send_native_snapshot(
+                                refresh_native_snapshot_for_renderer(
                                     &mut session,
                                     &daemon,
                                     &mut window,
+                                    terminal_renderer,
+                                    has_native_layout,
                                     &mut output_mux,
+                                    &mut pty_mux,
+                                    &mut replayed_native_pty_tabs,
                                     has_native_layout,
                                 ).await?;
                             }
@@ -5811,12 +5998,26 @@ async fn run_native_session(
                         has_native_layout = !terminals.is_empty();
                         daemon.update_client_native_view(&session_id, terminals).await;
                         if has_native_layout {
-                            send_visible_native_terminal_grid_snapshots(
-                                &mut session,
-                                &daemon,
-                                &mut window,
-                            )
-                            .await?;
+                            match terminal_renderer {
+                                NativeTerminalRenderer::ServerGrid => {
+                                    send_visible_native_terminal_grid_snapshots(
+                                        &mut session,
+                                        &daemon,
+                                        &mut window,
+                                    )
+                                    .await?;
+                                }
+                                NativeTerminalRenderer::Libghostty => {
+                                    send_visible_native_pty_replay(
+                                        &mut session,
+                                        &daemon,
+                                        &mut window,
+                                        &mut pty_mux,
+                                        &mut replayed_native_pty_tabs,
+                                    )
+                                    .await?;
+                                }
+                            }
                         }
                     }
                     Some(ClientMsg::Resize { viewport }) => {
@@ -5855,11 +6056,15 @@ async fn run_native_session(
                                 .await?;
                         }
                         if repaint {
-                            send_native_snapshot(
+                            refresh_native_snapshot_for_renderer(
                                 &mut session,
                                 &daemon,
                                 &mut window,
+                                terminal_renderer,
+                                has_native_layout,
                                 &mut output_mux,
+                                &mut pty_mux,
+                                &mut replayed_native_pty_tabs,
                                 has_native_layout,
                             ).await?;
                         }
@@ -5890,7 +6095,7 @@ async fn run_native_session(
                     return Ok(());
                 }
             }
-            batch = output_mux.recv_batch() => {
+            batch = output_mux.recv_batch(), if terminal_renderer == NativeTerminalRenderer::ServerGrid => {
                 let Some(batch) = batch else {
                     return Ok(());
                 };
@@ -5918,7 +6123,18 @@ async fn run_native_session(
                     );
                 }
             }
-            _ = native_grid_tick.tick(), if has_native_layout && !pending_native_dirty_tabs.is_empty() => {
+            event = pty_mux.recv(), if has_native_layout && terminal_renderer == NativeTerminalRenderer::Libghostty => {
+                let Some(event) = event else {
+                    return Ok(());
+                };
+                session
+                    .send(&ServerMsg::PtyBytes {
+                        tab_id: event.tab_id,
+                        data: event.data,
+                    })
+                    .await?;
+            }
+            _ = native_grid_tick.tick(), if has_native_layout && terminal_renderer == NativeTerminalRenderer::ServerGrid && !pending_native_dirty_tabs.is_empty() => {
                 let mut tab_ids = pending_native_dirty_tabs.drain().collect::<Vec<_>>();
                 tab_ids.sort_unstable();
                 if probe::verbose_enabled() {
@@ -5947,11 +6163,39 @@ async fn run_native_session(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn refresh_native_snapshot_for_renderer(
+    session: &mut Session,
+    daemon: &Arc<Daemon>,
+    window: &mut WindowState,
+    terminal_renderer: NativeTerminalRenderer,
+    has_native_layout: bool,
+    output_mux: &mut NativeTerminalDirtyMux,
+    pty_mux: &mut NativePtyOutputMux,
+    replayed_tabs: &mut HashSet<TabId>,
+    send_terminal_grids: bool,
+) -> Result<()> {
+    let grid_mode = terminal_renderer == NativeTerminalRenderer::ServerGrid;
+    let output_mux = if grid_mode { Some(output_mux) } else { None };
+    send_native_snapshot(
+        session,
+        daemon,
+        window,
+        output_mux,
+        send_terminal_grids && grid_mode,
+    )
+    .await?;
+    if terminal_renderer == NativeTerminalRenderer::Libghostty && has_native_layout {
+        send_visible_native_pty_replay(session, daemon, window, pty_mux, replayed_tabs).await?;
+    }
+    Ok(())
+}
+
 async fn send_native_snapshot(
     session: &mut Session,
     daemon: &Arc<Daemon>,
     window: &mut WindowState,
-    output_mux: &mut NativeTerminalDirtyMux,
+    output_mux: Option<&mut NativeTerminalDirtyMux>,
     send_terminal_grids: bool,
 ) -> Result<()> {
     let snapshot = build_native_snapshot(daemon, window).await?;
@@ -5963,7 +6207,9 @@ async fn send_native_snapshot(
             visible_tabs.push(tab);
         }
     }
-    output_mux.sync(visible_tabs);
+    if let Some(output_mux) = output_mux {
+        output_mux.sync(visible_tabs);
+    }
 
     session
         .send(&ServerMsg::NativeSnapshot { snapshot })
@@ -5987,6 +6233,43 @@ async fn send_visible_native_terminal_grid_snapshots(
     collect_native_visible_tab_ids(&snapshot.panels, &mut visible_ids);
     for tab_id in visible_ids {
         send_native_terminal_grid_snapshot(session, daemon, tab_id).await?;
+    }
+    Ok(())
+}
+
+async fn send_visible_native_pty_replay(
+    session: &mut Session,
+    daemon: &Arc<Daemon>,
+    window: &mut WindowState,
+    pty_mux: &mut NativePtyOutputMux,
+    replayed_tabs: &mut HashSet<TabId>,
+) -> Result<()> {
+    let snapshot = build_native_snapshot(daemon, window).await?;
+    let mut visible_ids = Vec::new();
+    collect_native_visible_tab_ids(&snapshot.panels, &mut visible_ids);
+    let visible_id_set: HashSet<TabId> = visible_ids.iter().copied().collect();
+    replayed_tabs.retain(|tab_id| visible_id_set.contains(tab_id));
+
+    let mut visible_tabs = Vec::with_capacity(visible_ids.len());
+    for tab_id in visible_ids {
+        if let Some(tab) = daemon.tab_by_id(tab_id).await {
+            visible_tabs.push(tab);
+        }
+    }
+
+    pty_mux.sync(&visible_tabs);
+    for tab in visible_tabs {
+        if !replayed_tabs.insert(tab.id) {
+            continue;
+        }
+        for chunk in tab.pty_replay_chunks() {
+            session
+                .send(&ServerMsg::PtyBytes {
+                    tab_id: tab.id,
+                    data: chunk,
+                })
+                .await?;
+        }
     }
     Ok(())
 }

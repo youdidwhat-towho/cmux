@@ -5,6 +5,18 @@ struct CmxBridgeTicket: Decodable, Equatable {
     let alpn: String
     let endpoint: CmxEndpointAddr
     let auth: CmxBridgeTicketAuth?
+
+    var webSocketURL: URL? {
+        endpoint.addrs.lazy.compactMap(\.webSocketURL).first
+    }
+
+    var webSocketToken: String? {
+        guard let url = webSocketURL,
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let item = components.queryItems?.first(where: { $0.name == "token" || $0.name == "access_token" })
+        else { return nil }
+        return item.value
+    }
 }
 
 struct CmxEndpointAddr: Decodable, Equatable {
@@ -16,6 +28,11 @@ enum CmxBridgeTicketAuth: Decodable, Equatable {
     case direct
     case rivetStack(pairingID: String, rivetEndpoint: String, stackProjectID: String, expiresAtUnix: UInt64)
     case unknown(String)
+
+    var pairingID: String? {
+        guard case .rivetStack(let pairingID, _, _, _) = self else { return nil }
+        return pairingID
+    }
 
     var label: String {
         switch self {
@@ -84,11 +101,42 @@ enum CmxTransportAddr: Equatable, Identifiable {
         case .custom(let value):
             return String(
                 format: String(localized: "ticket.route.custom", defaultValue: "custom:%@"),
-                value
+                CmxTransportAddr.redactedDisplayValue(value)
             )
         case .unknown(let value):
+            return CmxTransportAddr.redactedDisplayValue(value)
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .relay(let value), .ip(let value), .custom(let value), .unknown(let value):
             return value
         }
+    }
+
+    var webSocketURL: URL? {
+        guard var components = URLComponents(string: rawValue),
+              components.scheme == "ws" || components.scheme == "wss"
+        else { return nil }
+        if components.path.isEmpty || components.path == "/" {
+            components.path = "/attach"
+        }
+        return components.url
+    }
+
+    private static func redactedDisplayValue(_ value: String) -> String {
+        guard var components = URLComponents(string: value),
+              components.scheme == "ws" || components.scheme == "wss",
+              let queryItems = components.queryItems
+        else { return value }
+        components.queryItems = queryItems.map { item in
+            if item.name == "token" || item.name == "access_token" {
+                return URLQueryItem(name: item.name, value: "redacted")
+            }
+            return item
+        }
+        return components.string ?? value
     }
 }
 
@@ -126,7 +174,7 @@ extension CmxTransportAddr: Decodable {
 }
 
 enum CmxBridgeTicketParser {
-    static func parse(_ rawTicket: String) throws -> CmxBridgeTicket {
+    static func parse(_ rawTicket: String, now: Date = Date()) throws -> CmxBridgeTicket {
         let trimmed = rawTicket.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             throw CmxTicketError.empty
@@ -141,7 +189,37 @@ enum CmxBridgeTicketParser {
         guard ticket.alpn == "/cmux/cmx/3" else {
             throw CmxTicketError.unsupportedALPN(ticket.alpn)
         }
+        try validateAuth(ticket.auth, now: now)
         return ticket
+    }
+
+    private static func validateAuth(_ auth: CmxBridgeTicketAuth?, now: Date) throws {
+        guard let auth else {
+            throw CmxTicketError.missingAuth
+        }
+
+        switch auth {
+        case .direct:
+            return
+        case .unknown(let mode):
+            throw CmxTicketError.unsupportedAuth(mode)
+        case .rivetStack(let pairingID, let rivetEndpoint, let stackProjectID, let expiresAtUnix):
+            guard !pairingID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CmxTicketError.missingPairingID
+            }
+            guard !stackProjectID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                throw CmxTicketError.missingStackProjectID
+            }
+            guard let url = URL(string: rivetEndpoint.trimmingCharacters(in: .whitespacesAndNewlines)),
+                  let scheme = url.scheme,
+                  ["http", "https"].contains(scheme),
+                  url.host != nil else {
+                throw CmxTicketError.invalidRivetEndpoint
+            }
+            guard expiresAtUnix > UInt64(now.timeIntervalSince1970.rounded(.down)) else {
+                throw CmxTicketError.expiredPairing
+            }
+        }
     }
 }
 
@@ -150,6 +228,12 @@ enum CmxTicketError: LocalizedError, Equatable {
     case invalidUTF8
     case unsupportedVersion(Int)
     case unsupportedALPN(String)
+    case missingAuth
+    case unsupportedAuth(String)
+    case missingPairingID
+    case missingStackProjectID
+    case invalidRivetEndpoint
+    case expiredPairing
 
     var errorDescription: String? {
         switch self {
@@ -167,6 +251,21 @@ enum CmxTicketError: LocalizedError, Equatable {
                 format: String(localized: "ticket.error.alpn", defaultValue: "Unsupported bridge protocol %@."),
                 alpn
             )
+        case .missingAuth:
+            return String(localized: "ticket.error.auth_missing", defaultValue: "The bridge ticket is missing auth metadata.")
+        case .unsupportedAuth(let mode):
+            return String(
+                format: String(localized: "ticket.error.auth_unsupported", defaultValue: "Unsupported bridge auth mode %@."),
+                mode
+            )
+        case .missingPairingID:
+            return String(localized: "ticket.error.pairing_id", defaultValue: "The bridge ticket is missing its Rivet pairing id.")
+        case .missingStackProjectID:
+            return String(localized: "ticket.error.stack_project_id", defaultValue: "The bridge ticket is missing its Stack project id.")
+        case .invalidRivetEndpoint:
+            return String(localized: "ticket.error.rivet_endpoint", defaultValue: "The bridge ticket has an invalid Rivet endpoint.")
+        case .expiredPairing:
+            return String(localized: "ticket.error.pairing_expired", defaultValue: "The bridge pairing ticket has expired.")
         }
     }
 }

@@ -417,6 +417,7 @@ mod tests {
     #[test]
     fn pairing_proof_depends_on_secret_and_nonce() {
         let proof = pairing_proof("secret-a", "pairing-1", "client-a", "server-a").expect("proof");
+        assert_eq!(proof, "w62sYb9esNfmw-GwP36Z2ooce7olwxryi3xdRWVRpHs");
         assert_ne!(
             proof,
             pairing_proof("secret-b", "pairing-1", "client-a", "server-a").expect("proof")

@@ -1,5 +1,24 @@
 # TODO
 
+## iOS cmx Sync
+- [x] Render iOS terminal with actual libghostty/GhosttyKit instead of `libghostty-vt`
+- [x] Feed PTY bytes into Ghostty and route iOS input back through terminal-scoped state
+- [x] Dogfood simulator rendering, colors, and typing with tagged app `gsty`
+- [x] Add Swift `cmx` MessagePack codec coverage for `Hello`, `PtyBytes`, `Input`, framing, ticket routes, token redaction, and launch dogfood hooks
+- [x] Add iOS Stack/Rivet pairing proof code that matches the Rust iroh bridge HMAC test vector
+- [x] Add Rust native `libghostty` renderer mode: iOS requests raw PTY replay/live PTY bytes instead of server `TerminalGridSnapshot`
+- [x] Decode Rust `NativeSnapshot` on iOS and replace demo workspace/space/tab state with Rust-owned state after connect
+- [x] Replace connected-mode local echo with a real `cmx` WebSocket dev stream for `Hello`/`PtyBytes`/`Input` dogfood
+- [x] Switch iOS dev attach to `HelloNative` + `NativeInput` + `NativeLayout` so visible terminal input and resize target the Rust tab id
+- [x] Dogfood simulator against a real Rust `cmx server --ws-bind 0.0.0.0:8787 --auth-token dev`; typed text renders back through Ghostty, proving the two-way stream
+- [x] Add behavior coverage for the real libghostty renderer: unchanged PTY bytes, surface creation, ANSI output rendering, and outbound input
+- [x] Add iMessage-style node/workspace inbox shell with full-width conversation rows and node pins
+- [ ] Replace WebSocket dev route with real iroh transport for production tickets
+- [ ] Add Rust daemon integration tests for `Hello`/`PtyBytes`/`Input` round trip
+- [ ] Add iOS UI automation coverage that types into Ghostty and verifies the rendered terminal output
+- [ ] Replace demo node/workspace source with Stack Auth + Rivet signed-in hive discovery
+- [ ] Wire Stack Auth + Rivet pairing secrets before enabling production tickets
+
 ## Issue 151: Remote SSH (Living Execution)
 - [x] `cmux ssh` creates remote workspace metadata and does not require `--name`
 - [x] Remote daemon bootstrap/upload/start path with `cmuxd-remote serve --stdio`

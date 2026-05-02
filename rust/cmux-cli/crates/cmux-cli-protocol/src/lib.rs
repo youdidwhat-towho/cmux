@@ -45,6 +45,16 @@ pub struct TerminalColorReport {
     pub background: Option<TerminalRgb>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeTerminalRenderer {
+    /// Server-side libghostty-vt emits styled cell snapshots.
+    #[default]
+    ServerGrid,
+    /// Client-side libghostty receives raw PTY replay and live PTY bytes.
+    Libghostty,
+}
+
 /// Client → server.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -58,15 +68,16 @@ pub enum ClientMsg {
         #[serde(default)]
         token: Option<String>,
     },
-    /// Native graphical client mode. The server sends structured cmx state
-    /// plus per-terminal styled grids. The client renders chrome itself but
-    /// treats the server's libghostty-vt state as authoritative for terminal
-    /// cells.
+    /// Native graphical client mode. The server sends structured cmx state.
+    /// `terminal_renderer` decides whether terminal content arrives as
+    /// server-side styled cells or as raw PTY bytes for client-side libghostty.
     HelloNative {
         version: u32,
         viewport: Viewport,
         #[serde(default)]
         token: Option<String>,
+        #[serde(default)]
+        terminal_renderer: NativeTerminalRenderer,
     },
     /// Keystrokes / paste bytes destined for the focused tab's PTY.
     Input {

@@ -1,0 +1,132 @@
+import Foundation
+
+@MainActor
+protocol CmxWebSocketTerminalSessionDelegate: AnyObject {
+    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didReceive message: CmxServerMessage)
+    func webSocketTerminalSession(_ session: CmxWebSocketTerminalSession, didFail error: Error)
+    func webSocketTerminalSessionDidClose(_ session: CmxWebSocketTerminalSession)
+}
+
+@MainActor
+final class CmxWebSocketTerminalSession {
+    enum Mode: Equatable {
+        case tui
+        case nativeLibghostty
+    }
+
+    weak var delegate: CmxWebSocketTerminalSessionDelegate?
+
+    private let url: URL
+    private let token: String?
+    private let mode: Mode
+    private let urlSession: URLSession
+    private var task: URLSessionWebSocketTask?
+    private var receiveTask: Task<Void, Never>?
+    private var closedByClient = false
+
+    init(url: URL, token: String?, mode: Mode = .nativeLibghostty, urlSession: URLSession = .shared) {
+        self.url = url
+        self.token = token
+        self.mode = mode
+        self.urlSession = urlSession
+    }
+
+    func start(viewport: CmxWireViewport) {
+        closedByClient = false
+        let task = urlSession.webSocketTask(with: url)
+        self.task = task
+        task.resume()
+        receiveTask = Task { [weak self] in
+            await self?.receiveLoop()
+        }
+        switch mode {
+        case .tui:
+            send(.hello(viewport: viewport, token: token))
+        case .nativeLibghostty:
+            send(.helloNative(viewport: viewport, token: token))
+        }
+    }
+
+    func sendInput(_ data: Data, terminalID: UInt64) {
+        switch mode {
+        case .tui:
+            send(.input(data))
+        case .nativeLibghostty:
+            send(.nativeInput(tabID: terminalID, data: data))
+        }
+    }
+
+    func sendResize(_ viewport: CmxWireViewport, terminalID: UInt64) {
+        switch mode {
+        case .tui:
+            send(.resize(viewport))
+        case .nativeLibghostty:
+            send(.nativeLayout([
+                CmxWireTerminalViewport(tabID: terminalID, cols: viewport.cols, rows: viewport.rows),
+            ]))
+        }
+    }
+
+    func sendNativeLayout(_ terminals: [CmxWireTerminalViewport]) {
+        send(.nativeLayout(terminals))
+    }
+
+    func disconnect() {
+        closedByClient = true
+        receiveTask?.cancel()
+        receiveTask = nil
+        send(.detach)
+        task?.cancel(with: .goingAway, reason: nil)
+        task = nil
+    }
+
+    private func send(_ message: CmxClientMessage) {
+        guard let task else { return }
+        do {
+            let payload = try CmxWireCodec.encode(message)
+            task.send(.data(payload)) { [weak self] error in
+                guard let error else { return }
+                Task { @MainActor in
+                    guard let self, !self.closedByClient else { return }
+                    self.delegate?.webSocketTerminalSession(self, didFail: error)
+                }
+            }
+        } catch {
+            delegate?.webSocketTerminalSession(self, didFail: error)
+        }
+    }
+
+    private func receiveLoop() async {
+        guard let task else { return }
+        do {
+            while !Task.isCancelled {
+                let message = try await task.receive()
+                switch message {
+                case .data(let payload):
+                    delegate?.webSocketTerminalSession(self, didReceive: try CmxWireCodec.decodeServerMessage(payload))
+                case .string:
+                    throw CmxWebSocketTerminalSessionError.unexpectedTextFrame
+                @unknown default:
+                    throw CmxWebSocketTerminalSessionError.unsupportedFrame
+                }
+            }
+        } catch {
+            guard !closedByClient else { return }
+            delegate?.webSocketTerminalSession(self, didFail: error)
+        }
+    }
+}
+
+enum CmxWebSocketTerminalSessionError: LocalizedError {
+    case unexpectedTextFrame
+    case unsupportedFrame
+
+    var errorDescription: String? {
+        switch self {
+        case .unexpectedTextFrame:
+            String(localized: "ticket.error.websocket_text", defaultValue: "cmx sent an unexpected WebSocket text frame.")
+        case .unsupportedFrame:
+            String(localized: "ticket.error.websocket_frame", defaultValue: "cmx sent an unsupported WebSocket frame.")
+        }
+    }
+}

@@ -1,0 +1,126 @@
+import CryptoKit
+import Foundation
+import Security
+
+private let cmxIrohALPN = "/cmux/cmx/3"
+
+struct CmxPairingStart: Codable, Equatable {
+    let type: String
+    let pairingID: String
+    let clientNonce: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case pairingID = "pairing_id"
+        case clientNonce = "client_nonce"
+    }
+}
+
+struct CmxPairingChallenge: Codable, Equatable {
+    let type: String
+    let pairingID: String
+    let serverNonce: String
+    let alpn: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case pairingID = "pairing_id"
+        case serverNonce = "server_nonce"
+        case alpn
+    }
+}
+
+struct CmxPairingResponse: Codable, Equatable {
+    let type: String
+    let pairingID: String
+    let proof: String
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case pairingID = "pairing_id"
+        case proof
+    }
+}
+
+struct CmxPairingAccepted: Codable, Equatable {
+    let type: String
+}
+
+enum CmxPairingAuthError: LocalizedError, Equatable {
+    case pairingIDMismatch
+    case unsupportedALPN(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .pairingIDMismatch:
+            return String(localized: "pairing.error.id_mismatch", defaultValue: "The pairing challenge does not match this ticket.")
+        case .unsupportedALPN(let alpn):
+            return String(
+                format: String(localized: "pairing.error.alpn", defaultValue: "Unsupported pairing protocol %@."),
+                alpn
+            )
+        }
+    }
+}
+
+enum CmxPairingAuth {
+    static func makeStart(pairingID: String, clientNonce: String = makeNonce()) -> CmxPairingStart {
+        CmxPairingStart(type: "pairing_start", pairingID: pairingID, clientNonce: clientNonce)
+    }
+
+    static func makeResponse(
+        secret: String,
+        start: CmxPairingStart,
+        challenge: CmxPairingChallenge
+    ) throws -> CmxPairingResponse {
+        guard challenge.pairingID == start.pairingID else {
+            throw CmxPairingAuthError.pairingIDMismatch
+        }
+        guard challenge.alpn == cmxIrohALPN else {
+            throw CmxPairingAuthError.unsupportedALPN(challenge.alpn)
+        }
+        return CmxPairingResponse(
+            type: "pairing_response",
+            pairingID: start.pairingID,
+            proof: proof(
+                secret: secret,
+                pairingID: start.pairingID,
+                clientNonce: start.clientNonce,
+                serverNonce: challenge.serverNonce
+            )
+        )
+    }
+
+    static func proof(
+        secret: String,
+        pairingID: String,
+        clientNonce: String,
+        serverNonce: String
+    ) -> String {
+        let message = "\(cmxIrohALPN)\n\(pairingID)\n\(clientNonce)\n\(serverNonce)"
+        let key = SymmetricKey(data: Data(secret.utf8))
+        let code = HMAC<SHA256>.authenticationCode(for: Data(message.utf8), using: key)
+        return Data(code).base64URLEncodedString()
+    }
+
+    static func encodeLine<T: Encodable>(_ value: T) throws -> Data {
+        var data = try JSONEncoder().encode(value)
+        data.append(0x0A)
+        return data
+    }
+
+    private static func makeNonce() -> String {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes).base64URLEncodedString()
+    }
+}
+
+private extension Data {
+    func base64URLEncodedString() -> String {
+        base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+    }
+}

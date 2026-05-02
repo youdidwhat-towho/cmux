@@ -10,16 +10,28 @@ The parts this path deliberately does not carry forward are the Zig daemon, loca
 
 ## Rust daemon path
 
-The imported Rust tree under `rust/cmux-cli` already has the core pieces this app needs:
+The Rust `cmx` runtime from `$HOME/fun/cmux-cli` already has the core pieces this app needs:
 
 - workspaces, spaces, panes, and terminal state
 - a MessagePack protocol for TUI frame streaming, commands, layout, and native snapshots
-- `libghostty-vt` based terminal parsing in the daemon for native snapshots
 - a TUI attach mode that streams the same ANSI frame model used by the Rust `cmx` terminal interface
 
 The first production milestone is not the Swift sidebar model. It is iOS connecting as another `cmx` client and rendering the shared TUI interface through libghostty/GhosttyKit. The iOS client sends `Hello`, receives `PtyBytes`, sends `Input` and `Command`, and reconnects to the same Rust daemon state as the CLI/TUI.
 
 After that works, the Swift app should move to Rust-owned state by using `HelloNative`, `NativeSnapshot`, `TerminalGridSnapshot`, `NativeInput`, `NativeLayout`, and `Command`. Swift should render native controls, but Rust owns the workspace, space, panel, tab, terminal, and reconnect lifecycle.
+
+Current implementation status:
+
+- iOS renders the terminal with actual libghostty/GhosttyKit.
+- The iOS renderer has unit coverage for unchanged PTY byte forwarding, actual Ghostty surface creation, ANSI output rendering, and outbound typed input.
+- iOS has a local Swift `cmx` MessagePack codec with unit coverage for the TUI wire contract plus native `HelloNative`, `NativeSnapshot`, and `TerminalGridSnapshot` decoding.
+- iOS has the Stack/Rivet pairing auth frame model and HMAC proof algorithm. The Swift proof test shares the Rust bridge vector `w62sYb9esNfmw-GwP36Z2ooce7olwxryi3xdRWVRpHs`, so the eventual iroh client can prove possession of the Rivet-delivered secret before opening the cmx stream.
+- Connected mode uses a real `cmx` WebSocket dev stream. iOS now requests `HelloNative` with `terminal_renderer = libghostty`, applies Rust-owned `NativeSnapshot` state to the workspace UI, sends `NativeInput` scoped to the selected tab, and sends `NativeLayout` for the visible terminal.
+- Rust native mode now supports two renderer contracts: existing `server_grid` clients still receive `TerminalGridSnapshot`; iOS `libghostty` clients receive bounded PTY replay plus live `PtyBytes`, so actual libghostty/GhosttyKit owns terminal parsing, themes, colors, cursor state, and input echo.
+- The simulator dogfood path connects to `cmx server --ws-bind 0.0.0.0:8787 --auth-token dev` with a direct development ticket and verifies typed input renders back through Ghostty.
+- The home screen now uses an iMessage-style workspace inbox shell with node pins and full-width conversation rows. The data source is still demo state until Stack Auth and Rivet hive discovery land.
+
+The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 
 ## iroh transport
 
@@ -49,4 +61,6 @@ RivetKit docs that matter for that future step:
 
 The old iOS branch carried Ghostty changes for manual embedded I/O. After checking upstream Ghostty, those cmux-specific manual I/O API changes are still not available upstream.
 
-For the first TUI sync milestone, iOS should render the Rust `cmx` TUI frames with libghostty/GhosttyKit. That avoids Swift-owned terminal state and matches the CLI/TUI interface. For the later Swift-native app, we can either draw server-derived `TerminalGridSnapshot` cells directly or revisit Ghostty manual I/O if we need native Ghostty surface rendering with Rust-owned state.
+The iOS app now renders terminal frames with actual libghostty/GhosttyKit, not `libghostty-vt`. The Swift surface feeds PTY bytes into Ghostty's parser, sends user input back through the same store path, and uses Ghostty theme/color rendering. The fork keeps cmux comments on the manual I/O and iOS rendering hooks so they can be removed if upstream Ghostty grows equivalent embedded APIs.
+
+`libghostty-vt` remains useful on the Rust daemon side only for deriving structured native snapshots later. It should not be used as the iOS terminal renderer.
