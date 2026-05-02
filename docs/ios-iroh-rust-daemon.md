@@ -38,6 +38,7 @@ Current implementation status:
 - A direct WebSocket dogfood run launched iPhone and iPad simulators against the same Rust server in `$HOME/fun/cmux-cli` and attached `cmx attach` to the same socket. Both iOS and cmux-tmux showed `lawrence in ~/fun/cmux-cli on main λ`, and typing `echo IOS_PHONE_SYNC_OK` through iPhone rendered `IOS_PHONE_SYNC_OK` in the cmux-tmux TUI.
 - Rust tests now cover the old TUI round trip (`Hello`/`PtyBytes`/`Input`), native `libghostty` PTY byte streaming, native layout resize, attached native client layout reporting, and the rail/bounds helper resize dogfood path.
 - `cmux-iroh-bridge` now exposes a reusable Rust client connector that takes an encoded or decoded bridge ticket, optionally takes the Rivet pairing secret, opens the iroh bidirectional stream, performs the client-side HMAC proof, and returns the authenticated cmx stream. This is the transport core that the iOS binding should call instead of reimplementing the iroh handshake in Swift.
+- The iOS terminal accessory scroller now carries the terminal action set (Esc, Tab, Enter, Backspace, Delete, arrows, Home/End, PgUp/PgDn, tilde, pipe, Ctrl-C/D/Z/L, zoom) plus one-shot/sticky Ctrl/Alt/Shift modifiers. Connected node metadata infers macOS hosts and swaps the bar to macOS-style `⌃`/`⌥` labels with a Mac-only `⌘` control.
 
 The WebSocket route is a dev stepping stone so we can test the protocol and renderer composition before the iroh transport lands. It is not the production transport.
 

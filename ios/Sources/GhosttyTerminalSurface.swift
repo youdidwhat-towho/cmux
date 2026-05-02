@@ -37,26 +37,58 @@ public enum TerminalFontZoomDirection: Equatable {
 }
 
 public enum TerminalInputAccessoryAction: Int, CaseIterable {
+    case control
+    case alternate
+    case command
+    case shift
     case zoomOut
     case zoomIn
     case escape
     case tab
+    case enter
+    case backspace
+    case deleteForward
     case upArrow
     case downArrow
     case leftArrow
     case rightArrow
+    case home
+    case end
+    case pageUp
+    case pageDown
+    case tilde
+    case pipe
     case ctrlC
     case ctrlD
+    case ctrlZ
     case ctrlL
 
     var title: String {
+        title(isMacRemote: false)
+    }
+
+    func title(isMacRemote: Bool) -> String {
         switch self {
+        case .control:
+            isMacRemote ? "⌃" : String(localized: "ios.terminal.inputAccessory.control", defaultValue: "Ctrl")
+        case .alternate:
+            isMacRemote ? "⌥" : String(localized: "ios.terminal.inputAccessory.alt", defaultValue: "Alt")
+        case .command:
+            "⌘"
+        case .shift:
+            "⇧"
         case .zoomOut, .zoomIn:
             ""
         case .escape:
             String(localized: "ios.terminal.inputAccessory.escape", defaultValue: "Esc")
         case .tab:
             String(localized: "ios.terminal.inputAccessory.tab", defaultValue: "Tab")
+        case .enter:
+            String(localized: "ios.terminal.inputAccessory.enter", defaultValue: "Enter")
+        case .backspace:
+            "⌫"
+        case .deleteForward:
+            "⌦"
         case .upArrow:
             "↑"
         case .downArrow:
@@ -65,10 +97,24 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
             "←"
         case .rightArrow:
             "→"
+        case .home:
+            String(localized: "ios.terminal.inputAccessory.home", defaultValue: "Home")
+        case .end:
+            String(localized: "ios.terminal.inputAccessory.end", defaultValue: "End")
+        case .pageUp:
+            String(localized: "ios.terminal.inputAccessory.pageUp", defaultValue: "PgUp")
+        case .pageDown:
+            String(localized: "ios.terminal.inputAccessory.pageDown", defaultValue: "PgDn")
+        case .tilde:
+            "~"
+        case .pipe:
+            "|"
         case .ctrlC:
             String(localized: "ios.terminal.inputAccessory.ctrlC", defaultValue: "^C")
         case .ctrlD:
             String(localized: "ios.terminal.inputAccessory.ctrlD", defaultValue: "^D")
+        case .ctrlZ:
+            String(localized: "ios.terminal.inputAccessory.ctrlZ", defaultValue: "^Z")
         case .ctrlL:
             String(localized: "ios.terminal.inputAccessory.ctrlL", defaultValue: "^L")
         }
@@ -76,17 +122,42 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
 
     var accessibilityIdentifier: String {
         switch self {
+        case .control: "terminal.inputAccessory.control"
+        case .alternate: "terminal.inputAccessory.alt"
+        case .command: "terminal.inputAccessory.command"
+        case .shift: "terminal.inputAccessory.shift"
         case .zoomOut: "terminal.inputAccessory.zoomOut"
         case .zoomIn: "terminal.inputAccessory.zoomIn"
         case .escape: "terminal.inputAccessory.escape"
         case .tab: "terminal.inputAccessory.tab"
+        case .enter: "terminal.inputAccessory.enter"
+        case .backspace: "terminal.inputAccessory.backspace"
+        case .deleteForward: "terminal.inputAccessory.deleteForward"
         case .upArrow: "terminal.inputAccessory.up"
         case .downArrow: "terminal.inputAccessory.down"
         case .leftArrow: "terminal.inputAccessory.left"
         case .rightArrow: "terminal.inputAccessory.right"
+        case .home: "terminal.inputAccessory.home"
+        case .end: "terminal.inputAccessory.end"
+        case .pageUp: "terminal.inputAccessory.pageUp"
+        case .pageDown: "terminal.inputAccessory.pageDown"
+        case .tilde: "terminal.inputAccessory.tilde"
+        case .pipe: "terminal.inputAccessory.pipe"
         case .ctrlC: "terminal.inputAccessory.ctrlC"
         case .ctrlD: "terminal.inputAccessory.ctrlD"
+        case .ctrlZ: "terminal.inputAccessory.ctrlZ"
         case .ctrlL: "terminal.inputAccessory.ctrlL"
+        }
+    }
+
+    var accessibilityLabel: String? {
+        switch self {
+        case .zoomOut:
+            String(localized: "ios.terminal.inputAccessory.zoomOut", defaultValue: "Zoom Out")
+        case .zoomIn:
+            String(localized: "ios.terminal.inputAccessory.zoomIn", defaultValue: "Zoom In")
+        default:
+            nil
         }
     }
 
@@ -112,14 +183,29 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
         }
     }
 
+    var isModifier: Bool {
+        switch self {
+        case .control, .alternate, .command, .shift:
+            true
+        default:
+            false
+        }
+    }
+
     var output: Data? {
         switch self {
-        case .zoomOut, .zoomIn:
+        case .control, .alternate, .command, .shift, .zoomOut, .zoomIn:
             nil
         case .escape:
             Data([0x1B])
         case .tab:
             Data([0x09])
+        case .enter:
+            Data([0x0D])
+        case .backspace:
+            Data([0x7F])
+        case .deleteForward:
+            Data([0x1B, 0x5B, 0x33, 0x7E])
         case .upArrow:
             Data([0x1B, 0x5B, 0x41])
         case .downArrow:
@@ -128,10 +214,24 @@ public enum TerminalInputAccessoryAction: Int, CaseIterable {
             Data([0x1B, 0x5B, 0x44])
         case .rightArrow:
             Data([0x1B, 0x5B, 0x43])
+        case .home:
+            Data([0x1B, 0x5B, 0x48])
+        case .end:
+            Data([0x1B, 0x5B, 0x46])
+        case .pageUp:
+            Data([0x1B, 0x5B, 0x35, 0x7E])
+        case .pageDown:
+            Data([0x1B, 0x5B, 0x36, 0x7E])
+        case .tilde:
+            Data([0x7E])
+        case .pipe:
+            Data([0x7C])
         case .ctrlC:
             Data([0x03])
         case .ctrlD:
             Data([0x04])
+        case .ctrlZ:
+            Data([0x1A])
         case .ctrlL:
             Data([0x0C])
         }
@@ -761,6 +861,10 @@ public final class GhosttyTerminalSurfaceView: UIView {
         inputProxy.becomeFirstResponder()
     }
 
+    func updateHostPlatform(_ platform: CmxHostPlatform) {
+        inputProxy.updateModifierLabels(isMacRemote: platform.usesMacModifiers)
+    }
+
     public func simulateTextInputForTesting(_ text: String) {
         inputProxy.insertText(text)
     }
@@ -998,6 +1102,21 @@ private final class GhosttyInputTextView: UITextView {
     var onEscapeSequence: ((Data) -> Void)?
     var onZoom: ((TerminalFontZoomDirection) -> Void)?
     var onHideKeyboard: (() -> Void)?
+    private var controlAccessoryArmed = false
+    private var alternateAccessoryArmed = false
+    private var commandAccessoryArmed = false
+    private var shiftAccessoryArmed = false
+    private var controlAccessorySticky = false
+    private var alternateAccessorySticky = false
+    private var commandAccessorySticky = false
+    private var shiftAccessorySticky = false
+    private var lastControlTapTime: Date?
+    private var lastAlternateTapTime: Date?
+    private var lastCommandTapTime: Date?
+    private var lastShiftTapTime: Date?
+    private weak var accessoryStackView: UIStackView?
+    private var commandAccessoryButton: UIButton?
+    private var isMacRemote = false
 
     override var canBecomeFirstResponder: Bool { true }
 
@@ -1009,9 +1128,10 @@ private final class GhosttyInputTextView: UITextView {
     }
 
     private static let accessoryBackground = UIColor(red: 0x27 / 255, green: 0x28 / 255, blue: 0x22 / 255, alpha: 1)
-    private static let accessoryButtonBackground = UIColor(white: 0.35, alpha: 1)
+    private static let accessoryButtonNormalBackground = UIColor(white: 0.35, alpha: 1)
     private static let accessoryButtonHeight: CGFloat = 28
-    private static let accessoryButtonMinWidth: CGFloat = 42
+    private static let accessoryButtonMinWidth: CGFloat = 44
+    private static let stickyDoubleTapInterval: TimeInterval = 0.4
 
     private lazy var terminalAccessoryToolbar: UIView = {
         let container = UIView(frame: CGRect(x: 0, y: 0, width: 0, height: 44))
@@ -1037,7 +1157,12 @@ private final class GhosttyInputTextView: UITextView {
         stack.alignment = .center
 
         for action in TerminalInputAccessoryAction.allCases {
-            stack.addArrangedSubview(makeAccessoryButton(for: action))
+            let button = makeAccessoryButton(for: action)
+            if action == .command {
+                commandAccessoryButton = button
+            } else {
+                stack.addArrangedSubview(button)
+            }
         }
 
         scrollView.addSubview(stack)
@@ -1062,6 +1187,7 @@ private final class GhosttyInputTextView: UITextView {
             stack.heightAnchor.constraint(equalTo: scrollView.frameLayoutGuide.heightAnchor, constant: -8),
         ])
 
+        accessoryStackView = stack
         return container
     }()
 
@@ -1087,11 +1213,60 @@ private final class GhosttyInputTextView: UITextView {
 
     override func insertText(_ text: String) {
         guard !text.isEmpty else { return }
-        onText?(text)
+        emitCommittedText(text)
     }
 
     override func deleteBackward() {
+        if commandAccessoryArmed {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            onEscapeSequence?(Data([0x15]))
+            return
+        }
+        if alternateAccessoryArmed {
+            if !alternateAccessorySticky {
+                setAlternateAccessoryArmed(false)
+            }
+            if let output = TerminalHardwareKeyResolver.data(input: UIKeyCommand.inputDelete, modifierFlags: [.alternate]) {
+                onEscapeSequence?(output)
+            }
+            return
+        }
+        if controlAccessoryArmed {
+            if !controlAccessorySticky {
+                setControlAccessoryArmed(false)
+            }
+            onBackspace?()
+            return
+        }
         onBackspace?()
+    }
+
+    func updateModifierLabels(isMacRemote: Bool) {
+        guard self.isMacRemote != isMacRemote else { return }
+        self.isMacRemote = isMacRemote
+        guard let stack = accessoryStackView else { return }
+        for case let button as UIButton in stack.arrangedSubviews {
+            guard let action = TerminalInputAccessoryAction(rawValue: button.tag) else { continue }
+            button.setTitle(action.title(isMacRemote: isMacRemote), for: .normal)
+        }
+        if let commandAccessoryButton {
+            if isMacRemote {
+                if commandAccessoryButton.superview == nil {
+                    let insertIndex = stack.arrangedSubviews.firstIndex {
+                        $0.tag == TerminalInputAccessoryAction.alternate.rawValue
+                    }.map { $0 + 1 } ?? stack.arrangedSubviews.count
+                    stack.insertArrangedSubview(commandAccessoryButton, at: insertIndex)
+                }
+            } else if commandAccessoryButton.superview != nil {
+                stack.removeArrangedSubview(commandAccessoryButton)
+                commandAccessoryButton.removeFromSuperview()
+            }
+        }
+        if !isMacRemote && commandAccessoryArmed {
+            setCommandAccessoryArmed(false)
+        }
     }
 
     func simulateHardwareKeyForTesting(input: String, modifierFlags: UIKeyModifierFlags) -> Bool {
@@ -1099,7 +1274,23 @@ private final class GhosttyInputTextView: UITextView {
     }
 
     func simulateAccessoryActionForTesting(_ action: TerminalInputAccessoryAction) {
+        resetStickyTapTimeForTesting(action)
         handleAccessoryAction(action)
+    }
+
+    private func resetStickyTapTimeForTesting(_ action: TerminalInputAccessoryAction) {
+        switch action {
+        case .control:
+            lastControlTapTime = nil
+        case .alternate:
+            lastAlternateTapTime = nil
+        case .command:
+            lastCommandTapTime = nil
+        case .shift:
+            lastShiftTapTime = nil
+        default:
+            break
+        }
     }
 
     @objc private func handleHardwareKeyCommand(_ sender: UIKeyCommand) {
@@ -1127,11 +1318,58 @@ private final class GhosttyInputTextView: UITextView {
 
     private func handleAccessoryAction(_ action: TerminalInputAccessoryAction) {
         if let zoomDirection = action.zoomDirection {
+            disarmAllModifiers()
+            refreshAccessoryButtonStyles()
             onZoom?(zoomDirection)
             return
         }
+
+        if controlAccessoryArmed, !action.isModifier {
+            if !controlAccessorySticky {
+                setControlAccessoryArmed(false)
+            }
+            if let output = action.output {
+                onEscapeSequence?(output)
+            }
+            return
+        }
+
+        if alternateAccessoryArmed, !action.isModifier {
+            if !alternateAccessorySticky {
+                setAlternateAccessoryArmed(false)
+            }
+            if let output = alternateAccessoryOutput(for: action) {
+                onEscapeSequence?(output)
+            }
+            return
+        }
+
+        if commandAccessoryArmed, !action.isModifier {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            if let output = commandAccessoryOutput(for: action) {
+                onEscapeSequence?(output)
+            }
+            return
+        }
+
         if let output = action.output {
             onEscapeSequence?(output)
+            return
+        }
+
+        switch action {
+        case .control:
+            toggleControlModifier()
+        case .alternate:
+            toggleAlternateModifier()
+        case .command:
+            toggleCommandModifier()
+        case .shift:
+            toggleShiftModifier()
+        default:
+            break
         }
     }
 
@@ -1140,9 +1378,9 @@ private final class GhosttyInputTextView: UITextView {
         button.translatesAutoresizingMaskIntoConstraints = false
         button.tag = action.rawValue
         button.accessibilityIdentifier = action.accessibilityIdentifier
+        button.accessibilityLabel = action.accessibilityLabel
         button.titleLabel?.font = .systemFont(ofSize: 14, weight: .medium)
         button.tintColor = .white
-        button.backgroundColor = Self.accessoryButtonBackground
         button.layer.cornerRadius = 6
         if let symbolName = action.symbolName {
             button.setImage(UIImage(systemName: symbolName), for: .normal)
@@ -1150,10 +1388,267 @@ private final class GhosttyInputTextView: UITextView {
             button.setTitle(action.title, for: .normal)
         }
         button.setTitleColor(.white, for: .normal)
+        button.backgroundColor = Self.accessoryButtonNormalBackground
         button.heightAnchor.constraint(equalToConstant: Self.accessoryButtonHeight).isActive = true
         button.widthAnchor.constraint(greaterThanOrEqualToConstant: Self.accessoryButtonMinWidth).isActive = true
         button.addTarget(self, action: #selector(handleAccessoryButton(_:)), for: .touchUpInside)
         return button
+    }
+
+    private func emitCommittedText(_ text: String) {
+        if controlAccessoryArmed {
+            if !controlAccessorySticky {
+                setControlAccessoryArmed(false)
+            }
+            if let controlSequence = controlSequence(for: text) {
+                onEscapeSequence?(controlSequence)
+            } else {
+                onText?(text)
+            }
+            return
+        }
+        if alternateAccessoryArmed {
+            if !alternateAccessorySticky {
+                setAlternateAccessoryArmed(false)
+            }
+            if let alternateSequence = alternateSequence(for: text) {
+                onEscapeSequence?(alternateSequence)
+            } else {
+                onText?(text)
+            }
+            return
+        }
+        if commandAccessoryArmed {
+            if !commandAccessorySticky {
+                setCommandAccessoryArmed(false)
+            }
+            if let commandSequence = commandTextSequence(for: text) {
+                onEscapeSequence?(commandSequence)
+            } else {
+                onText?(text)
+            }
+            return
+        }
+        if shiftAccessoryArmed {
+            if !shiftAccessorySticky {
+                setShiftAccessoryArmed(false)
+            }
+            onText?(text.uppercased())
+            return
+        }
+        onText?(text)
+    }
+
+    private func disarmAllModifiers() {
+        controlAccessoryArmed = false; controlAccessorySticky = false; lastControlTapTime = nil
+        alternateAccessoryArmed = false; alternateAccessorySticky = false; lastAlternateTapTime = nil
+        commandAccessoryArmed = false; commandAccessorySticky = false; lastCommandTapTime = nil
+        shiftAccessoryArmed = false; shiftAccessorySticky = false; lastShiftTapTime = nil
+    }
+
+    private func toggleControlModifier() {
+        let now = Date()
+        if controlAccessorySticky {
+            disarmAllModifiers()
+        } else if controlAccessoryArmed, let lastControlTapTime, now.timeIntervalSince(lastControlTapTime) < Self.stickyDoubleTapInterval {
+            controlAccessorySticky = true
+            self.lastControlTapTime = nil
+        } else {
+            let shouldArm = !controlAccessoryArmed
+            disarmAllModifiers()
+            controlAccessoryArmed = shouldArm
+            lastControlTapTime = shouldArm ? now : nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func toggleAlternateModifier() {
+        let now = Date()
+        if alternateAccessorySticky {
+            disarmAllModifiers()
+        } else if alternateAccessoryArmed, let lastAlternateTapTime, now.timeIntervalSince(lastAlternateTapTime) < Self.stickyDoubleTapInterval {
+            alternateAccessorySticky = true
+            self.lastAlternateTapTime = nil
+        } else {
+            let shouldArm = !alternateAccessoryArmed
+            disarmAllModifiers()
+            alternateAccessoryArmed = shouldArm
+            lastAlternateTapTime = shouldArm ? now : nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func toggleCommandModifier() {
+        let now = Date()
+        if commandAccessorySticky {
+            disarmAllModifiers()
+        } else if commandAccessoryArmed, let lastCommandTapTime, now.timeIntervalSince(lastCommandTapTime) < Self.stickyDoubleTapInterval {
+            commandAccessorySticky = true
+            self.lastCommandTapTime = nil
+        } else {
+            let shouldArm = !commandAccessoryArmed
+            disarmAllModifiers()
+            commandAccessoryArmed = shouldArm
+            lastCommandTapTime = shouldArm ? now : nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func toggleShiftModifier() {
+        let now = Date()
+        if shiftAccessorySticky {
+            disarmAllModifiers()
+        } else if shiftAccessoryArmed, let lastShiftTapTime, now.timeIntervalSince(lastShiftTapTime) < Self.stickyDoubleTapInterval {
+            shiftAccessorySticky = true
+            self.lastShiftTapTime = nil
+        } else {
+            let shouldArm = !shiftAccessoryArmed
+            disarmAllModifiers()
+            shiftAccessoryArmed = shouldArm
+            lastShiftTapTime = shouldArm ? now : nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func refreshAccessoryButtonStyles() {
+        guard let stack = accessoryStackView else { return }
+        for case let button as UIButton in stack.arrangedSubviews {
+            guard let action = TerminalInputAccessoryAction(rawValue: button.tag) else { continue }
+            let armed = isAccessoryActionArmed(action)
+            let sticky = isAccessoryActionSticky(action)
+            if sticky {
+                button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.85)
+                button.layer.borderWidth = 2
+                button.layer.borderColor = UIColor.white.cgColor
+            } else if armed {
+                button.backgroundColor = .systemBlue
+                button.layer.borderWidth = 0
+            } else {
+                button.backgroundColor = Self.accessoryButtonNormalBackground
+                button.layer.borderWidth = 0
+            }
+            button.setTitleColor(.white, for: .normal)
+            button.tintColor = .white
+        }
+    }
+
+    private func controlSequence(for text: String) -> Data? {
+        guard text.count == 1 else { return nil }
+        return TerminalHardwareKeyResolver.data(input: text, modifierFlags: [.control])
+    }
+
+    private func alternateSequence(for text: String) -> Data? {
+        guard let encoded = text.data(using: .utf8), !encoded.isEmpty else { return nil }
+        var sequence = Data([0x1B])
+        sequence.append(encoded)
+        return sequence
+    }
+
+    private func commandTextSequence(for text: String) -> Data? {
+        guard text.count == 1, let char = text.lowercased().first else { return nil }
+        switch char {
+        case "a": return Data([0x01])
+        case "c": return Data([0x03])
+        case "d": return Data([0x04])
+        case "e": return Data([0x05])
+        case "k": return Data([0x0B])
+        case "l": return Data([0x0C])
+        case "u": return Data([0x15])
+        case "w": return Data([0x17])
+        default: return nil
+        }
+    }
+
+    private func alternateAccessoryOutput(for action: TerminalInputAccessoryAction) -> Data? {
+        switch action {
+        case .leftArrow:
+            TerminalHardwareKeyResolver.data(input: UIKeyCommand.inputLeftArrow, modifierFlags: [.alternate])
+        case .rightArrow:
+            TerminalHardwareKeyResolver.data(input: UIKeyCommand.inputRightArrow, modifierFlags: [.alternate])
+        case .control, .alternate, .command, .shift:
+            nil
+        default:
+            action.output.map { output in
+                var sequence = Data([0x1B])
+                sequence.append(output)
+                return sequence
+            }
+        }
+    }
+
+    private func commandAccessoryOutput(for action: TerminalInputAccessoryAction) -> Data? {
+        switch action {
+        case .leftArrow:
+            Data([0x01])
+        case .rightArrow:
+            Data([0x05])
+        case .backspace:
+            Data([0x15])
+        case .control, .alternate, .command, .shift:
+            nil
+        default:
+            action.output
+        }
+    }
+
+    private func isAccessoryActionArmed(_ action: TerminalInputAccessoryAction) -> Bool {
+        switch action {
+        case .control: controlAccessoryArmed
+        case .alternate: alternateAccessoryArmed
+        case .command: commandAccessoryArmed
+        case .shift: shiftAccessoryArmed
+        default: false
+        }
+    }
+
+    private func isAccessoryActionSticky(_ action: TerminalInputAccessoryAction) -> Bool {
+        switch action {
+        case .control: controlAccessorySticky
+        case .alternate: alternateAccessorySticky
+        case .command: commandAccessorySticky
+        case .shift: shiftAccessorySticky
+        default: false
+        }
+    }
+
+    private func setControlAccessoryArmed(_ armed: Bool) {
+        guard controlAccessoryArmed != armed else { return }
+        controlAccessoryArmed = armed
+        if !armed {
+            controlAccessorySticky = false
+            lastControlTapTime = nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func setAlternateAccessoryArmed(_ armed: Bool) {
+        guard alternateAccessoryArmed != armed else { return }
+        alternateAccessoryArmed = armed
+        if !armed {
+            alternateAccessorySticky = false
+            lastAlternateTapTime = nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func setCommandAccessoryArmed(_ armed: Bool) {
+        guard commandAccessoryArmed != armed else { return }
+        commandAccessoryArmed = armed
+        if !armed {
+            commandAccessorySticky = false
+            lastCommandTapTime = nil
+        }
+        refreshAccessoryButtonStyles()
+    }
+
+    private func setShiftAccessoryArmed(_ armed: Bool) {
+        guard shiftAccessoryArmed != armed else { return }
+        shiftAccessoryArmed = armed
+        if !armed {
+            shiftAccessorySticky = false
+            lastShiftTapTime = nil
+        }
+        refreshAccessoryButtonStyles()
     }
 }
 
@@ -1166,6 +1661,7 @@ private extension CGFloat {
 struct CmxGhosttyTerminalView: UIViewRepresentable {
     @ObservedObject var store: CmxConnectionStore
     let terminalID: UInt64
+    let hostPlatform: CmxHostPlatform
 
     @MainActor
     func makeCoordinator() -> Coordinator {
@@ -1185,7 +1681,12 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
                 delegate: context.coordinator
             )
             container.setHostedView(surfaceView)
-            context.coordinator.apply(store: store, terminalID: terminalID, to: surfaceView)
+            context.coordinator.apply(
+                store: store,
+                terminalID: terminalID,
+                hostPlatform: hostPlatform,
+                to: surfaceView
+            )
         } catch {
             let fallback = UILabel()
             fallback.backgroundColor = .black
@@ -1208,7 +1709,12 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
     func updateUIView(_ view: UIView, context: Context) {
         guard let container = view as? CmxTerminalHostedViewContainer,
               let surfaceView = container.hostedView as? GhosttyTerminalSurfaceView else { return }
-        context.coordinator.apply(store: store, terminalID: terminalID, to: surfaceView)
+        context.coordinator.apply(
+            store: store,
+            terminalID: terminalID,
+            hostPlatform: hostPlatform,
+            to: surfaceView
+        )
     }
 
     @MainActor
@@ -1225,13 +1731,19 @@ struct CmxGhosttyTerminalView: UIViewRepresentable {
         private var terminalID: UInt64?
         private var lastAppliedOutputID = 0
 
-        func apply(store: CmxConnectionStore, terminalID: UInt64, to surfaceView: GhosttyTerminalSurfaceView) {
+        func apply(
+            store: CmxConnectionStore,
+            terminalID: UInt64,
+            hostPlatform: CmxHostPlatform,
+            to surfaceView: GhosttyTerminalSurfaceView
+        ) {
             let didChangeTerminal = self.terminalID != terminalID
             if didChangeTerminal {
                 lastAppliedOutputID = 0
             }
             self.store = store
             self.terminalID = terminalID
+            surfaceView.updateHostPlatform(hostPlatform)
 
             for chunk in store.outputChunks(for: terminalID) where chunk.id > lastAppliedOutputID {
                 surfaceView.processOutput(chunk.data)

@@ -64,6 +64,10 @@ final class CmxConnectionStore: ObservableObject {
             )
     }
 
+    var selectedHostPlatform: CmxHostPlatform {
+        node(for: selectedWorkspace).platform
+    }
+
     var statusText: String {
         if isConnecting {
             return String(localized: "status.connecting", defaultValue: "Connecting")
@@ -168,6 +172,7 @@ final class CmxConnectionStore: ObservableObject {
             name: String(localized: "node.unknown.name", defaultValue: "Unknown Node"),
             subtitle: String(localized: "node.unknown.subtitle", defaultValue: "not discovered"),
             symbolName: "questionmark.circle",
+            platform: .unknown,
             isOnline: false
         )
     }

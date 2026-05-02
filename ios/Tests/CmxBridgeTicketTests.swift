@@ -95,7 +95,44 @@ final class CmxBridgeTicketTests: XCTestCase {
         XCTAssertEqual(node.name, "Lawrence MacBook Pro")
         XCTAssertEqual(node.subtitle, "local dev node")
         XCTAssertEqual(node.symbolName, "laptopcomputer")
+        XCTAssertEqual(node.platform, .macOS)
         XCTAssertTrue(node.isOnline)
+    }
+
+    func testTicketNodePlatformDetectsLinuxAndMacModifierStyle() throws {
+        let mac = try CmxBridgeTicketParser.parse(
+            """
+            {
+              "version": 1,
+              "alpn": "/cmux/cmx/3",
+              "endpoint": { "id": "mac-endpoint", "addrs": [] },
+              "auth": { "mode": "direct" },
+              "node": {
+                "id": "node-mac",
+                "name": "Lawrence Mac mini",
+                "kind": "darwin"
+              }
+            }
+            """
+        )
+        let linux = try CmxBridgeTicketParser.parse(
+            """
+            {
+              "version": 1,
+              "alpn": "/cmux/cmx/3",
+              "endpoint": { "id": "linux-endpoint", "addrs": [] },
+              "auth": { "mode": "direct" },
+              "node": {
+                "id": "node-linux",
+                "name": "Build server",
+                "kind": "linux"
+              }
+            }
+            """
+        )
+
+        XCTAssertEqual(CmxHiveNodeFactory.connectedNode(for: mac).platform, .macOS)
+        XCTAssertEqual(CmxHiveNodeFactory.connectedNode(for: linux).platform, .linux)
     }
 
     func testTicketWithoutNodeMetadataUsesStableEndpointFallbackNode() throws {

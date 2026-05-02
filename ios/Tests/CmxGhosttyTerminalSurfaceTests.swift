@@ -54,6 +54,58 @@ final class CmxGhosttyTerminalSurfaceTests: XCTestCase {
         await fulfillment(of: [inputExpectation], timeout: 2.0)
     }
 
+    func testGhosttyAccessoryBarEmitsModifierSequences() throws {
+        let (surfaceView, delegate) = try makeSurfaceView()
+        var inputs: [Data] = []
+        delegate.onInput = { data in
+            inputs.append(data)
+        }
+
+        surfaceView.simulateAccessoryActionForTesting(.control)
+        surfaceView.simulateTextInputForTesting("c")
+        surfaceView.simulateAccessoryActionForTesting(.alternate)
+        surfaceView.simulateAccessoryActionForTesting(.leftArrow)
+        surfaceView.updateHostPlatform(.macOS)
+        surfaceView.simulateAccessoryActionForTesting(.command)
+        surfaceView.simulateAccessoryActionForTesting(.rightArrow)
+
+        XCTAssertEqual(inputs, [
+            Data([0x03]),
+            Data([0x1B, 0x62]),
+            Data([0x05]),
+        ])
+    }
+
+    func testGhosttyAccessoryBarExposesFullTerminalActionSet() {
+        let actions = Set(TerminalInputAccessoryAction.allCases)
+
+        XCTAssertTrue(actions.isSuperset(of: [
+            .control,
+            .alternate,
+            .command,
+            .shift,
+            .escape,
+            .tab,
+            .enter,
+            .backspace,
+            .deleteForward,
+            .upArrow,
+            .downArrow,
+            .leftArrow,
+            .rightArrow,
+            .home,
+            .end,
+            .pageUp,
+            .pageDown,
+            .tilde,
+            .pipe,
+            .ctrlC,
+            .ctrlD,
+            .ctrlZ,
+            .ctrlL,
+        ]))
+    }
+
     func testGhosttySurfaceCanForceInitialGridReportAfterCoordinatorBinding() throws {
         let (surfaceView, delegate) = try makeSurfaceView()
         surfaceView.frame = CGRect(x: 0, y: 0, width: 390, height: 640)

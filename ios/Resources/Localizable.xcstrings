@@ -523,6 +523,18 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "libghostty を起動できませんでした" } }
       }
     },
+    "ios.terminal.inputAccessory.alt" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Alt" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Alt" } }
+      }
+    },
+    "ios.terminal.inputAccessory.control" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Ctrl" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Ctrl" } }
+      }
+    },
     "ios.terminal.inputAccessory.ctrlC" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "^C" } },
@@ -541,16 +553,64 @@
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "^L" } }
       }
     },
+    "ios.terminal.inputAccessory.ctrlZ" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "^Z" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "^Z" } }
+      }
+    },
+    "ios.terminal.inputAccessory.end" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "End" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "End" } }
+      }
+    },
+    "ios.terminal.inputAccessory.enter" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Enter" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Enter" } }
+      }
+    },
     "ios.terminal.inputAccessory.escape" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Esc" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "Esc" } }
       }
     },
+    "ios.terminal.inputAccessory.home" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Home" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "Home" } }
+      }
+    },
+    "ios.terminal.inputAccessory.pageDown" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "PgDn" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "PgDn" } }
+      }
+    },
+    "ios.terminal.inputAccessory.pageUp" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "PgUp" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "PgUp" } }
+      }
+    },
     "ios.terminal.inputAccessory.tab" : {
       "localizations" : {
         "en" : { "stringUnit" : { "state" : "translated", "value" : "Tab" } },
         "ja" : { "stringUnit" : { "state" : "translated", "value" : "Tab" } }
+      }
+    },
+    "ios.terminal.inputAccessory.zoomIn" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Zoom In" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "拡大" } }
+      }
+    },
+    "ios.terminal.inputAccessory.zoomOut" : {
+      "localizations" : {
+        "en" : { "stringUnit" : { "state" : "translated", "value" : "Zoom Out" } },
+        "ja" : { "stringUnit" : { "state" : "translated", "value" : "縮小" } }
       }
     },
     "workspace.row.detail" : {

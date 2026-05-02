@@ -441,7 +441,11 @@ private struct TerminalPane: View {
 
     var body: some View {
         GeometryReader { proxy in
-            CmxGhosttyTerminalView(store: store, terminalID: terminal.id)
+            CmxGhosttyTerminalView(
+                store: store,
+                terminalID: terminal.id,
+                hostPlatform: store.selectedHostPlatform
+            )
                 .id(terminal.id)
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .clipped()

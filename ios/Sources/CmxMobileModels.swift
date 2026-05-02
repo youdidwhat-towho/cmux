@@ -5,7 +5,41 @@ struct CmxHiveNode: Identifiable, Equatable {
     var name: String
     var subtitle: String
     var symbolName: String
+    var platform: CmxHostPlatform
     var isOnline: Bool
+}
+
+enum CmxHostPlatform: String, Equatable, Sendable {
+    case macOS = "macos"
+    case linux
+    case unknown
+
+    var usesMacModifiers: Bool {
+        self == .macOS
+    }
+
+    static func infer(kind: String?, name: String? = nil, subtitle: String? = nil) -> CmxHostPlatform {
+        let tokens = [kind, name, subtitle]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        if tokens.contains("macbook")
+            || tokens.contains("mac mini")
+            || tokens.contains("macmini")
+            || tokens.contains("macos")
+            || tokens.contains("darwin") {
+            return .macOS
+        }
+        if tokens.contains("linux")
+            || tokens.contains("ubuntu")
+            || tokens.contains("debian")
+            || tokens.contains("fedora")
+            || tokens.contains("server") {
+            return .linux
+        }
+        return .unknown
+    }
 }
 
 enum CmxHiveNodeFactory {
@@ -13,14 +47,17 @@ enum CmxHiveNodeFactory {
         let nodeKey = ticket.node?.id ?? ticket.endpoint.id
         let endpoint = ticket.endpoint.id
         let fallbackSubtitle = endpoint.count > 12 ? "\(endpoint.prefix(6))...\(endpoint.suffix(6))" : endpoint
+        let name = ticket.node?.name.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+            ?? String(localized: "node.connected.name", defaultValue: "cmx node")
+        let subtitle = ticket.node?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
+            ?? fallbackSubtitle.nonEmpty
+            ?? String(localized: "node.connected.subtitle", defaultValue: "connected")
         return CmxHiveNode(
             id: stableNodeID(for: nodeKey),
-            name: ticket.node?.name.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
-                ?? String(localized: "node.connected.name", defaultValue: "cmx node"),
-            subtitle: ticket.node?.subtitle?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty
-                ?? fallbackSubtitle.nonEmpty
-                ?? String(localized: "node.connected.subtitle", defaultValue: "connected"),
+            name: name,
+            subtitle: subtitle,
             symbolName: symbolName(for: ticket.node?.kind),
+            platform: CmxHostPlatform.infer(kind: ticket.node?.kind, name: name, subtitle: subtitle),
             isOnline: true
         )
     }
@@ -102,6 +139,7 @@ enum CmxDemoState {
             name: String(localized: "demo.node.macbook", defaultValue: "MacBook Pro"),
             subtitle: String(localized: "demo.node.macbook.subtitle", defaultValue: "local dev node"),
             symbolName: "laptopcomputer",
+            platform: .macOS,
             isOnline: true
         ),
         CmxHiveNode(
@@ -109,6 +147,7 @@ enum CmxDemoState {
             name: String(localized: "demo.node.mac_mini", defaultValue: "Mac mini"),
             subtitle: String(localized: "demo.node.mac_mini.subtitle", defaultValue: "hive standby"),
             symbolName: "macmini",
+            platform: .macOS,
             isOnline: true
         ),
     ]
